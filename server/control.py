@@ -1,0 +1,209 @@
+"""One control model for the whole workspace: three stages that run or pause on their own, plus per-account pause.
+
+Stages and the settings they sit on:
+  lists  "Collect lists"  settings `paused` (workspace pause, legacy) or `paused_lists`  -> /api/ext/next hands out no list jobs
+  bios   "Read bios"      settings `paused` or `paused_bios`                              -> /api/ext/next hands out no profile jobs
+  ai     "AI scoring"     setting `qualify` (off also switches `qualify_auto` off, so it does not switch itself back on)
+Resuming lists or bios clears the legacy `paused` and keeps the other stage where it was, so the three stay independent.
+"""
+from datetime import datetime, timedelta, timezone
+
+import accounts
+import db
+
+STAGES = ('lists', 'bios', 'ai')
+LABEL = {'lists': 'Collect lists', 'bios': 'Read bios', 'ai': 'AI scoring'}
+HELP = {
+    'lists': 'Visits the follower and following lists of your seed accounts on Instagram and saves the people in them. '
+             'Pause stops new list pages; nothing already saved is lost.',
+    'bios': 'Opens the profiles of the most promising people one by one and saves their bio. '
+            'Pause stops new profile visits; lists keep going unless you pause them too.',
+    'ai': 'Asks the AI model to read each saved bio and score how good a lead the person is. '
+          'Pause stops new model calls; no Instagram requests are involved.',
+}
+KIND = {'lists': 'list', 'bios': 'profile'}
+BREAK_S = 20   # a list clock further out than the longest normal gap (12 s) + slack means the account is on a break
+
+
+def utc(s):
+    try:
+        d = datetime.fromisoformat(str(s).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def iso(d):
+    return d.isoformat(timespec='microseconds')
+
+
+def stage_paused(conn, stage):
+    if stage == 'ai':
+        return not db.get_setting(conn, 'qualify')
+    return bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
+
+
+def paused_kinds(conn):
+    """Job kinds /api/ext/next must not hand out right now."""
+    return {KIND[s] for s in ('lists', 'bios') if stage_paused(conn, s)}
+
+
+def set_stage(conn, stage, pause):
+    if stage == 'ai':
+        db.set_setting(conn, 'qualify', not pause)
+        if pause:
+            db.set_setting(conn, 'qualify_auto', False)
+        return
+    if not pause and db.get_setting(conn, 'paused'):
+        # the legacy pause covered both Instagram stages: keep the other one paused so only this one resumes
+        other = 'bios' if stage == 'lists' else 'lists'
+        db.set_setting(conn, 'paused_' + other, True)
+        db.set_setting(conn, 'paused', False)
+    db.set_setting(conn, 'paused_' + stage, bool(pause))
+
+
+def stop_all(conn):
+    for s in STAGES:
+        set_stage(conn, s, True)
+
+
+def resume_all(conn):
+    db.set_setting(conn, 'paused', False)
+    for s in STAGES:
+        set_stage(conn, s, False)
+
+
+def mins(sec):
+    sec = max(0, int(sec))
+    return f'{sec} s' if sec < 60 else f'{round(sec / 60)} min' if sec < 3600 else f'{sec / 3600:.1f} h'
+
+
+def lane_wait(conn, row, kind, now):
+    """(why, seconds) when this account can't do `kind` right now, else None."""
+    if row['hold']:
+        return ('Instagram asks this account to log in again' if row['hold'] == 'login'
+                else 'Instagram wants a security check on this account'), None
+    cool = row['list_cool_until'] if kind == 'list' else None
+    for until in (cool, row['cooldown_until']):
+        u = utc(until) if until else None
+        if u and u > now:
+            return 'Instagram asked us to slow down, resting', int((u - now).total_seconds())
+    ready = (db.get_setting(conn, 'ext_ready') or {}).get(row['lane_id']) or {}
+    u = utc(ready.get(kind)) if ready.get(kind) else None
+    if u and u > now:
+        sec = int((u - now).total_seconds())
+        if kind == 'list' and sec > BREAK_S:
+            return 'Short break to look human', sec
+        return 'Waiting between requests', sec
+    return None
+
+
+def counts(conn, now):
+    hour, day = iso(now - timedelta(hours=1)), iso(now)[:10]
+
+    def two(sql):
+        return {'hour': conn.execute(sql, (hour,)).fetchone()[0], 'today': conn.execute(sql, (day,)).fetchone()[0]}
+    return {'lists': two('SELECT count(*) FROM edges WHERE first_seen>=?'),
+            'bios': two('SELECT count(*) FROM people WHERE bio_at>=?'),
+            'ai': two("SELECT count(*) FROM verdicts WHERE model IS NOT NULL AND model!='rules' AND updated_at>=?")}
+
+
+UNIT = {'lists': 'people', 'bios': 'bios', 'ai': 'scores'}
+
+
+def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
+    paused = stage_paused(conn, stage)
+    out = {'id': stage, 'label': LABEL[stage], 'help': HELP[stage], 'paused': paused, 'unit': UNIT[stage],
+           'hour': c['hour'], 'today': c['today'], 'wait': None, 'queue': queue}
+    if paused:
+        why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
+        return dict(out, state='paused', now=why)
+    if stage == 'ai':
+        if not queue:
+            return dict(out, state='idle', now='Running, nothing waiting to be scored.')
+        return dict(out, state='running', now=f'Scoring bios with the AI model, {queue:,} waiting.')
+    kind = KIND[stage]
+    # accounts that could do this stage: online, not paused, role allows it
+    role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
+    able = [a for a in accts if a['online'] and not a['paused'] and (a['role'] or 'both') in role_ok]
+    working = [a for a in able if a['job'] and a['job']['kind'] == kind]
+    if not accts or not any(a['online'] for a in accts):
+        return dict(out, state='idle', now='No Instagram account is online. Open Chrome with the extension.')
+    if not able:
+        return dict(out, state='idle', now='Every account that does this is paused or offline.')
+    if working:
+        a = working[0]
+        j = a['job']
+        what = (f"@{j['seed']}'s {j['direction']}" if kind == 'list' else '@' + (j['handle'] or '?'))
+        more = f' (+{len(working) - 1} more accounts)' if len(working) > 1 else ''
+        return dict(out, state='running', now=f"{a['name']} is reading {what}{more}.")
+    if not queue:
+        return dict(out, state='idle', now='Running, nothing left to do right now.')
+    waits = [(w, a) for a in able for w in [lane_wait(conn, rows[a['lane_id']], kind, now)] if w]
+    if waits and len(waits) == len(able):
+        (why, sec), a = min(waits, key=lambda x: x[0][1] if x[0][1] is not None else 1e9)
+        return dict(out, state='waiting', wait={'why': why, 'seconds': sec},
+                    now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
+    return dict(out, state='running', now='Running.')
+
+
+def account_out(conn, a, row, now, all_paused):
+    base = {'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
+            'status': a['status'], 'hour': a['hour'], 'today': a['today'], 'wait': None}
+    if a['paused']:
+        return dict(base, state='paused', now='Paused by you.')
+    if not a['online']:
+        return dict(base, state='offline', now='Offline: its Chrome window is closed or asleep.')
+    if a['job']:
+        j = a['job']
+        what = f"@{j['seed']}'s {j['direction']}" if j['kind'] == 'list' else f"the bio of @{j['handle']}"
+        return dict(base, state='running', now=f'Reading {what}.')
+    if all_paused:
+        return dict(base, state='paused', now='Nothing to do: lists and bios are both paused.')
+    for kind in ('list', 'profile'):
+        w = lane_wait(conn, row, kind, now)
+        if w:
+            why, sec = w
+            return dict(base, state='waiting', wait={'why': why, 'seconds': sec},
+                        now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
+    return dict(base, state='idle', now='Online, waiting for work.')
+
+
+def snapshot(conn, ai_left=None):
+    now = datetime.now(timezone.utc)
+    rows = {r['lane_id']: r for r in accounts.rows(conn)}
+    accts = [accounts.out(conn, r, now) for r in rows.values()]
+    c = counts(conn, now)
+    queue = dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
+        "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())
+    stages = [stage_out(conn, 'lists', accts, rows, c['lists'], now, queue['list']),
+              stage_out(conn, 'bios', accts, rows, c['bios'], now, queue['profile']),
+              stage_out(conn, 'ai', accts, rows, c['ai'], now, ai_left or 0)]
+    both = all(s['paused'] for s in stages[:2])
+    return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
+            'all_paused': all(s['paused'] for s in stages), 'at': iso(now)}
+
+
+def apply(conn, b):
+    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane_id, "action": ...}."""
+    action = b.get('action')
+    if action not in ('pause', 'resume'):
+        raise ValueError('action must be pause or resume')
+    pause = action == 'pause'
+    if b.get('account') is not None:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            accounts.edit(conn, str(b['account']), {'paused': pause})
+        except LookupError:
+            conn.rollback()
+            raise
+        conn.commit()
+        return
+    stage = b.get('stage')
+    if stage == 'all':
+        stop_all(conn) if pause else resume_all(conn)
+    elif stage in STAGES:
+        set_stage(conn, stage, pause)
+    else:
+        raise ValueError('stage must be lists, bios, ai or all (or give an account)')
+    conn.commit()
