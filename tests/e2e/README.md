@@ -21,9 +21,9 @@ Checks: every list complete with edges equal to what the fake served, no page fe
 
 ```
 lanes  time to 10k connections  all lists done
-    1                   1.83 h          2.33 h
-    2                   1.33 h          1.58 h
-    4                   0.67 h          0.92 h
+    1                   1.42 h          2.50 h
+    2                   1.00 h          1.67 h
+    4                   0.50 h          0.92 h
 ```
 Lane 2 is logged out for 45 min in the 2- and 4-lane runs, which is why 2 lanes are not twice as fast.
 
