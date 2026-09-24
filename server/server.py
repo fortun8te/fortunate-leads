@@ -1111,7 +1111,7 @@ def requalify(conn, p, me, net=None):
         conn.execute('UPDATE verdicts SET prefilter=?, updated_at=? WHERE person_id=?', (pre, p['updated_at'], p['id']))
         return
     tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
-    v = qualify.rule_verdict(p, tags)
+    v = qualify.rule_verdict(p, tags, net)
     conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at) "
                  "VALUES(?,?,?,?,?,?,'rules',NULL,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], p['updated_at']))
 

@@ -177,12 +177,27 @@ class Labelled(unittest.TestCase):
                 self.assertIn(v['tier'], ('hot', 'warm', 'cold'))
                 self.assertTrue(v['reason'].endswith('.') and len(v['reason']) < 160, v['reason'])
 
-    def test_buyers_rank_above_the_rest(self):
+    def test_buyers_rank_above_the_rest_in_the_same_lists(self):
         rows = self.run_all()
-        buyers = [r[4]['score'] for r in rows if r[5] == {'buyer'}]
-        others = [r[4]['score'] for r in rows if 'buyer' not in r[5] and 'connector' not in r[5]]
-        self.assertGreater(min(buyers), max(others))
+        for n in (1, 2, 3):
+            same = [r for r in rows if q.net_from_tags(r[2])['lists'] == n]
+            buyers = [r[4]['score'] for r in same if r[5] == {'buyer'}]
+            others = [r[4]['score'] for r in same if 'buyer' not in r[5] and 'connector' not in r[5]]
+            if buyers and others:
+                self.assertGreater(min(buyers), max(others), n)
         self.assertTrue(all(r[4]['tier'] == 'hot' for r in rows if r[5] == {'buyer'} and 'in 3 lists' in r[3]))
+
+    def test_network_outweighs_the_profile_read(self):
+        founder = P('mark.b', 'Founder. Building something new.', 'Mark')
+        in_three = q.rule_verdict(founder, q.rule_tags(founder, E('a', 'b', 'c'), ME))
+        brand = P('glowbrand', 'Clean skincare brand, ships worldwide. Shop below', 'Glow', 'https://glow.shop', followers=8000)
+        in_one = q.rule_verdict(brand, q.rule_tags(brand, E('a'), ME))
+        self.assertGreater(in_three['score'], in_one['score'])
+        # the widest possible profile swing (0 -> 100) moves a score less than the widest network swing
+        self.assertLess(q.blend(100, {'lists': 1}) - q.blend(0, {'lists': 1}),
+                        q.blend(50, {'lists': 5, 'me': 'mutual', 'client_seeds': 3, 'seeds': [('a', 'following')] * 2,
+                                     'seed_yield': 0.9, 'seed_marked': 20})
+                        - q.blend(50, {'lists': 1, 'seed_yield': 0.0, 'seed_marked': 20}))
 
 
 class Pieces(unittest.TestCase):
@@ -324,8 +339,8 @@ class LLMPath(unittest.TestCase):
 
     def test_good_reply(self):
         v = self.verdict('ok', models=('m/one:free',))
-        self.assertEqual((v['role'], v['fit'], v['model'], v['tier']), ('buyer', 81, 'm/one:free', 'hot'))
-        self.assertEqual(v['score'], 85)  # fit + 4 for a second list
+        self.assertEqual((v['role'], v['fit'], v['model'], v['tier']), ('buyer', 81, 'm/one:free', 'warm'))
+        self.assertEqual(v['score'], q.blend(81, {'lists': 2}))   # the network (2 lists) carries the larger share
         self.assertNotIn(('Nope', 'niche'), v['tags'])
 
     def test_bad_replies_fall_back_to_none(self):

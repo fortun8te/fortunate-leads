@@ -56,7 +56,7 @@ class Pipeline(unittest.TestCase):
         net = {'seeds': [('a', 'following'), ('b', 'following')], 'lists': 2, 'me': 'mutual', 'seed_yield': 0.6, 'seed_marked': 10,
                'client_seeds': 2}
         self.assertGreater(q.prefilter(person, ['a', 'b'], net), plain + 30)
-        low = dict(net, seed_yield=0.05, me=None, client_seeds=0, seeds=[('a', 'followers')])
+        low = dict(net, lists=1, seed_yield=0.05, me=None, client_seeds=0, seeds=[('a', 'followers')])
         self.assertLess(q.prefilter(person, ['a'], low), plain)       # a low-yield seed drags down
         self.assertLessEqual(q.prefilter(dict(person, is_private=1), ['a'], net), 35)
         self.assertEqual(q.prefilter(person, ['a'], None, 100), round(0.75 * plain + 25))   # Laya: one soft weighted signal

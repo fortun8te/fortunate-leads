@@ -193,39 +193,61 @@ N_NEG = re.compile(r'(?<!\w)(?:coach(?:ing)?|mentor|podcast|learn|course|academy
                    r'photography|dj|artist|model|actor|actress|athlete|nft)(?!\w)', re.I)
 
 
-def network_score(net) -> int:
-    """Points from the follower/following network (net = server.network_context entry; None = no network data)."""
-    if not net:
-        return 0
-    score = 0
+# Ranking: the network (who follows whom among Michael's seeds and clients) carries the larger share of every score; the
+# profile read (handle/name before the bio, then rules or the LLM on the bio) adjusts it.
+NET_WEIGHT = 0.6
+
+
+def _clamp(v):
+    return max(0, min(100, int(round(v))))
+
+
+def network_strength(net) -> int:
+    """0-100 from the network (net = server.network_context entry): lists count, seeds that follow them, how well their
+    seeds' people converted (seed yield), links to Michael's good/client accounts, and a direct link to Michael."""
+    net = net or {}
+    lists = int(net.get('lists') or 0)
+    s = 30 + (0, 0, 25, 38, 46)[min(lists, 4)] + (3 * (lists - 4) if lists > 4 else 0)
     by = sum(1 for _, d in net.get('seeds', []) if d == 'following')   # a seed chose to follow them: stronger than the reverse
-    score += min(8, 4 * by)
+    s += min(10, 5 * by)
     y = net.get('seed_yield')
     if y is not None and net.get('seed_marked'):
-        score += max(-8, min(16, round((y - 0.25) * 40)))
-    score += {'mutual': 12, 'follows': 8, 'followed': 6}.get(net.get('me'), 0)
-    score += min(12, 4 * int(net.get('client_seeds') or 0))
-    return score
+        s += max(-12, min(20, round((y - 0.25) * 60)))
+    s += {'mutual': 16, 'follows': 10, 'followed': 8}.get(net.get('me'), 0)
+    s += min(18, 6 * int(net.get('client_seeds') or 0))
+    return _clamp(s)
+
+
+def net_from_tags(tags) -> dict:
+    """The network as far as the source tags tell (lists count, link to Michael) when no network context is at hand."""
+    src = _names(tags).get('source', [])
+    me = 'mutual' if {'follows you', 'you follow'} <= set(src) else 'follows' if 'follows you' in src else \
+        'followed' if 'you follow' in src else None
+    return {'lists': max(_seed_count({'source': src}), 1 if src else 0), 'me': me}
+
+
+def blend(content, net) -> int:
+    return _clamp(NET_WEIGHT * network_strength(net) + (1 - NET_WEIGHT) * content)
 
 
 def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
-    """0-100 from list data only (no bio needed) plus network signals; Laya (optional) is one soft weighted signal."""
-    base = _prefilter(person, seeds) + network_score(net)
+    """0-100 before any bio: the network blended with handle/name signals; Laya (optional) is one soft weighted signal."""
+    if net is None:
+        net = {'lists': len({s.lower().lstrip('@') for s in seeds or [] if s})}
+    base = blend(_profile_signals(person), net)
     if person.get('is_private'):
         base = min(base, 35)
     if laya_fit is not None:
         base = round(0.75 * base + 0.25 * laya_fit)
-    return max(0, min(100, int(base)))
+    return _clamp(base)
 
 
-def _prefilter(person: dict, seeds: list[str]) -> int:
+def _profile_signals(person: dict) -> int:
+    """0-100 from the handle, display name and counts only (what a list page shows)."""
     handle = str(person.get('handle') or '').lower()
     name = str(person.get('name') or '')
     tokens = [t for t in re.split(r'[._\d]+', handle) if t]
-    distinct = {s.lower().lstrip('@') for s in seeds or [] if s}
     score = 32
-    n = len(distinct)
-    score += (0, 0, 16, 26, 33)[min(n, 4)] + (3 * (n - 4) if n > 4 else 0)
     if any(H_BRAND.search(t) for t in tokens) or re.search(r'(?:^|[._])co$', handle):
         score += 14
     if any(H_CONNECTOR.search(t) for t in tokens):
@@ -266,7 +288,7 @@ def _prefilter(person: dict, seeds: list[str]) -> int:
             score -= 10
     if person.get('is_private'):
         score = min(score - 20, 35)
-    return int(score)
+    return _clamp(score)
 
 
 # ---------------------------------------------------------------- rule tags
@@ -388,7 +410,8 @@ def _seed_count(g):
     return len([t for t in g.get('source', []) if t.startswith('via @')]) + (1 if 'knows you' in g.get('source', []) else 0)
 
 
-def rule_verdict(person: dict, tags) -> dict:
+def rule_verdict(person: dict, tags, net=None) -> dict:
+    """Rules on the bio give the profile read; the network (net, else what the source tags say) the larger share."""
     g = _names(tags)
     roles, sig, niche = g.get('role', []), set(g.get('signal', [])), g.get('niche', [])
     has_bio = bool(str(person.get('bio') or '').strip())
@@ -417,13 +440,11 @@ def rule_verdict(person: dict, tags) -> dict:
         score += 6 * bool('Founder' in sig) + 7 * bool('Shop Link' in sig) + 5 * bool('Shopify' in sig) + 4 * bool(niche)
     if role in ('buyer', 'connector'):
         score += 4 * bool('US' in sig) + 3 * bool('NL' in sig) + 4 * bool('Scaling' in sig) + 2 * bool('Email' in sig)
-    n = _seed_count(g)
-    score += min(12, 4 * max(0, n - 1)) + 3 * ('knows you' in g.get('source', []))
     size = (g.get('size') or [None])[0]
     score += {'1M+': -22, '100k-1M': -6, '<1k': -2}.get(size, 0) if role in ('buyer', 'connector') else 0
     if role in ('unrelated', 'peer'):
         score = min(score, 35)
-    score = max(0, min(100, score))
+    score = blend(_clamp(score), net if net is not None else net_from_tags(tags))
     return {'score': score, 'role': role, 'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)}
 
 
@@ -482,7 +503,8 @@ READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person s
 - Link in bio: a shop domain with products is the best evidence there is. Link hubs (linktr.ee etc.) need the real destination.
 - Follower counts: 300-100k is the sweet spot for a brand that hires a freelancer. Under 300 can be an early brand, still worth it if real.
   Over 1M is almost always a celebrity, big creator or big brand with an in-house team: very unlikely to hire him. Following far more than followers = follow-for-follow or spam.
-- Many followers of a business account are fans, friends and students, not buyers. Default to unrelated unless there are concrete business signs.
+- Many followers of a business account are fans, friends and students, not buyers. Without concrete business signs, lean unclear
+  rather than guessing a role.
 - Many good leads are lowkey: e-commerce owners and ads/growth people often keep a personal-looking profile and never say it in the bio.
   Quiet signs: sitting in several e-commerce/ads operators' networks, a brand @mention, "ops", "scaling", "8fig",
   a Shopify link, a second account for the business. Weigh these; do not dismiss a sparse profile that has them.
@@ -505,8 +527,11 @@ RUBRIC = """Scoring rubric (fit 0-100) for Fortunate's ideal client:
   or Dutch selling to the US, big enough to pay about EUR 2,000+ (real shop, products, customers, team or growth talk).
 - 60-79: likely a product brand / its decision-maker but size, market or role is not fully clear.
 - 40-59: connector (e-com agency/freelancer who can refer) or a sparse profile with real business signs.
-- 0-39: creators/influencers, agencies for non-product clients, coaches and course sellers, personal accounts, suppliers and tools,
-  anyone without evidence of a product business. Reject these unless the evidence shows they also own a product brand."""
+- 20-39: creators/influencers, agencies for non-product clients, coaches and course sellers, suppliers and tools: usually not a fit,
+  but they can know buyers. Score higher when the evidence shows they also run a product brand.
+- 0-19: clearly personal, fan, spam or bot accounts.
+Your fit judges the profile itself. The network lines (lists, who follows them, links to Michael and his clients) are added to
+the final ranking separately and weigh more than the bio, so do not push a fit to 0 just because the bio is sparse."""
 
 
 def _call(model, messages, timeout):
@@ -636,7 +661,7 @@ def _system(examples, n):
 ROLE_TAG = {'buyer': 'Brand', 'connector': 'Agency', 'collaborator': 'Creative', 'supplier': 'Supplier'}
 
 
-ROLE_CAP = {'buyer': 100, 'connector': 80, 'collaborator': 60, 'unclear': 60, 'supplier': 50, 'peer': 40, 'unrelated': 30}
+ROLE_CAP = {'buyer': 100, 'connector': 80, 'collaborator': 65, 'unclear': 65, 'supplier': 55, 'peer': 50, 'unrelated': 40}   # on the fit
 
 
 def _evidence(v, person):
@@ -648,15 +673,12 @@ def _evidence(v, person):
     return out[:3]
 
 
-def _verdict(v, person, tags, used, version):
+def _verdict(v, person, tags, used, version, net=None):
     if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
         return None
     allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
     fit = int(max(0, min(100, v['fit'])))
-    g = _names(tags)
-    n = _seed_count(g)
-    score = fit + min(10, 4 * max(0, n - 1)) + 3 * ('knows you' in g.get('source', []))
-    score = max(0, min(ROLE_CAP[v['role']], score))
+    score = blend(min(ROLE_CAP[v['role']], fit), net if net is not None else net_from_tags(tags))
     reason = re.sub(r'\s+', ' ', str(v.get('reason') or '')).strip()[:220] or rule_verdict(person, tags)['reason']
     extra = [t for t in (v.get('extra_tags') or []) if isinstance(t, str) and t in allowed]
     if isinstance(v.get('niche'), str) and v['niche'] in allowed:
@@ -708,7 +730,7 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
                 continue
             if 0 <= rid < len(chunk) and out[i + rid] is None:
                 it = chunk[rid]
-                out[i + rid] = _verdict(r, it['person'], it.get('tags'), used, version)
+                out[i + rid] = _verdict(r, it['person'], it.get('tags'), used, version, it.get('net'))
     return out
 
 
