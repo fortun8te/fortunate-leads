@@ -31,3 +31,13 @@ Confidence: H = read in source code or maintainer-measured, M = several user rep
 - [InstagramUnfollowers](https://github.com/davidarroyo1234/InstagramUnfollowers): filter chips, whitelist, configurable timings panel, partial-scan recovery.
 - [sigma.js](https://github.com/jacomyal/sigma.js) (12k★) and [force-graph](https://github.com/vasturiano/force-graph) (2k★) for network views. [cytoscape.js](https://github.com/cytoscape/cytoscape.js) (11k★) for layouts and filtering.
 - [twenty](https://github.com/twentyhq/twenty) (57k★) as a CRM table/kanban reference. **It is AGPL-style (NOASSERTION), so borrow ideas only, not code.**
+
+## 6. Bulk bios: no multi-user source exists (2026-09-24)
+Checked for any endpoint that returns `biography` for many users per request. None found; all list-type responses use the short user shape.
+- Followers/following v1 (`friendships/{id}/followers|following`, incl. `search_surface=follow_list_page`) and GraphQL followers (`query_hash 37479f2b…`): instagrapi parses both with `extract_user_short` (pk, username, full_name, profile_pic_url, is_private, is_verified). No bio. **H**, instagrapi `mixins/user.py`, `extractors.py`.
+- Related/chaining: `discover/chaining/` user fields are pk, username, full_name, is_private, profile_pic_url, profile_pic_id, is_verified, chaining_info, profile_chaining_secondary_label, social_context. No bio. **H**, instagram-private-api `discover.repository.chaining.response.ts`. GraphQL `edge_chaining` (`ad99dd9d…`) is also parsed as UserShort. **H**.
+- Search (`users/search`, topsearch): UserShort. **H** for users/search (instagrapi); **M** for web topsearch (not re-checked).
+- The only multi-id endpoint, `friendships/show_many`, returns follow status only. **H**.
+- Commercial tools (Datablist, Apify) also sell bios through a separate per-profile scraper. **M**.
+- Official Graph API Business Discovery returns biography/website/followers_count, but needs a Meta app + business token, one user per call, business/creator targets only. Not usable from the tab. **M**.
+Not tested live (nothing worth testing). Bio throughput stays bound to one `users/{pk}/info/` call per person.
