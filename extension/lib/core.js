@@ -393,6 +393,28 @@
   const api = { PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
+  // ---- Control strip (widget): the server's three stages as short rows. ctl = GET /api/control, now = ms ----
+  const STAGE_SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
+  function stageClock(sec) {
+    sec = Math.max(0, Math.round(sec));
+    return sec < 60 ? sec + ' s' : sec < 3600 ? Math.ceil(sec / 60) + ' min' : (sec / 3600).toFixed(1) + ' h';
+  }
+  function stagesView(ctl, now) {
+    if (!ctl || !Array.isArray(ctl.stages)) return [];
+    const age = ctl.got ? Math.max(0, (now - ctl.got) / 1e3) : 0;
+    return ctl.stages.map((s) => {
+      let word;
+      if (s.state === 'paused') word = 'paused';
+      else if (s.state === 'waiting' && s.wait) {
+        const kind = /break/i.test(s.wait.why || '') ? 'break' : /slow down/i.test(s.wait.why || '') ? 'resting' : 'waiting';
+        word = kind + (s.wait.seconds != null ? ' ' + stageClock(s.wait.seconds - age) : '');
+      } else if (s.state === 'idle') word = /no instagram account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
+      else word = 'running' + (s.hour ? ' · ' + Math.round(s.hour).toLocaleString('en-US') + '/h' : '');
+      return { id: s.id, name: STAGE_SHORT[s.id] || s.label, label: s.label, word, on: s.state === 'running' || s.state === 'waiting',
+        paused: !!s.paused, action: s.paused ? 'resume' : 'pause', now: s.now || '', help: s.help || '' };
+    });
+  }
+  api.stagesView = stagesView;
   root.FL = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1,4 +1,4 @@
-# Fortunate Leads extension (3.6.0)
+# Fortunate Leads extension (3.7.0)
 Install: chrome://extensions → Developer mode → remove the old "Follower export" → Load unpacked → this folder (same extension id).
 Needs a logged-in Instagram session and the server on http://127.0.0.1:8777. It uses an open instagram.com tab; if none is left while there is work it reopens one as a pinned background tab (at most once per 10 min), and it wakes a discarded/frozen Instagram tab by reloading it (at most once per 3 min, never the tab you are looking at). The tab it uses is marked not auto-discardable.
 What it does: asks the server for one job at a time (list page or profile read), runs it inside the Instagram tab, posts the result. One request lane; a stored lane marker stops a restarted worker from firing while an earlier request may still be running.
