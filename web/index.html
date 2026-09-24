@@ -29,7 +29,7 @@
       <a href="#/settings" data-view="settings"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg><span>Settings</span></a>
     </nav>
     <div class="side-foot">
-      <button class="btn ghost hide-sm" id="density-btn" title="Density (d)">Compact</button>
+      <button class="btn ghost hide-sm" id="density-btn" title="Density (d)" hidden>Compact</button>
       <button class="btn ghost" id="theme-btn">Light</button>
       <button class="btn ghost hide-sm" id="help-btn" title="Keyboard shortcuts"><kbd>?</kbd></button>
     </div>
@@ -44,9 +44,9 @@
         <a class="st-lanes" id="st-lanes" href="#/accounts" hidden></a>
         <span class="st-act hide-md" id="st-act"></span>
         <span class="st"><span class="hide-sm">Today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></span>
-        <span class="st hide-sm"><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
-        <span class="st hide-sm"><span>People/h</span><b class="num" id="st-peh">–</b></span>
-        <span class="st hide-md"><span>Last limit</span><b class="num" id="st-hit">–</b></span>
+        <span class="st hide-sm" hidden><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
+        <span class="st hide-sm" hidden><span>People/h</span><b class="num" id="st-peh">–</b></span>
+        <span class="st hide-md" hidden><span>Last limit</span><b class="num" id="st-hit">–</b></span>
       </div>
       <div class="st-r">
         <button class="toggle" id="qualify-btn" title="Qualification"><i></i><span>Qualify</span></button>
@@ -60,8 +60,12 @@
       <aside class="filters" id="filters"></aside>
       <div class="scrim" id="scrim" hidden></div>
       <div class="pane">
+        <header class="ph ph-work">
+          <div class="ph-t"><h1 id="work-h">Leads</h1><p id="work-p">Everyone the scraper found, best fit first.</p></div>
+          <div class="ph-a"><button class="btn" id="save-view" title="Save these filters as a view (v)">Save view</button></div>
+        </header>
         <div class="qbar">
-          <button class="btn fbtn" id="filters-btn" title="Filters ([)">Filters<span class="num" id="fbtn-n"></span></button>
+          <button class="btn fbtn" id="filters-btn" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
           <div class="qbox" id="qbox">
             <div class="tokens" id="tokens"></div>
             <input id="q" type="text" placeholder="Search, #tag, -#tag, fit:strong, lists:2+" autocomplete="off" spellcheck="false">
@@ -75,7 +79,6 @@
             <option value="recent">Newest</option>
             <option value="score">Score</option>
           </select>
-          <button class="btn ghost hide-sm" id="save-view" title="Save view (v)">Save view</button>
         </div>
 
         <div class="lpane" id="pane-leads">
@@ -121,8 +124,10 @@
 
     <section class="view" id="view-qual">
       <div class="ql">
-        <div class="ql-head"><div><h2>Qualification</h2>
-          <p class="muted">How each person was judged, why, and what it was based on. Use Dig deeper to read their bio again and their website.</p></div></div>
+        <header class="ph">
+          <div class="ph-t"><h1>Qualification</h1><p>Why each person got their score, and what it was based on.</p></div>
+          <div class="ph-a"><button class="btn solid" id="ql-toggle">Start AI checks</button></div>
+        </header>
         <div class="ql-prog" id="ql-prog"></div>
         <div class="ql-bar">
           <div class="seg" id="ql-view"><button data-v="ai" class="on">Checked by AI</button><button data-v="rules">Keywords only</button><button data-v="all">Everyone</button></div>
@@ -138,15 +143,13 @@
 
     <section class="view" id="view-tags">
       <div class="tg">
-        <div class="tg-intro">
-          <div><h2>Tags</h2>
-            <p class="muted">A tag is a short label on a person, like <i>Skincare</i> or <i>Founder</i>. Click any tag to see those people in Leads.</p></div>
-          <input class="input" id="tg-q" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="tg-kinds" id="tg-kinds"></div>
+        <header class="ph">
+          <div class="ph-t"><h1>Tags</h1><p>Short labels on people. Click one to see those people in Leads.</p></div>
+          <div class="ph-a"><input class="input" id="tg-q" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
+        </header>
         <div class="tg-groups" id="tg-groups"></div>
         <div class="panel">
-          <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person. Rename, merge or delete here.</span></div>
+          <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person, tidy them up here</span></div>
           <div class="tg-merge" id="tg-merge" hidden></div>
           <div class="tbl-wrap"><table class="tbl tg-tbl">
             <thead><tr><th class="c-ck"><button class="ck" id="tg-all"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
@@ -154,7 +157,7 @@
           </table></div>
         </div>
         <div class="panel">
-          <div class="p-head"><h3>Keyword rules</h3><span class="num muted" id="rl-n"></span><div class="grow"></div><span class="muted hide-sm">Tag everyone whose bio, name or link contains a word.</span></div>
+          <div class="p-head"><h3>Keyword rules</h3><span class="num muted" id="rl-n"></span><div class="grow"></div><span class="muted hide-sm">Tag everyone whose bio, name or link has a word</span></div>
           <form class="rule-form" id="rule-form">
             <div class="rl-row"><span class="muted">Tag</span><input class="input" id="rl-tag" placeholder="Tag name, e.g. Candles" list="tag-dl" autocomplete="off" required>
             <span class="muted">when</span>
@@ -174,10 +177,15 @@
 
     <section class="view" id="view-scraper">
       <div class="scr">
+        <header class="ph">
+          <div class="ph-t"><h1>Scraper</h1><p>Collects people from Instagram lists at a safe pace.</p></div>
+          <div class="ph-a"><button class="btn solid" id="scr-add">Add accounts</button></div>
+        </header>
         <div class="now" id="now"></div>
+        <div class="tiles" id="scr-counts"></div>
         <div class="stages" id="stages"></div>
-        <div class="panel">
-          <div class="p-head"><h3>Add accounts to scrape</h3></div>
+        <div class="panel" id="seed-panel">
+          <div class="p-head"><h3>Add accounts to scrape</h3><div class="grow"></div><span class="muted hide-sm">We read the people in their lists</span></div>
           <div class="p-body">
             <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
             <div class="row-flex">
@@ -190,8 +198,8 @@
         </div>
         <div class="panel grow-panel">
           <div class="gp-text"><b>Find more people like your best leads</b>
-            <span class="muted">Reads who each lead you marked Interested, Talking or Client follows. Their circles often hold more brands like them.</span></div>
-          <button class="btn solid" id="snowball">Scrape who they follow</button>
+            <span class="muted">Reads who your Interested, Talking and Client leads follow. Their circles often hold more brands like them.</span></div>
+          <button class="btn" id="snowball">Scrape who they follow</button>
         </div>
         <div class="panel">
           <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
@@ -200,26 +208,24 @@
             <tbody id="lists-body"></tbody>
           </table></div>
         </div>
-        <details class="panel more">
-          <summary class="p-head"><h3>Limits and details</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></summary>
-          <div class="p-body"><div class="kv" id="ext-kv"></div>
-            <form class="budget" id="budget" novalidate>
-              <label><span class="muted">List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label>
-              <label><span class="muted">Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label>
-              <button class="btn" id="b-save">Save</button>
-            </form>
-          </div>
+        <details class="adv">
+          <summary>Technical details<span class="num muted" id="ext-ver"></span></summary>
+          <div class="kv" id="ext-kv"></div>
         </details>
       </div>
     </section>
 
     <section class="view" id="view-accounts">
       <div class="scr">
+        <header class="ph">
+          <div class="ph-t"><h1>Accounts</h1><p>The Instagram accounts that do the scraping, one per Chrome profile.</p></div>
+          <div class="ph-a"><button class="btn solid" id="acc-add">Add account</button></div>
+        </header>
         <div class="alerts" id="acc-alerts"></div>
-        <div class="kpis kpis-4" id="acc-kpis"></div>
+        <div class="tiles" id="acc-kpis"></div>
         <div class="panel wiz" id="wiz" hidden></div>
         <div class="panel">
-          <div class="p-head"><h3>Accounts</h3><span class="num muted" id="acc-n"></span><div class="grow"></div><button class="btn solid" id="acc-add">Add account</button></div>
+          <div class="p-head"><h3>Accounts</h3><span class="num muted" id="acc-n"></span></div>
           <div id="acc-list"></div>
         </div>
       </div>
@@ -227,46 +233,75 @@
 
     <section class="view" id="view-settings">
       <div class="scr">
-        <div class="grid2">
-          <div class="panel">
-            <div class="p-head"><h3>Qualification</h3></div>
-            <div class="p-body">
-              <div class="set-row"><div><b>Qualify</b><span class="muted">Read bios and judge fit</span></div><button class="toggle" id="set-q-on"><i></i></button></div>
-              <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switch on by itself once every queued list is done</span></div><button class="toggle" id="set-q-auto"><i></i></button></div>
-              <form class="budget" id="set-q" novalidate>
-                <label><span class="muted">Model calls at once</span><input class="input" id="set-workers" type="number" min="1" max="16" inputmode="numeric"></label>
-                <label title="Combined network and profile score a person needs before a model reads them"><span class="muted">Model threshold</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label>
-                <label title="Planned bio reads skip people below this prefilter score; Read now still works"><span class="muted">Bio floor</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label>
-                <button class="btn">Save</button>
-              </form>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="p-head"><h3>Services</h3><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
-            <div class="p-body"><div id="set-svc"></div>
+        <header class="ph">
+          <div class="ph-t"><h1>Settings</h1><p>Scraping limits, the AI check and how the app looks.</p></div>
+        </header>
+
+        <section class="sg">
+          <div class="sg-h"><h2>Scraping limits</h2><p>How much each Instagram account reads per day. Lower is safer.</p></div>
+          <div class="card">
+            <form class="budget" id="budget" novalidate>
+              <label><span>List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label>
+              <label><span>Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label>
+              <button class="btn" id="b-save">Save</button>
+            </form>
+            <details class="adv">
+              <summary>Advanced</summary>
               <form class="budget" id="set-share-f" novalidate>
-                <label title="Your own account reads bios only at 0; above 0 it may take this share of list pages"><span class="muted">Main account list share, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label>
+                <label title="Your own account reads bios only at 0; above 0 it may take this share of list pages"><span>Share of list pages for your main account, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label>
                 <button class="btn">Save</button>
               </form>
+            </details>
+          </div>
+        </section>
+
+        <section class="sg">
+          <div class="sg-h"><h2>AI qualification</h2><p>The AI reads bios and judges who fits your agency.</p></div>
+          <div class="card">
+            <div class="set-row"><div><b>Check people with AI</b><span class="muted">Reads bios and scores fit</span></div><button class="toggle" id="set-q-on"><i></i></button></div>
+            <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switches on by itself once every list is collected</span></div><button class="toggle" id="set-q-auto"><i></i></button></div>
+            <details class="adv">
+              <summary>Advanced</summary>
+              <form class="budget" id="set-q" novalidate>
+                <label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="16" inputmode="numeric"></label>
+                <label title="Combined network and profile score a person needs before the AI reads them"><span>Score needed for an AI check</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label>
+                <label title="Planned bio reads skip people below this first score; Read now still works"><span>Score needed for a bio read</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label>
+                <button class="btn">Save</button>
+              </form>
+              <div class="sub-h"><b>Models</b><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
+              <ol class="models" id="set-models"></ol>
+              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
+              <div class="sub-h"><b>Local helpers</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
+              <div id="set-svc"></div>
+            </details>
+          </div>
+        </section>
+
+        <section class="sg">
+          <div class="sg-h"><h2>OpenRouter keys <span class="num muted" id="set-keys-n" hidden></span></h2><p>The AI runs on OpenRouter. A free key is enough for the free models.</p></div>
+          <div class="card flush">
+            <div class="tbl-wrap"><table class="tbl tg-tbl">
+              <thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead>
+              <tbody id="set-keys"></tbody>
+            </table></div>
+            <div class="set-forms">
+              <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
+              <details class="adv">
+                <summary>Advanced</summary>
+                <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric"><button class="btn">Save</button></form>
+                <span class="muted num" id="set-file"></span>
+              </details>
             </div>
           </div>
-        </div>
-        <div class="panel">
-          <div class="p-head"><h3>OpenRouter keys</h3><span class="num muted" id="set-keys-n"></span><div class="grow"></div><span class="muted num hide-sm" id="set-file"></span></div>
-          <div class="tbl-wrap"><table class="tbl tg-tbl">
-            <thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead>
-            <tbody id="set-keys"></tbody>
-          </table></div>
-          <div class="set-forms">
-            <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
-            <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric"><button class="btn">Save</button></form>
+        </section>
+
+        <section class="sg">
+          <div class="sg-h"><h2>Appearance</h2><p>Only changes how things look.</p></div>
+          <div class="card">
+            <div class="set-row"><div><b>Theme</b></div><div class="seg" id="set-theme"><button data-v="dark">Dark</button><button data-v="light">Light</button></div></div>
+            <div class="set-row"><div><b>Rows in Leads</b></div><div class="seg" id="set-density"><button data-v="comfortable">Roomy</button><button data-v="compact">Compact</button></div></div>
           </div>
-        </div>
-        <div class="panel">
-          <div class="p-head"><h3>Models</h3><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
-          <ol class="models" id="set-models"></ol>
-          <form class="set-inline set-forms" id="set-model-f"><input class="input grow" id="set-model" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
-        </div>
+        </section>
       </div>
     </section>
   </main>
