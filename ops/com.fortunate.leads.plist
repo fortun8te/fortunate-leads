@@ -4,14 +4,15 @@
 <dict>
   <key>Label</key>
   <string>com.fortunate.leads</string>
+  <!-- Template: launchd expands neither ~ nor $VARS. install-launchagent.sh fills
+       __PYTHON__, __REPO__ (detected from the script location) and __HOME__. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>server/server.py</string>
+    <string>__PYTHON__</string>
+    <string>__REPO__/server/server.py</string>
   </array>
-  <!-- launchd does not expand ~; install-launchagent.sh replaces __HOME__ with $HOME -->
   <key>WorkingDirectory</key>
-  <string>__HOME__/fortunate-leads</string>
+  <string>__REPO__</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

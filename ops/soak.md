@@ -3,7 +3,7 @@
 Goal: hours of list collection at 7–12 s gaps with no 429 / "please wait".
 
 ## Before
-- Server running via LaunchAgent (`ops/install-launchagent.sh`); nothing on :8766.
+- Server running via LaunchAgent (`ops/install-launchagent.sh --with-backup`); `ops/doctor.sh` all PASS (nothing on :8766).
 - Extension reloaded, manifest version bumped; `/api/scraper` → `ext.version` shows it, `ext.online=true`.
 - One logged-in instagram.com tab. Qualification off (`POST /api/settings/qualify {"on":false}`) so only lists run;
   `qualify_auto` true switches it on by itself once every list is done.
@@ -27,4 +27,4 @@ Goal: hours of list collection at 7–12 s gaps with no 429 / "please wait".
 
 ## Record afterwards
 Accounts done, hours run, total pages/people (`soak.6h`), first 429 time (if any), gaps used.
-Tail `~/Library/Logs/fortunate-leads.log` for tracebacks.
+Tail `~/Library/Logs/fortunate-leads.log` for tracebacks (`ops/doctor.sh` counts recent ones).
