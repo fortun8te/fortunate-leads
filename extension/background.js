@@ -71,6 +71,13 @@ async function queue(path, body) {
   await locked(async () => set({ box: FL.enqueue(await get('box'), path, body) }));
   await flushBox();
 }
+// Enqueue a job's result and clear `cur` in one storage write, so a worker restarted after this point never
+// re-runs a request whose result is already stored (step() flushes the outbox before leasing again).
+async function queueDone(path, body) {
+  await locked(async () => set({ box: FL.enqueue(await get('box'), path, body), cur: null }));
+  await editSt((st) => FL.succeeded(st));
+  await flushBox();
+}
 async function applyServer(j) {
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
   if (!j || typeof j.paused !== 'boolean') return;
@@ -300,9 +307,8 @@ async function runList(gen, job, tab) {
     if (page.limited) st.note = '@' + job.seed + ' ' + job.direction + ' capped by Instagram; kept what it returned and moved on';
   });
   if (page.limited) await trail('list capped', { seed: job.seed, direction: job.direction });
-  await queue('/api/ext/list-page', { job_id: job.id, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
+  await queueDone('/api/ext/list-page', { job_id: job.id, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
     next_cursor: page.next_cursor, done: page.done, total, limited: page.limited || undefined });
-  await done(job);
 }
 
 // ---- profile reads (bios) ----------------------------------------------------
@@ -325,8 +331,7 @@ async function runProfile(gen, job, tab) {
   await remember(p);
   await markSeen(p.handle);
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
-  await queue('/api/ext/profile', { job_id: job.id, profile: p });
-  await done(job);
+  await queueDone('/api/ext/profile', { job_id: job.id, profile: p });
 }
 
 // ---- the loop ----------------------------------------------------------------
