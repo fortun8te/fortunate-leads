@@ -36,7 +36,8 @@ verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TE
 marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- good|maybe|no|contacted|client|known
 jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT, handle TEXT,
   priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT)
-settings(key TEXT PRIMARY KEY, value TEXT)   -- json values; includes paused, budgets, ext heartbeat
+settings(key TEXT PRIMARY KEY, value TEXT)   -- json values; includes paused, budgets, ext heartbeat, qualify, qualify_auto
+pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id,cursor))   -- list pages ingested (idempotency + soak rate)
 ```
 
 ## Qualifier interface (`server/qualify.py`, pure functions + one LLM call)
@@ -59,24 +60,25 @@ Extension is a paced executor. Server owns the queue; extension owns pacing, bud
 - `POST /api/ext/list-page` `{"job_id","seed","ig_id","direction","users":[{"ig_id","handle","name","pic_url","is_private","is_verified"}],"next_cursor":str|null,"done":bool,"total":int|null}`
 - `POST /api/ext/profile` `{"job_id":int|null,"profile":{"ig_id","handle","name","bio","website","category","followers","following","posts","is_private","is_verified","is_business","pic_url"}}` — `job_id:null` = passively captured while Michael browsed Instagram (free bio, no extra request).
 - `POST /api/ext/error` `{"job_id","code":"rate_limit|soft_block|challenge|login|private|not_found|other","retry_at":iso|null,"message"}` — private/not_found finish the job; others release it.
-- `POST /api/ext/heartbeat` `{"version","state":"running|idle|paused|cooldown","cooldown_until":iso|null,"today":{"list":n,"profile":n},"budget":{"list":n,"profile":n},"last_error":str|null}` every ≤30 s.
+- `POST /api/ext/heartbeat` `{"version","state":"running|idle|paused|cooldown","cooldown_until":iso|null,"today":{"list":n,"profile":n},"budget":{"list":n,"profile":n},"last_error":str|null,"rate"?:{"pages_hour":num,"people_hour":num,"last_hit_at":iso|null}}` every ≤30 s. `rate` is optional; bad values are stored as null.
 
 All return `{"ok":true}` or `{"ok":false,"error":...}`. Server is idempotent: re-sent pages must not duplicate edges.
 
 ## UI API
 
-- `GET /api/leads?tier=hot,warm&tags=a,b&status=&q=&sort=score|recent|followers&offset=0&limit=50` → `{"total", "rows":[{"id","handle","name","pic","bio","website","followers","following","tier","score","role","reason","tags":[{"tag","grp","source"}],"via":["seed",...],"status"}]}` — `pic` = `/img/{id}` or null.
-- `GET /api/tags` → `[{"tag","grp","count"}]`
+- `GET /api/leads?tier=hot,warm&tags=a,b&status=&q=&sort=score|recent|followers|connected&min_lists=N&offset=0&limit=50` → `{"total", "rows":[{"id","handle","name","pic","bio","website","followers","following","tier","score","role","reason","tags":[{"tag","grp","source"}],"via":["seed",...],"lists":int,"status"}]}` — `pic` = `/img/{id}` or null. `lists` = distinct seeds the person is linked to by any edge (both directions count once). `sort=connected` = `lists` desc, then followers desc. `min_lists=N` keeps `lists ≥ N`.
+- `GET /api/tags` → `[{"tag","grp","count","source":"auto"|"manual"}]` — one entry per (tag, source); a tag used both ways appears twice.
 - `GET /api/counts` → `{"hot","warm","cold","unread","good","maybe","contacted","total","with_bio"}`
 - `GET /api/person/{id}` → lead row + `{"edges":[{"seed","direction"}],"verdict":{...},"note"}`
 - `POST /api/person/{id}/mark` `{"status":null|"good"|"maybe"|"no"|"contacted"|"client"|"known","note"?}`
 - `POST /api/person/{id}/tags` `{"add":["..."],"remove":["..."]}` (manual tags)
 - `POST /api/person/{id}/read` → queue a profile read now (priority)
-- `GET /api/map?scope=leads|all&limit=400` → `{"nodes":[{"id":"s:handle"|"p:123","kind":"seed"|"lead","label","tier","score","pic","degree"}],"links":[{"source","target","direction"}],"rev":int}` — `scope=leads`: seeds + top leads by score plus everyone linked to ≥2 seeds.
-- `GET /api/scraper` → `{"ext":{"online","version","state","cooldown_until","today","budget","last_seen","last_error"},"paused","lists":[{"seed","direction","state","received","total","updated_at","error"}],"queue":{"list":n,"profile":n}}`
+- `GET /api/map?scope=leads|all&limit=400` → `{"nodes":[{"id":"s:handle"|"p:123","kind":"seed"|"lead","label","tier","score","pic","degree"}],"links":[{"source","target","direction"}],"rev":int}` — Lead `degree` = the same distinct-seed count as `lists`. `scope=leads`: seeds + top leads by score plus everyone linked to ≥2 seeds.
+- `GET /api/scraper` → `{"ext":{"online","version","state","cooldown_until","today","budget","last_seen","activity","text","rate":{"pages_hour","people_hour","last_hit_at"}|null,"last_error"},"paused","qualify":bool,"qualify_auto":bool,"soak":{"1h":{"pages","people","new_people","profiles"},"6h":{...}},"people_today","lists":[{"seed","direction","state","received","total","updated_at","error"}],"queue":{"list":n,"profile":n}}` — `soak`: list pages ingested (retries not counted), edges added, people first seen, bios read in the window.
 - `POST /api/scraper/seeds` `{"handles":["a","b"],"directions":["followers","following"]}`
 - `POST /api/scraper/pause` `{"paused":bool}`
 - `POST /api/scraper/budget` `{"list":n,"profile":n}`
+- `POST /api/settings/qualify` `{"on":bool,"auto"?:bool}` → `{"ok":true,"qualify":bool}` — `on` starts/stops the bios planner and LLM verdicts (rule verdicts always run). `qualify_auto` (default true) switches qualification on by itself once lists exist and none is queued/running.
 - `GET /img/{id}` → cached profile picture (downloaded once from the Instagram CDN into `data/pfp/`), 404 if none → UI shows initials.
 
 ## Rules

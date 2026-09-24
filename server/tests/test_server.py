@@ -184,6 +184,100 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
 
+    def test_connected_sort_min_lists_and_tag_sources(self):
+        ids = {}
+        for h, seeds, fol in [('ann', ['s1', 's2', 's3'], 10), ('ben', ['s1', 's2'], 500), ('cat', ['s1', 's2'], 900), ('dan', ['s1'], 5000)]:
+            ids[h] = db.upsert_person(self.conn, {'handle': h, 'bio': 'founder', 'followers': fol})
+            for s in seeds:
+                db.add_edge(self.conn, s, ids[h], 'followers')
+                db.add_edge(self.conn, s, ids[h], 'following')  # both directions still count as one list
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        res = self.call('/api/leads?sort=connected')[1]
+        self.assertEqual([(r['handle'], r['lists']) for r in res['rows']], [('ann', 3), ('cat', 2), ('ben', 2), ('dan', 1)])
+        res = self.call('/api/leads?min_lists=2&sort=connected')[1]
+        self.assertEqual((res['total'], [r['handle'] for r in res['rows']]), (3, ['ann', 'cat', 'ben']))
+        self.assertEqual(self.call('/api/leads?min_lists=x')[0], 400)
+        m = self.call('/api/map?scope=all')[1]
+        self.assertEqual({n['label']: n['degree'] for n in m['nodes'] if n['kind'] == 'lead'}, {'ann': 3, 'ben': 2, 'cat': 2, 'dan': 1})
+        self.call(f"/api/person/{ids['ann']}/tags", {'add': ['via @s1']})  # same tag name, manual on ann
+        tags = self.call('/api/tags')[1]
+        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 3, 'source': 'auto'}, tags)
+        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 1, 'source': 'manual'}, tags)
+
+    def test_heartbeat_rate_and_soak(self):
+        self.call('/api/ext/heartbeat', {'version': '2', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
+                                                                                    'last_hit_at': '2026-09-24T10:00:00Z', 'x': 1}})
+        s = self.call('/api/scraper')[1]
+        self.assertEqual(s['ext']['rate'], {'pages_hour': 300.0, 'people_hour': 7400.6, 'last_hit_at': '2026-09-24T10:00:00.000000+00:00'})
+        self.call('/api/ext/heartbeat', {'version': '2', 'rate': {'pages_hour': 'fast', 'last_hit_at': 'nope'}})
+        self.assertEqual(self.call('/api/scraper')[1]['ext']['rate'], {'pages_hour': None, 'people_hour': None, 'last_hit_at': None})
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        job = self.call('/api/ext/next')[1]['job']
+        self.page(job, [{'ig_id': '1', 'handle': 'a'}, {'ig_id': '2', 'handle': 'b'}], cursor='c1')
+        self.page(job, [{'ig_id': '1', 'handle': 'a'}, {'ig_id': '2', 'handle': 'b'}], cursor='c1')  # retry
+        soak = self.call('/api/scraper')[1]['soak']
+        self.assertEqual(soak['1h'], {'pages': 1, 'people': 2, 'new_people': 2, 'profiles': 0})
+        self.assertEqual(soak['6h']['pages'], 1)
+
+    def test_qualify_toggle_and_auto(self):
+        s = self.call('/api/scraper')[1]
+        self.assertEqual((s['qualify'], s['qualify_auto']), (False, True))
+        self.assertEqual(self.call('/api/settings/qualify', {'on': 'yes'})[0], 400)
+        self.assertEqual(self.call('/api/settings/qualify', {'on': True})[1], {'ok': True, 'qualify': True})
+        self.assertTrue(self.call('/api/scraper')[1]['qualify'])
+        self.call('/api/settings/qualify', {'on': False})
+        # auto: stays off while a list is queued, flips on when all are done
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        self.assertFalse(server.auto_qualify(self.conn))
+        job = self.call('/api/ext/next')[1]['job']
+        self.page(job, [{'ig_id': '1', 'handle': 'a'}], done=True)
+        self.assertTrue(server.auto_qualify(self.conn))
+        self.assertTrue(self.call('/api/scraper')[1]['qualify'])
+        self.call('/api/settings/qualify', {'on': False, 'auto': False})
+        self.assertFalse(server.auto_qualify(self.conn))
+
+    def test_qualify_end_to_end(self):
+        pid = db.upsert_person(self.conn, {'ig_id': '5', 'handle': 'eve'})
+        db.add_edge(self.conn, 's1', pid, 'followers')
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        self.call('/api/settings/qualify', {'on': True})
+        self.assertEqual(server.plan_profiles(self.conn), 1)
+        job = self.call('/api/ext/next')[1]['job']
+        self.assertEqual((job['kind'], job['handle']), ('profile', 'eve'))
+        self.call('/api/ext/profile', {'job_id': job['id'], 'profile': {'ig_id': '5', 'handle': 'eve', 'bio': 'founder'}})
+        server.qualify_batch(self.conn)
+        self.assertEqual(self.conn.execute('SELECT tier, model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('hot', 'rules'))
+        skip = {}
+        self.assertFalse(server.llm_step(self.conn, skip))  # model unavailable: rule verdict stays
+        self.assertIn(pid, skip)
+        self.assertIsNone(server.llm_step(self.conn, skip))  # held back, nothing else to do
+        server.qualify.llm_verdict = lambda p, tags, edges: {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm',
+                                                             'tags': [('Skincare', 'niche')]}
+        try:
+            self.assertTrue(server.llm_step(self.conn, {}))
+        finally:
+            server.qualify.llm_verdict = lambda p, tags, edges: None
+        v = self.conn.execute('SELECT score, model, input_hash FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual(v[:], (90, 'm', 'h'))
+        self.assertIn(('Skincare', 'niche', 'auto'), [tuple(r) for r in self.conn.execute('SELECT tag, grp, source FROM tags')])
+
+    def test_late_messages_do_not_corrupt_jobs(self):
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        job = self.call('/api/ext/next')[1]['job']
+        # a profile post carrying a list job's id must not finish the list job
+        self.call('/api/ext/profile', {'job_id': job['id'], 'profile': {'handle': 's', 'bio': 'x'}})
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'leased')
+        self.page(job, [], done=True)
+        self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'message': '429'})  # late error
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'done')
+        self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'done')
+
+    def test_budget_defaults_not_mutated(self):
+        self.call('/api/scraper/budget', {'profile': 7})
+        self.assertEqual(db.DEFAULTS['budget'], {'list': 2000, 'profile': 150})
+
     def test_migration(self):
         old = Path(self.tmp.name) / 'old.sqlite'
         c = sqlite3.connect(old)

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fortunate.leads</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>server/server.py</string>
+  </array>
+  <!-- launchd does not expand ~; install-launchagent.sh replaces __HOME__ with $HOME -->
+  <key>WorkingDirectory</key>
+  <string>__HOME__/fortunate-leads</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/fortunate-leads.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/fortunate-leads.log</string>
+</dict>
+</plist>

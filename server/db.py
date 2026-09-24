@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TE
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
+CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
 CREATE INDEX IF NOT EXISTS edges_person ON edges(person_id);
 CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
 CREATE INDEX IF NOT EXISTS verdicts_tier ON verdicts(tier, score);
@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 
 PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified', 'bio', 'website', 'category',
                  'followers', 'following', 'posts', 'is_business', 'bio_at')
-DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 150}}
+DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 150}, 'qualify': False, 'qualify_auto': True}
 
 
 def now():
@@ -54,6 +54,11 @@ def connect(path):
 def init(path):
     conn = connect(path)
     conn.executescript(SCHEMA)
+    if 'at' not in {r[1] for r in conn.execute('PRAGMA table_info(pages)')}:  # DBs created before pages were timestamped
+        conn.execute('ALTER TABLE pages ADD COLUMN at TEXT')
+    conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
+    conn.commit()
     return conn
 
 
@@ -110,7 +115,8 @@ def add_edge(conn, seed, person_id, direction, ts=None):
 
 def get_setting(conn, key, default=None):
     row = conn.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
-    return json.loads(row[0]) if row else DEFAULTS.get(key, default)
+    # a copy: callers mutate dicts (budget.update) and must never change the shared defaults
+    return json.loads(row[0] if row else json.dumps(DEFAULTS.get(key, default)))
 
 
 def set_setting(conn, key, value):

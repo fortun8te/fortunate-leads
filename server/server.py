@@ -98,7 +98,8 @@ def ext_list_page(conn, q, b):
     if not seed or direction not in ('followers', 'following'):
         raise Bad('seed and direction required')
     ts = db.now()
-    fresh = not job or conn.execute('INSERT OR IGNORE INTO pages VALUES(?,?)', (job['id'], b.get('next_cursor') or '')).rowcount
+    fresh = not job or conn.execute('INSERT OR IGNORE INTO pages(job_id, cursor, at) VALUES(?,?,?)',
+                                             (job['id'], b.get('next_cursor') or '', ts)).rowcount
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if b.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(b['ig_id']), seed))
@@ -136,8 +137,8 @@ def ext_profile(conn, q, b):
     handle = db.norm_handle(p['handle'])
     if p.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(p['ig_id']), handle))
-    conn.execute("UPDATE jobs SET state='done', leased_until=NULL WHERE (id=? OR (kind='profile' AND handle=? "
-                 "AND state IN ('queued','leased')))", (b.get('job_id'), handle))
+    conn.execute("UPDATE jobs SET state='done', leased_until=NULL WHERE kind='profile' AND (id=? OR handle=?) "
+                 "AND state IN ('queued','leased')", (b.get('job_id'), handle))
     conn.commit()
     return {'id': pid}
 
@@ -150,8 +151,8 @@ def ext_error(conn, q, b):
         until = utc(b['retry_at']) if b.get('retry_at') else datetime.now(timezone.utc) + timedelta(minutes=15)
         db.set_setting(conn, 'cooldown', iso(until))
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts})
-    job = conn.execute('SELECT * FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
-    if job:
+    job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
+    if job:  # a late error for a job that already finished must not requeue it
         final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') else 'error' if final else 'queued', job['id']))
@@ -165,7 +166,23 @@ def ext_error(conn, q, b):
     return {}
 
 
+def clean_rate(r):
+    if not isinstance(r, dict):
+        return None
+    out = {}
+    for k in ('pages_hour', 'people_hour'):
+        v = r.get(k)
+        out[k] = round(float(v), 1) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
+    v = r.get('last_hit_at')
+    try:
+        out['last_hit_at'] = iso(utc(v)) if isinstance(v, str) and v else None
+    except ValueError:
+        out['last_hit_at'] = None
+    return out
+
+
 def ext_heartbeat(conn, q, b):
+    b = dict(b, rate=clean_rate(b.get('rate')))
     db.set_setting(conn, 'ext', dict(b, last_seen=db.now()))
     conn.commit()
     return ext_state(conn)
@@ -173,7 +190,8 @@ def ext_heartbeat(conn, q, b):
 
 # ---------- UI endpoints ----------
 
-LEAD_SQL = ('SELECT p.*, v.tier, v.score, v.role, v.reason, m.status, m.note FROM people p '
+LISTS = '(SELECT count(DISTINCT e.seed) FROM edges e WHERE e.person_id=p.id)'  # distinct seeds a person is linked to
+LEAD_SQL = (f'SELECT p.*, v.tier, v.score, v.role, v.reason, m.status, m.note, {LISTS} AS lists FROM people p '
             'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id')
 
 
@@ -190,7 +208,7 @@ def lead_rows(conn, rows):
     return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
              'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
-             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'status': r['status']} for r in rows]
+             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'], 'status': r['status']} for r in rows]
 
 
 def csv(q, key):
@@ -216,7 +234,12 @@ def api_leads(conn, q, b):
     if text:
         where.append('(p.handle LIKE ? OR p.name LIKE ? OR p.bio LIKE ?)')
         args += [f'%{text}%'] * 3
-    order = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC'}.get(
+    min_lists = int(q.get('min_lists', ['0'])[0] or 0)
+    if min_lists > 0:
+        where.append(f'{LISTS}>=?')
+        args.append(min_lists)
+    order = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
+             'connected': 'lists DESC, p.followers IS NULL, p.followers DESC'}.get(
         q.get('sort', ['score'])[0], 'v.score IS NULL, v.score DESC, p.followers DESC')
     offset = max(0, int(q.get('offset', ['0'])[0]))
     limit = min(500, max(1, int(q.get('limit', ['50'])[0])))
@@ -228,7 +251,7 @@ def api_leads(conn, q, b):
 
 
 def api_tags(conn, q, b):
-    return [dict(r) for r in conn.execute('SELECT tag, grp, count(*) AS count FROM tags GROUP BY tag, grp ORDER BY count DESC, tag')]
+    return [dict(r) for r in conn.execute('SELECT tag, grp, count(*) AS count, source FROM tags GROUP BY tag, grp, source ORDER BY count DESC, tag, source')]
 
 
 def api_counts(conn, q, b):
@@ -340,13 +363,37 @@ def api_scraper(conn, q, b):
                     'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
                     'today': ext.get('today'), 'budget': db.get_setting(conn, 'budget'),
                     'last_seen': ext.get('last_seen'), 'activity': ext.get('activity'), 'text': ext.get('text'),
+                    'rate': ext.get('rate'),
                     'last_error': ext.get('last_error') or (db.get_setting(conn, 'last_error') or {}).get('message')},
             'paused': bool(db.get_setting(conn, 'paused')),
+            'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
+            'soak': soak(conn, now),
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': [dict(r) for r in conn.execute('SELECT seed, direction, state, received, total, updated_at, error FROM lists '
                                                     'ORDER BY updated_at DESC')],
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
+
+
+def soak(conn, now):
+    out = {}
+    for label, hours in (('1h', 1), ('6h', 6)):
+        since = iso(now - timedelta(hours=hours))
+        out[label] = {'pages': conn.execute('SELECT count(*) FROM pages WHERE at>=?', (since,)).fetchone()[0],
+                      'people': conn.execute('SELECT count(*) FROM edges WHERE first_seen>=?', (since,)).fetchone()[0],
+                      'new_people': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (since,)).fetchone()[0],
+                      'profiles': conn.execute('SELECT count(*) FROM people WHERE bio_at>=?', (since,)).fetchone()[0]}
+    return out
+
+
+def api_qualify(conn, q, b):
+    if not isinstance(b.get('on'), bool):
+        raise Bad('on must be true or false')
+    db.set_setting(conn, 'qualify', b['on'])
+    if 'auto' in b:
+        db.set_setting(conn, 'qualify_auto', bool(b['auto']))
+    conn.commit()
+    return {'qualify': b['on']}
 
 
 def api_seeds(conn, q, b):
@@ -379,7 +426,7 @@ ROUTES = [
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/scraper', api_scraper),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
-    ('POST', r'/api/scraper/budget', api_budget),
+    ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/settings/qualify', api_qualify),
 ]
 
 
@@ -505,9 +552,14 @@ def qualify_batch(conn, limit=200):
 def llm_step(conn, skip):
     if not db.get_setting(conn, 'qualify'):
         return None
-    rows = conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                        "AND v.model='rules' AND v.updated_at=p.updated_at ORDER BY v.prefilter DESC LIMIT 50").fetchall()
-    p = next((dict(r) for r in rows if skip.get(r['id'], 0) < datetime.now().timestamp()), None)
+    t = datetime.now().timestamp()
+    for k in [k for k, until in skip.items() if until <= t]:
+        del skip[k]
+    held = list(skip)[:900]  # recently failed: skip in SQL so they can't starve everyone behind them
+    row = conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
+                       "AND v.model='rules' AND v.updated_at=p.updated_at "
+                       f"AND p.id NOT IN ({','.join('?' * len(held))}) ORDER BY v.prefilter DESC LIMIT 1", held).fetchone()
+    p = dict(row) if row else None
     if not p:
         return None
     edges = edges_of(conn, p['id'])
@@ -524,7 +576,21 @@ def llm_step(conn, skip):
     return True
 
 
+def auto_qualify(conn):
+    """Switch qualification on once every queued list has been collected (setting qualify_auto, default on)."""
+    if db.get_setting(conn, 'qualify') or not db.get_setting(conn, 'qualify_auto'):
+        return False
+    lists = conn.execute("SELECT count(*), count(CASE WHEN state IN ('queued','running') THEN 1 END) FROM lists").fetchone()
+    jobs = conn.execute("SELECT count(*) FROM jobs WHERE kind='list' AND state IN ('queued','leased')").fetchone()[0]
+    if not lists[0] or lists[1] or jobs:
+        return False
+    db.set_setting(conn, 'qualify', True)
+    conn.commit()
+    return True
+
+
 def plan_profiles(conn):
+    auto_qualify(conn)
     if not db.get_setting(conn, 'qualify'):  # collection first: bios are read only once qualification is switched on
         return 0
     budget = db.get_setting(conn, 'budget')
