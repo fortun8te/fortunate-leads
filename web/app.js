@@ -85,12 +85,41 @@ const isViaTag = (t) => t.startsWith('via @');
 const isListTag = (t) => /^in \d+ lists$/.test(t);
 const KIND = { manual: 'man', rule: 'rule', auto: '' };
 const MODES = ['inc', 'any', 'exc'];
+// Fit: the verdict tier, raised by the qualifier's "Fit: strong/good" tag when that says more.
+const FITS = ['strong', 'good', 'weak', 'unread'];
+const FIT_LABEL = { strong: 'Strong', good: 'Good', weak: 'Weak', unread: 'Unread' };
+const TIER_FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
+const FIT_TIER = { strong: 'hot', good: 'warm', weak: 'cold', unread: 'unread' };
+const isFitTag = (t) => /^Fit: /.test(t);
+const tagName = (t) => (typeof t === 'string' ? t : t.tag);
+function fitOf(r) {
+  const tier = r.tier || (r.score == null ? 'unread' : r.score >= 70 ? 'hot' : r.score >= 45 ? 'warm' : 'cold');
+  let f = TIER_FIT[tier] || 'unread';
+  const names = (r.tags || []).map(tagName);
+  if (names.includes('Fit: strong')) f = 'strong';
+  else if (names.includes('Fit: good') && FITS.indexOf(f) > 1) f = 'good';
+  return f;
+}
+function fitBadge(r, cls = '') {
+  const f = fitOf(r);
+  const score = f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
+  return `<span class="fit f-${f} ${cls}" title="Fit${r.score != null ? ' score ' + esc(r.score) : ''}"><i></i>${FIT_LABEL[f]}${score}</span>`;
+}
+// Seeds a person was found through, from the "via @seed" tags (these leave out Michael's own account).
+const viaSeeds = (r) => (r.tags || []).map(tagName).filter(isViaTag).map((t) => t.slice(5));
+const YOU = { 'follows you': 'Follows you', 'you follow': 'You follow', 'knows you': 'Knows you' };
+const youLink = (r) => { const names = (r.tags || []).map(tagName); const k = ['follows you', 'you follow', 'knows you'].find((t) => names.includes(t)); return k ? YOU[k] : ''; };
+const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
+function connHTML(r) {
+  const n = lists(r), via = viaSeeds(r), you = youLink(r);
+  return `<span class="c1">${n ? `In ${plural(n, 'list')}` : 'No lists'}${you ? ` · <em>${you}</em>` : ''}</span>${via.length ? `<span class="c2">via ${seedList(via, 2)}</span>` : ''}`;
+}
 
 // ---------- state ----------
-const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', q: '', min: 0, bio: '', seed: '', fmin: null, fmax: null });
+const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
-  f: emptyFilter(), sort: store.get('sort', 'connected'),
+  f: emptyFilter(), sort: store.get('sort', 'fit'), sections: null,
   tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null, views: [], viewsLocal: false,
   rows: [], total: null, done: false, loading: false, error: false, gen: 0,
   cur: -1, open: null, person: null, seedCard: null,
@@ -106,13 +135,14 @@ function toQuery(f = S.f, sort = S.sort, withSort = true) {
   if (f.any.length) p.set('any', f.any.join(','));
   if (f.not.length) p.set('not', f.not.join(','));
   if (f.status) p.set('status', f.status);
+  if (f.tier) p.set('tier', f.tier);
   if (f.q) p.set('q', f.q);
   if (f.min) p.set('min_lists', f.min);
   if (f.bio) p.set('has_bio', f.bio);
   if (f.seed) p.set('seed', f.seed);
   if (f.fmin != null) p.set('followers_min', f.fmin);
   if (f.fmax != null) p.set('followers_max', f.fmax);
-  if (withSort && sort && sort !== 'connected') p.set('sort', sort);
+  if (withSort && sort && sort !== 'fit') p.set('sort', sort);
   return p;
 }
 function fromQuery(qs) {
@@ -120,12 +150,12 @@ function fromQuery(qs) {
   const list = (k) => (p.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
   const numOr = (k) => p.get(k) != null && p.get(k) !== '' && !isNaN(+p.get(k)) ? +p.get(k) : null;
   return {
-    f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
+    f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', tier: FIT_TIER[TIER_FIT[p.get('tier')]] || '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
       bio: ['0', '1'].includes(p.get('has_bio')) ? p.get('has_bio') : '', seed: (p.get('seed') || '').replace(/^@/, ''), fmin: numOr('followers_min'), fmax: numOr('followers_max') },
-    sort: p.get('sort') || 'connected',
+    sort: p.get('sort') || 'fit',
   };
 }
-const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
+const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
 const modeOf = (t) => S.f.tags.includes(t) ? 'inc' : S.f.any.includes(t) ? 'any' : S.f.not.includes(t) ? 'exc' : null;
 function setMode(t, mode) {
   S.f.tags = S.f.tags.filter((x) => x !== t); S.f.any = S.f.any.filter((x) => x !== t); S.f.not = S.f.not.filter((x) => x !== t);
@@ -151,13 +181,14 @@ function tokens() {
   const out = [];
   for (const mode of MODES) for (const t of S.f[mode === 'inc' ? 'tags' : mode === 'any' ? 'any' : 'not']) out.push({ k: 'tag', tag: t, mode, text: tagTok(t, mode) });
   if (S.f.status) out.push({ k: 'status', text: 'status:' + S.f.status });
+  if (S.f.tier) out.push({ k: 'tier', text: 'fit:' + TIER_FIT[S.f.tier] });
   if (S.f.min) out.push({ k: 'min', text: `lists:${S.f.min}+` });
   if (S.f.bio) out.push({ k: 'bio', text: 'bio:' + (S.f.bio === '1' ? 'yes' : 'no') });
   if (S.f.seed) out.push({ k: 'seed', text: 'seed:@' + S.f.seed });
   if (S.f.fmin != null || S.f.fmax != null) out.push({ k: 'fol', text: 'followers:' + folLabel(S.f.fmin, S.f.fmax) });
   return out;
 }
-const TOKEN_RX = /^[~+|-]?(#|via:)|^(status|lists|bio|seed|followers):/i;
+const TOKEN_RX = /^[~+|-]?(#|via:)|^(status|fit|lists|bio|seed|followers):/i;
 function canonTag(name) { return S.tagBy.has(name) ? name : S.tagLower.get(name.toLowerCase()) || null; }
 // Parses one typed token. Returns a function that applies it, or null.
 function parseToken(w, strict) {
@@ -177,6 +208,7 @@ function parseToken(w, strict) {
     if (s && s !== 'open' && s !== 'none' && s !== 'all' && !STATUSES.includes(s)) return null;
     return () => { S.f.status = s === 'open' ? '' : s; };
   }
+  if ((m = w.match(/^fit:(\w+)$/i))) { const t = FIT_TIER[m[1].toLowerCase()]; return t ? () => { S.f.tier = t; } : null; }
   if ((m = w.match(/^lists:(\d+)\+?$/i))) return () => { S.f.min = +m[1] > 1 ? +m[1] : 0; };
   if ((m = w.match(/^bio:(yes|no|1|0)$/i))) return () => { S.f.bio = /^(yes|1)$/i.test(m[1]) ? '1' : '0'; };
   if ((m = w.match(/^seed:@?([\w.]+)$/i))) return () => { S.f.seed = m[1].toLowerCase(); };
@@ -326,12 +358,12 @@ async function loadViews() {
 }
 
 // ---------- sidebar ----------
-const swatch = (kind, extra = '') => `<i class="sw ${KIND[kind] ?? ''} ${extra}"></i>`;
+const swatch = (kind, extra = '', grp = '') => `<i class="sw ${KIND[kind] ?? ''} ${extra}${grp ? ' g-' + esc(grp) : ''}"></i>`;
 function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}">${swatch(t.kind, t.grp === 'source' ? 'src' : '')}<span>${esc(label || t.tag)}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || t.tag)}</span><b>${fmt(n)}</b></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -358,6 +390,8 @@ function renderFilters() {
     ${STATUSES.map((s, i) => `<button class="fi${S.f.status === s ? ' on' : ''}" data-status="${s}"><span>${ucf(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b></b></button>
     <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>All, incl. no</span><b></b></button></div>
+    <div class="fsec"><h4>Fit</h4>
+    ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
     <div class="fsec fsegs"><h4>Shape</h4>
       <div class="fseg"><span>Lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -398,6 +432,7 @@ $('#filters').addEventListener('click', async (e) => {
   if (d.view != null) { applyQuery(d.view); if (narrow()) setDrawer(false); return; }
   // Segments toggle: clicking the active option turns it off.
   if (d.status != null) S.f.status = d.status;
+  else if (d.tier != null) S.f.tier = S.f.tier === d.tier ? '' : d.tier;
   else if (d.min != null) S.f.min = S.f.min === +d.min ? 0 : +d.min;
   else if (d.bio != null) S.f.bio = S.f.bio === d.bio ? '' : d.bio;
   else if (d.fol != null) { const o = FOL_OPTS.find((x) => x[0] === d.fol); const same = S.f.fmin === o[2] && S.f.fmax === o[3]; S.f.fmin = same ? null : o[2]; S.f.fmax = same ? null : o[3]; }
@@ -461,6 +496,7 @@ function renderTokens() {
 function removeToken(t) {
   if (t.k === 'tag') setMode(t.tag, null);
   else if (t.k === 'status') S.f.status = '';
+  else if (t.k === 'tier') S.f.tier = '';
   else if (t.k === 'min') S.f.min = 0;
   else if (t.k === 'bio') S.f.bio = '';
   else if (t.k === 'seed') S.f.seed = '';
@@ -533,10 +569,11 @@ function suggest() {
     const seeds = [...new Set([...S.tagList.filter((t) => isViaTag(t.tag)).map((t) => t.tag.slice(5)), ...(S.sc?.lists || []).map((l) => l.seed)])];
     items = seeds.filter((s) => s.includes(m[1].toLowerCase())).slice(0, 14).map((s) => ({ text: 'seed:@' + s, note: 'seed' }));
   } else if (/^status:\w*$/i.test(w)) items = ['open', 'none', 'all', ...STATUSES].filter((s) => ('status:' + s).startsWith(w.toLowerCase())).map((s) => ({ text: 'status:' + s, count: s === 'open' ? S.counts?.total : S.counts?.[s] }));
+  else if (/^fit:\w*$/i.test(w)) items = FITS.filter((f) => ('fit:' + f).startsWith(w.toLowerCase())).map((f) => ({ text: 'fit:' + f, count: S.counts?.[FIT_TIER[f]] }));
   else if (/^lists:\d*$/i.test(w)) items = ['2+', '3+', '4+', '5+'].map((s) => ({ text: 'lists:' + s }));
   else if (/^bio:\w*$/i.test(w)) items = ['yes', 'no'].map((s) => ({ text: 'bio:' + s }));
   else if (/^followers:\S*$/i.test(w)) items = ['<1k', '1k+', '10k+', '100k+', '1k-10k', '10k-100k'].map((s) => ({ text: 'followers:' + s }));
-  else if (w.length >= 2 && /^[a-z]+:?$/i.test(w)) items = ['status:', 'lists:', 'bio:', 'seed:', 'followers:', 'via:@'].filter((k) => k.startsWith(w.toLowerCase())).map((k) => ({ text: k, key: true }));
+  else if (w.length >= 2 && /^[a-z]+:?$/i.test(w)) items = ['status:', 'fit:', 'lists:', 'bio:', 'seed:', 'followers:', 'via:@'].filter((k) => k.startsWith(w.toLowerCase())).map((k) => ({ text: k, key: true }));
   sugg = { items, i: 0 };
   const box = $('#suggest');
   if (!items.length || document.activeElement !== $('#q')) { box.hidden = true; return; }
@@ -601,14 +638,36 @@ async function resetLeads(keep) {
   renderRows();
   await loadMore(gen, keep ? Math.max(PAGE, S.rows.length) : PAGE, keep);
 }
+// Best fit = Strong, Good, Weak, Unread laid end to end, each tier most connected first. Each tier is its own
+// request because the server's score order mixes unread people in with the rest.
+const fitOrder = () => S.sort === 'fit' && !S.f.tier;
+function leadsURL(tier, offset, limit) {
+  const p = toQuery(S.f, S.sort, false);
+  if (tier) p.set('tier', tier);
+  p.set('sort', S.sort === 'fit' ? 'connected' : S.sort);
+  p.set('offset', offset); p.set('limit', limit);
+  return '/api/leads?' + p;
+}
+async function fetchLeads(offset, limit) {
+  if (!fitOrder()) return api.get(leadsURL('', offset, limit));
+  if (offset === 0 || !S.sections) {
+    const heads = await Promise.all(FITS.map((f) => api.get(leadsURL(FIT_TIER[f], 0, 1))));
+    S.sections = FITS.map((f, i) => heads[i].total);
+  }
+  const rows = [];
+  let start = 0;
+  for (let i = 0; i < FITS.length; i++) {
+    const from = Math.max(offset, start), to = Math.min(offset + limit, start + S.sections[i]);
+    if (to > from) rows.push(...(await api.get(leadsURL(FIT_TIER[FITS[i]], from - start, to - from))).rows);
+    start += S.sections[i];
+  }
+  return { rows, total: start };
+}
 async function loadMore(gen = S.gen, n = PAGE, replace = false) {
   if (S.loading || (S.done && !replace)) return;
   S.loading = true;
-  const p = toQuery(S.f, S.sort, false);
-  p.set('sort', S.sort);
-  p.set('offset', replace ? 0 : S.rows.length); p.set('limit', Math.min(500, n));
   try {
-    const d = await api.get('/api/leads?' + p);
+    const d = await fetchLeads(replace ? 0 : S.rows.length, Math.min(500, n));
     if (gen !== S.gen) return;
     S.total = d.total;
     if (replace) S.rows = d.rows; else S.rows.push(...d.rows);
@@ -624,29 +683,35 @@ function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = isViaTag(t.tag) ? t.tag.slice(4) : t.tag;
-  return `<button class="tag ${k}${t.grp === 'source' ? ' src' : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
 const GORDER = { role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
+// Tags that describe the person, not how they were found or what the fit badge already says.
 function rowTags(r) {
-  return (r.tags || []).filter((t) => t.grp !== 'source' || t.tag === 'knows you')
-    .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4)).slice(0, 6);
+  return (r.tags || []).filter((t) => t.grp !== 'source' && t.grp !== 'size' && !isFitTag(t.tag))
+    .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
+}
+function whyHTML(r) {
+  if (r.reason) return esc(r.reason);
+  const sig = rowTags(r).filter((t) => t.grp === 'signal').slice(0, 3).map((t) => t.tag);
+  return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
 }
 const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}"><i></i>${ucf(s)}</span>` : '';
 function rowHTML(r, i, h) {
   const n = lists(r);
   const picked = S.pick.has(r.id);
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', picked ? 'picked' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
-  const ln = `lists-n${n >= 3 ? ' hi3' : n >= 2 ? ' hi' : ''}`;
+  const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span><span class="bio2${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'No bio'}</span></div>
-    <div class="bio c-bio${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'No bio'}</div>
-    <span class="num r fol">${fmt(r.followers)}</span>
-    <span class="num r ${ln}">${n}</span>
-    <div class="tags c-tags">${rowTags(r).map((t) => tagChip(t)).join('')}</div>
+    <div class="c-fit">${fitBadge(r)}</div>
+    <div class="who"><div class="l1"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span></div><div class="why">${whyHTML(r)}</div></div>
+    <div class="conn c-conn">${connHTML(r)}</div>
+    <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
+    <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <span class="c-st">${statHTML(r.status)}</span>
-    <div class="mnum"><span>${fmt(r.followers)}</span><span class="${ln}">${n} ${n === 1 ? 'list' : 'lists'}</span>${statHTML(r.status)}</div>
+    <div class="mnum">${fitBadge(r)}<span>${n} ${n === 1 ? 'list' : 'lists'} · ${fmt(r.followers)}</span>${statHTML(r.status)}</div>
   </div>`;
 }
 function renderRows() {
@@ -728,11 +793,9 @@ async function pickAllInFilter() {
   const gen = S.gen;
   try {
     const total = S.total ?? 0;
-    const p = toQuery(S.f, S.sort, false); p.set('sort', S.sort);
     if (total > 5000) toast('Selecting the first 5,000');
     while (ids.length < Math.min(total, 5000)) {
-      p.set('offset', ids.length); p.set('limit', 500);
-      const d = await api.get('/api/leads?' + p);
+      const d = await fetchLeads(ids.length, 500);
       if (gen !== S.gen || !d.rows.length) break;
       ids.push(...d.rows.map((r) => r.id));
     }
@@ -848,7 +911,7 @@ async function refreshPerson(id) {
     if (S.open !== id) return;
     S.person = p;
     const r = S.rows.find((x) => x.id === id);
-    if (r) Object.assign(r, { tags: p.tags, status: p.status });
+    if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, reason: p.reason });
   } catch (e) {
     if (S.open !== id || !S.person) return;
     S.person.loading = false; S.person.failed = true;
@@ -867,10 +930,17 @@ function seedEdges(edges) {
   for (const e of edges) { if (!m.has(e.seed)) m.set(e.seed, new Set()); if (e.direction) m.get(e.seed).add(e.direction); }
   return [...m];
 }
+const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
+function evidenceOf(v) {
+  let ev = v && v.evidence;
+  if (typeof ev === 'string') { try { ev = JSON.parse(ev); } catch (e) { ev = [ev]; } }
+  return (Array.isArray(ev) ? ev : []).filter((q) => typeof q === 'string' && q.trim());
+}
 function renderDetail() {
   if (S.seedCard) return renderSeedCard();
   const p = S.person;
   if (!p) return;
+  const v = p.verdict || {};
   const edges = p.edges || (p.via || []).map((s) => ({ seed: s }));
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
   const tags = (p.tags || []).filter((t) => t.grp !== 'source' || t.source === 'manual' || t.tag === 'knows you')
@@ -879,22 +949,31 @@ function renderDetail() {
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const focused = document.activeElement?.id;
   const tagVal = $('#tag-in')?.value || '';
+  const reason = p.reason || v.reason;
+  const ev = evidenceOf(v);
+  const you = youLink(p);
+  const role = p.role || v.role;
   $('#detail').innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
+      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    <div class="d-stats">
-      <div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div>
-      <div><b>${fmt(p.posts)}</b><span>Posts</span></div><div><b>${n || '–'}</b><span>Lists</span></div></div>
-    <div class="d-sec"><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : p.failed ? 'Could not load' : 'No bio read yet'}</div>
+    <div class="d-sec d-fit">
+      <div class="d-fit-h">${p.loading ? '' : fitBadge({ ...p, tier: p.tier || v.tier, score: p.score ?? v.score }, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
+      <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
+      ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}</div>
+    <div class="d-sec"><h4>Connections<span class="grow"></span><span class="num">${n ? 'In ' + plural(n, 'list') : ''}</span></h4>
+      ${you ? `<div class="you-line">${you}</div>` : ''}
+      <div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual' : d.has('following') ? 'Followed by them' : d.has('followers') ? 'Follows them' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
+    <div class="d-sec"><h4>Profile</h4><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : p.failed ? 'Could not load' : 'No bio read yet'}</div>
+      <div class="d-stats">
+        <div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
       <div class="d-links">
-        <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd style="color:inherit;border-color:currentColor">o</kbd></a>
+        <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}
-        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read profile</button>' : ''}</div></div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${ucf(s)}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read bio</button>' : ''}</div></div>
     <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
       <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form></div>
-    <div class="d-sec"><h4>Found in</h4><div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual' : d.has('following') ? 'Followed by' : d.has('followers') ? 'Follows' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}">${ucf(s)}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
     <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="Add a note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
   if (focused === 'tag-in') $('#tag-in').focus();
 }
@@ -1032,7 +1111,7 @@ const T = {
     $('#tg-body').innerHTML = rows.length ? rows.map((t) => {
       const can = this.editable(t);
       const on = this.checked.has(t.tag);
-      const label = `<button class="tag ${KIND[t.kind]}${t.grp === 'source' ? ' src' : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
+      const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
         <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
@@ -1300,6 +1379,13 @@ $('#budget').addEventListener('submit', async (e) => {
   if (list == null || profile == null) { toast('Budgets must be whole numbers, 0 or more'); return; }
   try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast('Could not save'); }
 });
+$('#snowball').onclick = async () => {
+  try {
+    const r = await api.post('/api/scraper/snowball', { min_status: 'good' });
+    toast(r.queued ? `${ucf(plural(r.queued, 'following list'))} queued` : 'No new good or client leads to snowball');
+    loadScraper();
+  } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
+};
 function parseHandles(s) {
   const out = new Set();
   for (let t of s.split(/[\s,;]+/)) {
@@ -1382,7 +1468,7 @@ const M = {
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
       const r = seed ? Math.max(9, Math.min(26, 7 + Math.sqrt(n.degree || 0) * 0.62)) : LEAD_R[Math.min(5, L)];
-      return Object.assign(n, { L, r, vis: 0 }, o ? { x: o.x, y: o.y, vx: 0, vy: 0 } : {});
+      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0 } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
@@ -1550,31 +1636,29 @@ const M = {
       for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
       c.stroke();
     }
-    // Leads: batch by style. Dim pass first, then bright.
+    // Leads: dots coloured by fit, sized by lists; one batched path per fit, dimmed pass first.
     const minPx = 1.3 / k;
+    const fitColor = Object.fromEntries(FITS.map((f) => [f, css('--fit-' + f)]));
+    const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
     const pass = (filter, fill, alpha) => {
       c.globalAlpha = alpha; c.fillStyle = fill; c.beginPath();
-      for (const n of this.leads) {
-        if (!inView(n) || !filter(n)) continue;
-        const r = Math.max(n.r, minPx);
-        c.rect(n.x - r, n.y - r, r * 2, r * 2);
-      }
+      for (const n of this.leads) if (inView(n) && filter(n)) circle(n, Math.max(n.r, minPx));
       c.fill();
     };
-    if (dim) { pass((n) => !on(n) && n.L < 2, fg4, 0.5); pass((n) => !on(n) && n.L >= 2, fg3, 0.4); }
-    pass((n) => on(n) && n.L < 2, dim ? fg : fg3, 1);
-    pass((n) => on(n) && n.L >= 2, fg, 1);
+    for (const f of [...FITS].reverse()) {
+      if (dim) pass((n) => !on(n) && n.fit === f, fitColor[f], 0.18);
+      pass((n) => on(n) && n.fit === f, fitColor[f], 1);
+    }
     // Marked rings.
-    c.globalAlpha = 1; c.strokeStyle = fg; c.lineWidth = 1.6 / k; c.beginPath();
+    c.globalAlpha = 1; c.strokeStyle = fg; c.lineWidth = 1.4 / k; c.beginPath();
     for (const n of this.leads) {
       if (!n.status || !MARKED.has(n.status) || !inView(n) || !on(n)) continue;
-      const r = Math.max(n.r, minPx) + 2.4 / k + 1;
-      c.rect(n.x - r, n.y - r, r * 2, r * 2);
+      circle(n, Math.max(n.r, minPx) + 2.2 / k + 1);
     }
     c.stroke();
     // Open / focused node.
     const sel = (S.open && this.byId.get('p:' + S.open)) || this.focus;
-    if (sel) { const r = sel.r + 6 / k; c.strokeStyle = fg; c.lineWidth = 2 / k; c.strokeRect(sel.x - r, sel.y - r, r * 2, r * 2); }
+    if (sel) { c.strokeStyle = fg; c.lineWidth = 2 / k; c.beginPath(); circle(sel, sel.r + 6 / k); c.stroke(); }
     // Seeds.
     for (const n of this.seeds) {
       const r = n.r;
@@ -1679,10 +1763,9 @@ function hoverCard(n) {
     const ov = (M.overlap.get(n.id) || []).slice(0, 3);
     return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>Seed · ${int(n.degree)} people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} shared with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
   }
-  const tags = (n.tags || []).filter((t) => !isViaTag(t) && !isListTag(t) && !['follows you', 'you follow'].includes(t)).slice(0, 5);
   const seeds = (n.seeds || (M.nbr.get(n.id) || []).map((id) => M.byId.get(id)?.label)).filter(Boolean);
-  return `<b>${esc(n.name || n.handle || n.label)}</b><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(n.status) : ''}</span>
-    <span>${plural(n.L, 'list')}: ${seeds.map((s) => '@' + esc(s)).join(', ')}</span>${tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}`;
+  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(ucf(n.status)) : ''}</span>
+    ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}<span>In ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
 }
 function openSeed(n) {
   S.seedCard = n.id; S.open = null; S.person = null;

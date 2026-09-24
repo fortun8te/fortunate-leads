@@ -51,6 +51,7 @@
   const size = (f) => f < 1000 ? '<1k' : f < 10000 ? '1k-10k' : f < 100000 ? '10k-100k' : f < 1000000 ? '100k-1M' : '1M+';
 
   const people = [];
+  const lists = (id) => new Set(edges.get(id).map((e) => e.seed)).size;
   const edges = new Map(); // id -> [{seed, direction}]
   const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
@@ -167,6 +168,33 @@
   }
   applyRules();
 
+  // Verdicts, shaped like the server's: rule score/tier for everyone with a bio, an LLM verdict (evidence quotes,
+  // "Fit: strong/good" tag) for part of them.
+  const ROLE_BASE = { Brand: ['buyer', 62], Store: ['buyer', 58], Agency: ['connector', 48], Freelancer: ['connector', 44], Creative: ['collaborator', 38],
+    Supplier: ['supplier', 30], SaaS: ['unrelated', 20], Coach: ['unrelated', 16], Creator: ['unrelated', 22], Personal: ['unrelated', 8] };
+  const REASON = {
+    buyer: (p) => pick([`Founder of a ${p._niche.toLowerCase()} brand with a live shop${p._us ? ', ships to the US' : ''}`, `Runs a DTC ${p._niche.toLowerCase()} brand selling physical product`, `${p._niche} brand at a size where ad creative pays off`]),
+    connector: () => pick(['Agency serving DTC brands, could refer work', 'Freelancer in the ecom space, possible partner']),
+    collaborator: () => 'Creative, not a buyer; possible collaborator',
+    supplier: () => 'Supplier to brands, not a buyer',
+    unrelated: (p) => p._role === 'Personal' ? 'Personal account, no brand in bio' : p._role === 'Creator' ? 'Creator, not a brand owner' : 'Sells software or coaching, not product',
+  };
+  const verdicts = new Map();
+  people.forEach((p) => {
+    const t = tags.get(p.id);
+    const has = (x) => t.some((y) => y.tag === x);
+    const [role, base] = ROLE_BASE[p._role];
+    const n = lists(p.id);
+    const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('knows you') + rnd() * 16 - 6)));
+    if (!p.bio) { verdicts.set(p.id, { score: Math.min(60, 20 + 8 * n), tier: 'unread', role: null, reason: n > 1 ? `In ${n} lists, bio not read yet` : 'Bio not read yet', model: null, evidence: '[]' }); return; }
+    const llm = chance(0.6);
+    const tier = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
+    const evidence = llm ? p.bio.split(' · ').slice(0, 2).concat(p.website ? [p.website.replace('https://', '')] : []) : [];
+    verdicts.set(p.id, { score, tier, role, reason: REASON[role](p), model: llm ? 'meta-llama/llama-3.3-70b-instruct:free' : 'rules', evidence: JSON.stringify(evidence) });
+    const fit = llm && role === 'buyer' && score >= 75 ? 'Fit: strong' : llm && ['buyer', 'connector'].includes(role) && score >= 55 ? 'Fit: good' : null;
+    if (fit) t.push({ tag: fit, grp: 'signal', source: 'auto' });
+  });
+
   // Saved views.
   let viewId = 4;
   const views = [
@@ -175,12 +203,12 @@
     { id: 3, name: 'Contacted', query: 'status=contacted' },
   ];
 
-  const lists = (id) => new Set(edges.get(id).map((e) => e.seed)).size;
   const row = (p) => ({
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
-    followers: p.followers, following: p.following, posts: p.posts, tier: p.bio ? 'warm' : 'unread', score: null, role: null, reason: null,
+    followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
     tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
   });
+  const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
@@ -188,8 +216,9 @@
     const all = csv(q, 'tags'), any = csv(q, 'any'), not = csv(q, 'not');
     const sts = csv(q, 'status'), text = (q.get('q') || '').toLowerCase().trim();
     const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
-    const fmin = q.get('followers_min'), fmax = q.get('followers_max');
+    const fmin = q.get('followers_min'), fmax = q.get('followers_max'), tiers = csv(q, 'tier');
     return people.filter((p) => {
+      if (tiers.length && !tiers.includes(verdicts.get(p.id).tier)) return false;
       const m = marks.get(p.id) || null;
       if (!sts.length ? m === 'no' : !sts.includes('all') && !sts.some((s) => (s === 'none' ? m === null : m === s))) return false;
       if (ml && lists(p.id) < ml) return false;
@@ -213,7 +242,7 @@
       connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
       followers: (a, b) => b.followers - a.followers,
       recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
-      score: (a, b) => (b.bio ? 1 : 0) - (a.bio ? 1 : 0) || lists(b.id) - lists(a.id) || b.followers - a.followers,
+      score: (a, b) => verdicts.get(b.id).score - verdicts.get(a.id).score || b.followers - a.followers,
     }[sort] || ((a, b) => lists(b.id) - lists(a.id));
     return list.sort((a, b) => cmp(a, b) || a.id - b.id);
   }
@@ -360,13 +389,13 @@
     }
     if (path === '/api/counts') {
       const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, total: 0, with_bio: 0 };
-      people.forEach((p) => { const s = marks.get(p.id); if (s) c[s]++; if (s === 'no') return; c.total++; if (p.bio) c.with_bio++; });
+      people.forEach((p) => { const s = marks.get(p.id); c[verdicts.get(p.id).tier]++; if (s) c[s]++; if (s === 'no') return; c.total++; if (p.bio) c.with_bio++; });
       return c;
     }
     if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: null, note: notes.get(id) || '' };
+      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, note: notes.get(id) || '' };
       if (m[3] === 'mark') { if (body.status) marks.set(id, body.status); else marks.delete(id); if (body.note !== undefined) notes.set(id, body.note); return { ok: true }; }
       if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
       if (m[3] === 'read') return { ok: true };
@@ -385,7 +414,7 @@
       list.forEach((p) => {
         const ss = [...new Set(edges.get(p.id).map((e) => e.seed))];
         nodes.push({ id: 'p:' + p.id, kind: 'lead', label: p.handle, handle: p.handle, name: p.name, pic: p.pic, degree: ss.length, lists: ss.length,
-          status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag), seeds: ss });
+          status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag).slice(0, 4), seeds: ss, ...verdictFields(p.id) });
         edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction }); });
       });
       return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
@@ -394,6 +423,13 @@
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
     if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true, qualify: scraper.qualify }; }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
+    if (path === '/api/scraper/snowball') {
+      const want = body.min_status === 'client' ? ['client'] : ['good', 'client'];
+      const seeds = people.filter((p) => want.includes(marks.get(p.id)) && !scraper.lists.some((l) => l.seed === p.handle && l.direction === 'following'))
+        .slice(0, body.limit || 50).map((p) => p.handle);
+      seeds.forEach((h) => scraper.lists.push({ seed: h, direction: 'following', state: 'queued', received: 0, total: null, updated_at: now(), error: null }));
+      return { ok: true, queued: seeds.length, seeds };
+    }
     if (path === '/api/scraper/seeds') {
       let queued = 0;
       body.handles.forEach((h) => body.directions.forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) { queued++; scraper.lists.push({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: now(), error: null }); } }));
