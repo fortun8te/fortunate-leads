@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Provider layer (llm.py) and Laya client (laya.py) against fake HTTP stubs."""
 import json
 import sys

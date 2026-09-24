@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 import os
 import sys
 import tempfile

@@ -1,4 +1,6 @@
 import argparse
+import collections
+import time
 import json
 import mimetypes
 import re
@@ -820,12 +822,38 @@ def api_scraper(conn, q, b):
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
             'llm': api_llm(conn, q, b),
-            'soak': soak(conn, now),
+            'soak': soak(conn, now), 'progress': progress(conn, accts),
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': [dict(r) for r in conn.execute('SELECT seed, direction, state, received, total, updated_at, error FROM lists '
                                                     'ORDER BY updated_at DESC')],
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
+
+
+def eta_hours(left, per_hour):
+    return round(left / per_hour, 2) if left and per_hour else (0 if not left else None)
+
+
+def progress(conn, accts):
+    """Plain numbers for the Scraper page: what is left, how fast it goes, when it is done."""
+    rate = accounts.aggregate_rate(accts)
+    lists_left = conn.execute("SELECT coalesce(sum(max(coalesce(total,0)-received,0)),0) FROM lists "
+                              "WHERE state NOT IN ('done','private','error')").fetchone()[0]
+    bios_left = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
+    bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
+    online = rate.get('online') or 0
+    q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
+                          "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+                          (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
+    q_rate = POOL[0].rate() if POOL[0] else None
+    return {
+        'lists': {'left': lists_left, 'per_hour': rate.get('people_hour'), 'eta_h': eta_hours(lists_left, rate.get('people_hour'))},
+        'bios': {'left': bios_left, 'per_day': bio_budget * max(1, online),
+                 'eta_h': eta_hours(bios_left, bio_budget * max(1, online) / 24) if online else None},
+        'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
+                    'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
+                    'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
+    }
 
 
 def soak(conn, now):
@@ -1351,6 +1379,7 @@ class LLMPool:
         self.running = 0
         self.skip = {}
         self.batch = batch
+        self.done = collections.deque(maxlen=2000)   # (time, verdicts written) for the ETA
 
     def step(self, conn):
         if not db.get_setting(conn, 'qualify'):
@@ -1375,10 +1404,21 @@ class LLMPool:
             threading.Thread(target=self._work, args=(g,), daemon=True).start()
         return True
 
+    def rate(self, window=900):
+        """Verdicts per hour over the last `window` seconds (None until there is data)."""
+        now = time.time()
+        recent = [(t, n) for t, n in list(self.done) if now - t <= window]
+        if not recent:
+            return None
+        span = max(60, now - recent[0][0])
+        return sum(n for _, n in recent) * 3600 / span
+
     def _work(self, rows):
         conn = db.connect(CFG['db'])
         try:
-            run_llm(conn, rows, self.skip)
+            n = run_llm(conn, rows, self.skip)
+            if n:
+                self.done.append((time.time(), n))
         except Exception:
             traceback.print_exc()
         finally:
@@ -1430,9 +1470,10 @@ def plan_profiles(conn):
     """Keep the profile queue topped up to the bio budget of the lanes that read bios. Qualification on: everyone above
     `bio_min`, best prefilter first. Still collecting (qualify off, auto on): only the people already in several lists."""
     auto_qualify(conn)
-    early = not db.get_setting(conn, 'qualify')
-    if early and not db.get_setting(conn, 'qualify_auto'):
-        return 0
+    # Bio reads are scraping, not AI: they run whether Qualify is on or off. While lists are still collecting,
+    # only people already in several lists get one.
+    early = not db.get_setting(conn, 'qualify') and bool(conn.execute(
+        "SELECT 1 FROM lists WHERE state IN ('queued','running') LIMIT 1").fetchone())
     now = datetime.now(timezone.utc)
     accts = [a for a in accounts.listing(conn, now) if a['healthy'] and a['role'] in ('bios', 'both')]
     if accts:   # every lane that reads bios brings its own daily budget (0 = no daily number)
@@ -1510,8 +1551,11 @@ def worker(stop, step, busy_wait, idle_wait):
         stop.wait(busy_wait if busy else idle_wait)
 
 
+POOL = [None]
+
+
 def start_workers(stop):
-    pool = LLMPool()
+    pool = POOL[0] = LLMPool()
     loops = [(qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()

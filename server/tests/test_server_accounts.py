@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Multi-account lanes: leasing, roles, handoff, main-account protection, migration, account endpoints."""
 import sqlite3
 import sys

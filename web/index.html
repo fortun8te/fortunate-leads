@@ -81,7 +81,7 @@
           <div class="bulk" id="bulk" hidden></div>
           <div class="thead">
             <span class="c-sel"><button class="ck" id="sel-page" title="Select all loaded"></button></span>
-            <span>Fit</span><span>Lead</span><span class="c-conn">Connections</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-st">Status</span>
+            <span>Lead</span><span>Fit</span><span class="c-conn">Connections</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-st">Status</span>
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
           <div class="foot"><span class="num" id="count"></span><span class="grow"></span>
@@ -150,38 +150,37 @@
 
     <section class="view" id="view-scraper">
       <div class="scr">
-        <div class="kpis" id="kpis"></div>
-        <div class="grid2">
-          <div class="panel">
-            <div class="p-head"><h3>Extension</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></div>
-            <div class="p-body"><div class="kv" id="ext-kv"></div>
-              <form class="budget" id="budget" novalidate>
-                <label><span class="muted">Pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label>
-                <label><span class="muted">Profiles per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label>
-                <button class="btn" id="b-save">Save</button>
-              </form>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="p-head"><h3>Add seeds</h3></div>
-            <div class="p-body">
-              <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
-              <div class="row-flex">
-                <div class="seg" id="seed-dir"><button data-v="followers" class="on">Followers</button><button data-v="following" class="on">Following</button></div>
-                <div class="grow"></div>
-                <span class="muted num" id="seed-n"></span>
-                <button class="btn solid" id="seed-add" disabled>Queue</button>
-              </div>
+        <div class="now" id="now"></div>
+        <div class="stages" id="stages"></div>
+        <div class="panel">
+          <div class="p-head"><h3>Add accounts to scrape</h3></div>
+          <div class="p-body">
+            <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
+            <div class="row-flex">
+              <div class="seg" id="seed-dir"><button data-v="followers" class="on">Their followers</button><button data-v="following" class="on">Who they follow</button></div>
+              <div class="grow"></div>
+              <span class="muted num" id="seed-n"></span>
+              <button class="btn solid" id="seed-add" disabled>Add</button>
             </div>
           </div>
         </div>
         <div class="panel">
-          <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div><button class="btn" id="snowball" title="Queue the following list of every lead marked good or client">Snowball good leads</button></div>
+          <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div><button class="btn" id="snowball" title="Also scrape who your Good and Client leads follow">Scrape who good leads follow</button></div>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Account</th><th class="hide-sm">Direction</th><th class="prog">Progress</th><th class="r">Received</th><th>State</th><th class="r hide-sm">Updated</th></tr></thead>
+            <thead><tr><th>Account</th><th class="hide-sm">List</th><th class="prog">Progress</th><th class="r">People</th><th>Status</th></tr></thead>
             <tbody id="lists-body"></tbody>
           </table></div>
         </div>
+        <details class="panel more">
+          <summary class="p-head"><h3>Limits and details</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></summary>
+          <div class="p-body"><div class="kv" id="ext-kv"></div>
+            <form class="budget" id="budget" novalidate>
+              <label><span class="muted">List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label>
+              <label><span class="muted">Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label>
+              <button class="btn" id="b-save">Save</button>
+            </form>
+          </div>
+        </details>
       </div>
     </section>
 

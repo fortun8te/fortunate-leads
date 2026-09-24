@@ -689,8 +689,8 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
+    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
-    <div class="who"><div class="l1"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span></div><div class="why">${whyHTML(r)}</div></div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
@@ -1324,30 +1324,46 @@ $('#qualify-btn').onclick = async () => {
 };
 
 let listFilter = 'all';
+const LIST_STATE = { running: 'Reading now', queued: 'Waiting', paused: 'Paused', error: 'Failed', private: 'Private account', done: 'Done' };
+function eta(h) {
+  if (h == null) return null;
+  if (h <= 0) return 'done';
+  const m = Math.round(h * 60);
+  if (m < 60) return `about ${Math.max(1, m)} min`;
+  if (h < 48) return `about ${Math.round(h)} h`;
+  return `about ${Math.round(h / 24)} days`;
+}
 function renderScraper() {
   const sc = S.sc;
-  if (!sc) { $('#kpis').innerHTML = '<div class="kpi"><span>Loading</span><b>–</b></div>'; return; }
-  const x = sc.ext || {}, st = scState(), ls = sc.lists || [];
-  const done = ls.filter((l) => l.state === 'done').length;
-  const recv = ls.reduce((a, l) => a + (l.received || 0), 0);
-  const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
-  const kpi = (label, val, sub, pct) => `<div class="kpi"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}${pct != null ? `<div class="meter"><i style="width:${Math.min(100, pct)}%"></i></div>` : ''}</div>`;
-  $('#kpis').innerHTML = [
-    kpi('State', esc(st.short), x.cooldown_until && Date.parse(x.cooldown_until) > Date.now() ? left(x.cooldown_until) + ' left' : x.last_seen ? (x.online ? 'Seen ' : 'Last seen ') + ago(x.last_seen) + ' ago' : 'Never seen'),
-    kpi('Pages today', int(tl), bl != null ? 'of ' + int(bl) : '', bl ? (tl / bl) * 100 : null),
-    kpi('Profiles today', int(tp), bp != null ? 'of ' + int(bp) : '', bp ? (tp / bp) * 100 : null),
-    kpi('Pages/hour', x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–', x.rate?.last_hit_at ? 'Limit ' + ago(x.rate.last_hit_at) + ' ago' : 'No limit hits'),
-    kpi('People/hour', x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–', sc.people_today != null ? int(sc.people_today) + ' new today' : ''),
-    kpi('Lists', `${done}/${ls.length}`, int(recv) + ' received', ls.length ? (done / ls.length) * 100 : null),
+  if (!sc) { $('#stages').innerHTML = '<div class="muted">Loading</div>'; return; }
+  const x = sc.ext || {}, ls = sc.lists || [], pr = sc.progress || {};
+  const run = ls.find((l) => l.state === 'running');
+  // One plain sentence: what is happening right now.
+  let now;
+  if (sc.paused) now = 'Paused. Press Resume at the top to continue.';
+  else if (!x.online) now = `The Chrome extension is not connected${x.last_seen ? ' (last seen ' + ago(x.last_seen) + ' ago)' : ''}. Open Chrome with Instagram logged in.`;
+  else if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) now = `Taking a break so Instagram does not block you, back in ${left(x.cooldown_until)}.`;
+  else if (run) now = `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}: ${int(run.received)}${run.total ? ' of ' + int(run.total) : ''}.`;
+  else now = ucf(x.activity || x.text || 'Idle');
+  $('#now').innerHTML = `<i class="dot ${x.online && !sc.paused ? 'run' : 'off'}"></i><span>${esc(now)}</span>`;
+  const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
+  const recv = ls.reduce((a, l) => a + (l.received || 0), 0), tot = recv + (L.left || 0);
+  const stage = (title, line, pct, when) => `<div class="stage"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
+    <div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div><div class="muted">${line}</div></div>`;
+  const offline = x.online ? '' : 'waiting for the extension';
+  $('#stages').innerHTML = [
+    stage('1. Collect lists', `${int(recv)} people collected, ${int(L.left || 0)} still to go${L.per_hour ? ` · ${int(Math.round(L.per_hour))} per hour` : ''}`,
+      tot ? (recv / tot) * 100 : 0, !L.left ? 'Done' : offline || (eta(L.eta_h) ? eta(L.eta_h) + ' left' : '')),
+    stage('2. Read bios', `${int(B.left || 0)} bios waiting · limit ${int(B.per_day || 0)} a day to stay safe`,
+      B.left ? 0 : 100, !B.left ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : '')),
+    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
+      : `Off. Turn on Qualify at the top to let AI score ${int(Q.left || 0)} people with bios.`,
+      Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
   ].join('');
-  $('#ext-ver').textContent = x.version ? 'v' + x.version : '';
-  const soak = sc.soak?.['1h'];
+  $('#ext-ver').textContent = x.version ? 'Extension v' + x.version : '';
+  const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
   $('#ext-kv').innerHTML = [
-    ['Connection', x.online ? 'Online' : 'Offline'],
-    ['Activity', ucf(x.activity || x.text || '–')],
-    ['Queue', `${plural(sc.queue?.list || 0, 'list')}, ${plural(sc.queue?.profile || 0, 'profile')}`],
-    ['Last hour', soak ? `${int(soak.pages)} pages, ${int(soak.people)} people, ${int(soak.new_people)} new` : '–'],
-    ['Qualify', sc.qualify ? 'On' : 'Off'],
+    ['Today', `${int(tl)} of ${int(bl)} list pages, ${int(tp)} of ${int(bp)} bios`],
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const bL = $('#b-list'), bP = $('#b-profile');
@@ -1358,12 +1374,11 @@ function renderScraper() {
   const rows = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
-    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${esc(ucf(l.direction))}</td>
+    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
       <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
-      <td class="r num">${int(l.received)}${l.total ? ' / ' + int(l.total) : ''}</td>
-      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(ucf(l.state))}</span></td>
-      <td class="r num muted hide-sm">${ago(l.updated_at)}</td></tr>`;
-  }).join('') : `<tr><td colspan="6" class="muted">No lists</td></tr>`;
+      <td class="r num">${int(l.received)}${l.total ? ' of ' + int(l.total) : ''}</td>
+      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(LIST_STATE[l.state] || ucf(l.state))}</span></td></tr>`;
+  }).join('') : `<tr><td colspan="5" class="muted">No lists yet. Add an account above.</td></tr>`;
 }
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
 $('#budget').addEventListener('submit', async (e) => {
@@ -1728,7 +1743,30 @@ $('#view-settings').addEventListener('click', async (e) => {
 });
 
 // ---------- map ----------
-const LEAD_R = [0, 2.6, 4.2, 5.6, 6.8, 7.8];
+const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
+// Profile photos for the map, pre-cropped to circles on small canvases.
+const PICS = new Map(); let picsLoading = 0; const picQueue = [];
+function mapPic(url) {
+  let e = PICS.get(url);
+  if (!e) { PICS.set(url, (e = { state: 'queued', c: null })); picQueue.push(url); pumpPics(); }
+  return e.state === 'ok' ? e.c : null;
+}
+function pumpPics() {
+  while (picsLoading < 8 && picQueue.length) {
+    const url = picQueue.pop(), e = PICS.get(url);
+    picsLoading++;
+    const im = new Image(); im.decoding = 'async';
+    im.onload = () => {
+      const s = 64, c = document.createElement('canvas'); c.width = c.height = s;
+      const g = c.getContext('2d'), m = Math.min(im.naturalWidth, im.naturalHeight);
+      g.beginPath(); g.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2); g.clip();
+      g.drawImage(im, (im.naturalWidth - m) / 2, (im.naturalHeight - m) / 2, m, m, 0, 0, s, s);
+      e.c = c; e.state = 'ok'; picsLoading--; M.schedule(); pumpPics();
+    };
+    im.onerror = () => { e.state = 'err'; picsLoading--; pumpPics(); };
+    im.src = url;
+  }
+}
 const MARKED = new Set(['good', 'client', 'contacted', 'maybe']);
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
@@ -1964,6 +2002,16 @@ const M = {
       if (dim) pass((n) => !on(n) && n.fit === f, fitColor[f], 0.18);
       pass((n) => on(n) && n.fit === f, fitColor[f], 1);
     }
+    // Photos on top of the dots once they are big enough to read.
+    for (const n of this.leads) {
+      if (!n.pic || !inView(n)) continue;
+      const r = Math.max(n.r, minPx);
+      if (r * k < 5) continue;
+      const img = mapPic(n.pic);
+      if (!img) continue;
+      c.globalAlpha = dim && !on(n) ? 0.18 : 1;
+      c.drawImage(img, n.x - r, n.y - r, r * 2, r * 2);
+    }
     // Marked rings.
     c.globalAlpha = 1; c.strokeStyle = fg; c.lineWidth = 1.4 / k; c.beginPath();
     for (const n of this.leads) {
@@ -1979,10 +2027,12 @@ const M = {
       const r = n.r;
       const faded = (hd && !hd.set.has(n.id)) || !n.vis;
       c.globalAlpha = faded ? 0.3 : 1;
-      if (n.is_me) {
-        c.fillStyle = bg; c.fillRect(n.x - r, n.y - r, r * 2, r * 2);
-        c.strokeStyle = fg; c.lineWidth = Math.max(3, 3 / k); c.strokeRect(n.x - r + 1.5, n.y - r + 1.5, r * 2 - 3, r * 2 - 3);
-      } else { c.fillStyle = fg; c.fillRect(n.x - r, n.y - r, r * 2, r * 2); }
+      const img = n.pic && mapPic(n.pic);
+      c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2);
+      if (img) c.drawImage(img, n.x - r, n.y - r, r * 2, r * 2);
+      else { c.fillStyle = n.is_me ? bg : fg; c.fill(); }
+      c.strokeStyle = n.is_me ? fg : bg; c.lineWidth = n.is_me ? Math.max(3, 3 / k) : 2 / k;
+      c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2); c.stroke();
     }
     c.restore();
     c.globalAlpha = 1;
@@ -2144,11 +2194,10 @@ function seedCardClick(e) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (!moved && Math.abs(dx) + Math.abs(dy) > 4) {
         moved = true;
-        if (drag.n) { drag.n.fx = drag.n.x; drag.n.fy = drag.n.y; M.sim?.alphaTarget(0.08).restart(); }
       }
       if (!moved) return;
-      if (drag.n) { drag.n.fx += dx / M.k; drag.n.fy += dy / M.k; drag.x = e.clientX; drag.y = e.clientY; }
-      else { M.x = drag.ox + dx; M.y = drag.oy + dy; M.autoFit = false; M.draw(); }
+      // Dragging always pans; people stay where the layout put them.
+      M.x = drag.ox + dx; M.y = drag.oy + dy; M.autoFit = false; M.draw();
       $('#hover').hidden = true;
       return;
     }
@@ -2166,7 +2215,6 @@ function seedCardClick(e) {
   const end = (e) => {
     pts.delete(e.pointerId);
     if (pinch) { if (pts.size < 2) pinch = null; drag = null; return; }
-    if (drag?.n && moved) { drag.n.fx = null; drag.n.fy = null; M.sim?.alphaTarget(0); }
     if (drag && !moved) {
       if (drag.n) M.select(drag.n);
       else if (M.focus) { M.focus = null; M.draw(); }

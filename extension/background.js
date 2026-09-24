@@ -158,9 +158,18 @@ async function applyServer(j) {
   if (j.paused && !st.hold.sawPause) await editSt((s) => { if (s.hold) s.hold.sawPause = true; });
   if (!j.paused && st.hold.sawPause) await editSt((s) => { s.hold = null; s.lastError = null; });
 }
+// Auto-update: the extension is loaded unpacked from the repo, so a new version on disk (git pull) is picked up by reloading.
+async function selfUpdate() {
+  try {
+    const m = await (await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })).json();
+    if (m.version && m.version !== VERSION) { console.log('update', VERSION, '->', m.version); chrome.runtime.reload(); return true; }
+  } catch {}
+  return false;
+}
 async function heartbeat(force) {
   if (!force && Date.now() - mem.lastBeat < 25e3) return;
   mem.lastBeat = Date.now();
+  if (await selfUpdate()) return;
   await whoami().catch(() => {});
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
   const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };

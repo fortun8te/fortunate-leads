@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Regression tests for bugs found in the adversarial review (each failed before its fix)."""
 import socket
 

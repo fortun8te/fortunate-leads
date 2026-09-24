@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Staged qualifier: network signals in the prefilter and packet, batched LLM verdicts with rubric, evidence and few-shot."""
 import json
 import re

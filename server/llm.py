@@ -225,9 +225,31 @@ class Providers:
             return {'providers': out, 'models': list(self.models), 'daily_limit': self.daily_limit}
 
 
+ORSLOT = Path.home() / '.config' / 'openrouter' / 'slots'
+
+
+def orslot_keys():
+    """Every key in the orslot pool (~/.config/openrouter/slots/*), read fresh so new slots show up on reload."""
+    try:
+        files = sorted(ORSLOT.iterdir())
+    except OSError:
+        return []
+    out = []
+    for f in files:
+        try:
+            k = f.read_text().strip()
+        except OSError:
+            continue
+        if KEY_RX.fullmatch(k) and k not in out:
+            out.append(k)
+    return out
+
+
 def settings(path=None):
     """Keys from env OPENROUTER_API_KEYS and data/openrouter.json; models and daily limit from the file."""
     env = [k.strip() for k in os.environ.get('OPENROUTER_API_KEYS', '').split(',') if k.strip()]
+    if path is None and not os.environ.get('FL_NO_ORSLOT'):
+        env += [k for k in orslot_keys() if k not in env]
     cfg = read_config(path)
     keys = env + [k.strip() for k in cfg.get('keys') or [] if isinstance(k, str) and k.strip()]
     models = cfg.get('models') if isinstance(cfg.get('models'), list) and cfg['models'] \

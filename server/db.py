@@ -48,7 +48,7 @@ PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verifie
                  'followers', 'following', 'posts', 'is_business', 'bio_at')
 # budget: per account per day (list pages, profile reads; profile 0 = no daily number). bio_min: prefilter floor for planned
 # bio reads (an explicit read ignores it).
-DEFAULTS = {'paused': False, 'budget': {'list': 3000, 'profile': 300}, 'qualify': False, 'qualify_auto': True, 'llm_workers': 4,
+DEFAULTS = {'paused': False, 'budget': {'list': 3000, 'profile': 300}, 'qualify': False, 'qualify_auto': False, 'llm_workers': 8,
             'llm_min': 40, 'bio_min': 25, 'main_list_share': 0}
 
 

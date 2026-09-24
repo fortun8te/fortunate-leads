@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 import contextlib
 import io
 import json
@@ -153,6 +154,7 @@ class ServerTest(Base):
                 db.add_edge(self.conn, s, pid, 'followers')
         db.upsert_person(self.conn, {'handle': 'locked', 'is_private': True})
         db.set_setting(self.conn, 'budget', {'list': 10, 'profile': 2})
+        self.conn.execute("INSERT INTO lists(seed, direction, state) VALUES('s3','followers','queued')")
         self.conn.commit()
         server.qualify_batch(self.conn)
         self.assertEqual(server.plan_profiles(self.conn), 1)  # still collecting: only people in 2+ lists
@@ -162,9 +164,9 @@ class ServerTest(Base):
         self.assertEqual([r[0] for r in self.conn.execute("SELECT handle FROM jobs ORDER BY priority DESC")], ['p1', 'p0'])
         self.assertEqual(server.plan_profiles(self.conn), 0)
         db.set_setting(self.conn, 'qualify', False)
-        db.set_setting(self.conn, 'qualify_auto', False)
         self.conn.execute('DELETE FROM jobs')
-        self.assertEqual(server.plan_profiles(self.conn), 0)  # automation off: nothing until qualification is switched on
+        self.conn.execute('DELETE FROM lists')
+        self.assertEqual(server.plan_profiles(self.conn), 2)  # bio reads do not wait for Qualify; lists done: everyone
 
     def test_leads_filter_and_map(self):
         ids = {}
@@ -239,12 +241,12 @@ class ServerTest(Base):
 
     def test_qualify_toggle_and_auto(self):
         s = self.call('/api/scraper')[1]
-        self.assertEqual((s['qualify'], s['qualify_auto']), (False, True))
+        self.assertEqual((s['qualify'], s['qualify_auto']), (False, False))
         self.assertEqual(self.call('/api/settings/qualify', {'on': 'yes'})[0], 400)
         self.assertEqual(self.call('/api/settings/qualify', {'on': True})[1], {'ok': True, 'qualify': True})
         self.assertTrue(self.call('/api/scraper')[1]['qualify'])
-        self.call('/api/settings/qualify', {'on': False})
-        # auto: stays off while a list is queued, flips on when all are done
+        self.call('/api/settings/qualify', {'on': False, 'auto': True})
+        # auto (opt-in): stays off while a list is queued, flips on when all are done
         self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
         self.assertFalse(server.auto_qualify(self.conn))
         job = self.call('/api/ext/next')[1]['job']

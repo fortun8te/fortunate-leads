@@ -1,3 +1,4 @@
+import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Server side of the staged qualifier: network context, Laya stage, LLM worker pool, few-shot re-runs, snowball, /api/llm."""
 import json
 import os
@@ -76,7 +77,7 @@ class PipelineTest(Base):
             out = self.call('/api/llm')[1]
             self.assertEqual([p['key'] for p in out['providers']], [None, 'sk-…9876'])
             self.assertNotIn('secret', json.dumps(out))
-            self.assertEqual(out['workers'], 4)
+            self.assertEqual(out['workers'], 8)
             self.assertIn('llm', self.call('/api/scraper')[1])
         finally:
             server.llm.PROVIDERS[0] = old
