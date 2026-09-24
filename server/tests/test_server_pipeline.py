@@ -188,11 +188,27 @@ class PipelineTest(Base):
         self.conn.commit()
         server.qualify_batch(self.conn)
         db.set_setting(self.conn, 'qualify', True)
+        db.set_setting(self.conn, 'budget', {'list': 3000, 'profile': 0})
         self.conn.commit()
-        self.assertEqual(db.get_setting(self.conn, 'budget')['profile'], 0)
         self.assertEqual(server.plan_profiles(self.conn), 5)
         self.call('/api/scraper/budget', {'profile': 5000})
         self.assertEqual(db.get_setting(self.conn, 'budget')['profile'], 5000)   # no hard cap
+
+    def test_bio_min_floor_skips_hopeless_handles_but_not_explicit_reads(self):
+        ids = self.people({'good': (None, [('s1', 'followers')]), 'hopeless': (None, [('s1', 'followers')])})
+        self.conn.execute('UPDATE people SET bio=NULL, bio_at=NULL')
+        server.qualify_batch(self.conn)
+        self.conn.execute("UPDATE verdicts SET prefilter=CASE person_id WHEN ? THEN 60 ELSE 10 END", (ids['good'],))
+        db.set_setting(self.conn, 'qualify', True)
+        db.set_setting(self.conn, 'bio_min', 25)
+        self.conn.commit()
+        self.assertEqual(server.plan_profiles(self.conn), 1)
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT handle FROM jobs")], ['good'])
+        self.call(f"/api/person/{ids['hopeless']}/read", {})
+        self.assertEqual(self.call('/api/ext/next?kinds=profile')[1]['job']['handle'], 'hopeless')
+        self.assertEqual(self.call('/api/settings/qualify', {'on': True, 'bio_min': 101})[0], 400)
+        self.call('/api/settings/qualify', {'on': True, 'bio_min': 5})
+        self.assertEqual(db.get_setting(self.conn, 'bio_min'), 5)
 
     def test_old_verdicts_table_gains_columns(self):
         c = db.connect(server.CFG['db'])

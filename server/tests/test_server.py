@@ -18,7 +18,7 @@ stub = types.ModuleType('qualify')
 stub.prefilter = lambda p, seeds, net=None, laya_fit=None: 10 * len(seeds)
 stub.rule_tags = lambda p, edges, me: [(f"via @{e['seed']}", 'source') for e in edges] + (
     [('founder', 'role')] if 'founder' in (p.get('bio') or '') else [])
-stub.rule_verdict = lambda p, tags: {'score': 80 if ('founder', 'role') in tags else 30, 'role': 'x', 'reason': 'r',
+stub.rule_verdict = lambda p, tags, net=None: {'score': 80 if ('founder', 'role') in tags else 30, 'role': 'x', 'reason': 'r',
                                      'tier': 'unread' if not p.get('bio') else 'hot' if ('founder', 'role') in tags else 'cold'}
 stub.llm_verdict = lambda p, tags, edges: None
 stub.input_hash = lambda p, edges: 'h'
@@ -35,7 +35,10 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         server.CFG['db'] = str(Path(self.tmp.name) / 'leads.sqlite')
-        db.init(server.CFG['db']).close()
+        c = db.init(server.CFG['db'])
+        db.set_setting(c, 'bio_min', 0)   # the stub prefilter (10 per seed) is not on the real scale
+        c.commit()
+        c.close()
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         server.CFG['port'] = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -129,10 +132,10 @@ class ServerTest(Base):
         self.call('/api/scraper/seeds', {'handles': ['s1'], 'directions': ['following']})
         self.assertEqual(self.call('/api/ext/next?kinds=profile')[1]['job']['kind'], 'profile')
         nxt = self.call('/api/ext/next')[1]
-        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 2000, 'profile': 0}, False))
+        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 3000, 'profile': 300}, False))
         self.assertIsNone(self.call('/api/ext/next?kinds=list')[1]['job'])
         self.call('/api/scraper/pause', {'paused': True})
-        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 2000, 'profile': 0},
+        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 300},
                                                          'job': None, 'cooldown_until': None})
         self.call('/api/scraper/pause', {'paused': False})
         self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})
@@ -152,11 +155,16 @@ class ServerTest(Base):
         db.set_setting(self.conn, 'budget', {'list': 10, 'profile': 2})
         self.conn.commit()
         server.qualify_batch(self.conn)
-        self.assertEqual(server.plan_profiles(self.conn), 0)  # off until qualification is switched on
+        self.assertEqual(server.plan_profiles(self.conn), 1)  # still collecting: only people in 2+ lists
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT handle FROM jobs')], ['p1'])
         db.set_setting(self.conn, 'qualify', True)
-        self.assertEqual(server.plan_profiles(self.conn), 2)
+        self.assertEqual(server.plan_profiles(self.conn), 1)
         self.assertEqual([r[0] for r in self.conn.execute("SELECT handle FROM jobs ORDER BY priority DESC")], ['p1', 'p0'])
         self.assertEqual(server.plan_profiles(self.conn), 0)
+        db.set_setting(self.conn, 'qualify', False)
+        db.set_setting(self.conn, 'qualify_auto', False)
+        self.conn.execute('DELETE FROM jobs')
+        self.assertEqual(server.plan_profiles(self.conn), 0)  # automation off: nothing until qualification is switched on
 
     def test_leads_filter_and_map(self):
         ids = {}
@@ -284,7 +292,7 @@ class ServerTest(Base):
 
     def test_budget_defaults_not_mutated(self):
         self.call('/api/scraper/budget', {'profile': 7})
-        self.assertEqual(db.DEFAULTS['budget'], {'list': 2000, 'profile': 0})
+        self.assertEqual(db.DEFAULTS['budget'], {'list': 3000, 'profile': 300})
 
     def test_migration(self):
         old = Path(self.tmp.name) / 'old.sqlite'

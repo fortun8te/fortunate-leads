@@ -677,11 +677,20 @@ async function report(seeds) {
   check(!inHold.length, 'no request during a hold', inHold.slice(0, 3).map((e) => `${e.path} at ${dhm(e.t)}`).join(', ') || `${holds.length} holds`);
   // 6. pacing
   const reqs = igLog.filter((e) => e.kind !== 'nav');
-  let minGap = Infinity, minGapAt = null, minProfile = Infinity, lastProfile = null;
-  for (let i = 1; i < reqs.length; i++) { const g = reqs[i].t - reqs[i - 1].t; if (g < minGap) { minGap = g; minGapAt = reqs[i]; } }
-  for (const e of reqs.filter((e) => e.kind === 'profile' || (e.kind === 'page' && e.bucket === 'profile'))) { if (lastProfile) minProfile = Math.min(minProfile, e.t - lastProfile.t); lastProfile = e; }
-  check(minGap >= FL.PACE.listGap[0], 'request gaps >= PACE.listGap min', `min ${(minGap / 1e3).toFixed(1)} s${minGapAt ? ' (' + minGapAt.path + ' at ' + dhm(minGapAt.t) + ')' : ''}`);
-  if (Number.isFinite(minProfile)) check(minProfile >= FL.PACE.profileGap[0], 'bio reads >= PACE.profileGap min', `min ${(minProfile / 1e3).toFixed(1)} s`);
+  const minGapOf = (list) => {
+    let min = Infinity, at = null;
+    for (let i = 1; i < list.length; i++) { const g = list[i].t - list[i - 1].t; if (g < min) { min = g; at = list[i]; } }
+    return { min, at };
+  };
+  const all = minGapOf(reqs), lists = minGapOf(reqs.filter((e) => e.bucket === 'list'));
+  const bios = minGapOf(reqs.filter((e) => e.kind === 'profile' || (e.kind === 'page' && e.bucket === 'profile')));
+  const fmt = (g) => `min ${(g.min / 1e3).toFixed(1)} s${g.at ? ' (' + g.at.path + ' at ' + dhm(g.at.t) + ')' : ''}`;
+  check(lists.min >= FL.PACE.listGap[0], 'list request gaps >= PACE.listGap min', fmt(lists));
+  check(all.min >= FL.PACE.spacing[0], 'any two requests >= PACE.spacing min', fmt(all));
+  if (Number.isFinite(bios.min)) check(bios.min >= FL.PACE.profileGap[0], 'bio reads >= PACE.profileGap min', fmt(bios));
+  let peak = 0;
+  for (let i = 0, j = 0; i < reqs.length; i++) { while (reqs[i].t - reqs[j].t >= FL.PACE.window) j++; peak = Math.max(peak, i - j + 1); }
+  check(peak <= FL.PACE.windowMax, 'requests per 11 min <= PACE.windowMax', `peak ${peak}`);
   // 7. outbox
   const lost = [...boxSeen.entries()].filter(([, v]) => !v.acked);
   check(!lost.length, 'outbox: every queued result reached the server', `${boxSeen.size} items, ${lost.length} never acknowledged${lost.length ? ': ' + lost.slice(0, 3).map(([k]) => k.slice(0, 80)).join(' | ') : ''}`);
@@ -727,7 +736,7 @@ async function report(seeds) {
   console.log('restarts       ' + restarts.map((r) => `${dhm(r.t)} ${r.reason}`).join('; '));
   console.log('server         ' + `${serverLog.length} extension calls, ${serverLog.filter((e) => e.error).length} failed while offline, outage ${outage ? dhm(outage.t) + '–' + dhm(back && back.t) : 'none'}, ${counters.ticks} background ticks`);
   console.log('end state      ' + `popup "${store.view && store.view.text}", list cooldown until ${cool.list.until > END ? dhm(cool.list.until) : '-'}, bio cooldown until ${cool.profile.until > END ? dhm(cool.profile.until) : '-'}, server ext.state=${scraper.ext && scraper.ext.state}`);
-  console.log('simulated      ' + `${HOURS} h in ${((RealDate.now() - REAL_T0) / 1e3).toFixed(1)} s real (min request gap ${(minGap / 1e3).toFixed(1)} s)`);
+  console.log('simulated      ' + `${HOURS} h in ${((RealDate.now() - REAL_T0) / 1e3).toFixed(1)} s real (min request gap ${(all.min / 1e3).toFixed(1)} s)`);
   console.log('\nhourly         ' + hourly.map((h) => `${hm(h.t)} ${h.pages}p/${h.profile}b`).join('  '));
   console.log(`\nchecks: ${pass.length} passed, ${fail.length} failed`);
   for (const f of fail) console.log('  FAIL ' + f);
@@ -899,6 +908,10 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   // lanes and accounts
   for (const [i, L] of lanes.entries()) {
     check(igLog.some((e) => e.lane === L.name && e.kind === 'list'), 'every lane worked lists', L.name);
+    const own = igLog.filter((e) => e.lane === L.name && e.kind !== 'nav');
+    let peak = 0;
+    for (let x = 0, y = 0; x < own.length; x++) { while (own[x].t - own[y].t >= FL.PACE.window) y++; peak = Math.max(peak, x - y + 1); }
+    check(peak <= FL.PACE.windowMax, 'requests per 11 min per account <= PACE.windowMax', `${L.name} peak ${peak}`);
     const a = acc.accounts.find((x) => x.ig_id === accts[i].ig_id);
     check(a && a.handle === accts[i].handle, 'server knows each lane\'s account', `${L.name} -> ${a ? a.handle + ' (' + a.lane_id + ')' : 'missing'}`);
     check(!(L.store.box || []).length, 'outbox empty', `${L.name} ${(L.store.box || []).length}`);

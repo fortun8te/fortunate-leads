@@ -54,6 +54,18 @@ class LaneTest(Base):
         self.assertEqual(lanes, {ja['seed']: 'lane-a', jb['seed']: 'lane-b'})
         self.assertEqual(self.conn.execute("SELECT lane, users FROM pages").fetchall()[0][:], ('lane-a', 5))
 
+    def test_following_lists_first_and_label_and_share(self):
+        self.seeds('s1', direction='followers')
+        self.seeds('s2', direction='following')
+        self.assertEqual(self.nxt('a')['job']['direction'], 'following')   # following lists are small and dense: first
+        self.post('b', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'idle'})
+        acct = self.call('/api/accounts/lane-b', {'label': 'Scout 2'})[1]['account']
+        self.assertEqual((acct['label'], acct['name']), ('Scout 2', '@acct.b'))
+        self.assertEqual(self.call('/api/accounts/lane-b', {'label': 'x' * 41})[0], 400)
+        self.assertEqual(self.call('/api/settings/accounts', {'main_list_share': 1.5})[0], 400)
+        self.assertEqual(self.call('/api/settings/accounts', {'main_list_share': 0.25})[1]['main_list_share'], 0.25)
+        self.assertEqual(self.call('/api/accounts')[1]['main_list_share'], 0.25)
+
     def test_roles_and_pause(self):
         pid = db.upsert_person(self.conn, {'ig_id': '7', 'handle': 'dave'})
         self.conn.commit()
@@ -78,7 +90,7 @@ class LaneTest(Base):
         hb = self.post('c', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'paused'})[1]
         self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}})
         self.call('/api/accounts/lane-c', {'budget': None})
-        self.assertEqual(self.nxt('a')['budget'], {'list': 2000, 'profile': 0})
+        self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})
 
     def test_handoff_on_login_keeps_cursor(self):
         self.seeds('s1')

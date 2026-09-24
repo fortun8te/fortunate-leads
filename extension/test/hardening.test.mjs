@@ -95,10 +95,12 @@ test('3 hits within an hour across buckets stop everything until midnight', () =
 });
 test('plan: pacing gaps, profile gap, budgets, cooldown waits', () => {
   const st = FL.fresh(), left = { list: 10, profile: 10 };
-  FL.afterRequest(st, 'profile', T0, () => 0); // 35 s profile gap also holds lists
-  assert.deepEqual(FL.plan(st, left, T0 + 10e3), { kinds: [], wait: 25e3, why: 'pace' });
+  FL.afterRequest(st, 'profile', T0, () => 0); // bio: its own 35 s gap; lists only wait the 2 s spacing
+  assert.deepEqual(FL.plan(st, left, T0 + 1e3), { kinds: [], wait: 1e3, why: 'pace' });
+  assert.deepEqual(FL.plan(st, left, T0 + 10e3).kinds, ['list']);
   assert.deepEqual(FL.plan(st, left, T0 + 35e3).kinds, ['list', 'profile']);
-  FL.afterRequest(st, 'list', T0 + 35e3, () => 0); // list gap 7 s; profile still waits for its own gap
+  FL.afterRequest(st, 'list', T0 + 35e3, () => 0); // list gap 7 s; a bio may go in it after the spacing
+  assert.deepEqual(FL.plan(st, left, T0 + 38e3).kinds, ['profile']);
   st.profileNextAt = T0 + 100e3;
   assert.deepEqual(FL.plan(st, left, T0 + 43e3).kinds, ['list']);
   assert.deepEqual(FL.plan(st, { list: 0, profile: 0 }, T0), { kinds: [], wait: 10 * MIN, why: 'budget' });
@@ -107,8 +109,9 @@ test('plan: pacing gaps, profile gap, budgets, cooldown waits', () => {
 });
 test('pacing unchanged: list 7-12 s, profile 35-70 s; requests logged for the hourly rate', () => {
   const st = FL.fresh();
-  FL.afterRequest(st, 'list', T0, () => 1); assert.equal(st.nextAt, T0 + 12e3);
-  FL.afterRequest(st, 'profile', T0, () => 1); assert.equal(st.nextAt, T0 + 70e3);
+  FL.afterRequest(st, 'list', T0, () => 1); assert.equal(st.listNextAt, T0 + 12e3);
+  FL.afterRequest(st, 'profile', T0, () => 1); assert.equal(st.profileNextAt, T0 + 70e3);
+  assert.equal(FL.readyAt(st, 'list'), T0 + 12e3);
   assert.equal(FL.rateOf(st, T0 + MIN).requests_hour, 2);
   assert.equal(FL.rateOf(st, T0 + 2 * HOUR).requests_hour, 0);
 });
@@ -189,4 +192,18 @@ test('sampleOf: carries tab context and timing for self-diagnosis', () => {
   const s = FL.sampleOf({ status: 200, contentType: 'application/json', url: 'https://www.instagram.com/api/v1/users/1/info/', text: '{"status":"ok"}',
     env: { path: '/', vis: 'hidden', csrf: true, uid: false }, ms: 812 });
   assert.match(s, /^HTTP 200 application\/json https:\/\/www\.instagram\.com\/api\/v1\/users\/1\/info\/ body: \{"status":"ok"\} \| tab \/ hidden csrf=1 uid=0 \| 812 ms$/);
+});
+
+test('window: at most 72 requests of any kind in 11 min per account, whatever the gaps say', () => {
+  const st = FL.fresh(), left = { list: 1000, profile: 1000 };
+  for (let i = 0; i < 72; i++) FL.afterRequest(st, i % 5 ? 'list' : 'profile', T0 + i * 8e3, () => 0);
+  const t = T0 + 72 * 8e3; // 9.6 min: every clock says go
+  assert.deepEqual(FL.plan(st, left, t), { kinds: [], wait: T0 + 11 * MIN - t, why: 'window' });
+  assert.ok(FL.plan(st, left, T0 + 11 * MIN).kinds.length);
+  assert.equal(FL.windowOf(st, T0 + 11 * MIN).n, 71);
+});
+test('3.4 state migrates: its nextAt was the list clock', () => {
+  const st = FL.normalize({ nextAt: T0 + 9e3, profileNextAt: T0 + 40e3 }, T0);
+  assert.equal(FL.readyAt(st, 'list'), T0 + 9e3);
+  assert.equal(FL.readyAt(st, 'profile'), T0 + 40e3);
 });

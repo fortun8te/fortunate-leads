@@ -21,7 +21,7 @@ ROLES = ('lists', 'bios', 'both')
 HOLDS = ('login', 'challenge')
 RELEASE_AFTER = timedelta(minutes=10)   # offline this long: its list moves on
 ONLINE_FOR = timedelta(seconds=90)      # heartbeats come every <= 30 s
-BUDGET_MAX = {'list': 3000, 'profile': 300}
+BUDGET_MAX = {'list': 3000, 'profile': 5000}   # per day; profile 0 = no daily number
 HANDOFFS_KEEP = 30
 
 
@@ -220,7 +220,7 @@ def pick_job(conn, lane, kinds, now):
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
-          coalesce(l.state='running', 0) DESC, j.id LIMIT 1""",
+          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
         (*kinds, ts, lane, *ok, lane)).fetchone()
 
 

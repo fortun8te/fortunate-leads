@@ -1,16 +1,20 @@
 // Pure logic shared by the service worker (importScripts) and node tests (import).
 (function (root) {
   const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
+  // Lists and bios keep their own clocks (listNextAt, profileNextAt), so bios fill the list gaps and breaks; nextAt is the
+  // floor for any request (a short spacing after each one, hit pauses, backoffs, start offset). A sliding window caps the
+  // combined rate per account.
   const PACE = {
     listGap: [7e3, 12e3], breakEvery: [40, 60], breakLen: [90e3, 180e3],
-    profileGap: [35e3, 70e3], cooldownBase: 10 * MIN, cooldownCap: DAY, strikes: 3,
+    profileGap: [35e3, 70e3], spacing: [2e3, 5e3], window: 11 * MIN, windowMax: 72,
+    cooldownBase: 10 * MIN, cooldownCap: DAY, strikes: 3,
     hitPause: 5 * MIN,                 // any hit pauses the whole lane at least this long, whatever the bucket
     netBase: 30e3, netCap: 10 * MIN,   // tab / network trouble: local backoff, never counted as an Instagram limit
     otherBase: 2 * MIN, otherCap: 30 * MIN, // unknown Instagram answers: escalating backoff so they never hammer
   };
   const KINDS = ['list', 'profile'];
-  // pages/day, reads/day. profile 0 = no daily number: bios are paced only by the 35-70 s gap and the cooldown ladder.
-  const BUDGET = { list: 2000, profile: 0 };
+  // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
+  const BUDGET = { list: 3000, profile: 300 };
   const BOX_MAX = 3000;
   const rand = (lo, hi, r = Math.random) => Math.round(lo + (hi - lo) * r());
 
@@ -154,7 +158,7 @@
   const bucket = () => ({ until: 0, hits: [] });
 
   function fresh() {
-    return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
+    return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, listNextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
       cool: { list: bucket(), profile: bucket() }, hold: null, lastError: null, note: null,
       log: [], plog: [], rlog: [], streak: { other: 0, net: 0 }, infoOffUntil: 0 };
   }
@@ -166,6 +170,7 @@
   // Fills missing fields and migrates the 3.2 shape (one global cooldownUntil/hits) into per-bucket cooldowns.
   function normalize(stored, now) {
     const st = { ...fresh(), ...(stored || {}) };
+    if (stored && stored.listNextAt === undefined) st.listNextAt = Number(stored.nextAt) || 0; // 3.4: nextAt was the list clock
     st.cool = { list: { ...bucket(), ...(st.cool && st.cool.list) }, profile: { ...bucket(), ...(st.cool && st.cool.profile) } };
     if ('cooldownUntil' in st || 'hits' in st) {
       const until = Number(st.cooldownUntil) || 0, hits = Array.isArray(st.hits) ? st.hits : [];
@@ -182,17 +187,24 @@
     rollDay(st, now);
     st.today[kind] = (st.today[kind] || 0) + 1;
     st.rlog = (st.rlog || []).filter((e) => now - e[0] < HOUR).concat([[now, kind]]);
+    st.nextAt = Math.max(st.nextAt || 0, now + rand(...PACE.spacing, r));
     if (kind === 'profile') {
-      st.nextAt = now + rand(...PACE.profileGap, r);
-      st.profileNextAt = st.nextAt;
+      st.profileNextAt = now + rand(...PACE.profileGap, r);
       return st;
     }
-    st.nextAt = now + rand(...PACE.listGap, r);
+    st.listNextAt = now + rand(...PACE.listGap, r);
     if (++st.pages >= st.breakEvery) {
-      st.nextAt += rand(...PACE.breakLen, r);
+      st.listNextAt += rand(...PACE.breakLen, r);
       st.pages = 0; st.breakEvery = rand(...PACE.breakEvery, r);
     }
     return st;
+  }
+  // When a request of `kind` may go, pacing only (cooldowns and the window are checked in plan).
+  const readyAt = (st, kind) => Math.max(st.nextAt || 0, (kind === 'profile' ? st.profileNextAt : st.listNextAt) || 0);
+  // Sliding window over every Instagram request of this account: {n, until} (until = when the oldest one leaves it).
+  function windowOf(st, now) {
+    const inWin = (st.rlog || []).map((e) => e[0]).filter((t) => now - t < PACE.window).sort((a, b) => a - b);
+    return { n: inWin.length, until: inWin.length >= PACE.windowMax ? inWin[inWin.length - PACE.windowMax] + PACE.window : 0 };
   }
   const allHits = (st) => KINDS.flatMap((k) => (st.cool && st.cool[k] && st.cool[k].hits) || []);
   // rate_limit / soft_block on bucket `kind`: that bucket cools 10 min, doubling per hit in 24 h (cap 24 h, Retry-After
@@ -234,10 +246,11 @@
       if (!cooling.length) return { kinds: [], wait: 10 * MIN, why: 'budget' };
       return { kinds: [], wait: Math.max(1e3, Math.min(...cooling.map((k) => st.cool[k].until)) - now), why: 'cooldown' };
     }
-    const readyAt = (k) => (k === 'profile' ? Math.max(st.nextAt || 0, st.profileNextAt || 0) : st.nextAt || 0);
-    const kinds = eligible.filter((k) => readyAt(k) <= now);
+    const win = windowOf(st, now);
+    if (win.until > now) return { kinds: [], wait: Math.max(1e3, win.until - now), why: 'window' };
+    const kinds = eligible.filter((k) => readyAt(st, k) <= now);
     if (kinds.length) return { kinds, wait: 0, why: 'ready' };
-    return { kinds: [], wait: Math.max(1e3, Math.min(...eligible.map(readyAt)) - now), why: 'pace' };
+    return { kinds: [], wait: Math.max(1e3, Math.min(...eligible.map((k) => readyAt(st, k))) - now), why: 'pace' };
   }
   // The in-flight Instagram request marker in storage. A restarted worker waits it out instead of double-firing.
   const laneBusy = (lane, now) => !!(lane && lane.until > now);
@@ -346,7 +359,8 @@
     const badge = lc ? badgeFor(st.cool.list.until) : '';
     if (ctx.job) return { state: 'running', text: pre + 'Scraping', badge, key: 'run' };
     if (ctx.laneWait) return { state: 'running', text: pre + 'Waiting for the last request to finish', badge, key: 'wait' };
-    if (st.nextAt > now) return { state: 'running', text: pre + 'Next request in ' + Math.ceil((st.nextAt - now) / 1e3) + 's', badge, key: 'wait' };
+    const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now)).map((k) => readyAt(st, k)));
+    if (next > now && next < Infinity) return { state: 'running', text: pre + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
     if (lc) return { state: 'cooldown', text: 'Lists cooling until ' + t(st.cool.list.until), badge, key: 'cool' };
     return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
   }
@@ -378,7 +392,7 @@
 
   const api = { PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
-    afterRequest, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
+    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
   root.FL = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

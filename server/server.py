@@ -35,7 +35,6 @@ LEASE_MIN = 10
 PROFILE_MAX_ATTEMPTS = 5   # a profile job whose lease keeps expiring (tab crash, hang) is parked as 'error' after this
 BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
-BUDGET_MAX = {'list': 3000, 'profile': 10 ** 6}   # profile 0 = no daily number (paced by the extension)
 PLAN_BATCH = 200   # profile jobs kept queued at a time when the profile budget is unlimited
 
 
@@ -813,7 +812,7 @@ def soak(conn, now):
 def api_qualify(conn, q, b):
     if not isinstance(b.get('on'), bool):
         raise Bad('on must be true or false')
-    for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100)):
+    for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
     db.set_setting(conn, 'qualify', b['on'])
@@ -821,8 +820,9 @@ def api_qualify(conn, q, b):
         db.set_setting(conn, 'qualify_auto', bool(b['auto']))
     if 'workers' in b:
         db.set_setting(conn, 'llm_workers', b['workers'])
-    if 'llm_min' in b:
-        db.set_setting(conn, 'llm_min', b['llm_min'])
+    for key in ('llm_min', 'bio_min'):
+        if key in b:
+            db.set_setting(conn, key, b[key])
     conn.commit()
     return {'qualify': b['on']}
 
@@ -873,7 +873,7 @@ def api_pause(conn, q, b):
 
 def api_budget(conn, q, b):
     budget = db.get_setting(conn, 'budget')
-    budget.update({k: max(0, min(cap, int(b[k]))) for k, cap in BUDGET_MAX.items() if b.get(k) is not None})
+    budget.update({k: max(0, min(cap, int(b[k]))) for k, cap in accounts.BUDGET_MAX.items() if b.get(k) is not None})
     db.set_setting(conn, 'budget', budget)
     conn.commit()
     return {}
@@ -884,6 +884,16 @@ def api_accounts(conn, q, b):
     accts = accounts.listing(conn, now)
     return {'accounts': accts, 'alerts': accounts.alerts(conn, now, accts), 'rate': accounts.aggregate_rate(accts),
             'main_list_share': float(db.get_setting(conn, 'main_list_share') or 0)}
+
+
+def api_account_settings(conn, q, b):
+    """{"main_list_share": 0-1}: the share of list pages Michael's own account may take (0 = bios only)."""
+    v = b.get('main_list_share')
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= 1:
+        raise Bad('main_list_share must be a number 0-1')
+    db.set_setting(conn, 'main_list_share', round(float(v), 2))
+    conn.commit()
+    return {'main_list_share': round(float(v), 2)}
 
 
 def api_account_edit(conn, q, b, lane):
@@ -919,6 +929,7 @@ LANE = r'([A-Za-z0-9_-]{1,64})'
 ROUTES = [
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
+    ('POST', r'/api/settings/accounts', api_account_settings),
     ('GET', r'/api/ext/next', ext_next), ('POST', r'/api/ext/list-page', ext_list_page),
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
@@ -1327,9 +1338,15 @@ def retag_if_changed(conn):
     return True
 
 
+EARLY_LISTS = 2   # while lists are still collecting, only people already in this many lists get a bio read
+
+
 def plan_profiles(conn):
+    """Keep the profile queue topped up to the bio budget of the lanes that read bios. Qualification on: everyone above
+    `bio_min`, best prefilter first. Still collecting (qualify off, auto on): only the people already in several lists."""
     auto_qualify(conn)
-    if not db.get_setting(conn, 'qualify'):  # collection first: bios are read only once qualification is switched on
+    early = not db.get_setting(conn, 'qualify')
+    if early and not db.get_setting(conn, 'qualify_auto'):
         return 0
     now = datetime.now(timezone.utc)
     accts = [a for a in accounts.listing(conn, now) if a['healthy'] and a['role'] in ('bios', 'both')]
@@ -1344,13 +1361,13 @@ def plan_profiles(conn):
     need = room - active
     if need <= 0:
         return 0
-    rows = conn.execute("""SELECT p.handle, v.prefilter, (SELECT count(DISTINCT seed) FROM edges e WHERE e.person_id=p.id) AS n
+    rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {LISTS} AS n
         FROM people p JOIN verdicts v ON v.person_id=p.id
-        WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0
+        WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
           AND p.handle NOT IN (SELECT handle FROM seeds) AND instr(p.handle, '~')=0
-          AND p.id NOT IN (SELECT person_id FROM marks WHERE status='no')
-        ORDER BY v.prefilter DESC, n DESC, p.id LIMIT ?""", (need,)).fetchall()
+          AND p.id NOT IN (SELECT person_id FROM marks WHERE status='no')) WHERE n>=?
+        ORDER BY prefilter DESC, n DESC, handle LIMIT ?""", (db.get_setting(conn, 'bio_min'), EARLY_LISTS if early else 0, need)).fetchall()
     ts = db.now()
     conn.executemany("INSERT INTO jobs(kind, handle, priority, created_at) VALUES('profile',?,?,?)",
                      [(r['handle'], plan_priority(r['n'], r['prefilter']), ts) for r in rows])

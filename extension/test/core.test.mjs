@@ -68,19 +68,20 @@ test('pacing: list gaps 7-12 s, break of 90-180 s every 40-60 pages', () => {
   let t = T0;
   for (let i = 1; i <= 39; i++) {
     FL.afterRequest(st, 'list', t);
-    assert.ok(st.nextAt - t >= 7e3 && st.nextAt - t <= 12e3);
-    t = st.nextAt;
+    assert.ok(st.listNextAt - t >= 7e3 && st.listNextAt - t <= 12e3);
+    assert.ok(st.nextAt - t >= 2e3 && st.nextAt - t <= 5e3); // any request: a short spacing only
+    t = st.listNextAt;
   }
   FL.afterRequest(st, 'list', t);
-  assert.ok(st.nextAt - t >= 7e3 + 90e3 && st.nextAt - t <= 12e3 + 180e3);
+  assert.ok(st.listNextAt - t >= 7e3 + 90e3 && st.listNextAt - t <= 12e3 + 180e3);
   assert.ok(st.breakEvery >= 40 && st.breakEvery <= 60);
   assert.equal(st.pages, 0); assert.equal(st.today.list, 40);
 });
 test('pacing: profile gap 35-70 s', () => {
   for (const r of [() => 0, () => 1, Math.random]) {
     const st = FL.afterRequest(FL.fresh(), 'profile', T0, r);
-    assert.ok(st.nextAt - T0 >= 35e3 && st.nextAt - T0 <= 70e3);
-    assert.equal(st.profileNextAt, st.nextAt);
+    assert.ok(st.profileNextAt - T0 >= 35e3 && st.profileNextAt - T0 <= 70e3);
+    assert.equal(st.listNextAt, 0); // a bio never holds up the list clock
   }
 });
 test('cooldown escalates 10 → 20 min, then 3 strikes stops until midnight', () => {
@@ -103,13 +104,15 @@ test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when long
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
   for (let i = 0; i < 150; i++) FL.afterRequest(st, 'profile', T0);
-  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 2000, profile: Infinity }); // default 0 = no daily number
-  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 2000, profile: 50 });
-  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, T0), { list: 2000, profile: 0 });
-  assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 5000 }); // no hard cap
-  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, FL.nextMidnight(T0) + 1), { list: 2000, profile: 150 });
+  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 3000, profile: 150 }); // default 300 bios a day per account
+  assert.deepEqual(FL.budgetLeft(st, { profile: 0 }, T0), { list: 3000, profile: Infinity }); // 0 = no daily number
+  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 3000, profile: 50 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, T0), { list: 3000, profile: 0 });
+  assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 5000 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, FL.nextMidnight(T0) + 1), { list: 3000, profile: 150 });
   // unlimited still paces: the next bio waits the 35-70 s gap
-  const p = FL.plan(st, FL.budgetLeft(st, null, T0), T0);
+  st.rlog = []; // (150 reads at one instant would trip the window first)
+  const p = FL.plan(st, { list: 0, profile: Infinity }, T0);
   assert.ok(!p.kinds.includes('profile') && p.wait >= 35e3 - 1 && p.why === 'pace');
   FL.tally(st, T0 + DAY, 25, 1); FL.tally(st, T0 + DAY, 50, 0);
   assert.deepEqual([st.today.people, st.today.bios], [75, 1]);
@@ -126,6 +129,7 @@ test('statusOf: badge and state', () => {
   const st = FL.fresh();
   assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Scraping', badge: '', key: 'run' });
   assert.equal(FL.statusOf({ ...st, nextAt: T0 + 8e3 }, {}, T0).text, 'Next request in 8s');
+  assert.equal(FL.statusOf({ ...st, listNextAt: T0 + 90e3, profileNextAt: T0 + 20e3 }, {}, T0).text, 'Next request in 20s');
   assert.equal(FL.statusOf(st, { localPaused: true }, T0).badge, '‖');
   assert.equal(FL.statusOf(st, { noTab: true }, T0).text, 'Open Instagram');
   const cool = (l, p) => ({ ...st, cool: { list: { until: l, hits: [] }, profile: { until: p, hits: [] } } });
