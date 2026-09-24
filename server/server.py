@@ -3,6 +3,7 @@ import collections
 import time
 import json
 import mimetypes
+import os
 import re
 import socket
 import ssl
@@ -893,6 +894,12 @@ def api_llm(conn, q, b):
     out.update(workers=db.get_setting(conn, 'llm_workers'), llm_min=db.get_setting(conn, 'llm_min'),
                bio_min=db.get_setting(conn, 'bio_min'), laya={'url': laya.URL, 'up': laya.last_known()},
                config=str(llm.CONFIG.relative_to(ROOT)) if llm.CONFIG.is_relative_to(ROOT) else str(llm.CONFIG))
+    auto = llm.read_config().get('auto_models') or {}
+    out['auto_models'] = {k: auto.get(k) for k in ('stealth', 'free', 'at', 'error', 'new_stealth')}
+    counts = {}
+    for p in out['providers']:
+        counts[p.get('state') or 'untested'] = counts.get(p.get('state') or 'untested', 0) + 1
+    out['summary'] = counts   # e.g. {'ok': 2, 'spent': 2, 'error': 1}: spent keys are not broken, they return at 00:00 UTC
     out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
                                         'GROUP BY 1').fetchall())
     return out
@@ -932,6 +939,12 @@ def api_llm_key_test(conn, q, b, pid):
         return llm.get().test(pid)
     except LookupError:
         raise NotFound('no such key') from None
+
+
+def api_llm_models_refresh(conn, q, b):
+    rec = llm.refresh_models(force=True)
+    st = llm.get().status()
+    return {'models': st['models'], 'auto': {k: rec.get(k) for k in ('stealth', 'free', 'at', 'error', 'new_stealth')}}
 
 
 def api_llm_models(conn, q, b):
@@ -1054,10 +1067,18 @@ ROUTES = [
     ('POST', r'/api/settings/qualify', api_qualify),
     ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
-    ('POST', r'/api/llm/models', api_llm_models),
+    ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
 ]
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
 ROUTES += qual_api.routes(sys.modules[__name__])
+
+
+class Server(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5: a browser opening ~10 asset connections at once overflowed it and
+    # macOS answered the extra SYNs with a reset (ERR_CONNECTION_RESET / ERR_SOCKET_NOT_CONNECTED). curl, one at a time, never did.
+    request_queue_size = 256
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 SECURITY_HEADERS = {'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff'}
@@ -1080,6 +1101,7 @@ class Handler(BaseHTTPRequestHandler):
                                             'Access-Control-Allow-Headers': 'Content-Type, X-FL'})
 
     def send(self, code, body, ctype='application/json', headers=None):
+        self.drain()
         if not isinstance(body, bytes):
             body = json.dumps(body).encode()
         self.send_response(code)
@@ -1094,7 +1116,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def drain(self):
+        """Read a request body nobody consumed (early 403/404): closing a socket with unread bytes sends a TCP reset,
+        which the browser reports as ERR_CONNECTION_RESET instead of the response."""
+        if getattr(self, '_drained', False):
+            return
+        self._drained = True
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            n = 0
+        if 0 < n <= 64 * 1024 * 1024:
+            self.rfile.read(n)
+
     def route(self, method):
+        self._drained = False
         url = urlparse(self.path)
         port = CFG['port']
         origin = self.headers.get('Origin')
@@ -1125,6 +1161,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length') or 0)
             if n < 0 or n > 64 * 1024 * 1024:
                 raise Bad('bad Content-Length')
+            self._drained = True
             body = json.loads(self.rfile.read(n) or b'{}') if n else {}
             if not isinstance(body, dict):
                 raise Bad('body must be a JSON object')
@@ -1556,9 +1593,30 @@ def worker(stop, step, busy_wait, idle_wait):
 POOL = [None]
 
 
+def repair_step(conn):
+    """Every 15 min: lists that stopped short or lost their job get queued again (db.repair_lists)."""
+    out = db.repair_lists(conn)
+    conn.commit()
+    if any(out.values()):
+        print('repair_lists', out, flush=True)
+    return False
+
+
+def models_step(conn):
+    """Once a day: pick up OpenRouter's free and stealth models (llm.refresh_models; stealth ones go first)."""
+    if not os.environ.get('FL_NO_ORSLOT'):   # tests stay offline
+        llm.refresh_models()
+        # hourly: probe providers that are not known-good, so Settings shows ok / spent / broken instead of 'untested'
+        pool = llm.get()
+        for p in pool.status()['providers']:
+            if p['state'] not in ('ok', 'spent', 'broken'):
+                pool.test(p['id'])
+    return False
+
+
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
-    loops = [(qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
+    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 
@@ -1575,7 +1633,7 @@ def main():
     conn.close()
     start_workers(threading.Event())
     print(f'Fortunate Leads on http://127.0.0.1:{a.port}  db={CFG["db"]}', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', a.port), Handler).serve_forever()
+    Server(('127.0.0.1', a.port), Handler).serve_forever()
 
 
 if __name__ == '__main__':

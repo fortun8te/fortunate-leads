@@ -198,3 +198,64 @@ def queue_list(conn, seed, direction, priority=0):
         conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)',
                      ('list', seed, direction, priority, ts))
     return True
+
+
+REOPEN_MAX = 2          # a list that keeps ending short (hidden accounts, IG caps) is reopened at most this often
+SHORT_RATIO = 0.95      # done with received below this share of the known total = ended early
+SHORT_MIN = 20          # ... and at least this many people missing
+
+
+def repair_lists(conn, dry=False):
+    """Make sure every seed has both lists queued until they are really complete. Returns counts; caller commits.
+    - a seed without a followers/following list row gets one (queued);
+    - a list in state paused/error/queued/running without a live job gets a job again (cursor kept: it resumes);
+    - a list marked done with received well below its known total is reopened from the start (edges dedupe),
+      at most REOPEN_MAX times per list."""
+    ts = now()
+    out = {'added': 0, 'requeued': 0, 'reopened': 0, 'seed_bios': 0}
+    reopened = get_setting(conn, 'lists_reopened') or {}
+    live = {(r[0].lower(), r[1]) for r in conn.execute(
+        "SELECT seed, direction FROM jobs WHERE kind='list' AND state IN ('queued','leased')")}
+    # a list without a total borrows it from the seed's profile (its followers / following count)
+    if not dry:
+        conn.execute("UPDATE lists SET total=(SELECT CASE lists.direction WHEN 'followers' THEN p.followers ELSE p.following END "
+                     "FROM people p WHERE p.handle=lists.seed) WHERE total IS NULL")
+    rows = {(r['seed'].lower(), r['direction']): r for r in conn.execute('SELECT * FROM lists')}
+    # done lists nobody can judge yet: read the seed's profile first (its counts are the list totals)
+    blind = {r['seed'] for r in rows.values() if r['state'] == 'done' and not r['total']}
+    have = {r[0] for r in conn.execute("SELECT handle FROM jobs WHERE kind='profile' AND state IN ('queued','leased')")}
+    have |= {r[0] for r in conn.execute('SELECT handle FROM people WHERE bio_at IS NOT NULL')}   # read once is enough
+    out['seed_bios'] = len(blind - have)
+    if not dry:
+        for s in blind - have:
+            conn.execute('INSERT INTO jobs(kind, handle, priority, created_at) VALUES(?,?,?,?)', ('profile', s, 10000, ts))
+    todo = []
+    for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0"):
+        for d in ('followers', 'following'):
+            r = rows.get((s.lower(), d))
+            if r is None:
+                out['added'] += 1
+                todo.append((s, d, 'add'))
+            elif r['state'] in ('paused', 'error', 'queued', 'running', None) and (s.lower(), d) not in live:
+                out['requeued'] += 1
+                todo.append((r['seed'], d, 'requeue'))
+            elif r['state'] == 'done' and r['total'] and (r['received'] or 0) < SHORT_RATIO * r['total'] \
+                    and r['total'] - (r['received'] or 0) >= SHORT_MIN and reopened.get(f'{s}|{d}', 0) < REOPEN_MAX:
+                out['reopened'] += 1
+                todo.append((r['seed'], d, 'reopen'))
+    if dry:
+        return out
+    for s, d, what in todo:
+        if what == 'add':
+            conn.execute('INSERT OR IGNORE INTO lists(seed, direction, state, updated_at) VALUES(?,?,?,?)', (s, d, 'queued', ts))
+        else:
+            if what == 'reopen':
+                reopened[f'{s}|{d}'] = reopened.get(f'{s}|{d}', 0) + 1
+                conn.execute('UPDATE lists SET cursor=NULL WHERE seed=? AND direction=?', (s, d))
+            conn.execute("UPDATE lists SET state='queued', error=NULL, lane=NULL, updated_at=? WHERE seed=? AND direction=?", (ts, s, d))
+        if (s.lower(), d) not in live:
+            conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)', ('list', s, d, 0, ts))
+            live.add((s.lower(), d))
+    if out['reopened']:
+        set_setting(conn, 'lists_reopened', reopened)
+    return out

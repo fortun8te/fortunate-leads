@@ -6,8 +6,8 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
   - a list sticks to the lane that started it (`lists.lane`) while that lane is healthy: seen within 10 min, not
     logged out / challenged, not paused and not in a list cooldown. Otherwise the list is released (`prev_lane` kept)
     and the next lane resumes it from the saved cursor;
-  - role lists|bios|both filters the job kinds; a main account (is_main) gets bios only, or lists up to
-    `main_list_share` of the last hour's pages when that setting is above 0.
+  - role lists|bios|both filters the job kinds; a main account (is_main) gets bios only (or lists up to
+    `main_list_share` of the last hour's pages) while another healthy account takes lists; alone, it takes lists too.
 """
 import json
 import re
@@ -128,6 +128,16 @@ def healthy(row, now):
         and not row['paused'] and not later(row['list_cool_until'], now)
 
 
+def list_share(conn, rows, now):
+    """The main account's list share: the setting, or 1.0 while no other healthy account takes lists (a lone main
+    account used to get no lists at all, so one connected extension sat 'Idle, queue empty' on a full queue)."""
+    share = float(db.get_setting(conn, 'main_list_share') or 0)
+    if share > 0:
+        return share
+    others = [r for r in rows if not r['is_main'] and healthy(r, now) and (r['role'] or 'both') in ('lists', 'both')]
+    return 0.0 if others else 1.0
+
+
 def keeps_lists(row, now, share=0.0):
     """Healthy and allowed to work lists (role, main-account protection)."""
     return healthy(row, now) and (row['role'] or 'both') in ('lists', 'both') and (not row['is_main'] or share > 0)
@@ -151,7 +161,7 @@ def release(conn, now, only=None):
     """Give back the leases and list ownership of lanes that are not healthy. Caller commits.
     A paused lane may still be finishing the job it holds, so its leases go only once they expire."""
     rows = {r['lane_id']: r for r in conn.execute('SELECT * FROM accounts')}
-    share = float(db.get_setting(conn, 'main_list_share') or 0)
+    share = list_share(conn, rows.values(), now)
     ok = {k for k, r in rows.items() if keeps_lists(r, now, share)}
     ts = iso(now)
     fine = {k for k, r in rows.items() if healthy(r, now)}
@@ -197,7 +207,9 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     kinds = [k for k in kinds if k in allowed]
     if 'list' in kinds and row['is_main']:
-        share = float(db.get_setting(conn, 'main_list_share') or 0)
+        share = list_share(conn, conn.execute('SELECT * FROM accounts').fetchall(), now)
+        if share >= 1.0:
+            return kinds
         since = iso(now - timedelta(hours=1))
         own, total = conn.execute('SELECT count(CASE WHEN lane=? THEN 1 END), count(*) FROM pages WHERE at>=?',
                                   (row['lane_id'], since)).fetchone()
@@ -210,8 +222,9 @@ def pick_job(conn, lane, kinds, now):
     """The next job for this lane (inside the caller's write transaction), or None. Lists first: its own list,
     then lists another lane left mid-way (they have a cursor), then by priority."""
     ts = iso(now)
-    share = float(db.get_setting(conn, 'main_list_share') or 0)
-    ok = [r['lane_id'] for r in conn.execute('SELECT * FROM accounts') if keeps_lists(r, now, share)]
+    accts = conn.execute('SELECT * FROM accounts').fetchall()
+    share = list_share(conn, accts, now)
+    ok = [r['lane_id'] for r in accts if keeps_lists(r, now, share)]
     marks = ','.join('?' * len(kinds))
     okm = ','.join('?' * len(ok)) or "''"
     return conn.execute(
@@ -334,9 +347,12 @@ def alerts(conn, now=None, accts=None):
                          'text': f"{same[0]['name']} is logged in on {len(same)} Chrome profiles — log the extra ones into other accounts"})
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='list' AND state IN ('queued','leased')").fetchone()[0]
     live = [a for a in accts if a['online'] and not a['paused'] and not a['hold']]
-    if queued and live and not any(a['role'] in ('lists', 'both') and not a['is_main'] for a in live) \
-            and not float(db.get_setting(conn, 'main_list_share') or 0):
+    if queued and live and not any(a['role'] in ('lists', 'both') for a in live):
         out_.append({'level': 'warn', 'lane_id': None, 'text': 'No online account takes lists — set one to lists or both'})
+    elif queued and live and not any(a['role'] in ('lists', 'both') and not a['is_main'] for a in live) \
+            and not float(db.get_setting(conn, 'main_list_share') or 0):
+        out_.append({'level': 'info', 'lane_id': None,
+                     'text': 'Your main account is the only one online, so it reads lists too — add a second account to protect it'})
     return out_
 
 
