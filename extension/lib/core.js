@@ -350,7 +350,32 @@
     return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
   }
 
-  const api = { PACE, BUDGET, PROFILE_CAP, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
+  // ---- Lanes: one install = one Chrome profile = one Instagram account ----
+  // A stable per-install id the server leases jobs to (kept in chrome.storage.local, survives updates).
+  const newLaneId = (r = Math.random) => 'ln_' + Array.from({ length: 12 }, () => 'abcdefghijkmnpqrstuvwxyz23456789'[Math.floor(r() * 32)]).join('');
+  // Each lane starts its first request after its own random offset, so profiles opened together never fire in step.
+  const START_OFFSET = [15e3, 120e3];
+  const startOffset = (r = Math.random) => rand(...START_OFFSET, r);
+  // The logged-in account of this profile: ds_user_id from the cookie, the handle from the page's own JSON
+  // (the "username" nearest to that id). ig_id null = no Instagram session in this profile.
+  function handleFrom(text, uid) {
+    if (!text || !uid) return null;
+    const s = String(text), id = String(uid), rx = /"username"\s*:\s*"([A-Za-z0-9._]{1,30})"/g;
+    let best = null, bestD = Infinity;
+    for (let i = s.indexOf('"' + id + '"'); i >= 0 && bestD > 0; i = s.indexOf('"' + id + '"', i + 1)) {
+      const lo = Math.max(0, i - 400), win = s.slice(lo, i + 400);
+      rx.lastIndex = 0;
+      for (let m; (m = rx.exec(win));) { const d = Math.abs(lo + m.index - i); if (d < bestD) { bestD = d; best = m[1].toLowerCase(); } }
+    }
+    return best;
+  }
+  function accountFrom(cookie, text) {
+    const m = String(cookie || '').match(/(?:^|;\s*)ds_user_id=(\d+)/);
+    if (!m) return { ig_id: null, handle: null };
+    return { ig_id: m[1], handle: handleFrom(text, m[1]) };
+  }
+
+  const api = { PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, PROFILE_CAP, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
   root.FL = api;

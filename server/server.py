@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import accounts  # noqa: E402
 import db  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
@@ -34,6 +35,10 @@ BUDGET_MAX = {'list': 3000, 'profile': 300}
 
 
 class Bad(Exception):
+    pass
+
+
+class Missing(Exception):
     pass
 
 
@@ -61,36 +66,45 @@ def edges_of(conn, pid):
 
 # ---------- extension endpoints ----------
 
-def ext_state(conn):
-    return {'paused': bool(db.get_setting(conn, 'paused')), 'budget': db.get_setting(conn, 'budget')}
+def ext_state(conn, row=None):
+    """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
+    return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row)}
 
 
 def ext_next(conn, q, b):
-    st, ts = ext_state(conn), db.now()
+    """Leases per lane (see accounts.py): never one job to two lanes, lists stick to their lane while it is healthy."""
+    lane, ts, now = accounts.lane_of(q, b), db.now(), datetime.now(timezone.utc)
     kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
-    if st['paused']:  # cooldowns are the extension's job; the server only records them for display
-        return dict(st, job=None, cooldown_until=None)
     conn.execute('BEGIN IMMEDIATE')
+    # asking for work means no login wall holds it any more
+    row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
+    accounts.release(conn, now)
+    st = ext_state(conn, row)
+    if st['paused']:  # cooldowns are the extension's job; the server only records them for display
+        conn.commit()
+        return dict(st, job=None, cooldown_until=None)
+    kinds = accounts.kinds_for(conn, row, kinds, now)
+    if not kinds:
+        conn.commit()
+        return dict(st, job=None)
     # expired leases are re-leased below; a profile read that never comes back after N leases is parked, not retried forever
     conn.execute("UPDATE jobs SET state='error', leased_until=NULL WHERE kind='profile' AND state='leased' AND leased_until<? "
                  "AND attempts>=?", (ts, PROFILE_MAX_ATTEMPTS))
-    job = conn.execute(f"SELECT * FROM jobs WHERE (state='queued' OR (state='leased' AND leased_until<?)) "
-                       f"AND kind IN ({','.join('?' * len(kinds))}) ORDER BY kind='list' DESC, priority DESC, "
-                       f"EXISTS(SELECT 1 FROM lists l WHERE l.seed=jobs.seed AND l.direction=jobs.direction AND l.state='running') DESC, id LIMIT 1",
-                       (ts, *kinds)).fetchone()
+    job = accounts.pick_job(conn, lane, kinds, now)
     if not job:
         conn.commit()
         return dict(st, job=None)
-    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1 WHERE id=?",
-                 (iso(datetime.now(timezone.utc) + timedelta(minutes=LEASE_MIN)), job['id']))
+    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=? WHERE id=?",
+                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, job['id']))
+    accounts.took(conn, lane, job)
     if job['kind'] == 'list':
         conn.execute("UPDATE lists SET state='running', updated_at=? WHERE seed=? AND direction=?",
                      (ts, job['seed'], job['direction']))
         seed = conn.execute('SELECT coalesce(s.ig_id, p.ig_id) AS ig_id FROM seeds s LEFT JOIN people p ON p.handle=s.handle '
                             'WHERE s.handle=?', (job['seed'],)).fetchone()
-        lst = conn.execute('SELECT cursor FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
+        lst = conn.execute('SELECT cursor, received FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
         out = {'id': job['id'], 'kind': 'list', 'seed': job['seed'], 'ig_id': seed and seed['ig_id'],
-               'direction': job['direction'], 'cursor': lst and lst['cursor']}
+               'direction': job['direction'], 'cursor': lst and lst['cursor'], 'received': (lst and lst['received']) or 0}
     else:
         p = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
@@ -105,8 +119,9 @@ def ext_list_page(conn, q, b):
     if not seed or direction not in ('followers', 'following'):
         raise Bad('seed and direction required')
     ts = db.now()
-    fresh = not job or conn.execute('INSERT OR IGNORE INTO pages(job_id, cursor, at) VALUES(?,?,?)',
-                                             (job['id'], b.get('next_cursor') or '', ts)).rowcount
+    lane = accounts.lane_of(q, b)
+    fresh = not job or conn.execute('INSERT OR IGNORE INTO pages(job_id, cursor, at, lane, users) VALUES(?,?,?,?,?)',
+                                    (job['id'], b.get('next_cursor') or '', ts, lane, len(b.get('users') or []))).rowcount
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if b.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(b['ig_id']), seed))
@@ -130,7 +145,7 @@ def ext_list_page(conn, q, b):
                  'ON CONFLICT DO UPDATE SET state=excluded.state, cursor=excluded.cursor, received=excluded.received, '
                  'total=coalesce(excluded.total, total), error=NULL, updated_at=excluded.updated_at',
                  (seed, direction, 'done' if done else 'running', b.get('next_cursor'), received, total, ts))
-    conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0 WHERE kind='list' AND seed=? AND direction=? "
+    conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL WHERE kind='list' AND seed=? AND direction=? "
                  "AND state IN ('queued','leased')", ('done' if done else 'queued', seed, direction))
     conn.commit()
     return {'received': received}
@@ -172,14 +187,22 @@ def ext_profile(conn, q, b):
 
 
 def ext_error(conn, q, b):
-    code, ts = b.get('code'), db.now()
+    code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
     # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
     # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
+    # Per lane: a login wall hands that account's lists to the other lanes now; a list limit hands its list on.
+    job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
+    fields = {'last_error': (b.get('message') or code or '')[:500] or None}
     if code in ('rate_limit', 'soft_block'):
         until = utc(b['retry_at']) if b.get('retry_at') else datetime.now(timezone.utc) + timedelta(minutes=15)
         db.set_setting(conn, 'cooldown', iso(until))
-    db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts})
-    job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
+        fields['cooldown_until'] = iso(until)
+        if job and job['kind'] == 'list':
+            fields['list_cool_until'] = iso(until)
+    if code in accounts.HOLDS:
+        fields['hold'] = code
+    accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
     if job and code not in ('other', 'private', 'not_found'):
         # rate limits, soft blocks, login walls say nothing about this job: give the lease back to its attempt count,
         # so attempts = leases that ended in 'other' or expired (the ones that may mean the job itself is broken)
@@ -187,7 +210,7 @@ def ext_error(conn, q, b):
         job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if job:  # a late error for a job that already finished must not requeue it
         final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
-        conn.execute('UPDATE jobs SET state=?, leased_until=NULL WHERE id=?',
+        conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') else 'error' if final else 'queued', job['id']))
         if job['kind'] == 'list':
             state = 'private' if code == 'private' else 'error' if final else 'queued'
@@ -195,6 +218,10 @@ def ext_error(conn, q, b):
                          (state, b.get('message') or code, ts, job['seed'], job['direction']))
         elif code == 'private':
             conn.execute('UPDATE people SET is_private=1, updated_at=? WHERE handle=?', (ts, job['handle']))
+    if code in accounts.HOLDS:
+        accounts.release_all(conn, lane)
+    elif 'list_cool_until' in fields:
+        accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
     return {}
 
@@ -214,11 +241,34 @@ def clean_rate(r):
     return out
 
 
+def iso_or_none(v):
+    try:
+        return iso(utc(v)) if isinstance(v, str) and v else None
+    except ValueError:
+        return None
+
+
 def ext_heartbeat(conn, q, b):
     b = dict(b, rate=clean_rate(b.get('rate')))
-    db.set_setting(conn, 'ext', dict(b, last_seen=db.now()))
+    lane = accounts.lane_of(q, b)
+    db.set_setting(conn, 'ext', dict(b, last_seen=db.now(), lane_id=lane))   # last beat of any lane (older readers)
+    today = b.get('today') if isinstance(b.get('today'), dict) else {}
+
+    def text(v, n=500):
+        return v[:n] if isinstance(v, str) else None
+    fields = {'version': text(b.get('version'), 40), 'state': text(b.get('state'), 20),
+              'cooldown_until': iso_or_none(b.get('cooldown_until')), 'rate': json.dumps(b['rate']) if b['rate'] else None,
+              'last_error': text(b.get('last_error')), 'activity': text(b.get('activity'), 200), 'text': text(b.get('text'), 200),
+              'today': json.dumps({k: count_or_none(today.get(k)) or 0 for k in ('list', 'profile')})}
+    if isinstance(b.get('cool'), dict):   # per-bucket cooldowns (3.4+): a list cooldown hands the list to another lane
+        fields['list_cool_until'] = iso_or_none(b['cool'].get('list'))
+    if 'hold' in b:   # 3.4+ report a login wall / security check here too; older builds only via /api/ext/error
+        fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
+    row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    if row['hold'] or row['list_cool_until'] or row['paused']:
+        accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
-    return ext_state(conn)
+    return ext_state(conn, row)
 
 
 # ---------- UI endpoints ----------
@@ -645,17 +695,42 @@ def api_map(conn, q, b):
     return {'nodes': nodes, 'links': links, 'seed_links': seed_links(conn), 'rev': data_rev(conn)}
 
 
+def ext_aggregate(conn, accts, now):
+    """The old single-extension `ext` block, now summed over lanes (one lane: exactly what it reported)."""
+    if not accts:
+        ext = db.get_setting(conn, 'ext') or {}
+        cooldowns = [c for c in (ext.get('cooldown_until'), db.get_setting(conn, 'cooldown')) if c and utc(c) > now]
+        return {'online': bool(ext.get('last_seen')) and now - utc(ext['last_seen']) < timedelta(seconds=60),
+                'version': ext.get('version'), 'state': ext.get('state'),
+                'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
+                'today': ext.get('today'), 'budget': db.get_setting(conn, 'budget'),
+                'last_seen': ext.get('last_seen'), 'activity': ext.get('activity'), 'text': ext.get('text'),
+                'rate': ext.get('rate'), 'last_error': ext.get('last_error') or (db.get_setting(conn, 'last_error') or {}).get('message')}
+    live = [a for a in accts if a['online']] or accts
+    many = len(accts) > 1
+    running = [a for a in live if a['state'] == 'running']
+    first = (running or sorted(live, key=lambda a: a['last_seen'] or '', reverse=True))[0]
+    cools = [a['cooldown_until'] for a in live if a['cooldown_until']]
+    all_cool = len(cools) == len(live) and cools
+    rate = accounts.aggregate_rate(accts)
+    errs = sorted((a for a in accts if a['last_error']), key=lambda a: a['last_seen'] or '')
+    prefix = (lambda a, t: f"{a['name']}: {t}" if t and many else t)
+    last_error = errs[-1]['last_error'] if errs else (db.get_setting(conn, 'last_error') or {}).get('message')
+    return {'online': any(a['online'] for a in accts), 'version': max((a['version'] or '' for a in accts), default=None) or None,
+            'state': 'running' if running else first['state'],
+            'cooldown_until': min(cools) if all_cool else None,
+            'today': {k: sum(a['today'][k] for a in accts) for k in ('list', 'profile')},
+            'budget': db.get_setting(conn, 'budget'), 'last_seen': max(a['last_seen'] or '' for a in accts) or None,
+            'activity': prefix(first, first['activity']), 'text': prefix(first, first['text']),
+            'rate': None if not any(a['rate'] for a in live) else {k: rate[k] for k in ('pages_hour', 'people_hour', 'last_hit_at')},
+            'last_error': prefix(errs[-1], last_error) if errs else last_error}
+
+
 def api_scraper(conn, q, b):
-    ext = db.get_setting(conn, 'ext') or {}
     now = datetime.now(timezone.utc)
-    cooldowns = [c for c in (ext.get('cooldown_until'), db.get_setting(conn, 'cooldown')) if c and utc(c) > now]
-    return {'ext': {'online': bool(ext.get('last_seen')) and now - utc(ext['last_seen']) < timedelta(seconds=60),
-                    'version': ext.get('version'), 'state': ext.get('state'),
-                    'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
-                    'today': ext.get('today'), 'budget': db.get_setting(conn, 'budget'),
-                    'last_seen': ext.get('last_seen'), 'activity': ext.get('activity'), 'text': ext.get('text'),
-                    'rate': ext.get('rate'),
-                    'last_error': ext.get('last_error') or (db.get_setting(conn, 'last_error') or {}).get('message')},
+    accts = accounts.listing(conn, now)
+    return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts, 'rate': accounts.aggregate_rate(accts),
+            'alerts': accounts.alerts(conn, now, accts),
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
             'soak': soak(conn, now),
@@ -708,7 +783,46 @@ def api_budget(conn, q, b):
     return {}
 
 
+def api_accounts(conn, q, b):
+    now = datetime.now(timezone.utc)
+    accts = accounts.listing(conn, now)
+    return {'accounts': accts, 'alerts': accounts.alerts(conn, now, accts), 'rate': accounts.aggregate_rate(accts),
+            'main_list_share': float(db.get_setting(conn, 'main_list_share') or 0)}
+
+
+def api_account_edit(conn, q, b, lane):
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        row = accounts.edit(conn, str(lane), b)
+    except LookupError:
+        conn.rollback()
+        raise Missing('no such account') from None
+    except ValueError as e:
+        conn.rollback()
+        raise Bad(str(e)) from None
+    conn.commit()
+    return {'account': accounts.out(conn, row, datetime.now(timezone.utc))}
+
+
+def api_account_remove(conn, q, b, lane):
+    conn.execute('BEGIN IMMEDIATE')
+    n = accounts.remove(conn, str(lane))
+    conn.commit()
+    return {'removed': n}
+
+
+def api_setup(conn, q, b):
+    """What the add-account wizard shows: where the unpacked extension lives and which id Chrome gives it."""
+    manifest = json.loads((ROOT / 'extension' / 'manifest.json').read_text())
+    return {'repo': str(ROOT), 'extension_path': str(ROOT / 'extension'), 'extension_id': EXT_ORIGIN.split('//')[1],
+            'extension_version': manifest.get('version'), 'server': f"http://127.0.0.1:{CFG['port']}",
+            'lanes': conn.execute('SELECT count(*) FROM accounts').fetchone()[0]}
+
+
+LANE = r'([A-Za-z0-9_-]{1,64})'
 ROUTES = [
+    ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
+    ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
     ('GET', r'/api/ext/next', ext_next), ('POST', r'/api/ext/list-page', ext_list_page),
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
@@ -790,9 +904,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}') if n else {}
             conn = db.connect(CFG['db'])
             try:
-                out = fn(conn, q, body, *map(int, groups))
+                out = fn(conn, q, body, *(int(g) if g.isdigit() and '/accounts/' not in self.path else g for g in groups))
             finally:
                 conn.close()
+        except Missing as e:
+            return self.send(404, {'ok': False, 'error': str(e)})
         except (Bad, ValueError, KeyError, TypeError) as e:
             return self.send(400, {'ok': False, 'error': str(e)})
         except Exception as e:
@@ -918,12 +1034,17 @@ def plan_profiles(conn):
     auto_qualify(conn)
     if not db.get_setting(conn, 'qualify'):  # collection first: bios are read only once qualification is switched on
         return 0
-    budget = db.get_setting(conn, 'budget')
-    ext = db.get_setting(conn, 'ext') or {}
-    today = datetime.now(timezone.utc).date().isoformat()
-    used = (ext.get('today') or {}).get('profile', 0) if (ext.get('last_seen') or '').startswith(today) else 0
+    now = datetime.now(timezone.utc)
+    accts = [a for a in accounts.listing(conn, now) if a['healthy'] and a['role'] in ('bios', 'both')]
+    if accts:   # every lane that reads bios brings its own daily budget
+        room = sum(max(0, a['budget']['profile'] - a['today']['profile']) for a in accts)
+    else:
+        ext = db.get_setting(conn, 'ext') or {}
+        today = now.date().isoformat()
+        used = (ext.get('today') or {}).get('profile', 0) if (ext.get('last_seen') or '').startswith(today) else 0
+        room = db.get_setting(conn, 'budget')['profile'] - used
     active = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
-    need = budget['profile'] - used - active
+    need = room - active
     if need <= 0:
         return 0
     rows = conn.execute("""SELECT p.handle, v.prefilter, (SELECT count(DISTINCT seed) FROM edges e WHERE e.person_id=p.id) AS n
