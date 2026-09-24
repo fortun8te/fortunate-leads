@@ -191,3 +191,15 @@ test('accountFrom: ds_user_id plus the nearest username in the page JSON', () =>
   assert.deepEqual(FL.accountFrom('csrftoken=x', page), { ig_id: null, handle: null }); // logged out
   assert.equal(FL.handleFrom('{"username":"Mixed.Case_1","pk":"9"}', '9'), 'mixed.case_1');
 });
+
+test('stagesView: the widget rows for the three workspace stages', () => {
+  const ctl = { got: T0, stages: [
+    { id: 'lists', label: 'Collect lists', state: 'waiting', paused: false, hour: 1700, now: 'Short break to look human, back in 3 min.', wait: { why: 'Short break to look human', seconds: 180 } },
+    { id: 'bios', label: 'Read bios', state: 'running', paused: false, hour: 1700, now: 'x' },
+    { id: 'ai', label: 'AI scoring', state: 'paused', paused: true, hour: 0, now: 'Paused by you.' }] };
+  const v = FL.stagesView(ctl, T0 + 60e3);
+  assert.deepEqual(v.map((r) => r.word), ['break 2 min', 'running · 1,700/h', 'paused']);
+  assert.deepEqual(v.map((r) => r.action), ['pause', 'pause', 'resume']);
+  assert.deepEqual(v.map((r) => r.on), [true, true, false]);
+  assert.deepEqual(FL.stagesView(null, T0), []);
+});

@@ -178,7 +178,7 @@ async function heartbeat(force) {
       hold: st.hold ? st.hold.code : null,
       today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
-      rate: FL.rateOf(st, now) }, 10e3);
+      rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) } }, 10e3);
     mem.offline = false;
     await applyServer(r.json);
   } catch { mem.offline = true; }
@@ -548,6 +548,17 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg && msg.type === 'fl-view') {
     chrome.storage.local.get(['view', 'account']).then((o) => reply({ view: o.view || null, account: o.account || null }), () => reply(null));
+    return true;
+  }
+  // Control strip in the widget: the server's three stages (lists, bios, AI), read and switched through /api/ext/control.
+  if (msg && msg.type === 'fl-control') {
+    const body = msg.stage && (msg.action === 'pause' || msg.action === 'resume') ? { stage: msg.stage, action: msg.action } : undefined;
+    api('/api/ext/control', body).then((r) => {
+      const ctl = r.status === 200 && r.json && r.json.stages ? { ...r.json, got: Date.now() } : null;
+      if (ctl) set({ control: ctl });
+      if (body) { trail('control ' + body.stage + ' ' + body.action); mem.lastBeat = 0; loop(); }
+      reply({ control: ctl });
+    }, () => get('control').then((c) => reply({ control: c || null, offline: true }), () => reply(null)));
     return true;
   }
   if (msg && msg.type === 'fl-open') chrome.tabs.create({ url: SERVER + '/' }).catch(() => {});

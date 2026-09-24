@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
+import control  # noqa: E402
 import db  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
@@ -104,7 +105,9 @@ def ext_next(conn, q, b):
     if st['paused']:  # cooldowns are the extension's job; the server only records them for display
         conn.commit()
         return dict(st, job=None, cooldown_until=None)
-    kinds = accounts.kinds_for(conn, row, kinds, now)
+    stopped = control.paused_kinds(conn)   # a stage paused on the control strip hands out none of its jobs
+    st['stages'] = {'list': 'list' not in stopped, 'profile': 'profile' not in stopped}
+    kinds = [k for k in accounts.kinds_for(conn, row, kinds, now) if k not in stopped]
     if not kinds:
         conn.commit()
         return dict(st, job=None)
@@ -295,6 +298,10 @@ def ext_heartbeat(conn, q, b):
     if 'hold' in b:   # 3.4+ report a login wall / security check here too; older builds only via /api/ext/error
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    if isinstance(b.get('ready'), dict):   # 3.7+: when each clock allows the next request (the control strip shows breaks)
+        ready = db.get_setting(conn, 'ext_ready') or {}
+        ready[lane] = {k: clean_iso(b['ready'].get(k)) for k in ('list', 'profile')}
+        db.set_setting(conn, 'ext_ready', ready)
     if row['hold'] or row['list_cool_until'] or row['paused']:
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
@@ -1016,6 +1023,26 @@ def api_pause(conn, q, b):
     return {}
 
 
+def ai_left(conn):
+    return conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
+                        "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+                        (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
+
+
+def api_control(conn, q, b):
+    """What each stage (lists, bios, AI) and each account is doing right now, in plain sentences."""
+    return control.snapshot(conn, ai_left(conn))
+
+
+def api_control_set(conn, q, b):
+    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
+    try:
+        control.apply(conn, b)
+    except LookupError:
+        raise NotFound('no such account') from None
+    return api_control(conn, q, b)
+
+
 def api_budget(conn, q, b):
     budget = db.get_setting(conn, 'budget')
     budget.update({k: max(0, min(cap, int(b[k]))) for k, cap in accounts.BUDGET_MAX.items() if b.get(k) is not None})
@@ -1079,6 +1106,8 @@ ROUTES = [
     ('GET', r'/api/ext/next', ext_next), ('POST', r'/api/ext/list-page', ext_list_page),
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
+    ('GET', r'/api/control', api_control), ('POST', r'/api/control', api_control_set),
+    ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
     ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
     ('POST', r'/api/people/bulk', api_bulk),

@@ -44,6 +44,7 @@ Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md]
 - UI copy: short product language, no filler.
 
 ## 2026-09-24 late
+- Control strip (2026-09-24): `/api/control` + web/controls.js on every page + widget stage rows (extension 3.7.0): Collect lists / Read bios / AI scoring pause separately, Stop all.
 - Extension 3.6.0: in-page widget on instagram.com (widget.js, closed Shadow DOM, data only via the service worker).
 - The list error `other on @x following · page 1 (HTTP 0)` (no reason in brackets) is the pre-3.3 message format: an old
   extension build posted it at 18:07 today (georgebrocklehurst). No account row runs <3.5.1, so it is likely an old copy in

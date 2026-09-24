@@ -28,6 +28,15 @@
 .row { display: flex; gap: 6px; }
 .btn { flex: 1; height: 28px; border-radius: 8px; border: 1px solid #333; background: #1f1f1f; color: #ededed; font: inherit; cursor: pointer; }
 .btn:hover { background: #2a2a2a; }
+.stages { display: grid; gap: 4px; margin-bottom: 10px; }
+.stage { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 0 8px; background: #1f1f1f; border-radius: 8px; }
+.stage b { font-weight: 600; width: 34px; }
+.stage .word { flex: 1; color: #a3a3a3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage.paused .word { color: #707070; }
+.sbtn { height: 22px; padding: 0 9px; border-radius: 999px; border: 1px solid #333; background: #262626; color: #ededed; font: inherit; cursor: pointer; }
+.sbtn:hover { border-color: #707070; }
+.sbtn:disabled { opacity: .5; cursor: wait; }
+.lbl { color: #8a8a8a; font-size: 11px; margin-bottom: 4px; }
 [hidden] { display: none !important; }
 </style>
 <div class="w">
@@ -36,7 +45,9 @@
     <div class="top"><span class="dot" id="dot"></span><span class="name">Fortunate Leads</span><button class="x" id="min" title="Collapse">&#8211;</button></div>
     <p class="now" id="now">Connecting…</p>
     <div class="nums"><div><b id="people">0</b><span>people</span></div><div><b id="pages">0</b><span>pages</span></div><div><b id="bios">0</b><span>bios</span></div></div>
-    <div class="row"><button class="btn" id="toggle">Pause</button><button class="btn" id="open">Open workspace</button></div>
+    <p class="lbl">Workspace (all accounts)</p>
+    <div class="stages" id="stages"><div class="stage"><span class="word">Loading…</span></div></div>
+    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The workspace stages above keep their own switches.">Pause this account</button><button class="btn" id="open">Open workspace</button></div>
   </div>
 </div>`;
   const $ = (id) => root.getElementById(id);
@@ -63,16 +74,46 @@
     $('now').textContent = sentence(v);
     $('people').textContent = n(today.people); $('pages').textContent = n(today.list); $('bios').textContent = n(today.bios);
     const paused = !!v && v.state === 'paused' && !/workspace/i.test(v.text || '');
-    $('toggle').textContent = paused ? 'Resume' : 'Pause';
+    $('toggle').textContent = paused ? 'Resume this account' : 'Pause this account';
+    renderStages();
     $('toggle').dataset.cmd = paused ? 'resume' : 'pause';
     $('pill').hidden = !collapsed; $('card').hidden = collapsed;
   }
+  // Workspace stages (Collect lists, Read bios, AI scoring) from the server's /api/control, via the service worker.
+  let control = null, stageBusy = false, stageKey = '';
+  const escH = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function renderStages() {
+    const rows = FLV(control);
+    const key = JSON.stringify(rows.map((r) => [r.id, r.paused, r.on, r.now])) + stageBusy;
+    if (!rows.length) { $('stages').innerHTML = '<div class="stage"><span class="word">' + (control === false ? 'Workspace offline' : 'Loading…') + '</span></div>'; stageKey = ''; return; }
+    if (key !== stageKey) {   // rebuild only when something changed, so a button under the pointer stays put
+      stageKey = key;
+      $('stages').innerHTML = rows.map((r) => `<div class="stage${r.paused ? ' paused' : ''}" title="${escH(r.label + ': ' + r.now + '\n\n' + r.help)}">
+        <span class="dot${r.on ? ' on' : ''}"></span><b>${escH(r.name)}</b><span class="word"></span>
+        <button class="sbtn" data-stage="${r.id}" data-action="${r.action}" title="${escH((r.paused ? 'Resume ' : 'Pause ') + r.label.toLowerCase() + ' for all accounts. ' + r.help)}"${stageBusy ? ' disabled' : ''}>${r.paused ? 'Resume' : 'Pause'}</button></div>`).join('');
+    }
+    root.querySelectorAll('.stage .word').forEach((w, i) => { if (rows[i]) w.textContent = rows[i].word; });
+  }
+  const FLV = (c) => { try { return globalThis.FL.stagesView(c, Date.now()); } catch { return []; } };
+  async function loadControl(body) {
+    const r = await send(Object.assign({ type: 'fl-control' }, body || {}));
+    control = r && r.control ? r.control : control || false;
+    renderStages();
+  }
+  $('stages').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-stage]');
+    if (!b || b.disabled) return;
+    stageBusy = true; renderStages();
+    await loadControl({ stage: b.dataset.stage, action: b.dataset.action });
+    stageBusy = false; renderStages();
+  });
   async function refresh(force) {
     if (!alive) { clearInterval(timer); host.remove(); return; } // extension reloaded: the new build injects its own widget
     if (!force && document.visibilityState !== 'visible') return; // background tabs don't poll
     const r = await send({ type: 'fl-view' });
     if (r && r.view) { view = r.view; view.stale = Date.now() - (view.at || 0) > 3 * 60e3; }
     render();
+    if (!collapsed) loadControl();
   }
   const setCollapsed = (c) => { collapsed = c; render(); try { chrome.storage.local.set({ widgetCollapsed: c }); } catch {} if (!c) refresh(true); };
   $('pill').addEventListener('click', () => setCollapsed(false));
