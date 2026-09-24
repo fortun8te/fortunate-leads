@@ -175,6 +175,11 @@ class H(BaseHTTPRequestHandler):
                 STATE['seeds'] = {str(s['pk']): s for s in body.get('seeds', [])}
                 STATE['by_name'] = {s['username'].lower(): s for s in body.get('seeds', [])}
                 STATE['schedule'] = {k: {int(n): t for n, t in v.items()} for k, v in (body.get('schedule') or {}).items()}
+                # lanes mode: one fake account per simulated Chrome profile (X-Sim-Account), each with its own failures
+                STATE['accounts'] = {str(a['ig_id']): dict(a, schedule={k: {int(n): t for n, t in v.items()}
+                                                                        for k, v in (a.get('schedule') or {}).items()})
+                                     for a in body.get('accounts') or []}
+                STATE['acct_counters'] = {}
                 for k in STATE['counters']:
                     STATE['counters'][k] = 0
                 STATE['served'].clear(); STATE['pages_good'].clear(); STATE['log'].clear(); STATE['members'].clear()
@@ -192,9 +197,12 @@ class H(BaseHTTPRequestHandler):
         if u.path == '/__sim/log':
             with LOCK:
                 return self.reply(200, {'log': STATE['log'], 'counters': STATE['counters']})
+        acct = STATE.get('accounts', {}).get(self.headers.get('X-Sim-Account') or '')
         if u.path == '/':
+            viewer = ('<script type="application/json" data-sjs>' + json.dumps({'viewer': {'user': {
+                'id': acct['ig_id'], 'username': acct['handle'], 'full_name': acct['handle']}}}) + '</script>') if acct else ''
             return self.reply(200, '<!DOCTYPE html><html lang="en"><head><title>Instagram</title></head><body><main>Feed</main>'
-                              '</body></html>', 'text/html; charset=utf-8', {'X-Sim-Latency': 900})
+                              + viewer + '</body></html>', 'text/html; charset=utf-8', {'X-Sim-Latency': 900})
         if u.path.startswith('/accounts/login'):
             return self.reply(200, '<!DOCTYPE html><html lang="en"><head><title>Login &bull; Instagram</title></head><body>'
                               '<form id="loginForm"><input name="username"><input name="password" type="password">'
@@ -207,8 +215,12 @@ class H(BaseHTTPRequestHandler):
             STATE['counters'][kind] += 1
             n = STATE['counters'][kind]
             inject = STATE['schedule'].get(kind, {}).get(n)
+            if acct:   # its own request numbers and failures
+                key = (acct['ig_id'], kind)
+                STATE['acct_counters'][key] = STATE['acct_counters'].get(key, 0) + 1
+                inject = acct['schedule'].get(kind, {}).get(STATE['acct_counters'][key])
         entry = {'kind': kind, 'n': n, 'path': u.path, 'max_id': q.get('max_id', [None])[0], 'inject': inject,
-                 'sim_now': int(self.headers.get('X-Sim-Now') or 0)}
+                 'sim_now': int(self.headers.get('X-Sim-Now') or 0), 'account': acct and acct['ig_id']}
         if u.path == '/api/v1/users/web_profile_info/':  # retired for scripts (RESEARCH.md): 429 on the first call
             entry['status'] = 429
             self.log(entry)

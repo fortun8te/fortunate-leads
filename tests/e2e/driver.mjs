@@ -25,7 +25,8 @@ const EXT = process.env.FL_EXT_DIR ? path.resolve(process.env.FL_EXT_DIR) : path
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes('--' + n);
 const opt = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : d; };
-const HOURS = Number(opt('hours', 8));
+const LANES = opt('lanes', null);
+const HOURS = Number(opt('hours', LANES ? 12 : 8));
 const VERBOSE = flag('verbose');
 const EXT_ID = 'fgdbghllamedgihmdcolaggnbhnakjnf';
 const EXT_ORIGIN = 'chrome-extension://' + EXT_ID;
@@ -105,14 +106,14 @@ async function settle() {
 const harnessErrors = [];
 async function runUntil(end) {
   await settle();
-  while (heap.length && heap[0].at <= end) {
+  while (heap.length && heap[0].at <= end && !V.stop) {
     const t = hpop();
     if (cancelled.delete(t.id) || !t.owner.alive) continue;
     if (t.at > V.now) V.now = t.at;
     try { t.fn(); } catch (e) { harnessErrors.push(`${t.owner.name}: ${e && e.stack || e}`); }
     await settle();
   }
-  V.now = Math.max(V.now, end);
+  if (!V.stop) V.now = Math.max(V.now, end);
 }
 class SimDate extends RealDate {
   constructor(...a) { if (a.length) super(...a); else super(V.now); }
@@ -173,10 +174,24 @@ const viol = (what, extra) => { violations.push({ t: V.now, what, ...(extra || {
 const ev = (what, extra) => { events.push({ t: V.now, what, ...(extra || {}) }); if (VERBOSE) console.log(dhm(V.now), what, extra ? JSON.stringify(extra) : ''); };
 const seedByPk = new Map(), seedByName = new Map();
 
-// ---------------------------------------------------------------- chrome.storage.local (survives worker restarts)
-const store = {};
-let lastSt = null;
 const clone = (v) => (v === undefined ? undefined : structuredClone(v));
+const boxKey = (it) => it.path + ' ' + JSON.stringify(it.body);
+const coolOf = (st) => (st && st.cool ? st.cool : { list: { until: (st && st.cooldownUntil) || 0, hits: (st && st.hits) || [] }, profile: { until: 0, hits: [] } });
+const read = (f) => fs.readFileSync(f, 'utf8');
+const quiet = { log() {}, info() {}, debug() {}, warn(...a) { if (VERBOSE) console.warn('[ext]', ...a); }, error(...a) { if (VERBOSE) console.error('[ext]', ...a); } };
+const decode = (s) => s.replace(/&bull;/g, '•').replace(/&amp;/g, '&').replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"');
+const fakeUrl = (u) => `http://127.0.0.1:${PORT.ig}${u.pathname}${u.search}`;
+const igUrl = (real) => { const u = new URL(real); return IG + u.pathname + u.search; };
+const abortErr = () => new DOMException('This operation was aborted', 'AbortError');
+const tabInfo = (t) => ({ id: t.id, url: t.url, title: t.title, status: t.status, active: t.active, pinned: t.pinned, discarded: false,
+  frozen: false, windowId: 1, index: t.index, autoDiscardable: t.autoDiscardable, highlighted: t.active, incognito: false });
+
+// Everything one Chrome profile has: its own storage, tabs, alarms and service worker (one lane).
+function makeProfile(P) {
+const store = P.store, browser = P.browser, hits = P.hits, holds = P.holds;
+let lastSt = null, lastIg = null;
+const acctHdr = () => (P.igId ? { 'X-Sim-Account': P.igId } : {});
+// ---------------------------------------------------------------- chrome.storage.local (survives worker restarts)
 function storageGet(keys) {
   const ks = keys == null ? Object.keys(store) : typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
   const out = {};
@@ -190,11 +205,9 @@ function storageSet(o) {
     if (k === 'box') for (const it of v || []) { const key = boxKey(it); if (!boxSeen.has(key)) boxSeen.set(key, { first: V.now, acked: false, path: it.path }); }
   }
 }
-const boxKey = (it) => it.path + ' ' + JSON.stringify(it.body);
-const coolOf = (st) => (st && st.cool ? st.cool : { list: { until: (st && st.cooldownUntil) || 0, hits: (st && st.hits) || [] }, profile: { until: 0, hits: [] } });
 function observeSt(st) {
   const pre = lastSt;
-  lastSt = st;
+  lastSt = st; P.lastSt = st;
   const a = coolOf(pre), b = coolOf(st);
   for (const k of ['list', 'profile']) {
     for (const t of b[k].hits || []) {
@@ -209,15 +222,6 @@ function observeSt(st) {
 }
 
 // ---------------------------------------------------------------- browser: tabs, pages, content scripts
-const browser = { sw: null, tabs: new Map(), nextTab: 1, alarms: new Map() };
-const read = (f) => fs.readFileSync(f, 'utf8');
-const quiet = { log() {}, info() {}, debug() {}, warn(...a) { if (VERBOSE) console.warn('[ext]', ...a); }, error(...a) { if (VERBOSE) console.error('[ext]', ...a); } };
-const decode = (s) => s.replace(/&bull;/g, '•').replace(/&amp;/g, '&').replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"');
-const fakeUrl = (u) => `http://127.0.0.1:${PORT.ig}${u.pathname}${u.search}`;
-const igUrl = (real) => { const u = new URL(real); return IG + u.pathname + u.search; };
-const abortErr = () => new DOMException('This operation was aborted', 'AbortError');
-const tabInfo = (t) => ({ id: t.id, url: t.url, title: t.title, status: t.status, active: t.active, pinned: t.pinned, discarded: false,
-  frozen: false, windowId: 1, index: t.index, autoDiscardable: t.autoDiscardable, highlighted: t.active, incognito: false });
 
 // The tab's own fetch (page JS / executeScript MAIN world). Routes instagram.com to the fake, simulated latency/hangs.
 async function pageFetch(tab, input, init = {}) {
@@ -228,19 +232,19 @@ async function pageFetch(tab, input, init = {}) {
   const m = u.pathname.match(/^\/api\/v1\/friendships\/(\d+)\/(followers|following)\/$/);
   const info = /^\/api\/v1\/users\/[^/]+\/info\/$/.test(u.pathname);
   const kind = m ? 'list' : info ? 'profile' : 'api';
-  const entry = { t: V.now, kind, bucket: kind === 'api' ? 'list' : kind, path: u.pathname, maxId: u.searchParams.get('max_id'),
+  const entry = { t: V.now, lane: P.name, kind, bucket: kind === 'api' ? 'list' : kind, path: u.pathname, maxId: u.searchParams.get('max_id'),
     list: m ? (seedByPk.get(m[1]) || { handle: '?' + m[1] }).handle + '/' + m[2] : null, sw: browser.sw && browser.sw.name };
   if (kind === 'list') entry.n = ++counters.listReq;
   checkRequest(entry);
   igLog.push(entry);
   const r = await io(tab, async () => {
-    const res = await fetch(fakeUrl(u), { headers: { ...(init.headers || {}), 'X-Sim-Now': String(V.now) }, redirect: 'follow',
+    const res = await fetch(fakeUrl(u), { headers: { ...(init.headers || {}), 'X-Sim-Now': String(V.now), ...acctHdr() }, redirect: 'follow',
       signal: AbortSignal.timeout(20000) });
     return { status: res.status, url: igUrl(res.url), redirected: res.redirected, headers: res.headers, text: await res.text() };
   });
   entry.status = r.status; entry.inject = r.headers.get('x-sim-inject') || null; entry.retryAfter = r.headers.get('retry-after');
-  lastIg = entry;
-  if (kind === 'list' && entry.n === FAULT.restartMidRequest) {
+  lastIg = entry; P.lastIg = entry;
+  if (P.faults && kind === 'list' && entry.n === FAULT.restartMidRequest) {
     // The worker is stopped while its request is in flight: the tab finishes the fetch, nobody gets the answer.
     expectations.push({ type: 'resume-after-mid-request-restart', list: entry.list, want: entry.maxId, after: V.now });
     restart('stopped mid-request (list request #' + entry.n + ')', 3000);
@@ -267,7 +271,7 @@ function makePage(tab, html) {
   const text = decode(html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<title>[\s\S]*?<\/title>/, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
   const on = (bag) => (t, fn) => (bag[t] = bag[t] || []).push(fn);
   class XHR { open() {} send() {} addEventListener() {} }
-  const doc = { cookie: 'csrftoken=SimCsrf0; ds_user_id=4242424242; sessionid=sim', visibilityState: 'hidden', title,
+  const doc = { cookie: 'csrftoken=SimCsrf0; ds_user_id=' + (P.igId || '4242424242') + '; sessionid=sim', visibilityState: 'hidden', title,
     body: { innerText: text }, readyState: 'complete', addEventListener: on(L.doc), querySelectorAll: (sel) => (/application\/json/.test(sel) ? scripts : []) };
   const g = { console: quiet, Date: SimDate, setTimeout: (fn, ms, ...a) => timer(tab, ms, () => fn(...a)), clearTimeout: clearTimer,
     AbortController, URL, DOMException, document: doc, location: { href: u.href, hostname: u.hostname, pathname: u.pathname, origin: u.origin },
@@ -297,7 +301,7 @@ function navigate(tab, url, why) {
   igLog.push(entry);
   const gen = ++tab.gen;
   timer(tab, 400, () => io(tab, async () => {
-    const res = await fetch(fakeUrl(u), { headers: { 'X-Sim-Now': String(V.now) }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+    const res = await fetch(fakeUrl(u), { headers: { 'X-Sim-Now': String(V.now), ...acctHdr() }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
     return { status: res.status, url: igUrl(res.url), headers: res.headers, text: await res.text() };
   }).then((r) => {
     entry.status = r.status; entry.inject = r.headers.get('x-sim-inject') || null;
@@ -346,7 +350,6 @@ function createAlarm(name, info) {
 
 // ---------------------------------------------------------------- the service worker
 let swSeq = 0;
-const manifest = JSON.parse(read(path.join(EXT, 'manifest.json')));
 function makeChrome(inst) {
   const g = (fn) => (inst.alive ? Promise.resolve().then(fn).then((v) => (inst.alive ? v : NEVER())) : NEVER());
   const evt = (name) => ({ addListener: (fn) => inst.L[name].push(fn), removeListener() {}, hasListener: () => true });
@@ -370,7 +373,7 @@ function makeChrome(inst) {
   };
 }
 function bootSW(reason) {
-  const inst = { name: 'sw#' + (++swSeq), alive: true, L: { onMessage: [], onInstalled: [], onStartup: [], onAlarm: [], onMessageExternal: [] } };
+  const inst = { name: (P.prefix || '') + 'sw#' + (++swSeq), alive: true, L: { onMessage: [], onInstalled: [], onStartup: [], onAlarm: [], onMessageExternal: [] } };
   counters.swBoots++;
   const g = { console: quiet, Date: SimDate, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, DOMException,
     setTimeout: (fn, ms, ...a) => timer(inst, ms, () => fn(...a)), clearTimeout: clearTimer,
@@ -406,6 +409,7 @@ async function swFetch(inst, url, init = {}) {
   let fault = null;
   if (u.pathname === '/api/ext/list-page') {
     const k = ++counters.listPagePosts;
+    if (!P.faults) { /* lanes mode: no harness faults */ } else {
     entry.k = k;
     if (k === FAULT.outageAt) {
       await io(OPS, stopServer);
@@ -414,8 +418,9 @@ async function swFetch(inst, url, init = {}) {
     }
     if (FAULT.dropResponse.has(k)) fault = 'drop';
     if (k === FAULT.restartAfterCommit) fault = 'restart';
+    }
   }
-  if (u.pathname === '/api/ext/profile' && FAULT.dropProfileResponse.has(++counters.profilePosts)) fault = 'drop';
+  if (u.pathname === '/api/ext/profile' && FAULT.dropProfileResponse.has(++counters.profilePosts) && P.faults) fault = 'drop';
   const send = async () => {
     const r = await fetch(`http://127.0.0.1:${PORT.server}${u.pathname}${u.search}`, { method, headers, body: init.body,
       signal: AbortSignal.timeout(20000) });
@@ -460,7 +465,15 @@ function checkRequest(e) {
   }
   // The lane marker must be this request's own (set just before it), never an earlier request still in flight.
   if (store.lane && store.lane.until > e.t && store.lane.url && !String(store.lane.url).includes(e.path)) viol('request while another holds the lane', { path: e.path, lane: store.lane.url });
+  if (P.onRequest) P.onRequest(e, st);
 }
+
+return { bootSW, restart, createTab, toWorker };
+}
+const newProfile = (o) => { const P = { name: 'p0', store: {}, browser: { sw: null, tabs: new Map(), nextTab: 1, alarms: new Map() }, hits: [], holds: [], ...o }; return Object.assign(P, makeProfile(P)); };
+const manifest = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
+const P0 = newProfile({ hits, holds, faults: true });
+const store = P0.store, browser = P0.browser, { bootSW, restart, createTab } = P0;
 
 // ---------------------------------------------------------------- operator (Michael) and server background work
 async function opsHttp(p, body) {
@@ -563,7 +576,7 @@ function modelCooldowns() {
   // Independent model of the documented policy (README / RESEARCH.md §4), not core.js: per bucket 10 min doubling per hit
   // in 24 h, cap 24 h, Retry-After wins if longer, 3 hits in 24 h = until local midnight; every hit pauses the lane 5 min;
   // 3 hits within an hour across buckets = both until midnight.
-  const P = FL.PACE, bucketed = !!(lastSt && lastSt.cool);
+  const P = FL.PACE, bucketed = !!(P0.lastSt && P0.lastSt.cool);
   const m = { hits: { list: [], profile: [] }, until: { list: 0, profile: 0 } }, windows = [], problems = [];
   const midnight = (t) => { const d = new RealDate(t); d.setHours(24, 0, 0, 0); return d.getTime(); };
   for (const h of hits) {
@@ -735,4 +748,204 @@ async function report(seeds) {
   process.exit(ok ? 0 : 1);
 }
 
-main().catch((e) => { console.error(e); cleanup(); process.exit(2); });
+
+// ================================================================ --lanes N: several Chrome profiles, one server
+// Each lane is its own emulated Chrome profile (storage, tabs, alarms, service worker) running the real extension,
+// logged in to its own fake Instagram account with its own failures. Checks: no page fetched twice, a list is never
+// worked by two lanes at once, a logged-out lane's list moves to another lane from the saved cursor, a lane's cooldown
+// never stops the others. `--lanes 1,2,4` runs each count in its own process and compares the time to 10k connections.
+const LANE_SEEDS = [
+  ['north.goods', 'followers', 3000], ['clayandco', 'followers', 2400], ['saltlabs', 'followers', 1800],
+  ['fern.skin', 'followers', 1400], ['honeyroast', 'followers', 1000], ['wildthread', 'followers', 700],
+  ['goldmade', 'following', 2800], ['linenhouse', 'following', 2000], ['stoneworks', 'following', 1200],
+  ['amber.club', 'following', 600],
+];
+// Per-account Instagram answers by that account's own list request number.
+const LANE_SCHEDULE = [
+  { list: { 200: '429' } },                   // lane 1: a rate limit (its own cooldown only)
+  { list: { 20: 'login_redirect' } },         // lane 2: logged out mid-list -> its list must move on
+  { list: { 45: 'soft_block' } },             // lane 3
+  { list: { 60: 'please_wait' } },           // lane 4
+];
+const RESUME_AFTER = [12 * MIN, 45 * MIN, 12 * MIN, 12 * MIN]; // when Michael fixes a held lane (popup Resume)
+const TARGET = 10000;
+
+async function lanesCompare(counts) {
+  const out = [];
+  for (const n of counts) {
+    const args = [fileURLToPath(import.meta.url), '--lanes', String(n), '--json', ...(opt('hours') ? ['--hours', opt('hours')] : [])];
+    const r = await new Promise((res) => {
+      const p = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+      let buf = ''; p.stdout.on('data', (d) => { buf += d; if (!flag('quiet')) process.stdout.write(d); });
+      p.on('exit', (code) => res({ code, buf }));
+    });
+    const line = r.buf.split('\n').find((l) => l.startsWith('RESULT '));
+    out.push({ n, code: r.code, res: line ? JSON.parse(line.slice(7)) : null });
+  }
+  const t = (ms) => (ms == null ? '–' : (ms / HOUR).toFixed(2) + ' h');
+  console.log('\nlanes  time to 10k connections  all lists done  pages  limits  checks');
+  for (const { n, code, res } of out) {
+    console.log(String(n).padStart(5) + '  ' + t(res && res.t10k).padStart(23) + '  ' + t(res && res.tDone).padStart(14) + '  ' +
+      String(res ? res.pages : '–').padStart(5) + '  ' + String(res ? res.hits : '–').padStart(6) + '  ' + (code === 0 ? 'pass' : 'FAIL'));
+  }
+  const base = out[0] && out[0].res && out[0].res.t10k;
+  if (base) console.log('speed-up vs ' + out[0].n + ' lane' + (out[0].n > 1 ? 's' : '') + ': ' + out.map((o) => o.n + ' → ' + (o.res && o.res.t10k ? (base / o.res.t10k).toFixed(2) + 'x' : '–')).join(', '));
+  cleanup();
+  process.exit(out.every((o) => o.code === 0) ? 0 : 1);
+}
+
+async function lanesMain(N) {
+  PORT.server = await freePort(); PORT.ig = await freePort();
+  launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
+  await startServer();
+  await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  const seeds = LANE_SEEDS.map(([handle, direction, size], j) => {
+    const s = { pk: String(7_200_000_000 + j), username: handle, handle, direction, size, lists: { [direction]: size },
+      followers: direction === 'followers' ? size : 300 + j * 17, following: direction === 'following' ? size : 200 + j * 11 };
+    seedByPk.set(s.pk, s); seedByName.set(handle.toLowerCase(), s);
+    return s;
+  });
+  const accts = Array.from({ length: N }, (_, i) => ({ ig_id: String(5_500_000_000 + i), handle: 'lane' + (i + 1) + '.sim', schedule: LANE_SCHEDULE[i % LANE_SCHEDULE.length] }));
+  await fetch(`http://127.0.0.1:${PORT.ig}/__sim/config`, { method: 'POST', body: JSON.stringify({ seeds, schedule: {}, accounts: accts }) });
+  for (const dir of ['followers', 'following']) {
+    await fetch(`http://127.0.0.1:${PORT.server}/api/scraper/seeds`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Sim-Now': String(V.now), Origin: uiOrigin() },
+      body: JSON.stringify({ handles: seeds.filter((s) => s.direction === dir).map((s) => s.handle), directions: [dir] }) });
+  }
+  // who works which list right now, from the requests themselves
+  const owner = new Map(), switches = [], lanes = [];
+  // a lane stopped working its list when a limit or login wall hit it after its last request of that list
+  const stopped = (L) => !L.browser.sw || L.hits.some((h) => h.at >= L.lastListAt) || L.holds.some((h) => h.start >= L.lastListAt);
+  const onRequest = (L) => (e) => {
+    if (e.kind !== 'list') return;
+    const prev = owner.get(e.list);
+    if (prev && prev !== L) {
+      // the lane that had it must have stopped (hold, list cooldown, gone) or moved on to another list
+      if (prev.lastList === e.list && !stopped(prev)) viol('list worked by two lanes at once', { list: e.list, lanes: [prev.name, L.name] });
+      switches.push({ t: V.now, list: e.list, from: prev.name, to: L.name, maxId: e.maxId, why: prev.store.st && prev.store.st.hold ? 'hold' : 'cooldown' });
+      ev('list moved', { list: e.list, from: prev.name, to: L.name, max_id: e.maxId });
+    }
+    owner.set(e.list, L); L.lastList = e.list; L.lastListAt = V.now;
+  };
+  for (let i = 0; i < N; i++) {
+    const L = newProfile({ name: 'lane' + (i + 1), prefix: 'L' + (i + 1) + ':', igId: accts[i].ig_id, handle: accts[i].handle, faults: false });
+    L.onRequest = onRequest(L);
+    lanes.push(L);
+    L.createTab({ url: IG + '/', active: false, pinned: true });
+    timer(OPS, 2000 + i * 700, () => L.bootSW('install'));
+  }
+  // Michael clears a held lane after RESUME_AFTER (popup Resume in that profile)
+  const opsLoop = () => {
+    timer(OPS, MIN, opsLoop);
+    lanes.forEach((L, i) => {
+      const h = L.holds.at(-1);
+      if (h && h.end == null && !h.acted && V.now - h.start >= RESUME_AFTER[i % RESUME_AFTER.length] && L.browser.sw) {
+        h.acted = V.now; ev('operator: Resume in popup', { lane: L.name });
+        for (const fn of L.browser.sw.L.onMessage) fn({ cmd: 'resume' }, { id: EXT_ID }, () => {});
+      }
+    });
+  };
+  timer(OPS, MIN, opsLoop);
+  timer(OPS, 15e3, serverTick);
+  // connections so far (edges added by fresh pages) and the stop condition: every list done
+  let t10k = null, tDone = null;
+  const countConns = () => {
+    const conns = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && e.resp && !e.resp.duplicate).reduce((a, e) => a + (e.body.users || []).length, 0);
+    if (t10k == null && conns >= TARGET) { t10k = V.now - START; ev('10k connections', { h: (t10k / HOUR).toFixed(2) }); }
+  };
+  const watch = () => {
+    timer(OPS, 5 * MIN, watch);
+    countConns();
+    if (!serverUp) return;
+    opsHttp('/api/scraper').then((sc) => {
+      if (sc.lists && sc.lists.length === seeds.length && sc.lists.every((l) => l.state === 'done' || l.state === 'private') && !sc.queue.list) {
+        tDone = tDone ?? V.now - START; V.stop = true;
+      }
+    }).catch(() => {});
+  };
+  timer(OPS, 5 * MIN, watch);
+  await runUntil(END);
+  countConns();
+  for (const L of lanes) { if (L.browser.sw) L.browser.sw.alive = false; for (const t of L.browser.tabs.values()) t.alive = false; }
+  OPS.alive = false; BROWSER.alive = false;
+  await lanesReport(N, seeds, lanes, accts, switches, t10k, tDone);
+}
+
+async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
+  const served = await (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/served`)).json();
+  const fakeLog = await (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/log`)).json();
+  const acc = await (await fetch(`http://127.0.0.1:${PORT.server}/api/accounts`)).json();
+  const db = pyQuery(DB);
+  const handoffs = JSON.parse(execFileSync('python3', ['-c', `import sqlite3, sys; r = sqlite3.connect(sys.argv[1]).execute("SELECT value FROM settings WHERE key='handoffs'").fetchone(); print(r[0] if r else '[]')`, DB]).toString());
+  const pass = [], fail = [];
+  const check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
+  const lanesOfList = new Map();
+  for (const e of igLog.filter((x) => x.kind === 'list')) { if (!lanesOfList.has(e.list)) lanesOfList.set(e.list, new Set()); lanesOfList.get(e.list).add(e.lane); }
+  const rows = [];
+  for (const s of seeds) {
+    const key = s.handle.toLowerCase() + '/' + s.direction, L = db.lists.find((l) => l.seed.toLowerCase() + '/' + l.direction === key) || {};
+    const srv = new Set((served[key] || {}).served || []), got = new Set(db.edges[key] || []);
+    const same = srv.size === got.size && [...srv].every((x) => got.has(x));
+    rows.push({ list: '@' + s.handle + ' ' + s.direction, size: s.size, edges: got.size, state: L.state, lanes: [...(lanesOfList.get(key) || [])].join('+') });
+    check(same, 'edges == unique users served', `${key} ${got.size} vs ${srv.size}`);
+    if (tDone != null) check(L.state === 'done' && got.size === s.size, 'list complete', `${key} ${L.state} ${got.size}/${s.size}`);
+  }
+  check(db.edge_rows === db.edge_distinct, 'no duplicate edge rows', `${db.edge_rows}/${db.edge_distinct}`);
+  // no page fetched twice: every usable list answer is for a (list, cursor) nobody fetched before
+  const seenPage = new Map(); let dupPages = 0;
+  for (const e of fakeLog.log.filter((x) => x.kind === 'list' && x.users != null)) { const k = e.path + ' ' + e.max_id; if (seenPage.has(k)) dupPages++; seenPage.set(k, e.account); }
+  check(!dupPages, 'no page fetched twice (across all lanes)', `${seenPage.size} pages, ${dupPages} repeats`);
+  check(!counters.dupResponses, 'no page posted twice', `${counters.dupResponses} duplicate posts`);
+  // lanes and accounts
+  for (const [i, L] of lanes.entries()) {
+    check(igLog.some((e) => e.lane === L.name && e.kind === 'list'), 'every lane worked lists', L.name);
+    const a = acc.accounts.find((x) => x.ig_id === accts[i].ig_id);
+    check(a && a.handle === accts[i].handle, 'server knows each lane\'s account', `${L.name} -> ${a ? a.handle + ' (' + a.lane_id + ')' : 'missing'}`);
+    check(!(L.store.box || []).length, 'outbox empty', `${L.name} ${(L.store.box || []).length}`);
+    // its own cooldowns: none of its requests inside them (checkRequest too), and the others kept going meanwhile
+    for (const h of L.hits.filter((x) => x.bucket === 'list')) {
+      const until = coolOf(h.post).list.until;
+      const others = igLog.filter((e) => e.kind === 'list' && e.lane !== L.name && e.t > h.at && e.t < until).length;
+      const own = igLog.filter((e) => e.kind === 'list' && e.lane === L.name && e.t > h.at && e.t < until).length;
+      check(!own, 'no request during its own cooldown', `${L.name} ${own} in ${dhm(h.at)}–${dhm(until)}`);
+      if (N > 1) check(others > 0, 'cooldown stays on its lane (others keep going)', `${L.name} hit at ${dhm(h.at)}: ${others} requests by other lanes meanwhile`);
+    }
+  }
+  check(acc.accounts.length === N, 'one account row per lane', `${acc.accounts.length} rows`);
+  if (N > 1) {
+    const out = switches.filter((s) => s.from === 'lane2' && s.why === 'hold');
+    check(out.length > 0, 'logged-out lane hands its list over', out.map((s) => `${s.list} ${s.from}->${s.to} at ${dhm(s.t)}`).join(', ') || 'no handoff');
+    check(out.every((s) => s.maxId), 'handoff resumes from the saved cursor, not page 1', out.map((s) => `${s.list} max_id=${s.maxId}`).join(', '));
+    check(handoffs.some((h) => h.why === 'login'), 'server recorded the handoff', `${handoffs.length} handoffs`);
+  }
+  check(!harnessErrors.length, 'no uncaught errors in the extensions', harnessErrors.slice(0, 3).join(' | '));
+  check(!violations.length, 'no invariant violations', violations.slice(0, 3).map((v) => v.what + ' ' + JSON.stringify(v)).join('; '));
+  check(t10k != null, 'reached 10k connections', t10k != null ? (t10k / HOUR).toFixed(2) + ' h' : 'not within ' + HOURS + ' h');
+
+  const pad = (s, n) => String(s).padEnd(n), lpad = (s, n) => String(s).padStart(n);
+  console.log(`\nFortunate Leads e2e — ${N} lane${N > 1 ? 's' : ''}, extension ${manifest.version}, up to ${HOURS} simulated hours`);
+  console.log(pad('list', 30) + lpad('size', 6) + lpad('edges', 7) + '  ' + pad('state', 8) + 'lanes');
+  for (const r of rows) console.log(pad(r.list, 30) + lpad(r.size, 6) + lpad(r.edges, 7) + '  ' + pad(r.state, 8) + r.lanes);
+  console.log('');
+  for (const L of lanes) {
+    const reqs = igLog.filter((e) => e.lane === L.name && e.kind === 'list').length;
+    console.log(pad(L.name + ' @' + L.handle, 22) + `${reqs} list requests, hits ${L.hits.map((h) => dhm(h.at) + ' ' + h.bucket).join(', ') || 'none'}, holds ${L.holds.map((h) => dhm(h.start) + ' ' + h.code + (h.end ? ' ' + Math.round((h.end - h.start) / MIN) + ' min' : ' open')).join(', ') || 'none'}`);
+  }
+  console.log('handoffs       ' + (switches.map((s) => `${dhm(s.t)} ${s.list} ${s.from}->${s.to} (${s.why}, max_id ${s.maxId ? 'kept' : 'null'})`).join('; ') || 'none'));
+  console.log('result         10k connections ' + (t10k != null ? (t10k / HOUR).toFixed(2) + ' h' : '–') + ', all lists done ' + (tDone != null ? (tDone / HOUR).toFixed(2) + ' h' : '–') +
+    `, ${db.edge_rows} connections, ${(((RealDate.now() - REAL_T0) / 1e3)).toFixed(1)} s real`);
+  console.log(`\nchecks: ${pass.length} passed, ${fail.length} failed`);
+  for (const f of fail) console.log('  FAIL ' + f);
+  if (VERBOSE) for (const p of pass) console.log('  ok   ' + p);
+  const ok = !fail.length;
+  if (flag('json')) console.log('RESULT ' + JSON.stringify({ n: N, t10k, tDone, pages: seenPage.size, hits: lanes.reduce((a, L) => a + L.hits.length, 0), ok }));
+  console.log(ok ? '\nPASS' : '\nFAIL');
+  fs.writeFileSync(path.join(TMP, 'result.json'), JSON.stringify({ pass, fail, violations, switches, events: events.map((e) => ({ ...e, t: dhm(e.t) })) }, null, 1));
+  cleanup();
+  if (!flag('keep') && ok) fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
+const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 8) : [];
+(laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
+  .catch((e) => { console.error(e); cleanup(); process.exit(2); });
