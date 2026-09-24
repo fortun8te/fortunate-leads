@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 """
 
 PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified', 'bio', 'website', 'category',
-                 'followers', 'following', 'posts', 'is_business', 'bio_at')
+                 'followers', 'following', 'posts', 'is_business', 'bio_at', 'bio_src')
 # budget: per account per day (list pages, profile reads; profile 0 = no daily number). bio_min: prefilter floor for planned
 # bio reads (an explicit read ignores it).
 DEFAULTS = {'paused': False, 'budget': {'list': 3000, 'profile': 300}, 'qualify': False, 'qualify_auto': False, 'llm_workers': 8,
@@ -122,7 +122,8 @@ def init(path):
     for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'),
                              ('jobs', 'lane', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
-                             ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT')):
+                             ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
+                             ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')

@@ -1,4 +1,5 @@
 import argparse
+import biofetch
 import collections
 import time
 import json
@@ -881,6 +882,18 @@ def soak(conn, now):
     return out
 
 
+def api_biofetch_get(conn, q, b=None):
+    return biofetch.public(conn)
+
+
+def api_biofetch(conn, q, b):
+    """{"on"?, "token"?, "ig_user_id"?, "gap"?}: bios from the Meta Graph API (business_discovery), off by default."""
+    try:
+        return biofetch.save(conn, b)
+    except ValueError as e:
+        raise Bad(str(e))
+
+
 def api_qualify(conn, q, b):
     """{"on"?, "auto"?, "workers"?, "llm_min"?, "bio_min"?}: an absent key is left alone."""
     if 'on' in b and not isinstance(b['on'], bool):
@@ -1078,6 +1091,7 @@ ROUTES = [
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
+    ('GET', r'/api/settings/biofetch', api_biofetch_get), ('POST', r'/api/settings/biofetch', api_biofetch),
     ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
@@ -1639,7 +1653,7 @@ def models_step(conn):
 
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
-    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
+    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 

@@ -1715,6 +1715,7 @@ $('#wiz').addEventListener('click', (e) => {
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
 const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, busy: false };
 async function loadSettings() {
+  loadBiofetch();
   const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
   if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
   if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;
@@ -2543,3 +2544,13 @@ setInterval(loadScraper, 3000);
 setInterval(() => { if (!document.hidden) { loadCounts(); loadFacets(); } }, 30000);
 setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open && !S.pick.size) resetLeads(true); }, 45000);
 setInterval(() => { if (offlineSince) setOnline(false); if (S.view === 'scraper') renderScraper(); else renderStatus(); }, 1000);
+
+async function loadBiofetch() {
+  try { const b = await api.get('/api/settings/biofetch'); $('#bf-on').classList.toggle('on', !!b.on); $('#bf-uid').value = b.ig_user_id || '';
+    $('#bf-info').textContent = `Business and creator accounts only, via your own Meta app. Today: ${b.hits || 0} bios, ${b.misses || 0} not business${b.last_error ? ' · ' + b.last_error : ''}`; } catch (e) {}
+}
+$('#bf-on').onclick = async () => {
+  const on = !$('#bf-on').classList.contains('on'), body = { on, ig_user_id: $('#bf-uid').value };
+  if ($('#bf-tok').value) body.token = $('#bf-tok').value;
+  try { await api.post('/api/settings/biofetch', body); $('#bf-tok').value = ''; toast(on ? 'Meta bios on' : 'Meta bios off'); loadBiofetch(); } catch (e) { toast('Could not save'); }
+};
