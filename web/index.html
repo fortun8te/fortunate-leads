@@ -1,115 +1,150 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fortunate Leads</title>
 <script>
-  try { const t = localStorage.getItem('fl-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  try { const t = localStorage.getItem('fl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
   if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
 </script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<header class="bar">
-  <div class="brand">Fortunate<span>Leads</span></div>
+<aside class="side">
+  <div class="brand">Fortunate Leads</div>
   <nav class="nav">
-    <a href="#/leads" data-view="leads">Leads</a>
-    <a href="#/map" data-view="map">Map</a>
-    <a href="#/scraper" data-view="scraper">Scraper</a>
+    <a href="#/leads" data-view="leads"><span>Leads</span><b class="num" id="nav-leads"></b></a>
+    <a href="#/map" data-view="map"><span>Map</span><b class="num" id="nav-map"></b></a>
+    <a href="#/scraper" data-view="scraper"><span>Scraper</span><b class="num" id="nav-scraper"></b></a>
   </nav>
-  <div class="bar-right">
-    <a class="ext-status" href="#/scraper" id="ext-status"><i class="dot"></i><span>Offline</span></a>
-    <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme"></button>
+  <div class="grow"></div>
+  <div class="theme seg" id="theme-seg">
+    <button data-theme="dark">Dark</button><button data-theme="light">Light</button>
   </div>
-</header>
+</aside>
 
-<main>
-  <!-- Leads -->
-  <section class="view" id="view-leads">
-    <aside class="rail" id="tag-rail"></aside>
-    <div class="leads-main">
-      <div class="filters">
-        <div class="seg" id="tier-seg"></div>
-        <div class="seg seg-quiet" id="status-seg"></div>
+<div class="app">
+  <header class="status" id="status">
+    <a class="st-state" href="#/scraper"><i class="sq" id="st-sq"></i><span id="st-label">Loading</span></a>
+    <div class="st-activity" id="st-activity"></div>
+    <div class="st-metrics">
+      <div class="metric"><b class="num" id="st-ppm">–</b><span>people/min</span></div>
+      <div class="metric"><b class="num" id="st-pph">–</b><span>pages/hour</span></div>
+      <div class="metric"><b class="num" id="st-today">–</b><span>people today</span></div>
+      <div class="metric hide-sm"><b class="num" id="st-eta">–</b><span>queue ETA</span></div>
+    </div>
+    <button class="btn" id="st-pause">Pause</button>
+  </header>
+
+  <main>
+    <!-- Leads -->
+    <section class="view" id="view-leads">
+      <div class="toolbar">
+        <label class="search"><input id="q" type="search" placeholder="Search name, handle, bio" autocomplete="off"></label>
+        <select id="f-via" class="select" title="Source account"></select>
+        <select id="f-lists" class="select" title="Lists">
+          <option value="0">Any lists</option>
+          <option value="2">In 2+ lists</option>
+          <option value="3">In 3+ lists</option>
+          <option value="4">In 4+ lists</option>
+          <option value="5">In 5+ lists</option>
+        </select>
+        <select id="f-status" class="select" title="Status">
+          <option value="">Any status</option>
+          <option value="good">Good</option>
+          <option value="maybe">Maybe</option>
+          <option value="no">No</option>
+          <option value="contacted">Contacted</option>
+          <option value="client">Client</option>
+          <option value="known">Known</option>
+        </select>
+        <select id="f-tag" class="select" title="Tag"></select>
+        <button class="btn quiet" id="f-clear" hidden>Clear</button>
         <div class="grow"></div>
-        <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="q" type="search" placeholder="Search" autocomplete="off"><kbd>/</kbd></label>
-        <select id="sort" class="select">
-          <option value="score">Score</option>
-          <option value="recent">Recent</option>
+        <select id="sort" class="select" title="Sort">
+          <option value="connected">Most connected</option>
+          <option value="newest">Newest</option>
           <option value="followers">Followers</option>
         </select>
       </div>
-      <div class="active-tags" id="active-tags"></div>
-      <div class="list-head"><span id="list-total" class="num"></span><span class="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>g</kbd> good <kbd>m</kbd> maybe <kbd>x</kbd> no <kbd>o</kbd> Instagram <kbd>↵</kbd> open</span></div>
-      <div class="list-scroll" id="list-scroll">
-        <div id="list"></div>
-        <div id="sentinel" class="sentinel"></div>
+      <div class="thead">
+        <span></span><span>Person <span class="num" id="list-total"></span></span><span>Bio</span><span class="r">Followers</span><span class="r">Lists</span><span class="c-tags">Tags</span><span>Status</span>
       </div>
-    </div>
-  </section>
+      <div class="vscroll" id="list-scroll"><div class="vspace" id="list"></div></div>
+    </section>
 
-  <!-- Map -->
-  <section class="view" id="view-map">
-    <div class="map-tools">
-      <div class="seg" id="map-scope"></div>
-      <div class="seg seg-quiet" id="map-tier"></div>
-      <div class="pop-wrap">
-        <button class="btn" id="map-tags-btn">Tags</button>
-        <div class="pop" id="map-tags-pop" hidden></div>
+    <!-- Map -->
+    <section class="view" id="view-map">
+      <div class="toolbar">
+        <div class="seg" id="map-scope"><button data-scope="leads">Connected</button><button data-scope="all">All</button></div>
+        <select id="m-via" class="select" title="Source account"></select>
+        <select id="m-lists" class="select" title="Lists">
+          <option value="0">Any lists</option>
+          <option value="2">In 2+ lists</option>
+          <option value="3">In 3+ lists</option>
+          <option value="4">In 4+ lists</option>
+        </select>
+        <select id="m-tag" class="select" title="Tag"></select>
+        <div class="grow"></div>
+        <label class="search sm"><input id="map-q" type="search" placeholder="Find person" autocomplete="off"></label>
+        <button class="btn" id="map-fit">Fit</button>
       </div>
-      <div class="active-tags inline" id="map-active-tags"></div>
-      <div class="grow"></div>
-      <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="map-q" type="search" placeholder="Find person" autocomplete="off"></label>
-      <button class="btn" id="map-fit">Fit</button>
-    </div>
-    <div class="map-stage" id="map-stage">
-      <canvas id="map-canvas"></canvas>
-      <div class="hovercard" id="hovercard" hidden></div>
-      <div class="map-legend" id="map-legend"></div>
-    </div>
-  </section>
+      <div class="map-stage" id="map-stage">
+        <canvas id="map-canvas"></canvas>
+        <div class="hovercard" id="hovercard" hidden></div>
+        <div class="map-foot num" id="map-foot"></div>
+      </div>
+    </section>
 
-  <!-- Scraper -->
-  <section class="view" id="view-scraper">
-    <div class="scr">
-      <div class="scr-grid">
-        <div class="card" id="ext-card"></div>
-        <div class="card seed-card">
-          <div class="card-head"><h3>Add seeds</h3></div>
-          <textarea id="seed-input" rows="5" placeholder="@handle, instagram.com/handle, one per line"></textarea>
-          <div class="seed-row">
-            <div class="toggles">
-              <label class="tog"><input type="checkbox" id="dir-followers" checked><span>Followers</span></label>
-              <label class="tog"><input type="checkbox" id="dir-following" checked><span>Following</span></label>
+    <!-- Scraper -->
+    <section class="view" id="view-scraper">
+      <div class="scr">
+        <div class="kpis" id="kpis"></div>
+        <div class="scr-grid">
+          <div class="panel">
+            <div class="panel-head"><h3>Add accounts</h3><span class="muted num" id="seed-count"></span></div>
+            <textarea id="seed-input" rows="6" spellcheck="false" placeholder="@handle or instagram.com/handle, one per line or comma separated"></textarea>
+            <div class="seed-row">
+              <div class="seg" id="dir-seg"><button data-dir="followers" class="on">Followers</button><button data-dir="following" class="on">Following</button></div>
+              <div class="grow"></div>
+              <span class="muted" id="seed-msg"></span>
+              <button class="btn primary" id="seed-add" disabled>Queue</button>
             </div>
-            <div class="grow"></div>
-            <span class="muted" id="seed-msg"></span>
-            <button class="btn primary" id="seed-add" disabled>Add</button>
+          </div>
+          <div class="panel" id="ext-panel"></div>
+        </div>
+        <div class="panel flush">
+          <div class="panel-head pad">
+            <h3>Lists</h3>
+            <div class="seg" id="list-filter"></div>
+          </div>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr><th>Account</th><th>Direction</th><th class="w-prog">Progress</th><th class="r">%</th><th class="r">Pages left</th><th class="r">ETA</th><th>State</th><th class="r">Updated</th></tr></thead>
+              <tbody id="lists-body"></tbody>
+            </table>
           </div>
         </div>
       </div>
-      <div class="card flush">
-        <div class="card-head pad"><h3>Lists</h3><span class="muted num" id="queue-info"></span></div>
-        <table class="tbl">
-          <thead><tr><th>Seed</th><th>Direction</th><th class="w-prog">Progress</th><th>State</th><th class="r">Updated</th></tr></thead>
-          <tbody id="lists-body"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-</main>
+    </section>
+  </main>
+</div>
 
-<aside class="drawer" id="drawer" hidden>
-  <div class="drawer-inner" id="drawer-body"></div>
-</aside>
+<aside class="drawer" id="drawer" hidden><div class="drawer-inner" id="drawer-body"></div></aside>
 <datalist id="tag-options"></datalist>
 <div class="toast" id="toast" hidden></div>
 
-<script src="vendor/d3-dispatch.min.js"></script>
-<script src="vendor/d3-timer.min.js"></script>
-<script src="vendor/d3-quadtree.min.js"></script>
-<script src="vendor/d3-force.min.js"></script>
-<script src="app.js"></script>
+<script>
+  // Load in order, retrying a script that drops (a dropped local connection should not leave a blank page).
+  (function load(srcs, i, tries) {
+    if (i >= srcs.length) return;
+    const s = document.createElement('script');
+    s.src = srcs[i] + (tries ? '?retry=' + tries : '');
+    s.onload = () => load(srcs, i + 1, 0);
+    s.onerror = () => { s.remove(); if (tries < 4) setTimeout(() => load(srcs, i, tries + 1), 200 * (tries + 1)); };
+    document.body.appendChild(s);
+  })(['vendor/d3-dispatch.min.js', 'vendor/d3-timer.min.js', 'vendor/d3-quadtree.min.js', 'vendor/d3-force.min.js', 'app.js'], 0, 0);
+</script>
 </body>
 </html>

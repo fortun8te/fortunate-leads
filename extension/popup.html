@@ -1,12 +1,11 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><link rel="stylesheet" href="popup.css"><title>Fortunate Leads</title></head>
 <body>
-  <div class="status"><span id="dot"></span><span id="status">Loading</span></div>
-  <div id="job" class="muted"></div>
-  <div id="rows" class="rows">today: 0 people · 0 bios</div>
+  <div class="state"><i id="sq" class="sq"></i><span id="state">Loading</span><span id="ver" class="dim"></span></div>
+  <div id="job" class="job"></div>
   <dl>
-    <dt>List pages</dt><dd id="list">0 / 0</dd>
-    <dt>Profile reads</dt><dd id="profile">0 / 0</dd>
+    <dt>Today</dt><dd id="today">–</dd>
+    <dt>Speed</dt><dd id="speed">–</dd>
   </dl>
   <div id="error" class="error"></div>
   <div class="row"><button id="toggle">Pause</button><button id="open">Open workspace</button></div>

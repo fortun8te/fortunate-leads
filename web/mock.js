@@ -96,16 +96,44 @@
   let extraMap = 0;
   setInterval(() => { mapRev++; extraMap += 6; }, 25000);
 
+  // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
-    paused: false, budget: { list: 60, profile: 150 },
-    lists: SEEDS.flatMap((s) => ['followers', 'following'].map((d) => {
-      const total = Math.floor(400 + rnd() * 9000);
-      const st = pick(['done', 'done', 'running', 'queued', 'paused']);
-      return { seed: s, direction: d, state: s === 'packagingstudy' && d === 'following' ? 'private' : st, received: st === 'done' ? total : st === 'queued' ? 0 : Math.floor(total * rnd()), total, updated_at: new Date(Date.now() - rnd() * 86400000).toISOString(), error: null };
+    paused: false, budget: { list: 2000, profile: 150 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
+    lists: SEEDS.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
+      const total = Math.floor(400 + rnd() * 6000);
+      const st = i < 3 ? 'done' : i === 3 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
+      return { seed: s, direction: d, state: st, received: st === 'done' ? total : st === 'running' ? Math.floor(total * 0.37) : 0, total: st === 'queued' && rnd() < 0.4 ? null : total,
+        updated_at: new Date(Date.now() - rnd() * 3600000).toISOString(), error: null };
     })),
+    nextAt: Date.now() + 8000,
   };
-  const cooldown = new Date(); cooldown.setHours(16, 40, 0, 0);
-  if (cooldown < new Date()) cooldown.setTime(Date.now() + 14 * 60000);
+  function tickScraper() {
+    const now = Date.now();
+    if (scraper.paused || now < scraper.nextAt) return;
+    let l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
+    if (!l) return;
+    l.state = 'running';
+    const size = l.direction === 'following' ? 50 : 25;
+    const got = Math.min(size, (l.total ?? 99999) - l.received);
+    l.received += got; l.updated_at = new Date().toISOString();
+    scraper.today.list++; scraper.peopleToday += Math.round(got * 0.6);
+    if (l.total != null && l.received >= l.total) l.state = 'done';
+    scraper.nextAt = now + 7000 + rnd() * 5000;
+  }
+  setInterval(tickScraper, 1000);
+  function scraperView() {
+    const l = scraper.lists.find((x) => x.state === 'running');
+    const secs = Math.max(0, Math.round((scraper.nextAt - Date.now()) / 1000));
+    const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
+    return {
+      ext: { online: true, version: '3.1.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
+        last_seen: new Date().toISOString(), last_error: null,
+        activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
+        text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
+      paused: scraper.paused, people_today: scraper.peopleToday, lists: scraper.lists,
+      queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
+    };
+  }
 
   function route(method, url, body) {
     const u = new URL(url, location.origin);
@@ -159,16 +187,13 @@
       const links = edges.filter((e) => set.has(e.person_id)).map((e) => ({ source: 's:' + e.seed, target: 'p:' + e.person_id, direction: e.direction }));
       return { nodes, links, rev: mapRev * 10 + (scope === 'leads' ? 1 : 2) };
     }
-    if (path === '/api/scraper') {
-      const onl = true;
-      return { ext: { online: onl, version: '0.4.2', state: scraper.paused ? 'paused' : 'cooldown', cooldown_until: cooldown.toISOString(), today: { list: 41, profile: 97 }, budget: scraper.budget, last_seen: new Date().toISOString(), last_error: 'rate_limit: 429 on followers page' },
-        paused: scraper.paused, people_today: 2431 + Math.floor((Date.now() / 5000) % 100) * 3, lists: scraper.lists, queue: { list: 6, profile: 212 } };
-    }
+    if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
     if (path === '/api/scraper/seeds') {
-      body.handles.forEach((h) => body.directions.forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) scraper.lists.unshift({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: new Date().toISOString(), error: null }); }));
-      return { ok: true };
+      let queued = 0;
+      body.handles.forEach((h) => body.directions.forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) { queued++; scraper.lists.push({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: new Date().toISOString(), error: null }); } }));
+      return { ok: true, queued };
     }
     return null;
   }
