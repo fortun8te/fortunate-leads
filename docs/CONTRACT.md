@@ -55,10 +55,10 @@ def input_hash(person: dict, edges) -> str                     # cache key; unch
 
 Extension is a paced executor. Server owns the queue; extension owns pacing, budgets and cooldowns.
 
-- `GET  /api/ext/next` → `{"paused":bool, "job": null | {"id","kind":"list","seed","ig_id"|null,"direction","cursor"|null} | {"id","kind":"profile","handle"}}`. Lists before profiles. Leases a job for 10 min.
+- `GET  /api/ext/next` → `{"paused":bool, "job": null | {"id","kind":"list","seed","ig_id"|null,"direction","cursor"|null} | {"id","kind":"profile","handle","ig_id"|null}}`. Lists before profiles. Leases a job for 10 min.
 - `POST /api/ext/list-page` `{"job_id","seed","ig_id","direction","users":[{"ig_id","handle","name","pic_url","is_private","is_verified"}],"next_cursor":str|null,"done":bool,"total":int|null}`
 - `POST /api/ext/profile` `{"job_id":int|null,"profile":{"ig_id","handle","name","bio","website","category","followers","following","posts","is_private","is_verified","is_business","pic_url"}}` — `job_id:null` = passively captured while Michael browsed Instagram (free bio, no extra request).
-- `POST /api/ext/error` `{"job_id","code":"rate_limit|challenge|login|private|not_found|other","retry_at":iso|null,"message"}` — private/not_found finish the job; others release it.
+- `POST /api/ext/error` `{"job_id","code":"rate_limit|soft_block|challenge|login|private|not_found|other","retry_at":iso|null,"message"}` — private/not_found finish the job; others release it.
 - `POST /api/ext/heartbeat` `{"version","state":"running|idle|paused|cooldown","cooldown_until":iso|null,"today":{"list":n,"profile":n},"budget":{"list":n,"profile":n},"last_error":str|null}` every ≤30 s.
 
 All return `{"ok":true}` or `{"ok":false,"error":...}`. Server is idempotent: re-sent pages must not duplicate edges.
