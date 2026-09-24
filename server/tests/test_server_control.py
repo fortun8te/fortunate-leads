@@ -84,6 +84,10 @@ class ControlTest(LaneTest):
         self.assertEqual(self.call('/api/control', {'stage': 'x', 'action': 'pause'})[0], 400)
         self.assertEqual(self.call('/api/control', {'stage': 'lists', 'action': 'stop'})[0], 400)
         self.assertEqual(self.call('/api/ext/control')[0], 200)   # the extension reads the same model
+        # ...and switches a stage; its POSTs carry an `account` object that must not be taken for an account pause
+        out = self.post('a', '/api/ext/control', {'stage': 'bios', 'action': 'pause'})[1]
+        self.assertTrue(self.stage(out, 'bios')['paused'])
+        self.assertFalse(out['accounts'][0]['paused'])
 
 
 def load_tests(loader, tests, pattern):

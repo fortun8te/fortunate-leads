@@ -190,10 +190,11 @@ def apply(conn, b):
     if action not in ('pause', 'resume'):
         raise ValueError('action must be pause or resume')
     pause = action == 'pause'
-    if b.get('account') is not None:
+    # the extension tags every POST with its own `account` object, so only a lane id string means "this account"
+    if b.get('stage') is None and isinstance(b.get('account'), str):
         conn.execute('BEGIN IMMEDIATE')
         try:
-            accounts.edit(conn, str(b['account']), {'paused': pause})
+            accounts.edit(conn, b['account'], {'paused': pause})
         except LookupError:
             conn.rollback()
             raise
