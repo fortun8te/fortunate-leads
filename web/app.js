@@ -85,21 +85,14 @@ const isViaTag = (t) => t.startsWith('via @');
 const isListTag = (t) => /^in \d+ lists$/.test(t);
 const KIND = { manual: 'man', rule: 'rule', auto: '' };
 const MODES = ['inc', 'any', 'exc'];
-// Fit: the verdict tier, raised by the qualifier's "Fit: strong/good" tag when that says more.
+// Fit: the verdict tier under the names the UI uses (the server sends it as `fit` on map nodes).
 const FITS = ['strong', 'good', 'weak', 'unread'];
 const FIT_LABEL = { strong: 'Strong', good: 'Good', weak: 'Weak', unread: 'Unread' };
 const TIER_FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
 const FIT_TIER = { strong: 'hot', good: 'warm', weak: 'cold', unread: 'unread' };
 const isFitTag = (t) => /^Fit: /.test(t);
 const tagName = (t) => (typeof t === 'string' ? t : t.tag);
-function fitOf(r) {
-  const tier = r.tier || (r.score == null ? 'unread' : r.score >= 70 ? 'hot' : r.score >= 45 ? 'warm' : 'cold');
-  let f = TIER_FIT[tier] || 'unread';
-  const names = (r.tags || []).map(tagName);
-  if (names.includes('Fit: strong')) f = 'strong';
-  else if (names.includes('Fit: good') && FITS.indexOf(f) > 1) f = 'good';
-  return f;
-}
+const fitOf = (r) => r.fit || TIER_FIT[r.tier] || 'unread';
 function fitBadge(r, cls = '') {
   const f = fitOf(r);
   const score = f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
@@ -119,7 +112,7 @@ function connHTML(r) {
 const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
-  f: emptyFilter(), sort: store.get('sort', 'fit'), sections: null,
+  f: emptyFilter(), sort: store.get('sort', 'fit'),
   tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null, views: [], viewsLocal: false,
   rows: [], total: null, done: false, loading: false, error: false, gen: 0,
   cur: -1, open: null, person: null, seedCard: null,
@@ -232,7 +225,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'tags', 'scraper', 'accounts'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: ['leads', 'map', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -269,6 +262,7 @@ function setView(v) {
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
   $('#view-accounts').classList.toggle('on', v === 'accounts');
+  $('#view-settings').classList.toggle('on', v === 'settings');
   $('#pane-leads').classList.toggle('on', v === 'leads');
   $('#pane-map').classList.toggle('on', v === 'map');
   syncTabs();
@@ -279,6 +273,7 @@ function setView(v) {
   if (v === 'scraper') renderScraper();
   if (v === 'accounts') renderAccounts();
   if (v !== 'accounts' && A.wiz) closeWizard();
+  if (v === 'settings') loadSettings();
   if (v === 'tags') T.show();
   if (!work) hideSuggest();
 }
@@ -290,7 +285,7 @@ function filtersChanged(o = {}) {
   syncTabs();
   renderFilters(); renderTokens();
   resetLeads();
-  loadFacets();
+  loadFacets(); loadCounts();
   M.stale = true;
   if (S.view === 'map') M.reloadSoon();
 }
@@ -349,9 +344,14 @@ async function loadFacets() {
   if (!$('#suggest').hidden) suggest();
 }
 const loadFacetsSoon = debounce(loadFacets, 120);
+let countGen = 0;
 async function loadCounts() {
-  try { S.counts = await api.get('/api/counts'); } catch (e) { return; }
-  $('#n-leads').textContent = fmt(S.counts.total);
+  const g = ++countGen;
+  let d;
+  try { d = await api.get('/api/counts?' + toQuery(S.f, S.sort, false)); } catch (e) { return; }
+  if (g !== countGen) return;
+  S.counts = d;
+  $('#n-leads').textContent = fmt(d.total);
   renderFilters();
 }
 async function loadViews() {
@@ -389,10 +389,10 @@ function renderFilters() {
     <button class="fi${!active ? ' on' : ''}" data-view=""><span>Everyone</span><b>${fmt(c.total)}</b></button>
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
     <div class="fsec"><h4>Status</h4>
-    <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.total)}</b></button>
-    ${STATUSES.map((s, i) => `<button class="fi${S.f.status === s ? ' on' : ''}" data-status="${s}"><span>${ucf(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
-    <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b></b></button>
-    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>All, incl. no</span><b></b></button></div>
+    <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
+    ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}"><span>${ucf(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
+    <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b>${fmt(c.none)}</b></button>
+    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>All, incl. no</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
     <div class="fsec"><h4>Fit</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
     <div class="fsec fsegs"><h4>Shape</h4>
@@ -641,30 +641,11 @@ async function resetLeads(keep) {
   renderRows();
   await loadMore(gen, keep ? Math.max(PAGE, S.rows.length) : PAGE, keep);
 }
-// Best fit = Strong, Good, Weak, Unread laid end to end, each tier most connected first. Each tier is its own
-// request because the server's score order mixes unread people in with the rest.
-const fitOrder = () => S.sort === 'fit' && !S.f.tier;
-function leadsURL(tier, offset, limit) {
+// Best fit (sort=fit): strong, good, weak, unread, each tier most connected first, then by score.
+function fetchLeads(offset, limit) {
   const p = toQuery(S.f, S.sort, false);
-  if (tier) p.set('tier', tier);
-  p.set('sort', S.sort === 'fit' ? 'connected' : S.sort);
-  p.set('offset', offset); p.set('limit', limit);
-  return '/api/leads?' + p;
-}
-async function fetchLeads(offset, limit) {
-  if (!fitOrder()) return api.get(leadsURL('', offset, limit));
-  if (offset === 0 || !S.sections) {
-    const heads = await Promise.all(FITS.map((f) => api.get(leadsURL(FIT_TIER[f], 0, 1))));
-    S.sections = FITS.map((f, i) => heads[i].total);
-  }
-  const rows = [];
-  let start = 0;
-  for (let i = 0; i < FITS.length; i++) {
-    const from = Math.max(offset, start), to = Math.min(offset + limit, start + S.sections[i]);
-    if (to > from) rows.push(...(await api.get(leadsURL(FIT_TIER[FITS[i]], from - start, to - from))).rows);
-    start += S.sections[i];
-  }
-  return { rows, total: start };
+  p.set('sort', S.sort); p.set('offset', offset); p.set('limit', limit);
+  return api.get('/api/leads?' + p);
 }
 async function loadMore(gen = S.gen, n = PAGE, replace = false) {
   if (S.loading || (S.done && !replace)) return;
@@ -934,11 +915,7 @@ function seedEdges(edges) {
   return [...m];
 }
 const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
-function evidenceOf(v) {
-  let ev = v && v.evidence;
-  if (typeof ev === 'string') { try { ev = JSON.parse(ev); } catch (e) { ev = [ev]; } }
-  return (Array.isArray(ev) ? ev : []).filter((q) => typeof q === 'string' && q.trim());
-}
+const evidenceOf = (v) => (Array.isArray(v?.evidence) ? v.evidence : []).filter((q) => typeof q === 'string' && q.trim());
 function renderDetail() {
   if (S.seedCard) return renderSeedCard();
   const p = S.person;
@@ -1037,7 +1014,7 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
-    const to = { l: 'leads', m: 'map', t: 'tags', s: 'scraper', a: 'accounts' }[k];
+    const to = { l: 'leads', m: 'map', t: 'tags', s: 'scraper', a: 'accounts', ',': 'settings' }[k];
     if (to) { location.hash = hashFor(to); e.preventDefault(); }
     return;
   }
@@ -1319,7 +1296,7 @@ function renderStatus() {
     const html = accs.map((a) => `<i class="dot ${ST_DOT[a.status] || ''}" title="${esc(a.name)} · ${esc(ST_LABEL[a.status] || a.status)}"></i>`).join('');
     if (lanes.innerHTML !== html) lanes.innerHTML = html;
     const busy = accs.filter((a) => a.status === 'running').length;
-    if (st.label === 'running') $('#st-label').textContent = `running · ${busy}/${accs.length}`;
+    if (st.label === 'Running') $('#st-label').textContent = `Running · ${busy}/${accs.length}`;
   }
   const alerts = (sc?.alerts || []).filter((x) => x.level === 'error').length;
   $('#n-acc').textContent = alerts ? '!' + alerts : accs.length > 1 ? String(accs.length) : '';
@@ -1329,6 +1306,7 @@ async function loadScraper() {
   renderStatus();
   if (S.view === 'scraper') renderScraper();
   if (S.view === 'accounts') renderAccounts();
+  if (S.view === 'settings') renderSettings();
 }
 $('#pause-btn').onclick = async () => {
   if (!S.sc) return;
@@ -1429,10 +1407,10 @@ $('#seed-add').onclick = async () => {
 };
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
-const ST_LABEL = { running: 'running', online: 'online', cooldown: 'cooldown', needs_login: 'needs login', challenge: 'security check', offline: 'offline', paused: 'paused' };
+const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
 const ST_DOT = { running: 'run', online: 'on', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
-const ROLES = [['lists', 'lists'], ['bios', 'bios'], ['both', 'both']];
-const A = { wiz: null, setup: null, confirm: null, busy: new Set() };
+const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
+const A = { wiz: null, setup: null, confirm: null, renaming: null, busy: new Set(), dismissed: false };
 
 async function copyText(text, btn) {
   let ok = false;
@@ -1440,50 +1418,54 @@ async function copyText(text, btn) {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
     try { ok = document.execCommand('copy'); } catch (e2) { /* no clipboard */ } ta.remove();
   }
-  if (btn) { btn.textContent = ok ? 'copied' : 'copy failed'; setTimeout(() => { btn.textContent = 'copy'; }, 1400); }
+  if (btn) { btn.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { btn.textContent = 'Copy'; }, 1400); }
 }
-const copyRow = (text, label) => `<div class="copy"><code title="${esc(text)}">${esc(label || text)}</code><button class="btn" data-copy="${esc(text)}">copy</button></div>`;
+const copyRow = (text, label) => `<div class="copy"><code title="${esc(text)}">${esc(label || text)}</code><button class="btn" data-copy="${esc(text)}">Copy</button></div>`;
 
 function jobText(a) {
-  if (a.job) return a.job.kind === 'list' ? `@${a.job.seed} ${a.job.direction}` : `bio of @${a.job.handle}`;
-  if (a.status === 'needs_login') return 'Waiting for you to log in';
+  if (a.job) return a.job.kind === 'list' ? `@${a.job.seed} ${a.job.direction}` : `Bio of @${a.job.handle}`;
+  if (a.status === 'needs_login') return 'Waiting for a login';
   if (a.status === 'challenge') return 'Waiting for the security check';
   if (a.status === 'offline') return 'Last seen ' + ago(a.last_seen) + ' ago';
-  return a.activity || a.text || 'Idle';
+  return ucf(a.activity || a.text || 'Idle');
 }
 function stateText(a) {
-  const base = ST_LABEL[a.status] || a.status;
+  const base = ST_LABEL[a.status] || ucf(a.status);
   return a.status === 'cooldown' && a.cooldown_until ? `${base} ${left(a.cooldown_until)}` : base;
 }
-function accountCard(a) {
+function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
-  const conf = A.confirm === a.lane_id;
+  const conf = A.confirm === a.lane_id, warn = a.status === 'needs_login' || a.status === 'challenge';
   const stat = (label, val, sub) => `<div><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
-  return `<article class="acard${a.status === 'needs_login' || a.status === 'challenge' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <header><i class="dot ${ST_DOT[a.status] || ''}"></i><b class="aname">${esc(a.name)}</b>${a.is_main ? '<span class="pill">main</span>' : ''}
-      <span class="grow"></span><span class="astate">${esc(stateText(a))}</span></header>
-    <div class="astats">
-      ${stat('Pages/h', int(h.pages))}
-      ${stat('People/h', int(h.people))}
-      ${stat('Today', int(t.list), `of ${fmt(b.list)} · ${int(t.profile)} bios`)}
-      ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'none')}
+  const name = A.renaming === a.lane_id
+    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(a.label || '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
+    : `<b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}<button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
+  return `<section class="acc${warn ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
+    <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
+      <span class="grow"></span><span class="acc-state${warn ? ' bad' : ''}">${esc(stateText(a))}</span></div>
+    <div class="acc-now"><span class="muted">Now</span><span title="${esc(jobText(a))}">${esc(jobText(a))}</span></div>
+    <div class="acc-stats">
+      ${stat('Pages/hour', int(h.pages))}
+      ${stat('People/hour', int(h.people))}
+      ${stat('Pages today', int(t.list), 'of ' + int(b.list))}
+      ${stat('Bios today', int(t.profile), b.profile ? 'of ' + int(b.profile) : 'no daily cap')}
+      ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'None')}
     </div>
-    <div class="ajob"><span class="muted">Now</span><span class="ajob-t" title="${esc(jobText(a))}">${esc(jobText(a))}</span></div>
-    <div class="actl">
+    <div class="acc-ctl">
       <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main title="Your own account: bios only unless a list share is set"><i></i><span>main</span></button>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
       <span class="grow"></span>
-      <button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'resume' : 'pause'}</button>
+      <form class="acc-bud" data-bud>
+        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric"><span class="muted">pages/day</span></label>
+        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric"><span class="muted">bios/day</span></label>
+        <button class="btn">Save</button>
+      </form>
     </div>
-    <div class="actl">
-      <label class="bud"><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}"><span class="muted">pages/day</span></label>
-      <label class="bud"><input class="input" type="number" min="0" max="300" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}"><span class="muted">bios/day</span></label>
-      <button class="btn" data-save>save</button>
+    <div class="acc-foot"><span class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 100)) : ''}</span>
       <span class="grow"></span>
-      <button class="btn ${conf ? 'solid' : 'ghost'}" data-remove>${conf ? 'confirm remove' : 'remove'}</button>
-    </div>
-    <footer class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 90)) : ''}</footer>
-  </article>`;
+      <button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button>
+      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
+  </section>`;
 }
 
 function renderAccounts() {
@@ -1492,11 +1474,20 @@ function renderAccounts() {
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
-  $('#acc-sum').textContent = accs.length ? `${online} of ${plural(accs.length, 'account')} online · ${int(r.pages_last_hour)} pages · ${int(r.people_last_hour)} people this hour` : '';
+  const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
+  const kpi = (label, val, sub) => `<div class="kpi"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  $('#acc-kpis').innerHTML = [
+    kpi('Online', `${online}/${accs.length}`, accs.length ? plural(accs.filter((a) => a.status === 'running').length, 'working', 'working') : 'No accounts yet'),
+    kpi('Pages/hour', int(r.pages_last_hour), 'All accounts'),
+    kpi('People/hour', int(r.people_last_hour), r.last_hit_at ? 'Limit ' + ago(r.last_hit_at) + ' ago' : 'No limit hits'),
+    kpi('Today', int(pages), plural(bios, 'bio') + ' read'),
+  ].join('');
+  $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
-  const cards = $('#acc-cards');
-  if (cards.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // don't clobber typing
-  cards.innerHTML = accs.length ? accs.map(accountCard).join('') : (A.wiz ? '' : '<div class="empty muted">No account has checked in yet</div>');
+  const list = $('#acc-list');
+  if (list.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // don't clobber typing
+  list.innerHTML = accs.length ? accs.map(accountRow).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'No account has checked in yet.'}</div>`;
+  if (A.renaming) { const i = $('#acc-label'); if (i && document.activeElement !== i) { i.focus(); i.select(); } }
   if (A.wiz) renderWizard();
 }
 
@@ -1509,42 +1500,59 @@ async function editAccount(lane, body, msg) {
     if (a && r.account) Object.assign(a, r.account);
     renderAccounts(); renderStatus();
     if (msg) toast(msg);
-  } catch (e) { toast(e.status === 400 ? e.message : 'could not save'); }
+  } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not save'); }
   finally { A.busy.delete(lane); }
   loadScraper();
 }
-$('#acc-cards').addEventListener('click', async (e) => {
-  const card = e.target.closest('[data-lane]');
-  if (!card) return;
-  const lane = card.dataset.lane, a = S.sc?.accounts?.find((x) => x.lane_id === lane);
-  if (!a) return;
+$('#acc-list').addEventListener('click', async (e) => {
+  const row = e.target.closest('[data-lane]');
+  if (!row) return;
+  const lane = row.dataset.lane, a = S.sc?.accounts?.find((x) => x.lane_id === lane);
   const t = e.target.closest('button');
-  if (!t) return;
+  if (!a || !t || t.type === 'submit' && t.closest('form')) return;
   if (!t.hasAttribute('data-remove') && A.confirm) { A.confirm = null; renderAccounts(); }
-  if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${t.dataset.role}`);
-  if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer main` : `${a.name} is main: bios only`);
+  if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${ROLES.find((x) => x[0] === t.dataset.role)[1].toLowerCase()}`);
+  if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer the main account` : `${a.name} is the main account`);
   if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);
-  if (t.hasAttribute('data-save')) {
-    const val = (k) => { const v = card.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : Math.max(0, Math.round(+v)); };
-    const list = val('list'), profile = val('profile');
-    document.activeElement?.blur();
-    return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, 'budget saved');
-  }
+  if (t.hasAttribute('data-rename')) { A.renaming = lane; A.confirm = null; return renderAccounts(); }
+  if (t.hasAttribute('data-ren-x')) { A.renaming = null; return renderAccounts(); }
   if (t.hasAttribute('data-remove')) {
-    if (A.confirm !== lane) { A.confirm = lane; renderAccounts(); return; }
+    if (A.confirm !== lane) {
+      A.confirm = lane; renderAccounts();
+      setTimeout(() => { if (A.confirm === lane) { A.confirm = null; renderAccounts(); } }, 4000);
+      return;
+    }
     A.confirm = null;
-    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (e) { toast('could not remove'); }
+    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast('Could not remove'); }
     loadScraper();
   }
 });
-$('#acc-cards').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && e.target.matches('[data-b]')) e.target.closest('[data-lane]').querySelector('[data-save]').click();
+$('#acc-list').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const row = e.target.closest('[data-lane]'), lane = row?.dataset.lane;
+  if (!lane) return;
+  if (e.target.hasAttribute('data-ren')) {
+    const label = $('#acc-label').value.trim();
+    A.renaming = null;
+    document.activeElement?.blur();
+    return editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
+  }
+  if (e.target.hasAttribute('data-bud')) {
+    const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
+    const list = val('list'), profile = val('profile');
+    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Budgets are whole numbers, 0 or more'); return; }
+    document.activeElement?.blur();
+    return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, list == null && profile == null ? 'Using the default budget' : 'Budget saved');
+  }
+});
+$('#acc-list').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && e.target.id === 'acc-label') { e.stopPropagation(); A.renaming = null; renderAccounts(); }
 });
 
 // Add-account wizard: three steps, ticked as the new profile's extension checks in and reports its account.
 async function openWizard() {
   const accs = S.sc?.accounts || [];
-  A.wiz = { base: new Set(accs.map((a) => a.lane_id)), lane: null, acct: null, poll: null };
+  A.wiz = { base: new Set(accs.map((a) => a.lane_id)), acct: null, poll: null };
   $('#wiz').hidden = false; $('#acc-add').hidden = true;
   if (!A.setup) { try { A.setup = await api.get('/api/setup'); } catch (e) { /* shown as unknown */ } }
   renderWizard();
@@ -1562,8 +1570,7 @@ async function pollWizard() {
   try { d = await api.get('/api/accounts'); } catch (e) { return; }
   if (!A.wiz) return;
   const fresh = d.accounts.filter((a) => !A.wiz.base.has(a.lane_id));
-  const pick = fresh.find((a) => a.ig_id) || fresh[0];
-  if (pick) { A.wiz.lane = pick.lane_id; A.wiz.acct = pick; }
+  A.wiz.acct = fresh.find((a) => a.ig_id) || fresh[0] || null;
   renderWizard();
 }
 function renderWizard() {
@@ -1573,12 +1580,12 @@ function renderWizard() {
   const done = [!!a, !!a, !!(a && a.ig_id && !a.hold)];
   const step = (i, title, body) => `<li class="${done[i] ? 'done' : done.slice(0, i).every(Boolean) ? 'cur' : ''}">
     <span class="n">${done[i] ? '<i class="tick"></i>' : i + 1}</span><div><b>${title}</b>${body}</div></li>`;
-  const who = a ? (a.ig_id ? (a.handle ? '@' + a.handle : 'account ' + a.ig_id) : 'extension checked in, no Instagram login yet') : 'waiting for the extension to check in';
-  $('#wiz').innerHTML = `<div class="p-head"><h3>Add account</h3><div class="grow"></div><span class="muted wiz-who">${esc(who)}</span>
-      <button class="btn ghost" id="wiz-x">${done[2] ? 'done' : 'close'}</button></div>
+  const who = a ? (a.ig_id ? (a.handle ? 'Connected: @' + a.handle : 'Connected: account ' + a.ig_id) : 'Extension checked in, not logged in yet') : 'Waiting for the extension';
+  $('#wiz').innerHTML = `<div class="p-head"><h3>Add account</h3><span class="muted wiz-who">${esc(who)}</span><div class="grow"></div>
+      <button class="btn${done[2] ? ' solid' : ''}" id="wiz-x">${done[2] ? 'Done' : 'Close'}</button></div>
     <ol class="steps">
-      ${step(0, 'Create a Chrome profile', `<p>Profile menu, then Add, then Continue without an account. One profile per Instagram account.</p>${copyRow('chrome://profile-picker')}`)}
-      ${step(1, 'Load the extension in it', `<p>Open extensions, turn on Developer mode, click Load unpacked and pick this folder.</p>${copyRow('chrome://extensions')}${copyRow(s.extension_path || 'extension/ in the repo')}
+      ${step(0, 'Create a Chrome profile', `<p>Chrome profile menu, Add, Continue without an account. One profile per Instagram account.</p>${copyRow('chrome://profile-picker')}`)}
+      ${step(1, 'Load the extension', `<p>In the new profile: open Extensions, turn on Developer mode, Load unpacked, pick this folder.</p>${copyRow('chrome://extensions')}${copyRow(s.extension_path || 'extension/ in the repo')}
         <p class="muted num">Extension id ${esc(s.extension_id || '–')}${s.extension_version ? ' · v' + esc(s.extension_version) : ''}</p>`)}
       ${step(2, 'Log in to Instagram', `<p>Log in with the account this profile should use and keep one Instagram tab open.</p>${copyRow('https://www.instagram.com/')}`)}
     </ol>`;
@@ -1588,6 +1595,136 @@ $('#wiz').addEventListener('click', (e) => {
   const c = e.target.closest('[data-copy]');
   if (c) return copyText(c.dataset.copy, c);
   if (e.target.closest('#wiz-x')) closeWizard();
+});
+
+// ---------- settings (qualification, OpenRouter keys and models, local services) ----------
+const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, busy: false };
+async function loadSettings() {
+  const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
+  if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
+  if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;
+  renderSettings();
+  if (!SET.health) checkHealth();
+}
+async function checkHealth() {
+  SET.health = 'checking'; renderServices();
+  try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = null; }
+  renderServices();
+}
+const upText = (up) => (up == null ? 'Checking' : up ? 'Running' : 'Not running');
+function renderServices() {
+  const h = SET.health && SET.health !== 'checking' ? SET.health : null, l = SET.llm;
+  const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
+  $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
+    + row('Laya sidecar', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Optional. Start it with python3 sidecar/laya_server.py (see docs/SETUP.md).');
+}
+function keyStatus(p) {
+  if (p.disabled) return { text: 'Refused', cls: 'bad' };
+  const until = Object.values(p.cooldowns || {}).sort().pop();
+  if (until) return { text: 'Cooling until ' + new Date(until).toTimeString().slice(0, 5), cls: 'warn' };
+  return { text: 'Ready', cls: '' };
+}
+function renderSettings() {
+  const l = SET.llm, sc = S.sc;
+  $('#set-q-on').classList.toggle('on', !!sc?.qualify);
+  $('#set-q-auto').classList.toggle('on', !!sc?.qualify_auto);
+  const f = $('#set-q');
+  if (l && !f.contains(document.activeElement)) { $('#set-workers').value = l.workers; $('#set-llm-min').value = l.llm_min; $('#set-bio-min').value = l.bio_min; }
+  if (SET.share != null && document.activeElement?.id !== 'set-share') $('#set-share').value = Math.round(SET.share * 100);
+  renderServices();
+  const keys = (l?.providers || []).filter((p) => p.key);
+  $('#set-keys-n').textContent = l ? plural(keys.length, 'key') : '';
+  $('#set-file').textContent = l?.config || '';
+  $('#set-keys').innerHTML = !l ? `<tr><td colspan="5" class="muted">Loading</td></tr>` : keys.length ? keys.map((p) => {
+    const st = keyStatus(p), t = SET.tests[p.id], today = Object.values(p.requests_today || {}).reduce((a, b) => a + b, 0);
+    const test = t === 'run' ? 'Testing' : t ? (t.passed ? `Works, ${t.ms} ms` : t.error) : p.last_error || '';
+    const conf = SET.confirm === p.id;
+    return `<tr><td class="mono">${esc(p.key)}</td><td class="hide-sm muted">${p.source === 'env' ? 'Environment' : 'Settings'}</td>
+      <td><span class="kst ${st.cls}">${esc(st.text)}</span></td><td class="r num">${int(today)}</td>
+      <td class="hide-sm key-note${t && !t.passed && t !== 'run' ? ' bad' : ''}" title="${esc(test)}">${esc(test)}</td>
+      <td class="r"><span class="acts"><button data-ktest="${esc(p.id)}"${t === 'run' ? ' disabled' : ''}>Test</button>${p.source === 'env' ? '' : `<button data-kdel="${esc(p.id)}" class="${conf ? 'warn' : ''}">${conf ? 'Confirm' : 'Remove'}</button>`}</span></td></tr>`;
+  }).join('') : `<tr><td colspan="6" class="muted">No keys yet. Free models work with a free OpenRouter key.</td></tr>`;
+  if (l && document.activeElement?.id !== 'set-limit') $('#set-limit').value = l.daily_limit;
+  renderModels();
+}
+function renderModels() {
+  const ms = SET.models || [];
+  $('#set-models').innerHTML = ms.length ? ms.map((m, i) => `<li><span class="num muted">${i + 1}</span><code>${esc(m)}</code>${/:free$/.test(m) ? '<span class="pill">Free</span>' : ''}<span class="grow"></span>
+    <button class="btn ghost" data-mup="${i}" title="Try earlier"${i ? '' : ' disabled'}>Up</button><button class="btn ghost" data-mdown="${i}" title="Try later"${i < ms.length - 1 ? '' : ' disabled'}>Down</button><button class="btn ghost" data-mdel="${i}">Remove</button></li>`).join('')
+    : '<li class="muted">No models</li>';
+  $('#set-models-save').disabled = !SET.dirty;
+}
+$('#set-q-on').onclick = async () => {
+  const on = !S.sc?.qualify;
+  try { await api.post('/api/settings/qualify', { on }); toast(on ? 'Qualify on' : 'Qualify off'); await loadScraper(); renderSettings(); } catch (e) { toast('Could not save'); }
+};
+$('#set-q-auto').onclick = async () => {
+  const auto = !S.sc?.qualify_auto;
+  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast('Could not save'); }
+};
+$('#set-q').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const n = (id) => { const v = $(id).value.trim(); return /^\d+$/.test(v) ? +v : NaN; };
+  const body = { workers: n('#set-workers'), llm_min: n('#set-llm-min'), bio_min: n('#set-bio-min') };
+  if (Object.values(body).some(Number.isNaN)) { toast('Whole numbers only'); return; }
+  try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+});
+$('#set-share-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const v = $('#set-share').value.trim();
+  if (!/^\d+$/.test(v) || +v > 100) { toast('A share from 0 to 100 %'); return; }
+  try { const r = await api.post('/api/settings/accounts', { main_list_share: +v / 100 }); SET.share = r.main_list_share; toast(+v ? `Main account takes up to ${v} % of list pages` : 'Main account reads bios only'); document.activeElement?.blur(); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+});
+$('#set-key-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const key = $('#set-key').value.trim();
+  if (!key) return;
+  try { await api.post('/api/llm/keys', { key }); $('#set-key').value = ''; toast('Key added'); loadSettings(); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add the key'); }
+});
+$('#set-limit-f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const v = $('#set-limit').value.trim();
+  if (!/^\d+$/.test(v)) { toast('A whole number, 0 for no limit'); return; }
+  try { await api.post('/api/llm/models', { daily_limit: +v }); toast('Daily limit saved'); document.activeElement?.blur(); loadSettings(); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+});
+$('#set-model-f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const m = $('#set-model').value.trim();
+  if (!/^[\w.-]+\/[\w.:-]+$/.test(m)) { toast('Model ids look like vendor/model:free'); return; }
+  if (!SET.models.includes(m)) { SET.models.push(m); SET.dirty = true; }
+  $('#set-model').value = ''; renderModels();
+});
+$('#set-models-save').onclick = async () => {
+  // free models first (they cost nothing), keeping the chosen order inside each group
+  const models = [...SET.models.filter((m) => /:free$/.test(m)), ...SET.models.filter((m) => !/:free$/.test(m))];
+  try { await api.post('/api/llm/models', { models }); SET.dirty = false; toast('Models saved'); loadSettings(); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+};
+$('#view-settings').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.id === 'set-recheck') return checkHealth();
+  const ms = SET.models;
+  const swap = (i, j) => { [ms[i], ms[j]] = [ms[j], ms[i]]; SET.dirty = true; renderModels(); };
+  if (b.dataset.mup) return swap(+b.dataset.mup, +b.dataset.mup - 1);
+  if (b.dataset.mdown) return swap(+b.dataset.mdown, +b.dataset.mdown + 1);
+  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model'); return; }
+  if (b.dataset.ktest) {
+    const id = b.dataset.ktest;
+    SET.tests[id] = 'run'; renderSettings();
+    try { SET.tests[id] = await api.post(`/api/llm/keys/${id}/test`, {}); } catch (err) { SET.tests[id] = { passed: false, error: 'Could not reach the server' }; }
+    return loadSettings();
+  }
+  if (b.dataset.kdel) {
+    const id = b.dataset.kdel;
+    if (SET.confirm !== id) { SET.confirm = id; renderSettings(); setTimeout(() => { if (SET.confirm === id) { SET.confirm = null; renderSettings(); } }, 3000); return; }
+    SET.confirm = null;
+    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not remove'); }
+    return loadSettings();
+  }
 });
 
 // ---------- map ----------

@@ -186,16 +186,59 @@
     </section>
 
     <section class="view" id="view-accounts">
-      <div class="scr accs">
+      <div class="scr">
         <div class="alerts" id="acc-alerts"></div>
-        <div class="acc-head">
-          <h2>Accounts</h2>
-          <span class="num muted" id="acc-sum"></span>
-          <div class="grow"></div>
-          <button class="btn solid" id="acc-add">Add account</button>
-        </div>
+        <div class="kpis kpis-4" id="acc-kpis"></div>
         <div class="panel wiz" id="wiz" hidden></div>
-        <div class="cards" id="acc-cards"></div>
+        <div class="panel">
+          <div class="p-head"><h3>Accounts</h3><span class="num muted" id="acc-n"></span><div class="grow"></div><button class="btn solid" id="acc-add">Add account</button></div>
+          <div id="acc-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="scr">
+        <div class="grid2">
+          <div class="panel">
+            <div class="p-head"><h3>Qualification</h3></div>
+            <div class="p-body">
+              <div class="set-row"><div><b>Qualify</b><span class="muted">Read bios and judge fit</span></div><button class="toggle" id="set-q-on"><i></i></button></div>
+              <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switch on by itself once every queued list is done</span></div><button class="toggle" id="set-q-auto"><i></i></button></div>
+              <form class="budget" id="set-q" novalidate>
+                <label><span class="muted">Model calls at once</span><input class="input" id="set-workers" type="number" min="1" max="16" inputmode="numeric"></label>
+                <label title="Combined network and profile score a person needs before a model reads them"><span class="muted">Model threshold</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label>
+                <label title="Planned bio reads skip people below this prefilter score; Read now still works"><span class="muted">Bio floor</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label>
+                <button class="btn">Save</button>
+              </form>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="p-head"><h3>Services</h3><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
+            <div class="p-body"><div id="set-svc"></div>
+              <form class="budget" id="set-share-f" novalidate>
+                <label title="Your own account reads bios only at 0; above 0 it may take this share of list pages"><span class="muted">Main account list share, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label>
+                <button class="btn">Save</button>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="p-head"><h3>OpenRouter keys</h3><span class="num muted" id="set-keys-n"></span><div class="grow"></div><span class="muted num hide-sm" id="set-file"></span></div>
+          <div class="tbl-wrap"><table class="tbl tg-tbl">
+            <thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead>
+            <tbody id="set-keys"></tbody>
+          </table></div>
+          <div class="set-forms">
+            <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
+            <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric"><button class="btn">Save</button></form>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="p-head"><h3>Models</h3><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
+          <ol class="models" id="set-models"></ol>
+          <form class="set-inline set-forms" id="set-model-f"><input class="input grow" id="set-model" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
+        </div>
       </div>
     </section>
   </main>

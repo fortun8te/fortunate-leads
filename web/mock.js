@@ -186,11 +186,11 @@
     const [role, base] = ROLE_BASE[p._role];
     const n = lists(p.id);
     const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('knows you') + rnd() * 16 - 6)));
-    if (!p.bio) { verdicts.set(p.id, { score: Math.min(60, 20 + 8 * n), tier: 'unread', role: null, reason: n > 1 ? `In ${n} lists, bio not read yet` : 'Bio not read yet', model: null, evidence: '[]' }); return; }
+    if (!p.bio) { verdicts.set(p.id, { score: Math.min(60, 20 + 8 * n), tier: 'unread', role: null, reason: n > 1 ? `In ${n} lists, bio not read yet` : 'Bio not read yet', model: null, evidence: [] }); return; }
     const llm = chance(0.6);
     const tier = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
     const evidence = llm ? p.bio.split(' · ').slice(0, 2).concat(p.website ? [p.website.replace('https://', '')] : []) : [];
-    verdicts.set(p.id, { score, tier, role, reason: REASON[role](p), model: llm ? 'meta-llama/llama-3.3-70b-instruct:free' : 'rules', evidence: JSON.stringify(evidence) });
+    verdicts.set(p.id, { score, tier, role, reason: REASON[role](p), model: llm ? 'z-ai/glm-5.2:free' : 'rules', evidence });
     const fit = llm && role === 'buyer' && score >= 75 ? 'Fit: strong' : llm && ['buyer', 'connector'].includes(role) && score >= 55 ? 'Fit: good' : null;
     if (fit) t.push({ tag: fit, grp: 'signal', source: 'auto' });
   });
@@ -237,12 +237,16 @@
       return true;
     });
   }
+  const TIER_RANK = { hot: 0, warm: 1, cold: 2, unread: 3 };
+  const FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
   function sorted(list, sort) {
     const cmp = {
       connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
       followers: (a, b) => b.followers - a.followers,
       recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
       score: (a, b) => verdicts.get(b.id).score - verdicts.get(a.id).score || b.followers - a.followers,
+      fit: (a, b) => TIER_RANK[verdicts.get(a.id).tier] - TIER_RANK[verdicts.get(b.id).tier] || lists(b.id) - lists(a.id)
+        || verdicts.get(b.id).score - verdicts.get(a.id).score,
     }[sort] || ((a, b) => lists(b.id) - lists(a.id));
     return list.sort((a, b) => cmp(a, b) || a.id - b.id);
   }
@@ -263,7 +267,7 @@
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
-    paused: false, qualify: false, budget: { list: 2000, profile: 150 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
+    paused: false, qualify: false, qualify_auto: true, budget: { list: 3000, profile: 300 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
     lists: SEED_LIST.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
       const total = Math.floor(400 + rnd() * 6000);
       const st = i < 6 ? 'done' : i === 6 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
@@ -288,8 +292,8 @@
   // Accounts: four Chrome profiles; one is logged out and its list moved on, one is cooling down.
   const ago_ = (ms) => new Date(Date.now() - ms).toISOString();
   const H = 3600000;
-  const acct = (o) => ({ label: null, role: 'both', is_main: false, paused: false, budget_custom: false, budget: { list: 2000, profile: 150 },
-    version: '3.4.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
+  const acct = (o) => ({ label: null, role: 'both', is_main: false, paused: false, budget_custom: false, budget: { list: 3000, profile: 300 },
+    version: '3.5.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
     rate: null, last_limit: null, today: { list: 0, profile: 0 }, hour: { pages: 0, people: 0 }, activity: null, text: null, job: null, lists: [],
     last_seen: ago_(3000), first_seen: ago_(9 * 24 * H), ...o, name: '@' + o.handle });
   const accounts = [
@@ -312,6 +316,16 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
+  const settings = { main_list_share: 0 };
+  const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
+    keys: [
+      { id: '3f9a1c02be', key: 'sk-…8c1d', source: 'file', disabled: false, cooldowns: {}, requests_today: { 'z-ai/glm-5.2:free': 412, 'google/gemma-4-31b-it:free': 38 }, last_error: null },
+      { id: '7d20e4a911', key: 'sk-…04fa', source: 'file', disabled: false, cooldowns: { 'z-ai/glm-5.2:free': new Date(Date.now() + 42 * 60000).toISOString() }, requests_today: { 'z-ai/glm-5.2:free': 1000 }, last_error: 'z-ai/glm-5.2:free: HTTP 429' },
+      { id: 'c51b7e2f08', key: 'sk-…e7b2', source: 'env', disabled: true, cooldowns: {}, requests_today: {}, last_error: 'z-ai/glm-5.2:free: HTTP 401' },
+    ] };
+  const llmView = () => ({ providers: [{ id: 'proxy', name: 'proxy', url: 'http://127.0.0.1:18741/api/v1/chat/completions', key: null, source: null, disabled: false, cooldowns: {}, requests_today: {}, last_error: null },
+    ...llm.keys.map((k) => ({ ...k, name: 'openrouter', url: 'https://openrouter.ai/api/v1/chat/completions' }))], models: llm.models, daily_limit: llm.daily_limit,
+    workers: llm.workers, llm_min: llm.llm_min, bio_min: llm.bio_min, laya: { url: 'http://127.0.0.1:18742', up: true }, config: 'data/openrouter.json', verdicts: { llm: 1180, rules: 1100 } });
   let wizardLane = null;
   function startWizardLane() {   // a new profile's extension checks in, then reports its logged-in account
     if (wizardLane) return;
@@ -326,12 +340,12 @@
     const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
     const w = (k) => ({ pages: Math.round(342 / k), people: Math.round(11280 / k), new_people: Math.round(6400 / k), profiles: 0 });
     return {
-      ext: { online: true, version: '3.1.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
+      ext: { online: true, version: '3.5.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
         last_seen: now(), last_error: null,
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
-      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: true, soak: { '1h': w(1), '6h': w(1 / 5.6) },
+      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
@@ -423,9 +437,13 @@
       if (i >= 0) views.splice(i, 1);
       return { ok: true };
     }
-    if (path === '/api/counts') {
-      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, total: 0, with_bio: 0 };
-      people.forEach((p) => { const s = marks.get(p.id); c[verdicts.get(p.id).tier]++; if (s) c[s]++; if (s === 'no') return; c.total++; if (p.bio) c.with_bio++; });
+    if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
+      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
+      const without = (k) => { const x = new URLSearchParams(q); x.delete(k); return x; };
+      filtered(without('tier')).forEach((p) => { c[verdicts.get(p.id).tier]++; });
+      const st = without('status'); if (!st.get('status')) st.set('status', 'all');
+      filtered(st).forEach((p) => { const s = marks.get(p.id) || 'none'; c[s]++; if (s !== 'no') c.open++; });
+      people.forEach((p) => { if (p.bio) c.with_bio++; });
       return c;
     }
     if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
@@ -450,17 +468,40 @@
       list.forEach((p) => {
         const ss = [...new Set(edges.get(p.id).map((e) => e.seed))];
         nodes.push({ id: 'p:' + p.id, kind: 'lead', label: p.handle, handle: p.handle, name: p.name, pic: p.pic, degree: ss.length, lists: ss.length,
-          status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag).slice(0, 4), seeds: ss, ...verdictFields(p.id) });
+          status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag).slice(0, 4), seeds: ss, ...verdictFields(p.id),
+          fit: FIT[verdicts.get(p.id).tier] });
         edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction }); });
       });
       return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
     }
     if (path === '/api/scraper') return scraperView();
-    if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: 0 }; }
+    if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
+    if (path === '/api/settings/accounts') { settings.main_list_share = +body.main_list_share; return { ok: true, main_list_share: settings.main_list_share }; }
+    if (path === '/api/llm') return llmView();
+    if (path === '/api/llm/health') return { proxy: { url: 'http://127.0.0.1:18741', up: false }, laya: { url: 'http://127.0.0.1:18742', up: true } };
+    if (path === '/api/llm/keys') {
+      const k = String(body.key || '').trim();
+      if (k.length < 16) return { ok: false, error: 'that does not look like an API key' };
+      const id = Math.abs([...k].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7)).toString(16).padStart(10, '0').slice(0, 10);
+      llm.keys.push({ id, key: 'sk-…' + k.slice(-4), source: 'file', disabled: false, cooldowns: {}, requests_today: {}, last_error: null });
+      return { ok: true, id };
+    }
+    if ((m = path.match(/^\/api\/llm\/keys\/(\w+)\/(test|remove)$/))) {
+      const i = llm.keys.findIndex((x) => x.id === m[1]);
+      if (i < 0) return null;
+      if (m[2] === 'remove') { llm.keys.splice(i, 1); return { ok: true }; }
+      const passed = !llm.keys[i].disabled;
+      return { ok: true, passed, model: llm.models[0], ms: 840, error: passed ? null : 'HTTP 401 (key refused)' };
+    }
+    if (path === '/api/llm/models') {
+      if (body.models) llm.models = body.models;
+      if (body.daily_limit != null) llm.daily_limit = body.daily_limit;
+      return { ok: true, models: llm.models, daily_limit: llm.daily_limit };
+    }
     if (path === '/api/setup') {
       startWizardLane();
       return { repo: '/Users/michael/fortunate-leads', extension_path: '/Users/michael/fortunate-leads/extension', extension_id: 'fgdbghllamedgihmdcolaggnbhnakjnf',
-        extension_version: '3.4.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
+        extension_version: '3.5.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
     }
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/remove$/))) {
       const i = accounts.findIndex((a) => a.lane_id === m[1]);
@@ -473,15 +514,21 @@
       if (body.role) a.role = body.role;
       if ('paused' in body) a.paused = !!body.paused;
       if ('is_main' in body) a.is_main = !!body.is_main;
+      if ('label' in body) { a.label = body.label; a.name = a.handle ? '@' + a.handle : a.label || 'lane ' + a.lane_id.slice(0, 8); }
       if ('budget' in body) {
         a.budget_custom = !!body.budget;
-        a.budget = { list: body.budget?.list ?? 2000, profile: body.budget?.profile ?? 150 };
+        a.budget = { list: body.budget?.list ?? 3000, profile: body.budget?.profile ?? 300 };
       }
       if (a.status === 'running' || a.status === 'paused') a.status = statusOf(a);
       return { ok: true, account: { ...a } };
     }
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
-    if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true, qualify: scraper.qualify }; }
+    if (path === '/api/settings/qualify') {
+      if ('on' in body) scraper.qualify = !!body.on;
+      if ('auto' in body) scraper.qualify_auto = !!body.auto;
+      for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
+      return { ok: true, qualify: scraper.qualify };
+    }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
     if (path === '/api/scraper/snowball') {
       const want = body.min_status === 'client' ? ['client'] : ['good', 'client'];

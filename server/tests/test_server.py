@@ -377,7 +377,8 @@ class TagsViewsMapTest(Base):
         self.call('/api/people/bulk', {'ids': [ids['cat']], 'status': 'no'})
         c = self.call('/api/counts?min_lists=2&tier=hot')[1]
         self.assertEqual((c['hot'], c['cold'], c['unread'], c['good'], c['no'], c['total']), (1, 0, 1, 1, 0, 4))  # own dimension ignored
-        self.assertEqual(self.call('/api/counts?min_lists=2')[1]['no'], 1)
+        c = self.call('/api/counts?min_lists=2')[1]
+        self.assertEqual((c['no'], c['good'], c['none'], c['open']), (1, 1, 1, 2))
         self.assertEqual(self.call('/api/counts?q=zzz')[1]['hot'], 0)
         self.conn.execute("UPDATE verdicts SET evidence=? WHERE person_id=?", (json.dumps(['founder']), ids['ann']))
         self.conn.execute("UPDATE verdicts SET evidence='not json' WHERE person_id=?", (ids['ben'],))

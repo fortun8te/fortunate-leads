@@ -321,11 +321,16 @@ out("INFO", "last-hour", "pages %s, people %s, bios %s; ext rate %s pages/h" % (
     soak.get("pages", 0), soak.get("people", 0), soak.get("profiles", 0), rate.get("pages_hour", "n/a")))
 
 if s.get("qualify"):
+    keys = [p for p in (s.get("llm") or {}).get("providers") or [] if p.get("key") and not p.get("disabled")]
     try:
         socket.create_connection(("127.0.0.1", 18741), timeout=1).close()
-        out("PASS", "qualify", "on; LLM proxy :18741 reachable")
+        proxy = True
     except OSError:
-        out("WARN", "qualify", "on, but LLM proxy :18741 is down: rule verdicts only")
+        proxy = False
+    if proxy or keys:
+        out("PASS", "qualify", "on; LLM via %s" % " and ".join(x for x in ("proxy :18741" if proxy else "", "%d OpenRouter key(s)" % len(keys) if keys else "") if x))
+    else:
+        out("WARN", "qualify", "on, but no LLM: add an OpenRouter key in Settings (rule verdicts until then)")
 else:
     out("INFO", "qualify", "off" + (" (switches on by itself when lists finish)" if s.get("qualify_auto") else ""))
 ' "$FL_REPO/extension/manifest.json")"

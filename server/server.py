@@ -434,13 +434,16 @@ def api_counts(conn, q, b):
 
 
 def counts(conn, q):
-    """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible);
-    total / with_bio: everyone in the database."""
-    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', 'good', 'maybe', 'no', 'contacted', 'client', 'known'), 0)
-    for drop, sql in (('tier', "SELECT coalesce(v.tier,'unread'), count(*)"), ('status', 'SELECT m.status, count(*)')):
-        where, args = lead_filter({k: v for k, v in q.items() if k != drop}, **({'status_default': False} if drop == 'status' else {}))
-        out.update((k, n) for k, n in conn.execute(f"{sql} {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} GROUP BY 1", args)
-                   if k is not None)
+    """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible).
+    none = unmarked, open = everyone but 'no'; total / with_bio: everyone in the database."""
+    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', 'good', 'maybe', 'no', 'contacted', 'client', 'known', 'none', 'open'), 0)
+    where, args = lead_filter({k: v for k, v in q.items() if k != 'tier'})
+    out.update(conn.execute(f"SELECT coalesce(v.tier,'unread'), count(*) {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} "
+                            'GROUP BY 1', args).fetchall())
+    where, args = lead_filter({k: v for k, v in q.items() if k != 'status'}, status_default=False)
+    for status, n in conn.execute(f"SELECT m.status, count(*) {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} GROUP BY 1", args):
+        out[status or 'none'] += n
+        out['open'] += n if status != 'no' else 0
     out['total'], out['with_bio'] = conn.execute("SELECT count(*), count(nullif(bio,'')) FROM people").fetchone()
     return out
 
