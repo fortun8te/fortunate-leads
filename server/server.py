@@ -184,7 +184,7 @@ def lead_rows(conn, rows):
         via.setdefault(e['person_id'], []).append(e['seed'])
     return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
-             'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
+             'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
              'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'status': r['status']} for r in rows]
 
 
@@ -292,7 +292,7 @@ def data_rev(conn):
 
 def api_map(conn, q, b):
     limit = min(3000, max(10, int(q.get('limit', ['400'])[0])))
-    base = ('SELECT p.id, p.handle, p.pic_file, v.tier, v.score, count(DISTINCT e.seed) AS degree FROM people p '
+    base = ('SELECT p.id, p.handle, p.name, p.pic_file, v.tier, v.score, v.reason, count(DISTINCT e.seed) AS degree FROM people p '
             'JOIN edges e ON e.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id '
             "WHERE coalesce(m.status,'')!='no' AND p.handle NOT IN (SELECT handle FROM seeds) GROUP BY p.id")
     by_score = 'ORDER BY v.score IS NULL, v.score DESC, degree DESC LIMIT ?'
@@ -307,7 +307,13 @@ def api_map(conn, q, b):
                          'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id').fetchall()
     nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree']} for s in seeds]
-    nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'tier': r['tier'] or 'unread', 'score': r['score'],
+    tags = {}
+    for i in range(0, len(people), 900):
+        chunk = [r['id'] for r in people[i:i + 900]]
+        for t in conn.execute(f"SELECT person_id, tag FROM tags WHERE person_id IN ({','.join('?' * len(chunk))})", chunk):
+            tags.setdefault(t['person_id'], []).append(t['tag'])
+    nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
+               'tier': r['tier'] or 'unread', 'score': r['score'], 'reason': r['reason'], 'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree']} for r in people]
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])

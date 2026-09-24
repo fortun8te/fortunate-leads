@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fortunate Leads</title>
+<script>
+  try { const t = localStorage.getItem('fl-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
+</script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Fortunate<span>Leads</span></div>
+  <nav class="nav">
+    <a href="#/leads" data-view="leads">Leads</a>
+    <a href="#/map" data-view="map">Map</a>
+    <a href="#/scraper" data-view="scraper">Scraper</a>
+  </nav>
+  <div class="bar-right">
+    <a class="ext-status" href="#/scraper" id="ext-status"><i class="dot"></i><span>Offline</span></a>
+    <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme"></button>
+  </div>
+</header>
+
+<main>
+  <!-- Leads -->
+  <section class="view" id="view-leads">
+    <aside class="rail" id="tag-rail"></aside>
+    <div class="leads-main">
+      <div class="filters">
+        <div class="seg" id="tier-seg"></div>
+        <div class="seg seg-quiet" id="status-seg"></div>
+        <div class="grow"></div>
+        <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="q" type="search" placeholder="Search" autocomplete="off"><kbd>/</kbd></label>
+        <select id="sort" class="select">
+          <option value="score">Score</option>
+          <option value="recent">Recent</option>
+          <option value="followers">Followers</option>
+        </select>
+      </div>
+      <div class="active-tags" id="active-tags"></div>
+      <div class="list-head"><span id="list-total" class="num"></span><span class="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>g</kbd> good <kbd>m</kbd> maybe <kbd>x</kbd> no <kbd>o</kbd> Instagram <kbd>↵</kbd> open</span></div>
+      <div class="list-scroll" id="list-scroll">
+        <div id="list"></div>
+        <div id="sentinel" class="sentinel"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Map -->
+  <section class="view" id="view-map">
+    <div class="map-tools">
+      <div class="seg" id="map-scope"></div>
+      <div class="seg seg-quiet" id="map-tier"></div>
+      <div class="pop-wrap">
+        <button class="btn" id="map-tags-btn">Tags</button>
+        <div class="pop" id="map-tags-pop" hidden></div>
+      </div>
+      <div class="active-tags inline" id="map-active-tags"></div>
+      <div class="grow"></div>
+      <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="map-q" type="search" placeholder="Find person" autocomplete="off"></label>
+      <button class="btn" id="map-fit">Fit</button>
+    </div>
+    <div class="map-stage" id="map-stage">
+      <canvas id="map-canvas"></canvas>
+      <div class="hovercard" id="hovercard" hidden></div>
+      <div class="map-legend" id="map-legend"></div>
+    </div>
+  </section>
+
+  <!-- Scraper -->
+  <section class="view" id="view-scraper">
+    <div class="scr">
+      <div class="scr-grid">
+        <div class="card" id="ext-card"></div>
+        <div class="card seed-card">
+          <div class="card-head"><h3>Add seeds</h3></div>
+          <textarea id="seed-input" rows="5" placeholder="@handle, instagram.com/handle, one per line"></textarea>
+          <div class="seed-row">
+            <div class="toggles">
+              <label class="tog"><input type="checkbox" id="dir-followers" checked><span>Followers</span></label>
+              <label class="tog"><input type="checkbox" id="dir-following" checked><span>Following</span></label>
+            </div>
+            <div class="grow"></div>
+            <span class="muted" id="seed-msg"></span>
+            <button class="btn primary" id="seed-add" disabled>Add</button>
+          </div>
+        </div>
+      </div>
+      <div class="card flush">
+        <div class="card-head pad"><h3>Lists</h3><span class="muted num" id="queue-info"></span></div>
+        <table class="tbl">
+          <thead><tr><th>Seed</th><th>Direction</th><th class="w-prog">Progress</th><th>State</th><th class="r">Updated</th></tr></thead>
+          <tbody id="lists-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-inner" id="drawer-body"></div>
+</aside>
+<datalist id="tag-options"></datalist>
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/d3-dispatch.min.js"></script>
+<script src="vendor/d3-timer.min.js"></script>
+<script src="vendor/d3-quadtree.min.js"></script>
+<script src="vendor/d3-force.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
