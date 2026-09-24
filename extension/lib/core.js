@@ -8,7 +8,24 @@
   const BUDGET = { list: 2000, profile: 150 }, PROFILE_CAP = 300; // pages/day, reads/day; profile hard cap
   const rand = (lo, hi, r = Math.random) => Math.round(lo + (hi - lo) * r());
 
-  // ---- Instagram response classification -------------------------------
+  // ---- Instagram response parsing & classification ----------------------
+  // Tolerant: strips the `for (;;);` anti-JSON-hijack prefix and ignores content-type.
+  function parseBody(text) {
+    const t = String(text || '').replace(/^\uFEFF/, '').trim().replace(/^\s*(for\s*\(;;\);|while\s*\(1\);|\)\]\}',?)\s*/, '');
+    if (!/^[{[]/.test(t)) return null;
+    try { const j = JSON.parse(t); return j && typeof j === 'object' ? j : null; } catch { return null; }
+  }
+  // Users array from v1 (`users`), wrapped v1 (`data.users`) or GraphQL edges (`data.user.edge_followed_by.edges`).
+  function usersOf(json) {
+    if (!json || typeof json !== 'object') return null;
+    if (Array.isArray(json.users)) return json.users;
+    if (Array.isArray(json.data?.users)) return json.data.users;
+    const u = json.data?.user || json.user, e = u && (u.edge_followed_by || u.edge_follow);
+    return e && Array.isArray(e.edges) ? e.edges.map((x) => x && x.node) : null;
+  }
+  // Short, loggable description of an unusable response so the owner sees what Instagram actually sent.
+  const sampleOf = (res, n = 1500) => 'HTTP ' + (Number(res.status) || 0) + ' ' + (res.contentType || '?') +
+    (res.url ? ' ' + res.url : '') + (res.redirected ? ' (redirected)' : '') + ' body: ' + String(res.text || '').slice(0, n).replace(/\s+/g, ' ');
   // res = {status, json, text, retryAfter}. Returns {code, retryAt} or null when the response is usable.
   function classify(res, kind, now = Date.now()) {
     const status = Number(res.status) || 0, json = res.json;
@@ -18,6 +35,9 @@
     const ra = res.retryAfter, n = Number(ra);
     const retryAt = ra ? (Number.isFinite(n) ? now + n * 1000 : Date.parse(ra) || null) : null;
     const out = (code) => ({ code, retryAt });
+    const path = (() => { try { return new URL(res.url).pathname; } catch { return ''; } })();
+    if (/^\/challenge\//.test(path)) return out('challenge');
+    if (/^\/accounts\/login/.test(path)) return out('login');
     if (/checkpoint_required|challenge_required|\/challenge\//.test(text)) return out('challenge');
     if (status === 429 || /please wait a few minutes|rate.?limit|too many requests/.test(text)) return out('rate_limit');
     if (/feedback_required|spam/.test(text)) return out('soft_block');
@@ -28,8 +48,9 @@
     if (!json) return out(/login|password/.test(text) ? 'login' : 'other');
     if (json.status && json.status !== 'ok') return out('soft_block');
     if (kind === 'list') {
-      if (!Array.isArray(json.users)) return out('other');
-      if (!json.users.length && (json.has_more || json.next_max_id)) return out('soft_block');
+      const users = usersOf(json);
+      if (!users) return out('other');
+      if (!users.length && (json.has_more || json.next_max_id)) return out('soft_block');
     }
     return null;
   }
@@ -42,8 +63,10 @@
   }
 
   function parsePage(json) {
-    const users = (json.users || []).map(mapUser).filter(Boolean);
-    const next = json.has_more !== false && json.next_max_id && users.length ? String(json.next_max_id) : null;
+    const users = (usersOf(json) || []).map(mapUser).filter(Boolean);
+    const pi = json.data?.user?.edge_followed_by?.page_info || json.data?.user?.edge_follow?.page_info;
+    const cur = json.next_max_id ?? (pi && pi.has_next_page ? pi.end_cursor : null);
+    const next = json.has_more !== false && cur != null && cur !== '' && users.length ? String(cur) : null;
     const limited = !!json.should_limit_list_of_followers;
     return { users, next_cursor: limited ? null : next, done: limited || !next, limited };
   }
@@ -72,7 +95,7 @@
 
   function fresh() {
     return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
-      cooldownUntil: 0, hits: [], hold: null, lastError: null };
+      cooldownUntil: 0, hits: [], hold: null, lastError: null, log: [] };
   }
   function rollDay(st, now) {
     const k = dayKey(now);
@@ -115,6 +138,16 @@
     st.today.people = (st.today.people || 0) + people; st.today.bios = (st.today.bios || 0) + bios;
     return st;
   }
+  // Soak-test rate: list pages and people in the last hour, plus the last rate_limit/soft_block hit.
+  function logPage(st, now, people) {
+    st.log = (st.log || []).filter((e) => now - e[0] < HOUR).concat([[now, people]]);
+    return st;
+  }
+  function rateOf(st, now) {
+    const log = (st.log || []).filter((e) => now - e[0] < HOUR), hits = st.hits || [];
+    return { pages_hour: log.length, people_hour: log.reduce((a, e) => a + (e[1] || 0), 0),
+      last_hit_at: hits.length ? new Date(Math.max(...hits)).toISOString() : null };
+  }
   function budgetLeft(st, budget, now) {
     rollDay(st, now);
     const b = budgetOf(budget);
@@ -152,7 +185,7 @@
     return { state: 'idle', text: 'Idle, queue empty', badge: '' };
   }
 
-  const api = { PACE, BUDGET, PROFILE_CAP, budgetOf, tally, MIN, HOUR, DAY, classify, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight,
+  const api = { PACE, BUDGET, PROFILE_CAP, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, sampleOf, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight,
     fresh, rollDay, afterRequest, applyHit, budgetLeft, enqueue, flush, statusOf };
   root.FL = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

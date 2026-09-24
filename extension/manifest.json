@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fortunate Leads",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuLIR+eMycoluQXG6hJKmbd1pt/Faaqecgc4oXdGMj5DnPc667rvCIFuPSNsrry+HyEbAq80tBa8Y9fIonGIf1nUIUE0MtBjjheZxpaIj5i5lZHGWFH/DDYnVH7nLIThVbQDclp/x2RITp2Ux77NehZsB6SXBrf/PV3u/raF75Gfvru1SPMWkpRXMi6Xevtb2Ap/5NJ0TXc3phzIKDa3AfGlwlQJG6Rt359kxS4g9iZgEVDIGcC3DNlDTbGV+wQ/gbfBRqKqAuTP1C+nCfZAg1H6Sv8ALzVFd9LsyFOsGEn2b6K8/iQp0ORgHTjKKUWbCr6HfkAnIpUw+Jb2s5suFOwIDAQAB",
   "description": "Collects Instagram lists and bios at a safe pace for the local Fortunate Leads workspace.",
   "permissions": [

@@ -127,3 +127,43 @@ test('statusOf: badge and state', () => {
   assert.equal(FL.statusOf({ ...st, cooldownUntil: T0 + 5 * HOUR }, {}, T0).state, 'cooldown');
   assert.equal(FL.statusOf({ ...st, hold: { message: 'x' } }, {}, T0).badge, '!');
 });
+
+test('parseBody: prefixes, non-json content, garbage', () => {
+  assert.deepEqual(FL.parseBody('for (;;);{"users":[],"status":"ok"}'), { users: [], status: 'ok' });
+  assert.deepEqual(FL.parseBody('﻿  {"a":1}'), { a: 1 });
+  assert.equal(FL.parseBody('<!DOCTYPE html><html>login</html>'), null);
+  assert.equal(FL.parseBody(''), null);
+  assert.equal(FL.parseBody('{bad'), null);
+});
+test('classify/parsePage: alternate list shapes', () => {
+  const wrapped = { data: { users: [{ pk: 1, username: 'a' }] }, next_max_id: 'QVF', status: 'ok' };
+  assert.equal(FL.classify(res(wrapped), 'list'), null);
+  assert.equal(FL.parsePage(wrapped).next_cursor, 'QVF');
+  const gql = { data: { user: { edge_followed_by: { count: 9, page_info: { has_next_page: true, end_cursor: 'C1' },
+    edges: [{ node: { id: '5', username: 'b' } }] } } }, status: 'ok' };
+  assert.equal(FL.classify(res(gql), 'list'), null);
+  assert.deepEqual(FL.parsePage(gql), { users: [{ ig_id: '5', handle: 'b', name: '', pic_url: '', is_private: false, is_verified: false }],
+    next_cursor: 'C1', done: false, limited: false });
+  assert.equal(FL.parsePage({ users: [{ pk: 1, username: 'a' }], next_max_id: 25 }).next_cursor, '25'); // numeric cursor
+});
+test('classify: redirects to login/challenge, html 200 is other with a sample', () => {
+  assert.equal(FL.classify({ status: 200, text: '<html>', json: null, url: 'https://www.instagram.com/accounts/login/?next=x' }, 'list').code, 'login');
+  assert.equal(FL.classify({ status: 200, text: '<html>', json: null, url: 'https://www.instagram.com/challenge/abc/' }, 'list').code, 'challenge');
+  const r = { status: 200, text: '<!DOCTYPE html>' + 'x'.repeat(3000), json: null, contentType: 'text/html', url: 'https://www.instagram.com/api/v1/friendships/1/followers/' };
+  assert.equal(FL.classify(r, 'list').code, 'other');
+  const s = FL.sampleOf(r);
+  assert.match(s, /^HTTP 200 text\/html https:\/\/www\.instagram\.com\/api\/v1\/friendships\/1\/followers\/ body: <!DOCTYPE html>x/);
+  assert.ok(s.length < 1700);
+  assert.equal(FL.classify(res({ status: 'ok', big_list: true }), 'list').code, 'other');
+});
+test('rate: pages/people in last hour and last hit', () => {
+  const st = FL.fresh();
+  FL.logPage(st, T0 - 2 * HOUR, 50);
+  FL.logPage(st, T0 - 10 * MIN, 25);
+  FL.logPage(st, T0, 20);
+  assert.deepEqual(FL.rateOf(st, T0), { pages_hour: 2, people_hour: 45, last_hit_at: null });
+  assert.equal(st.log.length, 2);
+  FL.applyHit(st, T0 - 5 * MIN);
+  assert.equal(FL.rateOf(st, T0).last_hit_at, new Date(T0 - 5 * MIN).toISOString());
+  assert.deepEqual(FL.rateOf({}, T0), { pages_hour: 0, people_hour: 0, last_hit_at: null });
+});

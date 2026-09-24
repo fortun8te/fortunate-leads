@@ -55,6 +55,9 @@ function render(v) {
   $('job').textContent = v.job || '';
   $('today').textContent = n(v.today && v.today.people) + ' people · ' + n(v.today && v.today.list) + ' pages';
   $('speed').textContent = speed();
+  const r = v.rate, ago = r && r.last_hit_at ? Math.round((Date.now() - Date.parse(r.last_hit_at)) / 60e3) : null;
+  $('hour').textContent = r ? n(r.people_hour) + ' people · ' + n(r.pages_hour) + ' pages · ' +
+    (ago == null ? 'no limit hit' : 'limit ' + (ago >= 60 ? Math.floor(ago / 60) + 'h ' : '') + (ago % 60) + 'm ago') : '–';
   const err = s.err || (v.lastError && v.lastError !== v.text ? v.lastError : '');
   $('error').textContent = err;
   const paused = v.state === 'paused' && !/workspace/i.test(v.text || '');

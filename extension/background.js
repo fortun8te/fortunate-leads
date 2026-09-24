@@ -51,7 +51,8 @@ async function heartbeat(force) {
   try {
     const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: st.cooldownUntil > Date.now() ? iso(st.cooldownUntil) : null,
       today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')), last_error: st.hold ? st.hold.message : st.lastError,
-      activity: mem.label || null, text: s.text, people_today: st.today.people || 0 });
+      activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
+      rate: FL.rateOf(st, Date.now()) });
     mem.offline = false;
     await applyServer(r.json);
   } catch { mem.offline = true; }
@@ -64,7 +65,7 @@ async function status(st) {
   chrome.action.setBadgeText({ text: s.badge });
   chrome.action.setBadgeBackgroundColor({ color: s.badge === '!' ? '#b3261e' : '#555' });
   await set({ view: { ...s, today: st.today, budget: FL.budgetOf(await get('budget')), job: mem.job ? mem.label : '',
-    lastError: st.hold ? st.hold.message : st.lastError, at: Date.now() } });
+    lastError: st.hold ? st.hold.message : st.lastError, rate: FL.rateOf(st, Date.now()), at: Date.now() } });
   return s;
 }
 
@@ -87,11 +88,12 @@ async function inTab(tabId, url) {
           'X-Requested-With': 'XMLHttpRequest' } });
         const claimOut = res.headers.get('x-ig-set-www-claim');
         if (claimOut) try { sessionStorage.setItem('www-claim-v2', claimOut); } catch {}
-        return { status: res.status, text: await res.text(), retryAfter: res.headers.get('retry-after') };
+        return { status: res.status, text: await res.text(), retryAfter: res.headers.get('retry-after'),
+          contentType: res.headers.get('content-type') || '', url: res.url, redirected: res.redirected };
       } catch (e) { return { status: 0, text: String(e) }; } finally { clearTimeout(timer); }
     } }));
     const p = (r && r.result) || { status: 0, text: '' };
-    try { p.json = JSON.parse(p.text); } catch { p.json = null; }
+    p.json = FL.parseBody(p.text);
     return p;
   } catch (e) { return { status: 0, text: String(e), json: null }; }
 }
@@ -110,10 +112,12 @@ async function fail(job, bad, what) {
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt);
     else if (msg[bad.code]) st.hold = { code: bad.code, message: msg[bad.code], at: now };
     else if (bad.code === 'other') st.nextAt = Math.max(st.nextAt, now + 2 * FL.MIN);
-    st.lastError = bad.code + ' on ' + what;
+    st.lastError = bad.code + ' on ' + what + (bad.sample ? ' | ' + bad.sample.slice(0, 300) : '');
   });
+  // Full raw sample kept locally too (chrome.storage.local 'debug') for inspection from the service-worker console.
+  if (bad.sample) await set({ debug: { at: iso(now), what, code: bad.code, sample: bad.sample } });
   await queue('/api/ext/error', { job_id: job.id, code: bad.code, retry_at: st.cooldownUntil > now ? iso(st.cooldownUntil) : null,
-    message: String(bad.code + ' on ' + what + ' (HTTP ' + (bad.status || 0) + ')') });
+    message: String(bad.code + ' on ' + what + ' (HTTP ' + (bad.status || 0) + ')' + (bad.sample ? ' | ' + bad.sample : '')) });
 }
 // Waits for the pace gap while keeping heartbeats going; false if paused or blocked meanwhile.
 async function waitUntil(ts) {
@@ -146,14 +150,15 @@ async function runList(job, tab) {
     total = job.direction === 'followers' ? p.followers : p.following;
     if (!(await waitUntil((await loadSt()).nextAt))) return;
   }
+  // Followers: the web app sends search_surface=follow_list_page; Instagram caps follower pages at ~25 whatever count says.
   const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + (job.direction === 'following' ? 50 : 25) +
-    (job.cursor ? '&max_id=' + encodeURIComponent(job.cursor) : '');
+    (job.cursor ? '&max_id=' + encodeURIComponent(job.cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   const { res, bad } = await igRequest(tab, url, 'list');
-  if (bad) return fail(job, { ...bad, status: res.status }, mem.label);
+  if (bad) return fail(job, { ...bad, status: res.status, sample: bad.code === 'other' ? FL.sampleOf(res) : '' }, mem.label);
   const page = FL.parsePage(res.json);
   mem.pages[key] = page.done ? 0 : (mem.pages[key] || 0) + 1;
   if (page.limited) await editSt((st) => { st.lastError = '@' + job.seed + ' list capped by Instagram; kept what it returned'; });
-  await editSt((st) => FL.tally(st, Date.now(), page.users.length, 0));
+  await editSt((st) => FL.logPage(FL.tally(st, Date.now(), page.users.length, 0), Date.now(), page.users.length));
   await queue('/api/ext/list-page', { job_id: job.id, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
     next_cursor: page.next_cursor, done: page.done, total });
 }
@@ -163,7 +168,7 @@ async function runProfile(job, tab) {
   if (job.ig_id) {
     const { res, bad } = await igRequest(tab, IG + '/api/v1/users/' + job.ig_id + '/info/', 'profile');
     p = !bad && FL.mapProfile(FL.userOf(res.json));
-    if (bad || !p) return fail(job, bad ? { ...bad, status: res.status } : { code: 'other', status: res.status }, mem.label);
+    if (bad || !p) return fail(job, { ...(bad || { code: 'other' }), status: res.status, sample: !bad || bad.code === 'other' ? FL.sampleOf(res, 600) : '' }, mem.label);
   } else {
     p = await lookupViaPage(job.handle);
     if (!p) return fail(job, { code: 'not_found', status: 0 }, mem.label);
