@@ -232,7 +232,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'tags', 'scraper'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: ['leads', 'map', 'tags', 'scraper', 'accounts'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -268,6 +268,7 @@ function setView(v) {
   $('#view-work').classList.toggle('on', work);
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
+  $('#view-accounts').classList.toggle('on', v === 'accounts');
   $('#pane-leads').classList.toggle('on', v === 'leads');
   $('#pane-map').classList.toggle('on', v === 'map');
   syncTabs();
@@ -276,6 +277,8 @@ function setView(v) {
   if (v !== 'map' && S.seedCard) { S.seedCard = null; if (!S.open) $('#detail').hidden = true; }
   if (prev !== v && narrow() && (S.open || S.seedCard)) closeDetail();
   if (v === 'scraper') renderScraper();
+  if (v === 'accounts') renderAccounts();
+  if (v !== 'accounts' && A.wiz) closeWizard();
   if (v === 'tags') T.show();
   if (!work) hideSuggest();
 }
@@ -1034,7 +1037,7 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
-    const to = { l: 'leads', m: 'map', t: 'tags', s: 'scraper' }[k];
+    const to = { l: 'leads', m: 'map', t: 'tags', s: 'scraper', a: 'accounts' }[k];
     if (to) { location.hash = hashFor(to); e.preventDefault(); }
     return;
   }
@@ -1308,11 +1311,24 @@ function renderStatus() {
   $('#qualify-btn').classList.toggle('on', !!sc?.qualify);
   const q = sc ? (sc.queue?.list || 0) + (sc.queue?.profile || 0) : 0;
   $('#n-queue').textContent = q ? fmt(q) : '';
+  // one dot per account; the label counts the ones working
+  const accs = sc?.accounts || [];
+  const lanes = $('#st-lanes');
+  lanes.hidden = accs.length < 2;
+  if (accs.length > 1) {
+    const html = accs.map((a) => `<i class="dot ${ST_DOT[a.status] || ''}" title="${esc(a.name)} · ${esc(ST_LABEL[a.status] || a.status)}"></i>`).join('');
+    if (lanes.innerHTML !== html) lanes.innerHTML = html;
+    const busy = accs.filter((a) => a.status === 'running').length;
+    if (st.label === 'running') $('#st-label').textContent = `running · ${busy}/${accs.length}`;
+  }
+  const alerts = (sc?.alerts || []).filter((x) => x.level === 'error').length;
+  $('#n-acc').textContent = alerts ? '!' + alerts : accs.length > 1 ? String(accs.length) : '';
 }
 async function loadScraper() {
   try { S.sc = await api.get('/api/scraper'); } catch (e) { /* keep last */ }
   renderStatus();
   if (S.view === 'scraper') renderScraper();
+  if (S.view === 'accounts') renderAccounts();
 }
 $('#pause-btn').onclick = async () => {
   if (!S.sc) return;
@@ -1411,6 +1427,168 @@ $('#seed-add').onclick = async () => {
     $('#seed-in').value = ''; syncSeed(); loadScraper();
   } catch (e) { toast('Could not queue'); }
 };
+
+// ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
+const ST_LABEL = { running: 'running', online: 'online', cooldown: 'cooldown', needs_login: 'needs login', challenge: 'security check', offline: 'offline', paused: 'paused' };
+const ST_DOT = { running: 'run', online: 'on', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
+const ROLES = [['lists', 'lists'], ['bios', 'bios'], ['both', 'both']];
+const A = { wiz: null, setup: null, confirm: null, busy: new Set() };
+
+async function copyText(text, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch (e2) { /* no clipboard */ } ta.remove();
+  }
+  if (btn) { btn.textContent = ok ? 'copied' : 'copy failed'; setTimeout(() => { btn.textContent = 'copy'; }, 1400); }
+}
+const copyRow = (text, label) => `<div class="copy"><code title="${esc(text)}">${esc(label || text)}</code><button class="btn" data-copy="${esc(text)}">copy</button></div>`;
+
+function jobText(a) {
+  if (a.job) return a.job.kind === 'list' ? `@${a.job.seed} ${a.job.direction}` : `bio of @${a.job.handle}`;
+  if (a.status === 'needs_login') return 'Waiting for you to log in';
+  if (a.status === 'challenge') return 'Waiting for the security check';
+  if (a.status === 'offline') return 'Last seen ' + ago(a.last_seen) + ' ago';
+  return a.activity || a.text || 'Idle';
+}
+function stateText(a) {
+  const base = ST_LABEL[a.status] || a.status;
+  return a.status === 'cooldown' && a.cooldown_until ? `${base} ${left(a.cooldown_until)}` : base;
+}
+function accountCard(a) {
+  const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
+  const conf = A.confirm === a.lane_id;
+  const stat = (label, val, sub) => `<div><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  return `<article class="acard${a.status === 'needs_login' || a.status === 'challenge' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
+    <header><i class="dot ${ST_DOT[a.status] || ''}"></i><b class="aname">${esc(a.name)}</b>${a.is_main ? '<span class="pill">main</span>' : ''}
+      <span class="grow"></span><span class="astate">${esc(stateText(a))}</span></header>
+    <div class="astats">
+      ${stat('Pages/h', int(h.pages))}
+      ${stat('People/h', int(h.people))}
+      ${stat('Today', int(t.list), `of ${fmt(b.list)} · ${int(t.profile)} bios`)}
+      ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'none')}
+    </div>
+    <div class="ajob"><span class="muted">Now</span><span class="ajob-t" title="${esc(jobText(a))}">${esc(jobText(a))}</span></div>
+    <div class="actl">
+      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main title="Your own account: bios only unless a list share is set"><i></i><span>main</span></button>
+      <span class="grow"></span>
+      <button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'resume' : 'pause'}</button>
+    </div>
+    <div class="actl">
+      <label class="bud"><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}"><span class="muted">pages/day</span></label>
+      <label class="bud"><input class="input" type="number" min="0" max="300" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}"><span class="muted">bios/day</span></label>
+      <button class="btn" data-save>save</button>
+      <span class="grow"></span>
+      <button class="btn ${conf ? 'solid' : 'ghost'}" data-remove>${conf ? 'confirm remove' : 'remove'}</button>
+    </div>
+    <footer class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 90)) : ''}</footer>
+  </article>`;
+}
+
+function renderAccounts() {
+  const sc = S.sc;
+  const accs = sc?.accounts || [], alerts = sc?.alerts || [];
+  $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
+  const r = sc?.rate || {};
+  const online = accs.filter((a) => a.online).length;
+  $('#acc-sum').textContent = accs.length ? `${online} of ${plural(accs.length, 'account')} online · ${int(r.pages_last_hour)} pages · ${int(r.people_last_hour)} people this hour` : '';
+  if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
+  const cards = $('#acc-cards');
+  if (cards.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // don't clobber typing
+  cards.innerHTML = accs.length ? accs.map(accountCard).join('') : (A.wiz ? '' : '<div class="empty muted">No account has checked in yet</div>');
+  if (A.wiz) renderWizard();
+}
+
+async function editAccount(lane, body, msg) {
+  if (A.busy.has(lane)) return;
+  A.busy.add(lane);
+  const a = S.sc?.accounts?.find((x) => x.lane_id === lane);
+  try {
+    const r = await api.post(`/api/accounts/${encodeURIComponent(lane)}`, body);
+    if (a && r.account) Object.assign(a, r.account);
+    renderAccounts(); renderStatus();
+    if (msg) toast(msg);
+  } catch (e) { toast(e.status === 400 ? e.message : 'could not save'); }
+  finally { A.busy.delete(lane); }
+  loadScraper();
+}
+$('#acc-cards').addEventListener('click', async (e) => {
+  const card = e.target.closest('[data-lane]');
+  if (!card) return;
+  const lane = card.dataset.lane, a = S.sc?.accounts?.find((x) => x.lane_id === lane);
+  if (!a) return;
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (!t.hasAttribute('data-remove') && A.confirm) { A.confirm = null; renderAccounts(); }
+  if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${t.dataset.role}`);
+  if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer main` : `${a.name} is main: bios only`);
+  if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);
+  if (t.hasAttribute('data-save')) {
+    const val = (k) => { const v = card.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : Math.max(0, Math.round(+v)); };
+    const list = val('list'), profile = val('profile');
+    document.activeElement?.blur();
+    return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, 'budget saved');
+  }
+  if (t.hasAttribute('data-remove')) {
+    if (A.confirm !== lane) { A.confirm = lane; renderAccounts(); return; }
+    A.confirm = null;
+    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (e) { toast('could not remove'); }
+    loadScraper();
+  }
+});
+$('#acc-cards').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('[data-b]')) e.target.closest('[data-lane]').querySelector('[data-save]').click();
+});
+
+// Add-account wizard: three steps, ticked as the new profile's extension checks in and reports its account.
+async function openWizard() {
+  const accs = S.sc?.accounts || [];
+  A.wiz = { base: new Set(accs.map((a) => a.lane_id)), lane: null, acct: null, poll: null };
+  $('#wiz').hidden = false; $('#acc-add').hidden = true;
+  if (!A.setup) { try { A.setup = await api.get('/api/setup'); } catch (e) { /* shown as unknown */ } }
+  renderWizard();
+  A.wiz.poll = setInterval(pollWizard, 2000);
+}
+function closeWizard() {
+  if (A.wiz?.poll) clearInterval(A.wiz.poll);
+  A.wiz = null; A.dismissed = true;
+  $('#wiz').hidden = true; $('#acc-add').hidden = false;
+  renderAccounts();
+}
+async function pollWizard() {
+  if (!A.wiz) return;
+  let d;
+  try { d = await api.get('/api/accounts'); } catch (e) { return; }
+  if (!A.wiz) return;
+  const fresh = d.accounts.filter((a) => !A.wiz.base.has(a.lane_id));
+  const pick = fresh.find((a) => a.ig_id) || fresh[0];
+  if (pick) { A.wiz.lane = pick.lane_id; A.wiz.acct = pick; }
+  renderWizard();
+}
+function renderWizard() {
+  const w = A.wiz, s = A.setup || {};
+  if (!w) return;
+  const a = w.acct;
+  const done = [!!a, !!a, !!(a && a.ig_id && !a.hold)];
+  const step = (i, title, body) => `<li class="${done[i] ? 'done' : done.slice(0, i).every(Boolean) ? 'cur' : ''}">
+    <span class="n">${done[i] ? '<i class="tick"></i>' : i + 1}</span><div><b>${title}</b>${body}</div></li>`;
+  const who = a ? (a.ig_id ? (a.handle ? '@' + a.handle : 'account ' + a.ig_id) : 'extension checked in, no Instagram login yet') : 'waiting for the extension to check in';
+  $('#wiz').innerHTML = `<div class="p-head"><h3>Add account</h3><div class="grow"></div><span class="muted wiz-who">${esc(who)}</span>
+      <button class="btn ghost" id="wiz-x">${done[2] ? 'done' : 'close'}</button></div>
+    <ol class="steps">
+      ${step(0, 'Create a Chrome profile', `<p>Profile menu, then Add, then Continue without an account. One profile per Instagram account.</p>${copyRow('chrome://profile-picker')}`)}
+      ${step(1, 'Load the extension in it', `<p>Open extensions, turn on Developer mode, click Load unpacked and pick this folder.</p>${copyRow('chrome://extensions')}${copyRow(s.extension_path || 'extension/ in the repo')}
+        <p class="muted num">Extension id ${esc(s.extension_id || '–')}${s.extension_version ? ' · v' + esc(s.extension_version) : ''}</p>`)}
+      ${step(2, 'Log in to Instagram', `<p>Log in with the account this profile should use and keep one Instagram tab open.</p>${copyRow('https://www.instagram.com/')}`)}
+    </ol>`;
+}
+$('#acc-add').onclick = () => openWizard();
+$('#wiz').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-copy]');
+  if (c) return copyText(c.dataset.copy, c);
+  if (e.target.closest('#wiz-x')) closeWizard();
+});
 
 // ---------- map ----------
 const LEAD_R = [0, 2.6, 4.2, 5.6, 6.8, 7.8];

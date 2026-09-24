@@ -24,6 +24,8 @@
       <a href="#/map" data-view="map"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Map</span></a>
       <a href="#/tags" data-view="tags"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg><span>Tags</span></a>
       <a href="#/scraper" data-view="scraper"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/></svg><span>Scraper</span><span class="num" id="n-queue"></span></a>
+      <a href="#/accounts" data-view="accounts"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.6"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7M10 6.5h2.5M10 9h2.5"/></svg><span>Accounts</span><span class="num" id="n-acc"></span></a>
+      <a href="#/settings" data-view="settings"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg><span>Settings</span></a>
     </nav>
     <div class="side-foot">
       <button class="btn ghost hide-sm" id="density-btn" title="Density (d)">Compact</button>
@@ -38,6 +40,7 @@
     <div class="status" id="status">
       <div class="st-l">
         <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">Connecting</span></a>
+        <a class="st-lanes" id="st-lanes" href="#/accounts" hidden></a>
         <span class="st-act hide-md" id="st-act"></span>
         <span class="st"><span class="hide-sm">Today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></span>
         <span class="st hide-sm"><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
@@ -181,6 +184,20 @@
         </div>
       </div>
     </section>
+
+    <section class="view" id="view-accounts">
+      <div class="scr accs">
+        <div class="alerts" id="acc-alerts"></div>
+        <div class="acc-head">
+          <h2>Accounts</h2>
+          <span class="num muted" id="acc-sum"></span>
+          <div class="grow"></div>
+          <button class="btn solid" id="acc-add">Add account</button>
+        </div>
+        <div class="panel wiz" id="wiz" hidden></div>
+        <div class="cards" id="acc-cards"></div>
+      </div>
+    </section>
   </main>
   </div>
 </div>
@@ -215,7 +232,7 @@
   <span><kbd>l</kbd></span><span>Labels</span>
   <span><kbd>n</kbd></span><span>Next search match</span>
   <h4>General</h4>
-  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd></span><span>Leads, map, tags, scraper</span>
+  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd> <kbd>a</kbd> <kbd>,</kbd></span><span>Leads, map, tags, scraper, accounts, settings</span>
   <span><kbd>d</kbd></span><span>Density</span>
   <span><kbd>esc</kbd></span><span>Close, clear selection</span>
 </div></div>

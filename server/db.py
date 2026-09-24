@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN(
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
+CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
+  role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
+  is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
+  list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
 CREATE INDEX IF NOT EXISTS edges_person ON edges(person_id);
 CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp);   -- covering: facets, rule hits, tag filters
 CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag);
@@ -47,6 +51,10 @@ DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 0}, 'qualify': 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='microseconds')
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 def connect(path):
@@ -89,13 +97,15 @@ def init(path):
     conn.executescript(SCHEMA)
     migrate_tags(conn)
     conn.execute('DROP INDEX IF EXISTS tags_tag')  # superseded by the covering tags_tag_src
-    if 'at' not in {r[1] for r in conn.execute('PRAGMA table_info(pages)')}:  # DBs created before pages were timestamped
-        conn.execute('ALTER TABLE pages ADD COLUMN at TEXT')
-    have = {r[1] for r in conn.execute('PRAGMA table_info(verdicts)')}
-    for col in ('prompt', 'evidence'):  # DBs from before the staged qualifier
-        if col not in have:
-            conn.execute(f'ALTER TABLE verdicts ADD COLUMN {col} TEXT')
+    # columns added after the first release: ALTER only when missing, so any older DB opens as is
+    for table, col, decl in (('pages', 'at', 'TEXT'), ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
+                             ('jobs', 'lane', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT')):
+        if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
     conn.commit()
     return conn

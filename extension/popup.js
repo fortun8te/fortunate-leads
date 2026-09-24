@@ -51,7 +51,9 @@ function render(v) {
   $('toggle').textContent = paused ? 'Resume' : 'Pause';
   $('toggle').dataset.cmd = paused ? 'resume' : 'pause';
 }
-$('ver').textContent = 'v' + chrome.runtime.getManifest().version;
+const showVer = (a) => { $('ver').textContent = 'v' + chrome.runtime.getManifest().version + (a && a.ig_id ? ' · ' + (a.handle ? '@' + a.handle : 'id ' + a.ig_id) : a ? ' · logged out' : ''); };
+chrome.storage.local.get('account').then((o) => showVer(o.account));
+chrome.storage.onChanged.addListener((c) => { if (c.account) showVer(c.account.newValue); });
 chrome.storage.local.get(['view', 'debug']).then((o) => { debug = o.debug || null; render(o.view); });
 chrome.storage.onChanged.addListener((c) => {
   if (c.debug) debug = c.debug.newValue || null;
@@ -63,7 +65,7 @@ $('open').onclick = () => chrome.tabs.create({ url: 'http://127.0.0.1:8777/' });
 
 // Everything needed to diagnose a stall from a paste: state, last raw Instagram answer, recent events, tabs.
 $('copy').onclick = async () => {
-  const keys = ['st', 'view', 'debug', 'debugLog', 'trail', 'lane', 'cur', 'prog', 'boot', 'workTab', 'localPaused', 'budget', 'lookupTab'];
+  const keys = ['laneId', 'account', 'st', 'view', 'debug', 'debugLog', 'trail', 'lane', 'cur', 'prog', 'boot', 'workTab', 'localPaused', 'budget', 'lookupTab'];
   const o = await chrome.storage.local.get([...keys, 'box']);
   const box = o.box || [];
   let tabs = [];

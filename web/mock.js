@@ -285,6 +285,41 @@
     scraper.nextAt = t + 7000 + rnd() * 5000;
   }
   setInterval(tickScraper, 1000);
+  // Accounts: four Chrome profiles; one is logged out and its list moved on, one is cooling down.
+  const ago_ = (ms) => new Date(Date.now() - ms).toISOString();
+  const H = 3600000;
+  const acct = (o) => ({ label: null, role: 'both', is_main: false, paused: false, budget_custom: false, budget: { list: 2000, profile: 150 },
+    version: '3.4.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
+    rate: null, last_limit: null, today: { list: 0, profile: 0 }, hour: { pages: 0, people: 0 }, activity: null, text: null, job: null, lists: [],
+    last_seen: ago_(3000), first_seen: ago_(9 * 24 * H), ...o, name: '@' + o.handle });
+  const accounts = [
+    acct({ lane_id: 'ln_main7fk2q9xd', ig_id: '48213377', handle: 'fortun8te', is_main: true, today: { list: 0, profile: 61 }, hour: { pages: 0, people: 0 },
+      job: { kind: 'profile', handle: 'saltwater.skin' }, text: 'Next request in 31s' }),
+    acct({ lane_id: 'ln_scout2mw8hr', ig_id: '51120984', handle: 'fortunate.scout', role: 'lists', today: { list: 1480, profile: 0 }, hour: { pages: 212, people: 7340 },
+      job: { kind: 'list', seed: 'glowbrand.co', direction: 'followers' }, last_limit: ago_(5.2 * H), rate: { pages_hour: 212, people_hour: 7340 } }),
+    acct({ lane_id: 'ln_scout4q8vbe', ig_id: '51120990', handle: 'fl.north', status: 'cooldown', state: 'cooldown', cooldown_until: new Date(Date.now() + 23 * 60000).toISOString(),
+      today: { list: 640, profile: 12 }, hour: { pages: 131, people: 3120 }, last_limit: ago_(7 * 60000), last_error: 'rate_limit (please_wait) on @dtc.daily followers' }),
+    acct({ lane_id: 'ln_scout3pz4tn', ig_id: '51120985', handle: 'fl.research', role: 'lists', status: 'needs_login', state: 'paused', hold: 'login', healthy: false,
+      today: { list: 402, profile: 0 }, hour: { pages: 64, people: 1920 }, last_error: 'login (require_login) on @kettleandco followers', last_seen: ago_(12000) }),
+  ];
+  const statusOf = (a) => (a.hold ? (a.hold === 'login' ? 'needs_login' : 'challenge') : a.paused ? 'paused' : a.cooldown_until ? 'cooldown' : 'running');
+  function alertsView() {
+    return accounts.filter((a) => a.hold === 'login').map((a) => ({ level: 'error', lane_id: a.lane_id,
+      text: `${a.name} logged out — open its Chrome profile and log in; its list moved to @fortunate.scout` }));
+  }
+  function rateView() {
+    const on = accounts.filter((a) => a.online);
+    return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
+      online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
+  }
+  let wizardLane = null;
+  function startWizardLane() {   // a new profile's extension checks in, then reports its logged-in account
+    if (wizardLane) return;
+    wizardLane = acct({ lane_id: 'ln_new9c3kd7s', ig_id: null, handle: null, status: 'online', state: 'idle', first_seen: now(), hour: { pages: 0, people: 0 } });
+    wizardLane.name = 'lane ln_new9c';
+    setTimeout(() => accounts.push(wizardLane), 5000);
+    setTimeout(() => { Object.assign(wizardLane, { ig_id: '51120999', handle: 'fl.west', name: '@fl.west' }); }, 11000);
+  }
   function scraperView() {
     const l = scraper.lists.find((x) => x.state === 'running');
     const secs = Math.max(0, Math.round((scraper.nextAt - Date.now()) / 1000));
@@ -297,7 +332,8 @@
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: true, soak: { '1h': w(1), '6h': w(1 / 5.6) },
-      people_today: scraper.peopleToday, lists: scraper.lists,
+      people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
+      rate: rateView(), alerts: alertsView(),
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
     };
   }
@@ -420,6 +456,30 @@
       return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
     }
     if (path === '/api/scraper') return scraperView();
+    if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: 0 }; }
+    if (path === '/api/setup') {
+      startWizardLane();
+      return { repo: '/Users/michael/fortunate-leads', extension_path: '/Users/michael/fortunate-leads/extension', extension_id: 'fgdbghllamedgihmdcolaggnbhnakjnf',
+        extension_version: '3.4.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
+    }
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/remove$/))) {
+      const i = accounts.findIndex((a) => a.lane_id === m[1]);
+      if (i >= 0) accounts.splice(i, 1);
+      return { ok: true, removed: i >= 0 ? 1 : 0 };
+    }
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)$/)) && method === 'POST') {
+      const a = accounts.find((x) => x.lane_id === m[1]);
+      if (!a) return null;
+      if (body.role) a.role = body.role;
+      if ('paused' in body) a.paused = !!body.paused;
+      if ('is_main' in body) a.is_main = !!body.is_main;
+      if ('budget' in body) {
+        a.budget_custom = !!body.budget;
+        a.budget = { list: body.budget?.list ?? 2000, profile: body.budget?.profile ?? 150 };
+      }
+      if (a.status === 'running' || a.status === 'paused') a.status = statusOf(a);
+      return { ok: true, account: { ...a } };
+    }
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
     if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true, qualify: scraper.qualify }; }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }

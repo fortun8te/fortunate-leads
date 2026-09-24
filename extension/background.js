@@ -27,9 +27,77 @@ class Superseded extends Error {}
 // Short ring of recent events (requests, failures, restarts) for the popup's "Copy debug".
 const trail = (what, extra) => edit('trail', (t) => (t || []).concat({ at: hhmmss(Date.now()), what, ...(extra || {}) }).slice(-40)).catch(() => {});
 
+// ---- lane identity: this install (laneId) and the Instagram account logged in to this Chrome profile ------
+// Several Chrome profiles can each run this extension against the same server; the server leases jobs per lane.
+async function ident() {
+  let { laneId, account } = await chrome.storage.local.get(['laneId', 'account']);
+  if (!laneId) {
+    laneId = await locked(async () => {
+      const cur = await get('laneId');
+      if (cur) return cur;
+      const id = FL.newLaneId();
+      await set({ laneId: id, startOffset: FL.startOffset() });
+      return id;
+    });
+  }
+  return { lane_id: laneId, account: account ? { ig_id: account.ig_id || null, handle: account.handle || null } : undefined };
+}
+// Adds lane + account to a server body (outbox items are tagged when queued, so a retry sends the same bytes).
+async function tagged(body) {
+  const id = await ident();
+  return body && body.lane_id === undefined ? { ...body, lane_id: id.lane_id, ...(id.account ? { account: id.account } : {}) } : body;
+}
+// Reads ds_user_id and the handle from an already loaded instagram.com tab (no network request). Throttled.
+async function whoami(force) {
+  const acc = await get('account'), now = Date.now();
+  if (!force && acc && now - acc.at < (acc.ig_id && acc.handle ? 10 * FL.MIN : FL.MIN)) return acc;
+  let tabs = [];
+  try { tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter((t) => t.status === 'complete' && !t.discarded && !mem.lookups.has(t.id) && FL.pageKind(t.url) === 'ok'); } catch {}
+  if (!tabs.length) return acc;
+  let res = null;
+  try {
+    const [r] = await withTimeout(5e3, chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'MAIN', func: () => {
+      const m = document.cookie.match(/(?:^|;\s*)ds_user_id=(\d+)/), uid = m && m[1], snips = [];
+      if (uid) {
+        document.querySelectorAll('script[type="application/json"]').forEach((s) => {
+          const t = s.textContent || '';
+          for (let i = t.indexOf('"' + uid + '"'); i >= 0 && snips.length < 40; i = t.indexOf('"' + uid + '"', i + 1)) snips.push(t.slice(Math.max(0, i - 400), i + 400));
+        });
+      }
+      return { host: location.hostname, ready: document.readyState, cookie: uid ? 'ds_user_id=' + uid : '', text: snips.join('\n') };
+    } }));
+    res = r && r.result;
+  } catch {}
+  if (!res || res.host !== 'www.instagram.com' || res.ready !== 'complete') return acc;
+  const a = FL.accountFrom(res.cookie, res.text);
+  if (a.ig_id && !a.handle) { // the page did not name it: the id cache (passive capture) or what we knew before may
+    if (acc && acc.ig_id === a.ig_id && acc.handle) a.handle = acc.handle;
+    else { const ids = (await get('ids')) || {}; a.handle = Object.keys(ids).find((h) => ids[h].ig_id === a.ig_id) || null; }
+  }
+  const next = { ...a, at: now };
+  if (!acc || acc.ig_id !== next.ig_id || acc.handle !== next.handle) { await trail('account', { ig_id: next.ig_id, handle: next.handle }); mem.lastBeat = 0; }
+  await set({ account: next });
+  return next;
+}
+// First request after a quiet spell (browser start, install, > 30 min without a request): wait this lane's own offset.
+async function startOffset(reason) {
+  await ident();
+  const st = await loadSt(), last = st.rlog.length ? st.rlog[st.rlog.length - 1][0] : 0, now = Date.now();
+  if (now - last < 30 * FL.MIN) return;
+  const off = ((await get('startOffset')) ?? FL.startOffset()) + Math.round(Math.random() * 10e3);
+  await editSt((s) => { s.nextAt = Math.max(s.nextAt || 0, now + off); });
+  await trail('start offset', { s: Math.round(off / 1e3), reason });
+}
+
 // ---- server I/O (every call has a timeout: a hung local server must never stall the loop) ------
 async function api(path, body, ms = 15e3) {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms);
+  const id = await ident();
+  if (body === undefined) {
+    const p = new URLSearchParams({ lane: id.lane_id });
+    if (id.account) { p.set('ig_id', id.account.ig_id || ''); if (id.account.handle) p.set('handle', id.account.handle); }
+    path += (path.includes('?') ? '&' : '?') + p;
+  } else body = await tagged(body);
   try {
     const r = await fetch(SERVER + path, body === undefined ? { headers: { 'X-FL': '1' }, signal: ctl.signal } :
       { method: 'POST', headers: { 'content-type': 'application/json', 'X-FL': '1' }, body: JSON.stringify(body), signal: ctl.signal });
@@ -68,12 +136,14 @@ function flushBox() {
   return flushing;
 }
 async function queue(path, body) {
+  body = await tagged(body);
   await locked(async () => set({ box: FL.enqueue(await get('box'), path, body) }));
   await flushBox();
 }
 // Enqueue a job's result and clear `cur` in one storage write, so a worker restarted after this point never
 // re-runs a request whose result is already stored (step() flushes the outbox before leasing again).
 async function queueDone(path, body) {
+  body = await tagged(body);
   await locked(async () => set({ box: FL.enqueue(await get('box'), path, body), cur: null }));
   await editSt((st) => FL.succeeded(st));
   await flushBox();
@@ -91,9 +161,12 @@ async function applyServer(j) {
 async function heartbeat(force) {
   if (!force && Date.now() - mem.lastBeat < 25e3) return;
   mem.lastBeat = Date.now();
+  await whoami().catch(() => {});
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
+  const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
   try {
-    const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null,
+    const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null, cool,
+      hold: st.hold ? st.hold.code : null,
       today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
       rate: FL.rateOf(st, now) }, 10e3);
@@ -293,6 +366,9 @@ async function runList(gen, job, tab) {
   // Followers: the web app sends search_surface=follow_list_page; Instagram caps follower pages at ~25 whatever count says.
   const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + (job.direction === 'following' ? 50 : 25) +
     (cursor ? '&max_id=' + encodeURIComponent(cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
+  // Another lane may have moved this list on since we last saw it: the server's count is then the one to trust.
+  const moved = cursor && prog.next !== cursor && Number.isFinite(job.received);
+  if (moved) prog = { ...prog, received: job.received, emptyAt: null };
   const ctx = { cursor, total, received: cursor ? prog.received || 0 : 0, emptyAt: prog.emptyAt ?? null };
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
@@ -300,7 +376,7 @@ async function runList(gen, job, tab) {
     return fail(job, bad, mem.label, res, 'list');
   }
   const page = FL.parsePage(res.json), now = Date.now();
-  await editProg(key, (p) => ({ ...(cursor ? p : {}), cursor, next: page.next_cursor, received: (cursor ? p.received || 0 : 0) + page.users.length,
+  await editProg(key, (p) => ({ ...(cursor ? p : {}), cursor, next: page.next_cursor, received: (cursor ? (moved ? job.received : p.received || 0) : 0) + page.users.length,
     pages: (cursor ? p.pages || 0 : 0) + 1, total, emptyAt: null, limited: page.limited, at: now }));
   await editSt((st) => {
     FL.logPage(FL.tally(st, now, page.users.length, 0), now, page.users.length);
@@ -378,6 +454,7 @@ async function step(gen) {
   return 1e3;
 }
 async function loop() {
+  await booted;
   if (mem.looping && Date.now() - mem.beat < LOOP_STALE) return;
   if (mem.looping) await trail('loop stalled; restarting', { since: hhmmss(mem.beat) });
   const gen = ++mem.gen;
@@ -444,6 +521,8 @@ async function passive(user) {
   const p = FL.mapProfile(user);
   if (!p || !p.ig_id) return;
   await remember(p);
+  const me = await get('account'); // our own profile went by: now we know this account's handle
+  if (me && me.ig_id === p.ig_id && me.handle !== p.handle.toLowerCase()) { await set({ account: { ...me, handle: p.handle.toLowerCase() } }); mem.lastBeat = 0; }
   const w = waiters[p.handle.toLowerCase()];
   if (w) return w(p); // a lookup asked for this one; its job posts it
   if (p.bio === null || !(await markSeen(p.handle))) return;
@@ -471,11 +550,13 @@ async function wake(reason) {
   const stale = await get('lookupTab');
   if (stale != null && !mem.lookups.size) { chrome.tabs.remove(stale).catch(() => {}); await set({ lookupTab: null }); }
   await ensureAlarm();
+  await startOffset(reason).catch(() => {});
 }
 chrome.runtime.onInstalled.addListener((d) => { trail('installed', { reason: d && d.reason }); ensureAlarm(); loop(); });
 chrome.runtime.onStartup.addListener(() => { trail('browser startup'); ensureAlarm(); loop(); });
 chrome.alarms.onAlarm.addListener(() => { ensureAlarm(); heartbeat(); loop(); });
-wake('worker').finally(loop);
+const booted = wake('worker').catch(() => {});
+booted.then(loop);
 
 // The workspace can reload the extension after an update (loopback origin only).
 chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {

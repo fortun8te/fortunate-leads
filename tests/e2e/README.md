@@ -11,6 +11,21 @@ Options:
 - `--outage-min N`: how long the server stays offline. The default is 4.
 - `--keep`: keep the temp dir.
 - `--verbose`: print the timeline, the passed checks and the extension's own trail.
+- `--lanes N`: several accounts instead (see below). `--lanes 1,2,4` runs each count in its own process and prints the time to 10k connections side by side.
+
+## Lanes (`--lanes N`)
+
+N emulated Chrome profiles, each with its own storage, tabs, alarms and service worker running the real extension, all against one server. Each profile is logged in to its own fake Instagram account (`X-Sim-Account`; the home page names the viewer so the extension can detect it) with its own failures, counted per account: lane 1 gets a 429 on its 200th list request, lane 2 is logged out on its 20th (Michael logs it back in 45 min later), lane 3 a soft block on its 45th, lane 4 "please wait" on its 60th. No harness faults. 10 lists, 16.9k connections; the run stops when every list is done (cap 12 simulated hours).
+
+Checks: every list complete with edges equal to what the fake served, no page fetched twice across lanes and none posted twice, a list is never requested by a second lane while the lane that had it is still working it, the logged-out lane's list moves to another lane from its saved cursor (and the server records the handoff), no lane requests anything inside its own cooldown while the other lanes keep going, the server knows each lane's account, every outbox ends empty.
+
+```
+lanes  time to 10k connections  all lists done
+    1                   1.83 h          2.33 h
+    2                   1.33 h          1.58 h
+    4                   0.67 h          0.92 h
+```
+Lane 2 is logged out for 45 min in the 2- and 4-lane runs, which is why 2 lanes are not twice as fast.
 
 ## What runs
 

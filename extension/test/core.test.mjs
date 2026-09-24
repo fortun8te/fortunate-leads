@@ -173,3 +173,17 @@ test('rate: pages/people in last hour and last hit', () => {
   assert.equal(FL.rateOf(st, T0).last_hit_at, new Date(T0 - 5 * MIN).toISOString());
   assert.deepEqual(FL.rateOf({}, T0), { pages_hour: 0, people_hour: 0, bios_hour: 0, requests_hour: 0, hits_24h: 0, last_hit_at: null });
 });
+
+test('lanes: stable id format and a start offset inside its range', () => {
+  const ids = new Set(Array.from({ length: 50 }, () => FL.newLaneId()));
+  assert.equal(ids.size, 50);
+  for (const id of ids) assert.match(id, /^ln_[a-z2-9]{12}$/);
+  for (let i = 0; i < 50; i++) { const o = FL.startOffset(); assert.ok(o >= FL.START_OFFSET[0] && o <= FL.START_OFFSET[1]); }
+});
+test('accountFrom: ds_user_id plus the nearest username in the page JSON', () => {
+  const page = '{"viewer":{"user":{"id":"4242","username":"fortun8te","full_name":"M"}},"other":{"pk":"1","username":"someone"}}';
+  assert.deepEqual(FL.accountFrom('csrftoken=x; ds_user_id=4242; sessionid=y', page), { ig_id: '4242', handle: 'fortun8te' });
+  assert.deepEqual(FL.accountFrom('csrftoken=x; ds_user_id=4242', '{"username":"far","x":"' + 'a'.repeat(900) + '","id":"4242"}'), { ig_id: '4242', handle: null });
+  assert.deepEqual(FL.accountFrom('csrftoken=x', page), { ig_id: null, handle: null }); // logged out
+  assert.equal(FL.handleFrom('{"username":"Mixed.Case_1","pk":"9"}', '9'), 'mixed.case_1');
+});
