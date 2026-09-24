@@ -42,3 +42,13 @@ Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md]
 ## Rules
 - Honour Instagram's own limits (429 / "please wait") with backoff; never retry through them; never loosen list pacing.
 - UI copy: short product language, no filler.
+
+## 2026-09-24 late
+- Extension 3.6.0: in-page widget on instagram.com (widget.js, closed Shadow DOM, data only via the service worker).
+- The list error `other on @x following · page 1 (HTTP 0)` (no reason in brackets) is the pre-3.3 message format: an old
+  extension build posted it at 18:07 today (georgebrocklehurst). No account row runs <3.5.1, so it is likely an old copy in
+  another Chrome profile or a replayed outbox item. Check chrome://extensions in every profile; 3.5.1+ always sends a reason.
+- Statuses are a pipeline: interested, contacted, talking, client, no (Not a fit). Migration in db.init (backup
+  data/leads.backup-pre-statuses-*.sqlite). Status, note and manual tags feed the LLM prompt and input_hash.
+- Map: hit test against drawn radius on live nodes (the cached quadtree missed new/big nodes); seeds with a person row open
+  that person's panel; solid line = follows the seed, dashed = seed follows them.

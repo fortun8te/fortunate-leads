@@ -46,7 +46,7 @@ verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TE
   model TEXT, input_hash TEXT, updated_at TEXT, prompt TEXT, evidence TEXT)   -- tier: hot|warm|cold|unread
   -- prompt = qualify.prompt_version (prompt + few-shot set) of an LLM verdict; evidence = JSON list of exact bio quotes
 laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT)   -- optional Laya sidecar answers (soft signal)
-marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- good|maybe|no|contacted|client|known
+marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- interested|contacted|talking|client|no (no = Not a fit). 2026-09 migration: good→interested; maybe/known→status cleared + manual tag 'Maybe' / 'Already know them' (notes kept)
 jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT, handle TEXT,
   priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT)
   -- state queued|leased|done|error. attempts = leases that expired or ended in an 'other' error (rate_limit/soft_block/
@@ -90,15 +90,15 @@ Precision over recall: promo codes for someone else's brand ("code X at @brand")
 
 **Weighting.** Every score (prefilter, rule verdict, LLM verdict) is `blend(profile read, network)`: 60 % network strength, 40 %
 the profile read. Network strength: 30 for one list, +25/+38/+46 for 2/3/4 lists (+3 per list beyond), +5 per seed that follows
-them (max 10), seed yield (y − 0.25) × 60 clamped −12..+20, Michael mutual/follows/followed +16/+10/+8, +6 per linked good/client
+them (max 10), seed yield (y − 0.25) × 60 clamped −12..+20, Michael mutual/follows/followed +16/+10/+8, +6 per linked positive mark (interested/talking/client)
 account (max 18). The profile read is handle/name signals before a bio, then the rule score or the LLM fit capped by role (unrelated 40,
 peer 50, supplier 55, collaborator/unclear 65, connector 80, buyer 100). Without a network context the source tags stand in.
 
 Staged pipeline (all stages run in background threads; HTTP handlers and ingest never wait on them):
 1. **Prefilter** from list data only (name, handle, verified, private, seeds and direction, lists count) plus the **network context**
    (`server.network_context`): `seeds` [(seed, direction)] — being followed BY a seed weighs more than following it; `lists`;
-   `me` = `mutual|follows|followed` for Michael's own (`is_me`) seed; `seed_yield` = best seed's (good+client+1)/(marked+4) from
-   Michael's marks, with `seed_marked`; `client_seeds` = the person's seeds that are people marked good/client. Laya (optional) adds
+   `me` = `mutual|follows|followed` for Michael's own (`is_me`) seed; `seed_yield` = best seed's (positive+1)/(marked+4) from
+   Michael's marks, with `seed_marked`; `client_seeds` = the person's seeds that are people marked interested/talking/client. Laya (optional) adds
    a 25 % weighted soft signal. Private accounts stay ≤ 35. This orders the bio-read queue, so people get a first pass before any read.
 2. **Rule tags** + rule verdict after the bio read (and for everyone without one).
 3. **Laya** (optional, `server/laya.py`): `POST http://127.0.0.1:18742/decide` in batches of 64 with 5 questions (dtc_founder,
@@ -109,7 +109,7 @@ Staged pipeline (all stages run in background threads; HTTP handlers and ingest 
    founder/decision-maker of a DTC physical-product brand, US or NL-selling-to-US, able to pay ~EUR 2k. JSON reply per profile:
    `role, niche, brand_handle, decision_maker, fit, evidence[], reason, extra_tags`; evidence quotes not found in the profile are
    dropped. Tags from the verdict: role, niche, `Founder` (decision-maker of a brand), `Fit: strong` (buyer, fit ≥ 75), `Fit: good`
-   (buyer/connector, fit ≥ 55). Few-shot: up to 8 recent good/client and 8 `no` marks with a bio, frozen until the good/client/no
+   (buyer/connector, fit ≥ 55). Few-shot: up to 8 recent interested/talking/client and 8 `no` marks with a bio, frozen until those
    count moves by ≥ 5 (or 20 %); then LLM verdicts from another prompt version with score ≥ 35 (warm or near it) are re-run. Bounded pool: `llm_workers` concurrent
    calls (default 4) spread across providers/keys.
 
@@ -153,7 +153,7 @@ GET endpoints return the JSON directly; POST endpoints return `{"ok":true,...}`;
 | `tags=a,b` | has **all** of these tags (any source) |
 | `any=c,d` | has **at least one** |
 | `not=e,f` | has **none** |
-| `status=` | absent: everyone except `no`; `good,maybe`: any of these; `none`: unmarked (combinable: `status=good,none`); `all`: no status filter |
+| `status=` | absent: everyone except `no`; `interested,talking`: any of these; `none`: unmarked (combinable: `status=interested,none`); legacy `good` = `interested`; `all`: no status filter |
 | `q=` | substring of handle, name or bio (`%` and `_` are literal) |
 | `min_lists=N` | linked to ≥ N distinct seeds |
 | `has_bio=1\|0` | bio read and non-empty / not |
@@ -163,14 +163,14 @@ GET endpoints return the JSON directly; POST endpoints return `{"ok":true,...}`;
 
 Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-sensitive) tag names, URL-encoded (`via%20%40seed`).
 
-- `GET /api/leads?<filter>&sort=score|fit|recent|followers|connected&offset=0&limit=50` → `{"total", "rows":[{"id","handle","name","pic","bio","website","followers","following","posts","tier","score","role","reason","tags":[{"tag","grp","source"}],"via":["seed",...],"lists":int,"status"}]}` — `tags` ordered manual first, then rule, then auto; inside a source role, niche, signal, size, source. `pic` = `/img/{id}` or null. `lists` = distinct seeds the person is linked to by any edge (both directions count once). `sort=connected` = `lists` desc, then followers desc. `sort=fit` = tier (hot, warm, cold, unread), then `lists` desc, then score. Another sort value is a 400. Michael's own account is never a row.
+- `GET /api/leads?<filter>&sort=score|fit|recent|followers|connected&offset=0&limit=50` → `{"total", "rows":[{"id","handle","name","pic","bio","website","followers","following","posts","tier","score","role","reason","tags":[{"tag","grp","source"}],"via":["seed",...],"lists":int,"status"}]}` — `tags` ordered manual first, then rule, then auto; inside a source role, niche, signal, size, source. `pic` = `/img/{id}` or null. `note` = Michael's note or null (search `q=` also matches notes). `lists` = distinct seeds the person is linked to by any edge (both directions count once). `sort=connected` = `lists` desc, then followers desc. `sort=fit` = tier (hot, warm, cold, unread), then `lists` desc, then score. Another sort value is a 400. Michael's own account is never a row.
 - `GET /api/tags?<filter>` → `[{"tag","grp","source":"auto"|"rule"|"manual","count","total"}]` — one entry per (tag, source); `count` = people in the current filtered set with it, `total` = overall. Sorted count desc, total desc, tag. Tags with `count: 0` are included.
 
 ### Tag management (manual tags)
 - `POST /api/person/{id}/tags` `{"add":["..."],"remove":["..."]}` — add makes the tag manual (an auto/rule tag of the same name becomes manual); remove deletes the tag whatever its source (auto/rule tags come back when their rule still matches).
 - `POST /api/tags/rename` `{"from","to"}` → `{"ok","renamed":n}` — manual tags only. If a person already has `to` (any source) the two merge into one manual `to`. Group: that of an existing `to`, else of `from`.
 - `POST /api/tags/delete` `{"tag"}` → `{"ok","deleted":n}` — manual tags only; auto/rule tags of that name stay.
-- `POST /api/people/bulk` `{"ids":[..≤5000], "add"?:[..], "remove"?:[..], "status"?:null|"good"|"maybe"|"no"|"contacted"|"client"|"known"}` → `{"ok","updated":n}` (n = ids that exist). `status` key absent = marks untouched; `null` = clear the status (notes kept).
+- `POST /api/people/bulk` `{"ids":[..≤5000], "add"?:[..], "remove"?:[..], "status"?:null|"interested"|"contacted"|"talking"|"client"|"no"}` → `{"ok","updated":n}` (n = ids that exist). `status` key absent = marks untouched; `null` = clear the status (notes kept).
 - Tag names: trimmed, inner whitespace collapsed, 1–64 chars, no commas (commas separate filter values) → else 400.
 
 ### Tag rules (user-defined auto tagging, source `rule`)
@@ -186,20 +186,20 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - `GET /api/views` → `[{"id","name","query"}]` (sorted by name). `POST /api/views` `{"name","query"}` → `{"ok","id","name","query"}` — `query` is the URL query string (leading `?` stripped); saving an existing name (any case) overwrites it. `POST /api/views/{id}/delete` → `{"ok","deleted":0|1}`.
 
 ### People, map, scraper
-- `GET /api/counts?<filter>` → `{"hot","warm","cold","unread","good","maybe","no","contacted","client","known","none","open","total","with_bio"}` — tier counts within the filter without its `tier`; status counts within the filter without its `status` (`none` = unmarked, `open` = all but `no`); `total`/`with_bio` = the whole database. Cached per query and `data_rev`.
+- `GET /api/counts?<filter>` → `{"hot","warm","cold","unread","interested","contacted","talking","client","no","none","open","total","with_bio"}` — tier counts within the filter without its `tier`; status counts within the filter without its `status` (`none` = unmarked, `open` = all but `no`); `total`/`with_bio` = the whole database. Cached per query and `data_rev`.
 - `GET /api/person/{id}` → lead row + `{"edges":[{"seed","direction"}],"verdict":{...,"evidence":[str]},"note"}` — `evidence` is always a list.
-- `POST /api/person/{id}/mark` `{"status"?:null|"good"|"maybe"|"no"|"contacted"|"client"|"known","note"?:str|null}` — an absent key is left as it is; `status:null` clears the status but keeps the note; `note:""`/`null` clears the note; the row goes when both are empty.
+- `POST /api/person/{id}/mark` `{"status"?:null|"interested"|"contacted"|"talking"|"client"|"no","note"?:str|null}` — an absent key is left as it is; `status:null` clears the status but keeps the note; `note:""`/`null` clears the note; the row goes when both are empty.
 - `POST /api/person/{id}/read` → queue a profile read now (priority); 400 for a parked `handle~id` row
 - `GET /api/map?<filter>&scope=leads|all&limit=400` → `{"nodes":[...],"links":[{"source":"s:seed","target","direction"}],"seed_links":[{"source":"s:a","target":"s:b","shared":n}],"rev":int}`
-  - seed node: `{"id":"s:handle","kind":"seed","label","tier","score","pic","degree","followers","status","lists","tags","seeds","is_me"}` — `degree` = edges into that seed's lists; `followers`/`status`/`tags`/`lists`/`seeds` describe the seed's own person row (a seed can sit in other seeds' lists), empty/0/null if unknown. `is_me` = Michael's own account.
-  - lead node: `{"id":"p:123","kind":"lead","label","handle","name","tier","fit":"strong|good|weak|unread","score","reason","pic","degree","lists","status","followers","tags","seeds"}` — `degree` = `lists` = distinct seeds; `tags` = up to 4 tag names, manual first (same order as leads); `seeds` = seed handles it is linked to.
+  - seed node: `{"id":"s:handle","kind":"seed","label","tier","score","pic","degree","followers","status","lists","tags","seeds","is_me","pid","note"}` — `pid` = the seed's own person id (null if never read; with it the UI opens that person's panel), `note` = Michael's note or null; `degree` = edges into that seed's lists; `followers`/`status`/`tags`/`lists`/`seeds` describe the seed's own person row (a seed can sit in other seeds' lists), empty/0/null if unknown. `is_me` = Michael's own account.
+  - lead node: `{"id":"p:123","kind":"lead","label","handle","name","tier","fit":"strong|good|weak|unread","score","reason","pic","degree","lists","status","note","followers","tags","seeds"}` — `degree` = `lists` = distinct seeds; `tags` = up to 4 tag names, manual first (same order as leads); `seeds` = seed handles it is linked to.
   - The filter applies to leads only; all seeds are always returned. `scope=leads`: up to 60 % people linked to ≥ 2 seeds (most connected first), the rest by score. `scope=all`: by score. Default excludes `status=no`, as leads.
   - `seed_links` = top 50 seed pairs by shared audience (distinct people linked to both, any direction; ties by pair name), not filtered; recomputed when edges change, at most every 30 s while a list streams in. The rest of the response is cached per query and `data_rev` (people, verdicts, edges, seeds, marks, tags, tag rules, LLM writes).
 - `GET /api/scraper` → `{"llm":<same as /api/llm>,"ext":{"online","version","state","cooldown_until","today","budget","last_seen","activity","text","rate":{"pages_hour","people_hour","last_hit_at"}|null,"last_error"},"paused","qualify":bool,"qualify_auto":bool,"soak":{"1h":{"pages","people","new_people","profiles"},"6h":{...}},"people_today","lists":[{"seed","direction","state","received","total","updated_at","error"}],"queue":{"list":n,"profile":n}}` — `soak`: list pages ingested (retries not counted), edges added, people first seen, bios read in the window.
 - `POST /api/scraper/seeds` `{"handles":["a","b"],"directions":["followers","following"]}`
 - `POST /api/scraper/pause` `{"paused":bool}`
 - `POST /api/scraper/budget` `{"list":n,"profile":n}` — the default per account per day: list ≤ 3000, profile ≤ 5000, `0` = no daily number.
-- `POST /api/scraper/snowball` `{"min_status"?:"good"|"client","limit"?:1-500}` → `{"ok","queued":n,"seeds":[...]}` — **opt-in** (never
+- `POST /api/scraper/snowball` `{"min_status"?:"interested"|"client","limit"?:1-500}` → `{"ok","queued":n,"seeds":[...]}` — **opt-in** (never
   automatic): queues the `following` list of each good+client (or client only) person that is not private, not parked and has no
   following list yet (default limit 50, most recently marked first). Their people then pick up the same network signals.
 - `GET /api/llm` → `{"providers":[{"id":"proxy"|keyid,"name":"proxy"|"openrouter","url","key":"sk-…abcd"|null,"source":"env"|"file"|null,
@@ -226,3 +226,9 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - Never loosen Instagram pacing to go faster. One request at a time per account. Limits → cooldown, escalating, auto-resume bounded.
 - Short product language in the UI, no emoji decoration, no gradients, no filler. Real data only.
 - Old system stays untouched as backup: `~/ig-follower-export`, `~/Documents/Codex/2026-09-23/here-s-the-full-prompt-with-2/work/`.
+
+## Owner judgement in qualification (2026-09)
+Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_at`, so the next qualify batch re-derives that
+person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
+`input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
+judgement re-runs the model for that person.

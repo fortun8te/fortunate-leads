@@ -200,7 +200,7 @@ class ServerTest(Base):
         self.assertEqual({n['id'] for n in m['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2'})
         self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'}, m['links'])
         self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
-                                              'tags', 'seeds', 'is_me'})
+                                              'tags', 'seeds', 'is_me', 'pid', 'note'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
 
     def test_connected_sort_min_lists_and_tag_sources(self):
@@ -375,12 +375,12 @@ class TagsViewsMapTest(Base):
         # stub tiers: founder -> hot (80), hobby -> cold (30), no bio -> unread; lists break ties inside a tier
         self.assertEqual(self.rows('sort=fit'), ['ben', 'ann', 'cat', 'dan'])
         self.assertEqual(self.call('/api/leads?sort=nope')[0], 400)
-        self.call('/api/people/bulk', {'ids': [ids['ben']], 'status': 'good'})
+        self.call('/api/people/bulk', {'ids': [ids['ben']], 'status': 'interested'})
         self.call('/api/people/bulk', {'ids': [ids['cat']], 'status': 'no'})
         c = self.call('/api/counts?min_lists=2&tier=hot')[1]
-        self.assertEqual((c['hot'], c['cold'], c['unread'], c['good'], c['no'], c['total']), (1, 0, 1, 1, 0, 4))  # own dimension ignored
+        self.assertEqual((c['hot'], c['cold'], c['unread'], c['interested'], c['no'], c['total']), (1, 0, 1, 1, 0, 4))  # own dimension ignored
         c = self.call('/api/counts?min_lists=2')[1]
-        self.assertEqual((c['no'], c['good'], c['none'], c['open']), (1, 1, 1, 2))
+        self.assertEqual((c['no'], c['interested'], c['none'], c['open']), (1, 1, 1, 2))
         self.assertEqual(self.call('/api/counts?q=zzz')[1]['hot'], 0)
         self.conn.execute("UPDATE verdicts SET evidence=? WHERE person_id=?", (json.dumps(['founder']), ids['ann']))
         self.conn.execute("UPDATE verdicts SET evidence='not json' WHERE person_id=?", (ids['ben'],))
@@ -405,7 +405,7 @@ class TagsViewsMapTest(Base):
         self.assertEqual(self.rows('followers_min=300&followers_max=5000&sort=followers'), ['ann', 'ben'])
         self.assertEqual(self.rows('followers_min=100000'), [])
         self.call(f"/api/person/{ids['ben']}/mark", {'status': 'no'})
-        self.call(f"/api/person/{ids['cat']}/mark", {'status': 'good'})
+        self.call(f"/api/person/{ids['cat']}/mark", {'status': 'interested'})
         self.assertNotIn('ben', self.rows(''))
         self.assertEqual(self.rows('status=no'), ['ben'])
         self.assertEqual(sorted(self.rows('status=none')), ['ann', 'dan'])
@@ -451,11 +451,11 @@ class TagsViewsMapTest(Base):
     def test_bulk(self):
         ids = self.people(self.SPEC)
         allids = list(ids.values())
-        out = self.call('/api/people/bulk', {'ids': allids + [999999], 'add': ['  batch   one ', 'b2'], 'status': 'maybe'})[1]
+        out = self.call('/api/people/bulk', {'ids': allids + [999999], 'add': ['  batch   one ', 'b2'], 'status': 'contacted'})[1]
         self.assertEqual(out, {'ok': True, 'updated': 4})
         self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='batch one' AND source='manual'").fetchone()[0], 4)
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status='maybe'").fetchone()[0], 4)
-        self.call(f"/api/person/{ids['ann']}/mark", {'status': 'good', 'note': 'call'})
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status='contacted'").fetchone()[0], 4)
+        self.call(f"/api/person/{ids['ann']}/mark", {'status': 'interested', 'note': 'call'})
         self.call('/api/people/bulk', {'ids': allids, 'remove': ['b2']})  # no status key: marks untouched
         self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status IS NOT NULL").fetchone()[0], 4)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='b2'").fetchone()[0], 0)
@@ -531,12 +531,12 @@ class TagsViewsMapTest(Base):
     def test_map_filter_nodes_and_seed_links(self):
         ids = self.people({'ann': ('founder', 5000, ['s1', 's2', 's3']), 'ben': ('founder', 300, ['s1', 's2']),
                            'cat': ('hobby', 90000, ['s2', 's3']), 'dan': (None, None, ['s1'])})
-        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['m1', 'm2'], 'status': 'good'})
+        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['m1', 'm2'], 'status': 'interested'})
         server.qualify_batch(self.conn)
         m = self.call('/api/map?scope=all')[1]
         leads = {n['label']: n for n in m['nodes'] if n['kind'] == 'lead'}
         ann = leads['ann']
-        self.assertEqual((ann['lists'], ann['degree'], ann['status'], ann['followers'], ann['seeds']), (3, 3, 'good', 5000, ['s1', 's2', 's3']))
+        self.assertEqual((ann['lists'], ann['degree'], ann['status'], ann['followers'], ann['seeds']), (3, 3, 'interested', 5000, ['s1', 's2', 's3']))
         self.assertEqual(ann['tags'], ['m1', 'm2', 'founder', 'via @s1'])  # max 4, manual first
         self.assertEqual(leads['dan']['tags'], ['via @s1'])
         self.assertEqual(m['seed_links'], [{'source': 's:s1', 'target': 's:s2', 'shared': 2},
@@ -709,15 +709,15 @@ class AuditTest(Base):
         pid = db.upsert_person(self.conn, {'handle': 'ann'})
         self.conn.commit()
         mark = lambda: self.conn.execute('SELECT status, note FROM marks WHERE person_id=?', (pid,)).fetchone()  # noqa: E731
-        self.call(f'/api/person/{pid}/mark', {'status': 'good', 'note': 'met at expo'})
+        self.call(f'/api/person/{pid}/mark', {'status': 'interested', 'note': 'met at expo'})
         self.call(f'/api/person/{pid}/mark', {'status': None})
         self.assertEqual(mark()[:], (None, 'met at expo'))
-        self.call(f'/api/person/{pid}/mark', {'status': 'maybe'})
-        self.assertEqual(mark()[:], ('maybe', 'met at expo'))
+        self.call(f'/api/person/{pid}/mark', {'status': 'contacted'})
+        self.assertEqual(mark()[:], ('contacted', 'met at expo'))
         self.call(f'/api/person/{pid}/mark', {'note': 'follow up'})  # status absent: kept
-        self.assertEqual(mark()[:], ('maybe', 'follow up'))
+        self.assertEqual(mark()[:], ('contacted', 'follow up'))
         self.call(f'/api/person/{pid}/mark', {'note': ''})
-        self.assertEqual(mark()[:], ('maybe', None))
+        self.assertEqual(mark()[:], ('contacted', None))
         self.call(f'/api/person/{pid}/mark', {'status': None})
         self.assertIsNone(mark())  # nothing left: row removed
         self.assertEqual(self.call(f'/api/person/{pid}/mark', {'note': 5})[0], 400)

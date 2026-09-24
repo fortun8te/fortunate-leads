@@ -78,3 +78,50 @@ class BugTest(Base):
         r = self.call('/api/ext/list-page', {'job_id': None, 'seed': 's', 'direction': 'followers', 'next_cursor': None,
                                              'users': [{'handle': 'u', 'name': {'a': 1}}, 'junk', None], 'done': False})
         self.assertEqual(r[0], 200)
+
+
+class StatusPipelineTest(Base):
+    def test_old_statuses_migrate(self):
+        ids = {h: db.upsert_person(self.conn, {'handle': h}) for h in ('g', 'm', 'k', 'c', 'n')}
+        for h, st, note in (('g', 'good', None), ('m', 'maybe', None), ('k', 'known', 'school friend'), ('c', 'client', None), ('n', 'no', None)):
+            self.conn.execute('INSERT INTO marks VALUES(?,?,?,?)', (ids[h], st, note, db.now()))
+        db.migrate_statuses(self.conn)
+        marks = dict(self.conn.execute('SELECT person_id, status FROM marks').fetchall())
+        self.assertEqual(marks, {ids['g']: 'interested', ids['k']: None, ids['c']: 'client', ids['n']: 'no'})  # m: no status, no note -> gone
+        tags = {tuple(r) for r in self.conn.execute("SELECT person_id, tag FROM tags WHERE source='manual'")}
+        self.assertEqual(tags, {(ids['m'], 'Maybe'), (ids['k'], 'Already know them')})
+        db.migrate_statuses(self.conn)  # idempotent
+        self.assertEqual(dict(self.conn.execute('SELECT person_id, status FROM marks').fetchall()), marks)
+
+    def test_new_statuses_validate_and_note_is_searchable(self):
+        pid = db.upsert_person(self.conn, {'handle': 'ann'})
+        self.conn.commit()
+        self.assertEqual(self.call(f'/api/person/{pid}/mark', {'status': 'maybe'})[0], 400)
+        self.assertEqual(self.call(f'/api/person/{pid}/mark', {'status': 'talking', 'note': 'Met at Shopify meetup'})[0], 200)
+        self.assertEqual([r['handle'] for r in self.call('/api/leads?q=shopify%20meetup')[1]['rows']], ['ann'])
+        self.assertEqual(self.call('/api/counts')[1]['talking'], 1)
+
+    def test_status_and_note_feed_the_qualifier(self):
+        import importlib.util, pathlib   # the real module: test_server stubs 'qualify' for the server
+        spec = importlib.util.spec_from_file_location('qualify_real', pathlib.Path(server.__file__).with_name('qualify.py'))
+        qualify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qualify)
+        pid = db.upsert_person(self.conn, {'handle': 'bea', 'bio': 'Founder of a candle brand'})
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        p = lambda: server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))  # noqa: E731
+        before = qualify.input_hash(p(), [])
+        self.assertEqual(before, qualify.input_hash({k: v for k, v in p().items() if k not in ('status', 'note', 'manual_tags')}, []))
+        stamp = lambda: self.conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0]  # noqa: E731
+        old = stamp()
+        self.call(f'/api/person/{pid}/mark', {'status': 'no', 'note': 'Sells wholesale only'})
+        self.assertGreater(server.qualify_batch(self.conn), 0)   # re-qualified after the mark, not a one-time pass
+        self.assertNotEqual(stamp(), old)
+        after = p()
+        self.assertNotEqual(qualify.input_hash(after, []), before)
+        packet = qualify._packet(after, [], [])
+        self.assertIn("OWNER'S OWN JUDGEMENT", packet)
+        self.assertIn('Not a fit', packet)
+        self.assertIn('Sells wholesale only', packet)
+        self.call(f'/api/person/{pid}/tags', {'add': ['Wholesale']})
+        self.assertIn('Wholesale', qualify._packet(p(), [], []))

@@ -86,7 +86,7 @@
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
           <div class="foot"><span class="num" id="count"></span><span class="grow"></span>
-            <span><kbd>j</kbd><kbd>k</kbd> Move</span><span><kbd>x</kbd> Select</span><span><kbd>1</kbd>–<kbd>6</kbd> Status</span><span><kbd>t</kbd> Tag</span><span><kbd>#</kbd> Filter by tag</span><span><kbd>?</kbd> All keys</span></div>
+            <span><kbd>j</kbd><kbd>k</kbd> Move</span><span><kbd>x</kbd> Select</span><span><kbd>1</kbd>–<kbd>5</kbd> Status</span><span><kbd>t</kbd> Tag</span><span><kbd>#</kbd> Filter by tag</span><span><kbd>?</kbd> All keys</span></div>
         </div>
 
         <div class="mpane" id="pane-map">
@@ -108,7 +108,9 @@
               <span><i class="fdot f-good"></i>Good</span>
               <span><i class="fdot f-weak"></i>Weak</span>
               <span><i class="fdot f-unread"></i>Unread</span>
-              <span><i class="lg-mk"></i>Marked</span>
+              <span><i class="lg-mk"></i>Has a status</span>
+              <span title="They are in the seed's followers list"><i class="lg-ln"></i>Follows the seed</span>
+              <span title="They are in the seed's following list"><i class="lg-ln dash"></i>Seed follows them</span>
               <span><i class="lg-ss"></i>Shared people</span>
             </div>
           </div>
@@ -187,9 +189,9 @@
           </div>
         </div>
         <div class="panel grow-panel">
-          <div class="gp-text"><b>Find more people like your good leads</b>
-            <span class="muted">Reads who each lead you marked Good or Client follows. Their circles often hold more brands like them.</span></div>
-          <button class="btn solid" id="snowball">Scrape who good leads follow</button>
+          <div class="gp-text"><b>Find more people like your best leads</b>
+            <span class="muted">Reads who each lead you marked Interested, Talking or Client follows. Their circles often hold more brands like them.</span></div>
+          <button class="btn solid" id="snowball">Scrape who they follow</button>
         </div>
         <div class="panel">
           <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
@@ -280,8 +282,8 @@
   <span><kbd>x</kbd></span><span>Select row</span>
   <span><kbd>shift</kbd> <kbd>j</kbd> <kbd>k</kbd></span><span>Extend selection</span>
   <span><kbd>shift</kbd> <kbd>a</kbd></span><span>Select everyone in filter</span>
-  <span><kbd>1</kbd>–<kbd>6</kbd> <kbd>0</kbd></span><span>Good, maybe, no, contacted, client, known, clear</span>
-  <span><kbd>m</kbd></span><span>Cycle good, maybe, no</span>
+  <span><kbd>1</kbd>–<kbd>5</kbd> <kbd>0</kbd></span><span>Interested, contacted, talking, client, not a fit; 0 clears</span>
+  <span><kbd>m</kbd></span><span>Next step in the pipeline</span>
   <span><kbd>t</kbd></span><span>Tag current or selected</span>
   <span><kbd>o</kbd></span><span>Open on Instagram</span>
   <h4>Filter</h4>

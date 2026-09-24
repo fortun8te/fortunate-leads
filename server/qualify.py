@@ -593,6 +593,26 @@ def network_lines(net):
     return rows
 
 
+OWNER_STATUS = {'interested': 'Interested (worth contacting)', 'contacted': 'Contacted', 'talking': 'Talking (in conversation)',
+                'client': 'Client', 'no': 'Not a fit'}
+
+
+def owner_lines(person):
+    """Michael's own judgement on this person (status, note, his hand-set tags): labelled so the model weighs it above guesses."""
+    out = []
+    if person.get('status') in OWNER_STATUS:
+        out.append(f"OWNER'S OWN JUDGEMENT - status Michael set himself: {OWNER_STATUS[person['status']]}")
+    note = re.sub(r'\s+', ' ', str(person.get('note') or '')).strip()
+    if note:
+        out.append(f"OWNER'S OWN NOTE (Michael wrote this; trust it over the bio): {note[:500]}")
+    if person.get('manual_tags'):
+        out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags'][:12]))
+    if out:
+        out.append("(Lines marked OWNER come from Michael himself: follow them. Not a fit means fit under 15; Interested, "
+                   "Talking or Client means he wants them, so keep fit high unless his note says otherwise.)")
+    return out
+
+
 def _packet(person, tags, edges, net=None):
     others, mine = _seeds(edges, 'fortun8te')
     rows = [f"@{person.get('handle')}" + (f" · name: {person['name']}" if person.get('name') else '')]
@@ -612,6 +632,7 @@ def _packet(person, tags, edges, net=None):
             rows.append("Appears in the follower/following lists of these e-commerce/ads operators: " + ', '.join('@' + s for s in sorted(others)[:10]))
         if mine:
             rows.append('Connected to Michael (@fortun8te): ' + ', '.join(sorted({'followers': 'follows him', 'following': 'he follows them'}.get(d, d) for d in mine)))
+    rows += owner_lines(person)
     rt = [t for t, gr in tags or [] if gr in ('role', 'niche', 'signal')]
     if rt:
         rows.append('Keyword rules matched (hint, may be wrong): ' + ', '.join(rt))
@@ -627,7 +648,7 @@ def fewshot_text(examples):
     line = lambda e: f"- @{e.get('handle')}" + (f" ({e['name']})" if e.get('name') else '') + ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]  # noqa: E731
     out = ["Michael's own past judgements (learn his taste from these):"]
     if good:
-        out += ['Marked GOOD (he wants these):'] + [line(e) for e in good]
+        out += ['Marked Interested / Talking / Client (he wants these):'] + [line(e) for e in good]
     if bad:
         out += ['Marked NO (not a fit):'] + [line(e) for e in bad]
     return '\n'.join(out)
@@ -767,4 +788,7 @@ def llm_verdict(person: dict, tags, edges, timeout: float = 45, models=None, bud
 def input_hash(person: dict, edges) -> str:
     keys = ('handle', 'name', 'bio', 'website', 'category', 'followers', 'following', 'posts', 'is_private', 'is_verified', 'is_business')
     payload = [PROMPT_VERSION, [person.get(k) for k in keys], sorted({(str(e.get('seed') or '').lower(), str(e.get('direction'))) for e in edges or []})]
+    owner = [person.get('status'), (person.get('note') or '').strip(), sorted(person.get('manual_tags') or [])]
+    if any(owner):   # appended only when set, so hashes of people Michael never touched stay as they were
+        payload.append(owner)
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]

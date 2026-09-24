@@ -74,8 +74,14 @@ document.addEventListener('error', (e) => {
 }, true);
 
 // ---------- constants ----------
-const STATUSES = ['good', 'maybe', 'no', 'contacted', 'client', 'known'];
-const CYCLE = [null, 'good', 'maybe', 'no'];
+// The pipeline, in order. Keys 1-5 set it, 0 clears, m steps forward. 'no' hides the person from the default views.
+const STATUSES = ['interested', 'contacted', 'talking', 'client', 'no'];
+const SLABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', client: 'Client', no: 'Not a fit' };
+const SDESC = { interested: 'Worth contacting', contacted: 'You sent the first message', talking: 'They replied, a conversation is going',
+  client: 'Paying client', no: 'Not for you: hidden from the list' };
+const LEGACY_STATUS = { good: 'interested' };
+const slabel = (s) => SLABEL[s] || ucf(s);
+const CYCLE = [null, 'interested', 'contacted', 'talking', 'client'];
 const GROUPS = [['ai', 'AI verdict'], ['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
 const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
 const BIO_OPTS = [['1', 'Yes'], ['0', 'No']];
@@ -197,7 +203,7 @@ function parseToken(w, strict) {
     return () => setMode(canonTag('via @' + m[2]) || 'via @' + m[2].toLowerCase(), mode);
   }
   if ((m = w.match(/^status:(\w*)$/i))) {
-    let s = m[1].toLowerCase(); if (s === 'unmarked') s = 'none';
+    let s = m[1].toLowerCase(); if (s === 'unmarked') s = 'none'; s = LEGACY_STATUS[s] || s;
     if (s && s !== 'open' && s !== 'none' && s !== 'all' && !STATUSES.includes(s)) return null;
     return () => { S.f.status = s === 'open' ? '' : s; };
   }
@@ -392,9 +398,9 @@ function renderFilters() {
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
     <div class="fsec"><h4>Status</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
-    ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}"><span>${ucf(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
+    ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}" title="${esc(SDESC[s])}"><span>${slabel(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b>${fmt(c.none)}</b></button>
-    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>All, incl. no</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
+    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including Not a fit"><span>All</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
     <div class="fsec"><h4>Fit</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
     <div class="fsec fsegs"><h4>Shape</h4>
@@ -683,7 +689,8 @@ function whyHTML(r) {
   const sig = rowTags(r).filter((t) => t.grp === 'signal').slice(0, 3).map((t) => t.tag);
   return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
 }
-const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}"><i></i>${ucf(s)}</span>` : '';
+const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}" title="${esc(SDESC[s])}"><i></i>${slabel(s)}</span>` : '';
+const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
 function rowHTML(r, i, h) {
   const n = lists(r);
   const picked = S.pick.has(r.id);
@@ -691,7 +698,7 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
+    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
@@ -811,7 +818,7 @@ function renderBulk() {
     <form id="bk-form" style="display:contents"><input class="input" id="bk-add" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(addVal)}"><button class="btn">Tag</button></form>
     ${rm.length ? `<select class="select" id="bk-rm" title="Remove tag"><option value="">Remove tag</option>${rm.map(([t, c]) => `<option value="${esc(t)}">${esc(t)} (${c})</option>`).join('')}</select>` : ''}
     <span class="sep"></span>
-    <span class="st-b">${STATUSES.map((s, i) => `<button data-bs="${s}" title="${ucf(s)} (${i + 1})">${ucf(s)}</button>`).join('')}<button data-bs="" title="Clear status (0)">Clear</button></span>
+    <span class="st-b">${STATUSES.map((s, i) => `<button data-bs="${s}" title="${esc(SDESC[s])} (${i + 1})">${slabel(s)}</button>`).join('')}<button data-bs="" title="Clear status (0)">Clear</button></span>
     <span class="grow"></span>
     <button class="btn" id="bk-x" title="Clear selection (esc)">&times;</button>`;
   el.hidden = false;
@@ -852,7 +859,7 @@ async function bulk(op, ids = [...S.pick], quiet) {
   bulkKey = ''; renderRows(); loadFacetsSoon(); loadCounts();
   M.patch(ids, op);
   if (quiet) return;
-  const what = 'status' in op ? (op.status ? `marked ${op.status}` : 'status cleared') : op.add ? `tagged ${op.add[0]}` : `untagged ${op.remove[0]}`;
+  const what = 'status' in op ? (op.status ? `marked ${slabel(op.status)}` : 'status cleared') : op.add ? `tagged ${op.add[0]}` : `untagged ${op.remove[0]}`;
   toast(`${ucf(plural(ids.length, 'person', 'people'))} ${what}`, () => {
     if (op.add) bulk({ remove: op.add }, ids, true);
     else if (op.remove) bulk({ add: op.remove }, ids, true);
@@ -931,6 +938,9 @@ function renderDetail() {
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const focused = document.activeElement?.id;
   const tagVal = $('#tag-in')?.value || '';
+  const noteEl = $('#note'), noteVal = noteEl && +noteEl.dataset.id === p.id ? noteEl.value : p.note || '';
+  const have = new Set((p.tags || []).map((t) => t.tag));
+  const quick = (S.tagList || []).filter((t) => t.grp !== 'source' && !have.has(t.tag)).sort((a, b) => b.total - a.total).slice(0, 6);
   const reason = p.reason || v.reason;
   const ev = evidenceOf(v);
   const you = youLink(p);
@@ -954,16 +964,22 @@ function renderDetail() {
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}
         ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read bio</button>' : ''}</div></div>
     <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
-      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form></div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}">${ucf(s)}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="Add a note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
+      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
+      ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4>Note<span class="grow"></span><span class="d-note" id="note-st">${p.note ? 'Saved' : 'Saves as you type'}</span></h4><textarea class="input" id="note" data-id="${p.id}" placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>`;
+  const sn = M.seeds?.find((x) => x.pid === p.id);
+  if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   if (focused === 'tag-in') $('#tag-in').focus();
+  if (focused === 'note') { const t = $('#note'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
 }
 $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-close')) return closeDetail();
-  if (S.seedCard) return seedCardClick(e);
+  if (S.seedCard || e.target.closest('[data-sf],[data-only],[data-focus]')) return seedCardClick(e);
   const p = S.person;
   if (!p) return;
+  const qt = e.target.closest('[data-addtag]');
+  if (qt) return editTags(p.id, [qt.dataset.addtag], []);
   const rmt = e.target.closest('[data-rmtag]');
   if (rmt) { e.stopPropagation(); return editTags(p.id, [], [rmt.dataset.rmtag]); }
   const tag = e.target.closest('[data-tag]');
@@ -984,12 +1000,15 @@ $('#detail').addEventListener('submit', (e) => {
 $('#detail').addEventListener('keydown', (e) => { if (e.key === 'Escape' && /INPUT|TEXTAREA/.test(e.target.tagName)) { e.stopPropagation(); e.target.blur(); } });
 const saveNote = debounce(async (id, note) => {
   try {
-    await api.post(`/api/person/${id}/mark`, { status: S.person?.id === id ? S.person.status || null : null, note });
-    if (S.person?.id === id) { S.person.note = note; $('#note-st').textContent = 'Saved'; }
-  } catch (e) { if ($('#note-st')) $('#note-st').textContent = 'Not saved'; }
+    await api.post(`/api/person/${id}/mark`, { note });
+    if (S.person?.id === id) { S.person.note = note; if ($('#note-st')) { $('#note-st').textContent = 'Saved'; $('#note-st').className = 'd-note ok'; } }
+    const r = S.rows.find((x) => x.id === id), n = M.byId.get('p:' + id);
+    if (r) { r.note = note || null; renderRows(); }
+    if (n) n.note = note || null;
+  } catch (e) { if ($('#note-st')) { $('#note-st').textContent = 'Not saved, check the server'; $('#note-st').className = 'd-note bad'; } }
 }, 600);
 $('#detail').addEventListener('input', (e) => {
-  if (e.target.id === 'note' && S.person) { $('#note-st').textContent = ''; saveNote(S.person.id, e.target.value); }
+  if (e.target.id === 'note' && S.person) { $('#note-st').textContent = 'Saving…'; $('#note-st').className = 'd-note'; saveNote(S.person.id, e.target.value); }
 });
 async function editTags(id, add, remove) {
   try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('Could not save tag'); return; }
@@ -1038,7 +1057,7 @@ document.addEventListener('keydown', (e) => {
     if (k === 'l') { M.toggleLabels(); return; }
     if (k === 'n') { M.next(); return; }
     const p = S.person;
-    if (p && /^[0-6]$/.test(k)) mark(p.id, k === '0' ? null : STATUSES[+k - 1]);
+    if (p && /^[0-5]$/.test(k)) mark(p.id, k === '0' ? null : STATUSES[+k - 1]);
     if (p && k === 'm') mark(p.id, CYCLE[(CYCLE.indexOf(p.status ?? null) + 1) % CYCLE.length]);
     if (p && k === 'o') window.open(`https://www.instagram.com/${encodeURIComponent(p.handle)}/`, '_blank', 'noopener');
     if (p && k === 't') { e.preventDefault(); $('#tag-in')?.focus(); }
@@ -1059,11 +1078,11 @@ document.addEventListener('keydown', (e) => {
   if (k === 'A') { pickAllInFilter(); return; }
   const r = current();
   if (k === 'Enter' && S.rows[S.cur]) { openDetail(S.rows[S.cur].id); return; }
-  if (S.pick.size && /^[0-6]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
+  if (S.pick.size && /^[0-5]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
   if (S.pick.size && k === 't') { e.preventDefault(); $('#bk-add')?.focus(); return; }
   if (!r) return;
   if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
-  if (/^[0-6]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
+  if (/^[0-5]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
   if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
   if (k === 't') { e.preventDefault(); if (S.open !== r.id) openDetail(r.id).then(() => $('#tag-in')?.focus()); else $('#tag-in')?.focus(); }
 });
@@ -1429,8 +1448,8 @@ $('#budget').addEventListener('submit', async (e) => {
 });
 $('#snowball').onclick = async () => {
   try {
-    const r = await api.post('/api/scraper/snowball', { min_status: 'good' });
-    toast(r.queued ? `Queued who ${plural(r.queued, 'good lead')} follow${r.queued === 1 ? 's' : ''}` : 'Nothing new: every Good or Client lead is already done or private');
+    const r = await api.post('/api/scraper/snowball', { min_status: 'interested' });
+    toast(r.queued ? `Queued who ${plural(r.queued, 'Interested lead')} follow${r.queued === 1 ? 's' : ''}` : 'Nothing new: every Interested, Talking or Client lead is already done or private');
     loadScraper();
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
 };
@@ -1901,11 +1920,11 @@ function pumpPics() {
     im.src = url;
   }
 }
-const MARKED = new Set(['good', 'client', 'contacted', 'maybe']);
+const MARKED = new Set(['interested', 'contacted', 'talking', 'client']);
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
-  loaded: false, stale: true, fitted: false, timer: null, qt: null, qtAt: 0, raf: 0, maxShared: 1, shown: false, loading: false,
+  loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false,
   show() {
     this.shown = true;
     this.resize();
@@ -1967,7 +1986,14 @@ const M = {
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
     this.leads = this.nodes.filter((n) => n.kind !== 'seed');
-    this.links = (d.links || []).filter((l) => this.byId.has(l.source) && this.byId.has(l.target)).map((l) => ({ source: l.source, target: l.target }));
+    // One line per seed-person pair: 'followers' = they follow the seed, 'following' = the seed follows them, 'both'.
+    const pair = new Map();
+    for (const l of d.links || []) {
+      if (!this.byId.has(l.source) || !this.byId.has(l.target)) continue;
+      const key = l.source + '>' + l.target, had = pair.get(key);
+      if (had) { if (had.dir !== l.direction) had.dir = 'both'; } else pair.set(key, { source: l.source, target: l.target, dir: l.direction || 'followers' });
+    }
+    this.links = [...pair.values()];
     this.seedLinks = (d.seed_links || []).map((l) => ({ source: sid(l.source), target: sid(l.target), shared: +l.shared || 0 }))
       .filter((l) => this.byId.has(l.source) && this.byId.has(l.target) && l.shared > 0);
     this.maxShared = Math.max(1, ...this.seedLinks.map((l) => l.shared));
@@ -2026,7 +2052,7 @@ const M = {
       .force('x', F.forceX(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004)).force('y', F.forceY(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004))
       .alpha(alpha).alphaDecay(big ? 0.055 : 0.035).alphaMin(big ? 0.012 : 0.001).velocityDecay(0.42)
       .on('tick', () => this.schedule())
-      .on('end', () => { this.qt = null; if (this.autoFit) this.fit(); });
+      .on('end', () => { if (this.autoFit) this.fit(); });
     if (alpha >= 1) {
       const t0 = performance.now();
       for (let i = 0; i < 160 && performance.now() - t0 < 450; i++) this.sim.tick();
@@ -2036,7 +2062,7 @@ const M = {
   },
   schedule() {
     if (this.raf) return;
-    this.raf = requestAnimationFrame(() => { this.raf = 0; this.qt = null; if (this.autoFit) this.fit(); else this.draw(); });
+    this.raf = requestAnimationFrame(() => { this.raf = 0; if (this.autoFit) this.fit(); else this.draw(); });
   },
   status(t) {
     const c = this.ctx; if (!c) return;
@@ -2078,7 +2104,7 @@ const M = {
     const dx = x - n.x, dy = y - n.y;
     n.x = n.fx = x; n.y = n.fy = y; n.vx = n.vy = 0;
     if (n.kind === 'seed') for (const id of this.nbr.get(n.id) || []) { const m = this.byId.get(id); if (m && m.L === 1 && m.fx == null) { m.x += dx; m.y += dy; m.vx = m.vy = 0; } }
-    this.qt = null; this.draw();
+    this.draw();
   },
   relax(n) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
@@ -2093,7 +2119,7 @@ const M = {
         if (b.fx == null) { b.x += dx * push; b.y += dy * push; moved = true; }
         if (a !== n && a.fx == null) { a.x -= dx * push; a.y -= dy * push; }
       }
-      this.qt = null; this.draw();
+      this.draw();
       if (moved && --frames > 0) requestAnimationFrame(step);
     };
     if (list.length) requestAnimationFrame(step);
@@ -2111,7 +2137,7 @@ const M = {
   patch(ids, op) {
     let hit = false;
     for (const id of ids) {
-      const n = this.byId.get('p:' + id);
+      const n = this.byId.get('p:' + id) || this.seeds.find((x) => x.pid === id);
       if (!n) continue;
       hit = true;
       if ('status' in op) n.status = op.status;
@@ -2146,10 +2172,15 @@ const M = {
       c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
     }
     // Lead edges: people in one list sit next to their seed, so their line is barely drawn; bridges (2+ lists) read clearly.
+    // Solid hairline = they follow the seed (or both ways); dashed = the seed follows them.
     const edgePass = (multi, alpha) => {
-      c.globalAlpha = alpha; c.beginPath();
-      for (const l of this.links) if ((l.target.L > 1) === multi) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
-      c.stroke();
+      c.globalAlpha = alpha;
+      for (const dashed of [false, true]) {
+        c.setLineDash(dashed ? [3 / k, 3 / k] : []); c.beginPath();
+        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+        c.stroke();
+      }
+      c.setLineDash([]);
     };
     c.strokeStyle = line; c.lineWidth = 1 / k;
     edgePass(false, dim ? 0.03 : 0.1);
@@ -2264,13 +2295,27 @@ const M = {
       c.globalAlpha = 1; c.fillStyle = big ? fg : fg2; c.fillText(t, box[0] + 4, y + 0.5);
     }
   },
+  // Hit test against what is drawn (dot radius with the on-screen minimum, photo, ring), always on the live node list:
+  // a cached quadtree went stale after reloads (new people could not be clicked) and its fixed 8-unit search radius
+  // missed the edge of big photo nodes. Seeds are drawn on top, so they win; then the node the pointer is most inside.
   at(px, py) {
-    const x = (px - this.x) / this.k, y = (py - this.y) / this.k;
-    for (const n of this.seeds) if (Math.abs(n.x - x) <= n.r + 3 / this.k && Math.abs(n.y - y) <= n.r + 3 / this.k) return n;
-    if (!this.qt || (this.sim && this.sim.alpha() > this.sim.alphaMin() && performance.now() - this.qtAt > 120)) {
-      this.qt = window.d3.quadtree(this.leads, (n) => n.x, (n) => n.y); this.qtAt = performance.now();
+    const k = this.k, x = (px - this.x) / k, y = (py - this.y) / k, minPx = 2.4 / k, pad = 7 / k;
+    for (let i = this.seeds.length - 1; i >= 0; i--) {
+      const n = this.seeds[i];
+      if (Math.hypot(n.x - x, n.y - y) <= n.r + 3 / k) return n;
     }
-    return this.qt.find(x, y, 8 / this.k + 8) || null;
+    let best = null, bestScore = Infinity;
+    for (const n of this.leads) {
+      if (n.x == null) continue;
+      const r = Math.max(n.r, minPx), reach = Math.max(r + 3 / k, pad);  // tiny dots get a 7 px target
+      const dx = n.x - x, dy = n.y - y;
+      if (dx > reach || dx < -reach || dy > reach || dy < -reach) continue;
+      const d = Math.hypot(dx, dy);
+      if (d > reach) continue;
+      const score = d - r;   // negative = inside the drawn circle
+      if (score < bestScore) { bestScore = score; best = n; }
+    }
+    return best;
   },
   search() {
     const q = $('#map-q').value.trim().toLowerCase().replace(/^@/, '');
@@ -2291,7 +2336,8 @@ const M = {
   },
   select(n) {
     this.focus = n;
-    if (n.kind === 'seed') openSeed(n); else openDetail(+n.id.slice(2));
+    // A seed that is also a person opens that person's panel (status, tags, note) with its lists below.
+    if (n.kind === 'seed' && !n.pid) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
     this.draw();
   },
 };
@@ -2301,8 +2347,8 @@ function hoverCard(n) {
     return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>Seed · ${int(n.degree)} people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} shared with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
   }
   const seeds = (n.seeds || (M.nbr.get(n.id) || []).map((id) => M.byId.get(id)?.label)).filter(Boolean);
-  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(ucf(n.status)) : ''}</span>
-    ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}<span>In ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
+  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(slabel(n.status)) : ''}</span>
+    ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>In ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
 }
 function openSeed(n) {
   S.seedCard = n.id; S.open = null; S.person = null;
@@ -2312,15 +2358,20 @@ function openSeed(n) {
 function renderSeedCard() {
   const n = M.byId.get(S.seedCard);
   if (!n) return;
-  const ov = M.overlap.get(n.id) || [];
-  const mx = Math.max(1, ...ov.map((o) => o[1]));
-  const ls = (S.sc?.lists || []).filter((l) => l.seed === n.label);
-  const via = canonTag('via @' + n.label);
   $('#detail').innerHTML = `
     <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
       <div class="who"><b>@${esc(n.label)}</b><span>${n.is_me ? 'You' : 'Seed'}</span></div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    <div class="d-stats"><div><b>${fmt(n.degree)}</b><span>People</span></div><div><b>${fmt(n.vis)}</b><span>On map</span></div><div><b>${ov.length}</b><span>Overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>Lists</span></div></div>
+    <div class="d-sec"><span class="muted">Not read as a person yet, so no status or tags. Its bio is read when a list reaches it.</span></div>
+    ${seedBlock(n)}`;
+}
+// The seed part of a panel: shown alone for a seed without a person row, or under that person's own panel.
+function seedBlock(n) {
+  const ov = M.overlap.get(n.id) || [];
+  const mx = Math.max(1, ...ov.map((o) => o[1]));
+  const ls = (S.sc?.lists || []).filter((l) => l.seed === n.label);
+  const via = canonTag('via @' + n.label);
+  return `<div class="d-sec"><h4>${n.is_me ? 'Your account' : 'Seed'}: its lists on the map</h4><div class="d-stats"><div><b>${fmt(n.degree)}</b><span>People</span></div><div><b>${fmt(n.vis)}</b><span>On map</span></div><div><b>${ov.length}</b><span>Overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>Lists</span></div></div></div>
     <div class="d-sec"><div class="d-links" style="margin-top:0">
       ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'knows you')}">Filter to ${n.is_me ? 'people who know you' : '@' + esc(n.label)}</button>` : ''}
       <button class="btn" data-only="${esc(n.label)}">seed:@${esc(n.label)}</button>
@@ -2364,7 +2415,7 @@ function seedCardClick(e) {
     }
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (!moved && Math.abs(dx) + Math.abs(dy) > 4) {
+      if (!moved && Math.hypot(dx, dy) > (e.pointerType === 'mouse' ? 5 : 10)) {
         moved = true;
         M.autoFit = false; $('#hover').hidden = true;
         // Freeze the layout while a node is carried, so nothing else drifts.

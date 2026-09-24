@@ -46,7 +46,7 @@ class PipelineTest(Base):
         ids = self.people({'good1': ('x', [('s1', 'followers')]), 'good2': ('x', [('s1', 'followers')]), 'no1': ('x', [('s2', 'followers')]),
                            'lead': (None, [('s1', 'following'), ('me', 'followers'), ('me', 'following'), ('good1', 'following')])})
         self.conn.execute("INSERT INTO seeds(handle, is_me) VALUES('me', 1)")
-        for h, st in (('good1', 'good'), ('good2', 'client'), ('no1', 'no')):
+        for h, st in (('good1', 'interested'), ('good2', 'client'), ('no1', 'no')):
             server.set_status(self.conn, [ids[h]], status=st)
         self.conn.commit()
         n = server.network_context(self.conn, [ids['lead']])[ids['lead']]
@@ -57,7 +57,7 @@ class PipelineTest(Base):
     def test_snowball_is_opt_in_and_queues_following_lists(self):
         ids = self.people({'g': ('x', []), 'c': ('x', []), 'm': ('x', []), 'priv': ('x', [])})
         self.conn.execute("UPDATE people SET is_private=1 WHERE handle='priv'")
-        for h, st in (('g', 'good'), ('c', 'client'), ('m', 'maybe'), ('priv', 'good')):
+        for h, st in (('g', 'interested'), ('c', 'client'), ('m', 'contacted'), ('priv', 'interested')):
             server.set_status(self.conn, [ids[h]], status=st)
         self.conn.commit()
         self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)   # nothing happens by itself
@@ -135,10 +135,10 @@ class PipelineTest(Base):
             for who, score in (('g0', 50), ('g11', 10)):   # a warm LLM verdict and a clearly cold one
                 self.conn.execute("INSERT OR REPLACE INTO verdicts(person_id, model, prompt, score, updated_at) VALUES(?, 'm', 'v0', ?, '')",
                                   (ids[who], score))
-            server.set_status(self.conn, [ids['g1']], status='good')
+            server.set_status(self.conn, [ids['g1']], status='interested')
             self.conn.commit()
             self.assertEqual(server.fewshot(self.conn), [])            # one new mark: examples stay frozen
-            server.set_status(self.conn, [ids[f'g{i}'] for i in range(2, 9)], status='good')
+            server.set_status(self.conn, [ids[f'g{i}'] for i in range(2, 9)], status='interested')
             self.conn.commit()
             ex = server.fewshot(self.conn)
             self.assertEqual(len(ex), 8)

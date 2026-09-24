@@ -132,7 +132,7 @@
   // Some manual tags and marks.
   const MANUAL = ['Warm intro', 'Pitch Q4', 'Met at event', 'Follow up', 'Dream client'];
   people.forEach((p) => { if (p.bio && chance(0.035)) tags.get(p.id).push({ tag: pick(MANUAL), grp: 'custom', source: 'manual' }); });
-  people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['good', 'good', 'maybe', 'contacted', 'contacted', 'client', 'no', 'known'])); });
+  people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['interested', 'interested', 'contacted', 'talking', 'client', 'no'])); });
 
   // Tag rules.
   let ruleId = 3;
@@ -531,7 +531,7 @@
     }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
     if (path === '/api/scraper/snowball') {
-      const want = body.min_status === 'client' ? ['client'] : ['good', 'client'];
+      const want = body.min_status === 'client' ? ['client'] : ['interested', 'talking', 'client'];
       const seeds = people.filter((p) => want.includes(marks.get(p.id)) && !scraper.lists.some((l) => l.seed === p.handle && l.direction === 'following'))
         .slice(0, body.limit || 50).map((p) => p.handle);
       seeds.forEach((h) => scraper.lists.push({ seed: h, direction: 'following', state: 'queued', received: 0, total: null, updated_at: now(), error: null }));

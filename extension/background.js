@@ -546,6 +546,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     set({ localPaused: false }).then(() => editSt((s) => { s.hold = null; s.lastError = null; FL.succeeded(s); }))
       .then(() => { mem.lastBeat = 0; mem.badTab = null; return status(); }).then(() => { reply({ ok: true }); loop(); });
   }
+  if (msg && msg.type === 'fl-view') {
+    chrome.storage.local.get(['view', 'account']).then((o) => reply({ view: o.view || null, account: o.account || null }), () => reply(null));
+    return true;
+  }
+  if (msg && msg.type === 'fl-open') chrome.tabs.create({ url: SERVER + '/' }).catch(() => {});
   return !!(msg && msg.cmd);
 });
 

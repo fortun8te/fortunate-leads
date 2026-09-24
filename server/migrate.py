@@ -85,6 +85,7 @@ def migrate(old_path, out_path, batch_path):
         if r['entity_id'] in pid:
             conn.execute('INSERT OR REPLACE INTO marks VALUES(?,?,?,?)', (pid[r['entity_id']], 'client' if r['relation'] == 'client' else 'known',
                                                                           f"{r['relation']}: {r['note'] or ''}".strip(': '), r['added_at']))
+    db.migrate_statuses(conn)   # 'known' -> tag 'Already know them'
     conn.commit()
     old.close()
 

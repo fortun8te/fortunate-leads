@@ -72,7 +72,7 @@ class Pipeline(unittest.TestCase):
         out = q.llm_verdicts(items, ex, models=('m/a:free',))
         self.assertEqual(len(Proxy.bodies), 2)               # 6 people -> batches of 4 + 2
         sysmsg, user = Proxy.bodies[0]['messages'][0]['content'], Proxy.bodies[0]['messages'][1]['content']
-        self.assertIn('Marked GOOD', sysmsg)
+        self.assertIn('Marked Interested', sysmsg)
         self.assertIn('@goodbrand', sysmsg)
         self.assertIn('Scoring rubric', sysmsg)
         self.assertIn('Followed BY these operators', user)

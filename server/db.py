@@ -97,6 +97,21 @@ def migrate_tags(conn):
     return True
 
 
+# 2026-09: statuses became a pipeline (interested, contacted, talking, client, no = Not a fit).
+# good -> interested. maybe and known are not pipeline steps: they become manual tags ('Maybe', 'Already know them'),
+# the status is cleared and the note kept. Idempotent: only rows still holding an old value are touched.
+OLD_STATUS_TAGS = {'maybe': 'Maybe', 'known': 'Already know them'}
+
+
+def migrate_statuses(conn):
+    conn.execute("UPDATE marks SET status='interested' WHERE status='good'")
+    for old, tag in OLD_STATUS_TAGS.items():
+        conn.execute("INSERT OR REPLACE INTO tags(person_id, tag, grp, source) SELECT person_id, ?, 'signal', 'manual' "
+                     "FROM marks WHERE status=?", (tag, old))
+        conn.execute('UPDATE marks SET status=NULL WHERE status=?', (old,))
+    conn.execute("DELETE FROM marks WHERE status IS NULL AND coalesce(note,'')=''")
+
+
 def init(path):
     conn = connect(path)
     conn.executescript(SCHEMA)
@@ -114,6 +129,7 @@ def init(path):
     conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
+    migrate_statuses(conn)
     conn.commit()
     return conn
 

@@ -31,7 +31,15 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 EXT_ORIGIN = 'chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf'
 CFG = {'db': str(ROOT / 'data' / 'leads.sqlite'), 'port': 8777}
-STATUSES = ('good', 'maybe', 'no', 'contacted', 'client', 'known')
+# Pipeline: (unmarked) -> interested -> contacted -> talking -> client; 'no' = Not a fit (hidden by default).
+STATUSES = ('interested', 'contacted', 'talking', 'client', 'no')
+POSITIVE = ('interested', 'talking', 'client')   # what used to be good/client: positive few-shot, seed yield, snowball
+POSITIVE_SQL = "('interested','talking','client')"
+LEGACY_STATUS = {'good': 'interested'}           # older clients / saved views
+
+
+def status_in(v):
+    return LEGACY_STATUS.get(v, v)
 PIC_HOSTS = ('.cdninstagram.com', '.fbcdn.net')
 PIC_MAX = 2 * 1024 * 1024
 READ_PRIORITY = 10000
@@ -323,7 +331,8 @@ def lead_rows(conn, rows):
     return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
              'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
-             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'], 'status': r['status']} for r in rows]
+             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'], 'status': r['status'],
+             'note': r['note'] or None} for r in rows]
 
 
 def csv(q, key):
@@ -363,16 +372,16 @@ def lead_filter(q, status_default=True):
         if status_default:
             where.append("coalesce(m.status,'')!='no'")
     elif 'all' not in statuses:
-        named = [s for s in statuses if s != 'none']
+        named = [status_in(s) for s in statuses if s != 'none']
         if any(s not in STATUSES for s in named):
             raise Bad('bad status')
         conds = (['m.status IS NULL'] if 'none' in statuses else []) + (['m.status IN ({})'] if named else [])
         within('(' + ' OR '.join(conds) + ')', named)
     text = q.get('q', [''])[0].strip()
     if text:
-        where.append("(p.handle LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\' OR p.bio LIKE ? ESCAPE '\\')")
+        where.append("(p.handle LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\' OR p.bio LIKE ? ESCAPE '\\' OR m.note LIKE ? ESCAPE '\\')")
         like = re.sub(r'([\\%_])', r'\\\1', text)
-        args += [f'%{like}%'] * 3
+        args += [f'%{like}%'] * 4
     min_lists = qint(q, 'min_lists') or 0
     if min_lists > 0:
         where.append(f'{LISTS}>=?')
@@ -439,13 +448,13 @@ def api_counts(conn, q, b):
 def counts(conn, q):
     """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible).
     none = unmarked, open = everyone but 'no'; total / with_bio: everyone in the database."""
-    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', 'good', 'maybe', 'no', 'contacted', 'client', 'known', 'none', 'open'), 0)
+    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', *STATUSES, 'none', 'open'), 0)
     where, args = lead_filter({k: v for k, v in q.items() if k != 'tier'})
     out.update(conn.execute(f"SELECT coalesce(v.tier,'unread'), count(*) {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} "
                             'GROUP BY 1', args).fetchall())
     where, args = lead_filter({k: v for k, v in q.items() if k != 'status'}, status_default=False)
     for status, n in conn.execute(f"SELECT m.status, count(*) {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} GROUP BY 1", args):
-        out[status or 'none'] += n
+        out[status or 'none'] = out.get(status or 'none', 0) + n
         out['open'] += n if status != 'no' else 0
     out['total'], out['with_bio'] = conn.execute("SELECT count(*), count(nullif(bio,'')) FROM people").fetchone()
     return out
@@ -484,12 +493,15 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
                          + ', '.join(sets + ['updated_at=excluded.updated_at']), rows)
     for chunk in chunks(pids):
         conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
+    if sets:
+        touch(conn, pids)   # status and note feed the qualifier: the person is re-qualified on the next batch
 
 
 def api_mark(conn, q, b, pid):
     """{"status"?: null|STATUS, "note"?: str|null}: an absent key is left alone, null clears (note '' clears too)."""
     person_row(conn, pid)
     status, note = b.get('status', KEEP), b.get('note', KEEP)
+    status = status_in(status) if isinstance(status, str) else status
     if status is not KEEP and status is not None and status not in STATUSES:
         raise Bad('bad status')
     if note is not KEEP and note is not None and (not isinstance(note, str) or len(note) > 5000):
@@ -567,6 +579,7 @@ def api_bulk(conn, q, b):
     add = [clean_tag(t) for t in b.get('add') or []]
     remove = [t for t in b.get('remove') or [] if isinstance(t, str)]
     status = b.get('status')
+    status = status_in(status) if isinstance(status, str) else status
     if 'status' in b and status is not None and status not in STATUSES:
         raise Bad('bad status')
     pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
@@ -744,7 +757,7 @@ def map_graph(conn, q):
     where, args = lead_filter(q)
     cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds)'] + where)
     # one materialized pass over the filtered people; both picks below sort that set (cost follows the filter's size)
-    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.reason, m.status, '
+    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.reason, m.status, m.note, '
             'count(DISTINCT e.seed) AS degree FROM people p JOIN edges e ON e.person_id=p.id '
             f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
     by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
@@ -756,7 +769,7 @@ def map_graph(conn, q):
     seen = {r['id'] for r in multi}
     people = multi + [r for r in rows if r['part'] == 1 and r['id'] not in seen][:limit - len(multi)]
     seeds = conn.execute('SELECT s.handle, (SELECT count(*) FROM edges e WHERE e.seed=s.handle) AS degree, p.id AS pid, '
-                         'p.pic_file, p.followers, v.tier, v.score, m.status, coalesce(sd.is_me, 0) AS is_me '
+                         'p.pic_file, p.followers, v.tier, v.score, m.status, m.note, coalesce(sd.is_me, 0) AS is_me '
                          'FROM (SELECT handle FROM seeds UNION SELECT seed FROM edges) s LEFT JOIN seeds sd ON sd.handle=s.handle '
                          'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
                          'LEFT JOIN marks m ON m.person_id=p.id').fetchall()
@@ -775,12 +788,12 @@ def map_graph(conn, q):
     nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
-              'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me'])} for s in seeds]
+              'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me']), 'pid': s['pid'], 'note': s['note'] or None} for s in seeds]
     nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
                'tier': r['tier'] or 'unread', 'fit': FIT.get(r['tier'], 'unread'), 'score': r['score'], 'reason': r['reason'],
                'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
-               'status': r['status'], 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
+               'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
     return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
 
 
@@ -961,13 +974,13 @@ SNOWBALL_MAX = 50
 
 def api_snowball(conn, q, b):
     """Opt-in: queue the `following` lists of good/client leads as new seeds (their people then get the same network signals)."""
-    min_status = b.get('min_status', 'good')
-    if min_status not in ('good', 'client'):
-        raise Bad('min_status must be good or client')
+    min_status = status_in(b.get('min_status', 'interested'))
+    if min_status not in ('interested', 'client'):
+        raise Bad('min_status must be interested or client')
     limit = b.get('limit', SNOWBALL_MAX)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
         raise Bad('limit must be 1-500')
-    statuses = ('good', 'client') if min_status == 'good' else ('client',)
+    statuses = POSITIVE if min_status == 'interested' else ('client',)
     rows = conn.execute(f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id WHERE m.status IN ({','.join('?' * len(statuses))}) "
                         "AND instr(p.handle, '~')=0 AND coalesce(p.is_private,0)=0 "
                         "AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.seed=p.handle AND l.direction='following') "
@@ -1208,10 +1221,10 @@ def network_context(conn, pids, me=None):
         return {}
     me = me if me is not None else me_handle(conn)
     yields = {r[0]: (r[1], r[2]) for r in conn.execute(
-        "SELECT e.seed, count(DISTINCT CASE WHEN m.status IN ('good','client') THEN e.person_id END), count(DISTINCT e.person_id) "
+        f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), count(DISTINCT e.person_id) "
         "FROM edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
     good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
-                                               "WHERE m.status IN ('good','client')")}
+                                               "WHERE m.status IN " + POSITIVE_SQL)}
     out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0} for p in pids}
     for chunk in chunks(pids):
         for e in conn.execute(f"SELECT person_id, seed, direction FROM edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
@@ -1246,7 +1259,17 @@ def laya_row(conn, pid):
         return None, None
 
 
+def with_owner(conn, p):
+    """Adds Michael's own judgement to a person dict: status, note and the tags he set by hand. The qualifier puts these in
+    the prompt and in input_hash, so changing any of them re-runs the model for that person."""
+    m = conn.execute('SELECT status, note FROM marks WHERE person_id=?', (p['id'],)).fetchone()
+    p['status'], p['note'] = (m['status'], m['note']) if m else (None, None)
+    p['manual_tags'] = sorted(r[0] for r in conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual'", (p['id'],)))
+    return p
+
+
 def requalify(conn, p, me, net=None):
+    with_owner(conn, p)
     edges = edges_of(conn, p['id'])
     answers, lfit = laya_row(conn, p['id'])
     pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
@@ -1330,12 +1353,12 @@ FEWSHOT_RERUN = 35    # ... but only those at or near warm (45): a new example s
 
 def fewshot(conn):
     """The few-shot example set, frozen until Michael's marks change a lot; then older LLM verdicts are re-run."""
-    n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('good','client','no')").fetchone()[0]
+    n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('interested','talking','client','no')").fetchone()[0]
     cur = db.get_setting(conn, 'fewshot') or {}
     if cur and abs(n - cur.get('n', 0)) < max(FEWSHOT_CHANGE, cur.get('n', 0) // 5):
         return cur.get('examples') or []
     ex = []
-    for label, statuses in (('good', "('good','client')"), ('no', "('no')")):
+    for label, statuses in (('good', POSITIVE_SQL), ('no', "('no')")):
         for r in conn.execute(f"SELECT p.handle, p.name, p.bio FROM marks m JOIN people p ON p.id=m.person_id WHERE m.status IN {statuses} "
                               f"AND coalesce(p.bio,'')!='' ORDER BY m.updated_at DESC LIMIT ?", (FEWSHOT_MAX,)):
             ex.append({'handle': r['handle'], 'name': r['name'], 'bio': (r['bio'] or '')[:200], 'label': label})
@@ -1360,7 +1383,7 @@ def llm_candidates(conn, limit, exclude):
 
 def run_llm(conn, rows, skip):
     """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
-    rows = [dict(r) for r in rows]
+    rows = [with_owner(conn, dict(r)) for r in rows]
     me = me_handle(conn)
     nets = network_context(conn, [p['id'] for p in rows], me)
     items = [{'person': p, 'edges': edges_of(conn, p['id']), 'net': nets.get(p['id']),
