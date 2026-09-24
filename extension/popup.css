@@ -1,0 +1,14 @@
+:root { --fg: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --bg: #fff; --run: #2e7d32; --warn: #b26a00; --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f2f2f7; --muted: #98989f; --line: #3a3a3c; --bg: #1c1c1e; } }
+body { width: 260px; margin: 0; padding: 14px; font: 13px/1.4 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+.status { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+#dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+#dot.running { background: var(--run); } #dot.cooldown { background: var(--warn); } #dot.attention { background: var(--bad); }
+.rows { margin-top: 10px; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); margin-top: 4px; min-height: 18px; }
+dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; margin: 10px 0; padding: 10px 0; border-block: 1px solid var(--line); }
+dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+.error { color: var(--bad); margin-bottom: 8px; } .error:empty { display: none; }
+.row { display: flex; gap: 8px; }
+button { flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+button:hover { border-color: var(--muted); }
