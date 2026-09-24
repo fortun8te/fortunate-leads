@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS saved_views(id INTEGER PRIMARY KEY, name TEXT NOT NUL
   created_at TEXT);
 CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TEXT, reason TEXT,
   model TEXT, input_hash TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
@@ -40,7 +41,8 @@ CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 
 PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified', 'bio', 'website', 'category',
                  'followers', 'following', 'posts', 'is_business', 'bio_at')
-DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 150}, 'qualify': False, 'qualify_auto': True}
+DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 0}, 'qualify': False, 'qualify_auto': True, 'llm_workers': 4,
+            'llm_min': 40}
 
 
 def now():
@@ -89,6 +91,10 @@ def init(path):
     conn.execute('DROP INDEX IF EXISTS tags_tag')  # superseded by the covering tags_tag_src
     if 'at' not in {r[1] for r in conn.execute('PRAGMA table_info(pages)')}:  # DBs created before pages were timestamped
         conn.execute('ALTER TABLE pages ADD COLUMN at TEXT')
+    have = {r[1] for r in conn.execute('PRAGMA table_info(verdicts)')}
+    for col in ('prompt', 'evidence'):  # DBs from before the staged qualifier
+        if col not in have:
+            conn.execute(f'ALTER TABLE verdicts ADD COLUMN {col} TEXT')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
     conn.commit()

@@ -39,14 +39,17 @@ tag_rules(id INTEGER PRIMARY KEY, tag TEXT, grp TEXT DEFAULT 'signal', field TEX
   match TEXT, created_at TEXT)
 saved_views(id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE NOCASE, query TEXT, created_at TEXT)   -- query = URL query string, no '?'
 verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TEXT, reason TEXT,
-  model TEXT, input_hash TEXT, updated_at TEXT)   -- tier: hot|warm|cold|unread
+  model TEXT, input_hash TEXT, updated_at TEXT, prompt TEXT, evidence TEXT)   -- tier: hot|warm|cold|unread
+  -- prompt = qualify.prompt_version (prompt + few-shot set) of an LLM verdict; evidence = JSON list of exact bio quotes
+laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT)   -- optional Laya sidecar answers (soft signal)
 marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- good|maybe|no|contacted|client|known
 jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT, handle TEXT,
   priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT)
   -- state queued|leased|done|error. attempts = leases that expired or ended in an 'other' error (rate_limit/soft_block/
   -- login/challenge give the lease back). 5 'other' errors park a job ('error'); a profile job whose lease expired 5 times
   -- is parked too. List jobs reset attempts on every page.
-settings(key TEXT PRIMARY KEY, value TEXT)   -- json values; includes paused, budgets, ext heartbeat, qualify, qualify_auto
+settings(key TEXT PRIMARY KEY, value TEXT)   -- json values; includes paused, budgets, ext heartbeat, qualify, qualify_auto,
+  -- llm_workers (default 4), llm_min (default 40), fewshot (frozen example set + its version)
 pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id,cursor))   -- list pages ingested (idempotency + soak rate)
 ```
 
@@ -55,10 +58,13 @@ pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id,cursor))   -- list pa
 ```python
 TAG_GROUPS = ('role','niche','signal','size','source')   # UI groups tags by this (monochrome)
 TAGS_VERSION = 't2'   # bump when rule tags change: on start the server lets the qualify batch re-derive all auto tags once
-def prefilter(person: dict, seeds: list[str]) -> int          # 0-100, no bio needed; decides who gets a profile read
+def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int   # 0-100, no bio needed; orders the profile reads
+def network_score(net) -> int                                  # points from the network context (below)
 def rule_tags(person: dict, edges: list[dict], me: str|None) -> list[tuple[str,str]]   # [(tag, grp)]
 def rule_verdict(person: dict, tags) -> dict                   # {'score','role','reason','tier'} with no model
-def llm_verdict(person: dict, tags, edges) -> dict | None      # same keys + 'model'; None if model unavailable
+def llm_verdict(person: dict, tags, edges, ..., net=None, examples=None) -> dict | None   # same keys + 'model'; None if unavailable
+def llm_verdicts(items, examples=None) -> list[dict|None]      # items [{person,tags,edges,net}], LLM_BATCH (4) profiles per call
+def prompt_version(examples) -> str                            # PROMPT_VERSION + few-shot set hash, stored in verdicts.prompt
 def input_hash(person: dict, edges) -> str                     # cache key; unchanged hash = skip re-run
 ```
 Auto tag vocabulary (all `grp` fixed by `qualify.TAXONOMY`):
@@ -70,25 +76,51 @@ Precision over recall: promo codes for someone else's brand ("code X at @brand")
 "of course", "available on Spotify", "model agency", "mama to baby", affiliate storefronts (shopmy/LTK) and look-alike domains
 (restorehealth.com, theworkshop.com) no longer fire. Instagram's own category label is used only when unambiguous ("… (Brand)", "E-commerce website", "Jewelry/watches").
 
+Staged pipeline (all stages run in background threads; HTTP handlers and ingest never wait on them):
+1. **Prefilter** from list data only (name, handle, verified, private, seeds and direction, lists count) plus the **network context**
+   (`server.network_context`): `seeds` [(seed, direction)] — being followed BY a seed weighs more than following it; `lists`;
+   `me` = `mutual|follows|followed` for Michael's own (`is_me`) seed; `seed_yield` = best seed's (good+client+1)/(marked+4) from
+   Michael's marks, with `seed_marked`; `client_seeds` = the person's seeds that are people marked good/client. Laya (optional) adds
+   a 25 % weighted soft signal. Private accounts stay ≤ 35. This orders the bio-read queue, so people get a first pass before any read.
+2. **Rule tags** + rule verdict after the bio read (and for everyone without one).
+3. **Laya** (optional, `server/laya.py`): `POST http://127.0.0.1:18742/decide` in batches of 64 with 5 questions (dtc_founder,
+   brand_account, creator, service_provider, netherlands), 60 s timeout; `GET /health` 3 s, cached 60 s; down → skipped silently.
+   Only a soft ranking signal: never a gate or verdict; it tags on its own only at p ≥ 0.9 for creator / brand_account / netherlands.
+   Runs on people with a bio first, then list-only people.
+4. **LLM** for the top candidates only: bio read, rule verdict current, `(prefilter + rule score) / 2 ≥ llm_min`, best first. Rubric:
+   founder/decision-maker of a DTC physical-product brand, US or NL-selling-to-US, able to pay ~EUR 2k. JSON reply per profile:
+   `role, niche, brand_handle, decision_maker, fit, evidence[], reason, extra_tags`; evidence quotes not found in the profile are
+   dropped. Tags from the verdict: role, niche, `Founder` (decision-maker of a brand), `Fit: strong` (buyer, fit ≥ 75), `Fit: good`
+   (buyer/connector, fit ≥ 55). Few-shot: up to 8 recent good/client and 8 `no` marks with a bio, frozen until the good/client/no
+   count moves by ≥ 5 (or 20 %); then LLM verdicts from another prompt version are re-run. Bounded pool: `llm_workers` concurrent
+   calls (default 4) spread across providers/keys.
+
 `person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `knows you` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
+
+**Providers** (`server/llm.py`, stdlib): the local proxy first, then `https://openrouter.ai/api/v1/chat/completions` direct, rotating
+keys from `OPENROUTER_API_KEYS` (comma-separated) or `data/openrouter.json` `{"keys":[...],"models":[...],"daily_limit":n}`.
+429/402/408/5xx → that key+model cools down (Retry-After, else 30 s doubling to 1 h); 401/403 → key disabled until restart;
+transport error → provider cools 10 s doubling to 5 min. Free models first; per key+model daily counter (default 1000/day).
+Headers `HTTP-Referer`, `X-Title: Fortunate Leads`; `response_format: json_object`. Keys are never logged or returned (`sk-…abcd`).
 
 ## Extension ↔ server
 
 Extension is a paced executor. Server owns the queue; extension owns pacing, budgets and cooldowns.
 
 - `GET  /api/ext/next` → `{"paused":bool, "job": null | {"id","kind":"list","seed","ig_id"|null,"direction","cursor"|null} | {"id","kind":"profile","handle","ig_id"|null}}`. Lists before profiles. Leases a job for 10 min; an expired lease is handed out again (same job id, list cursor = last saved page).
-  Profile planner (qualification on): people without a bio, not private, not a seed, not marked `no`, ordered by **lists count desc, then prefilter desc**; job priority = `min(lists,9)*1000 + prefilter` (a UI "read now" uses 10000).
+  Profile planner (qualification on): people without a bio, not private, not a seed, not a parked `handle~id` row, not marked `no`, ordered by **prefilter desc (likely fit, network included), then lists count desc**; job priority = `prefilter*10 + min(lists,9)` (a UI "read now" uses 10000). Profile budget `0` (default) = no daily number: the planner keeps 200 profile jobs queued and the extension paces bios only by its 35–70 s jittered gap and cooldown ladder, one request at a time.
 - `POST /api/ext/list-page` `{"job_id","seed","ig_id","direction","users":[{"ig_id","handle","name","pic_url","is_private","is_verified"}],"next_cursor":str|null,"done":bool,"total":int|null}`
 - `POST /api/ext/profile` `{"job_id":int|null,"profile":{"ig_id","handle","name","bio","website","category","followers","following","posts","is_private","is_verified","is_business","pic_url"}}` — `job_id:null` = passively captured while Michael browsed Instagram (free bio, no extra request). `website` is stored only if it matches `^https?://`; counts are coerced to int ≥ 0 or null (`"1,234"` → 1234).
   A new `ig_id` arriving under a handle that belongs to a row with a different `ig_id` parks the old row as `handle~id` (it keeps its marks/edges/tags) and creates a new person.
 - `POST /api/ext/error` `{"job_id","code":"rate_limit|soft_block|challenge|login|private|not_found|other","retry_at":iso|null,"message"}` — private/not_found finish the job; others release it. rate_limit/soft_block record a cooldown for display. challenge/login do **not** pause the server (the extension holds itself until Michael resumes it in the popup; the UI reads `ext.state`); the server `paused` flag is only set by `POST /api/scraper/pause`.
 - `POST /api/ext/heartbeat` `{"version","state":"running|idle|paused|cooldown","cooldown_until":iso|null,"today":{"list":n,"profile":n},"budget":{"list":n,"profile":n},"last_error":str|null,"rate"?:{"pages_hour":num,"people_hour":num,"last_hit_at":iso|null}}` every ≤30 s. `rate` is optional; bad values are stored as null.
 
-All return `{"ok":true}` or `{"ok":false,"error":...}`. Server is idempotent: re-sent pages must not duplicate edges (`pages(job_id, cursor)`; a re-sent page never moves the cursor back). Every list page and profile re-applies the tag rules to the people it touched.
+All return `{"ok":true}` or `{"ok":false,"error":...}`. Server is idempotent: re-sent pages must not duplicate edges (`pages(job_id, cursor)`; a re-sent page never moves the cursor back; a late page for a job that is already done/error keeps its people but never changes the list's state or cursor).
+Request bodies must be JSON objects (else 400); non-string text fields in profiles/users are dropped. Every list page and profile re-applies the tag rules to the people it touched.
 
 ## UI API
 
-GET endpoints return the JSON directly; POST endpoints return `{"ok":true,...}`; errors are `{"ok":false,"error"}` with 400 (bad input) / 403 / 404 / 500.
+GET endpoints return the JSON directly; POST endpoints return `{"ok":true,...}`; errors are `{"ok":false,"error"}` with 400 (bad input) / 403 / 404 (unknown person id) / 500.
 
 ### Shared lead filter (`/api/leads`, `/api/tags`, `/api/map`)
 | param | meaning |
@@ -97,7 +129,7 @@ GET endpoints return the JSON directly; POST endpoints return `{"ok":true,...}`;
 | `any=c,d` | has **at least one** |
 | `not=e,f` | has **none** |
 | `status=` | absent: everyone except `no`; `good,maybe`: any of these; `none`: unmarked (combinable: `status=good,none`); `all`: no status filter |
-| `q=` | substring of handle, name or bio |
+| `q=` | substring of handle, name or bio (`%` and `_` are literal) |
 | `min_lists=N` | linked to ≥ N distinct seeds |
 | `has_bio=1\|0` | bio read and non-empty / not |
 | `seed=h` | linked to that seed (any direction); `seed=a,b` = linked to all of them |
@@ -132,17 +164,23 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - `GET /api/counts` → `{"hot","warm","cold","unread","good","maybe","contacted","total","with_bio"}`
 - `GET /api/person/{id}` → lead row + `{"edges":[{"seed","direction"}],"verdict":{...},"note"}`
 - `POST /api/person/{id}/mark` `{"status"?:null|"good"|"maybe"|"no"|"contacted"|"client"|"known","note"?:str|null}` — an absent key is left as it is; `status:null` clears the status but keeps the note; `note:""`/`null` clears the note; the row goes when both are empty.
-- `POST /api/person/{id}/read` → queue a profile read now (priority)
+- `POST /api/person/{id}/read` → queue a profile read now (priority); 400 for a parked `handle~id` row
 - `GET /api/map?<filter>&scope=leads|all&limit=400` → `{"nodes":[...],"links":[{"source":"s:seed","target","direction"}],"seed_links":[{"source":"s:a","target":"s:b","shared":n}],"rev":int}`
   - seed node: `{"id":"s:handle","kind":"seed","label","tier","score","pic","degree","followers","status","lists","tags","seeds","is_me"}` — `degree` = edges into that seed's lists; `followers`/`status`/`tags`/`lists`/`seeds` describe the seed's own person row (a seed can sit in other seeds' lists), empty/0/null if unknown. `is_me` = Michael's own account.
   - lead node: `{"id":"p:123","kind":"lead","label","handle","name","tier","score","reason","pic","degree","lists","status","followers","tags","seeds"}` — `degree` = `lists` = distinct seeds; `tags` = up to 4 tag names, manual first (same order as leads); `seeds` = seed handles it is linked to.
   - The filter applies to leads only; all seeds are always returned. `scope=leads`: up to 60 % people linked to ≥ 2 seeds (most connected first), the rest by score. `scope=all`: by score. Default excludes `status=no`, as leads.
   - `seed_links` = top 50 seed pairs by shared audience (distinct people linked to both, any direction), not filtered; recomputed when edges change, at most every 30 s while a list streams in.
-- `GET /api/scraper` → `{"ext":{"online","version","state","cooldown_until","today","budget","last_seen","activity","text","rate":{"pages_hour","people_hour","last_hit_at"}|null,"last_error"},"paused","qualify":bool,"qualify_auto":bool,"soak":{"1h":{"pages","people","new_people","profiles"},"6h":{...}},"people_today","lists":[{"seed","direction","state","received","total","updated_at","error"}],"queue":{"list":n,"profile":n}}` — `soak`: list pages ingested (retries not counted), edges added, people first seen, bios read in the window.
+- `GET /api/scraper` → `{"llm":<same as /api/llm>,"ext":{"online","version","state","cooldown_until","today","budget","last_seen","activity","text","rate":{"pages_hour","people_hour","last_hit_at"}|null,"last_error"},"paused","qualify":bool,"qualify_auto":bool,"soak":{"1h":{"pages","people","new_people","profiles"},"6h":{...}},"people_today","lists":[{"seed","direction","state","received","total","updated_at","error"}],"queue":{"list":n,"profile":n}}` — `soak`: list pages ingested (retries not counted), edges added, people first seen, bios read in the window.
 - `POST /api/scraper/seeds` `{"handles":["a","b"],"directions":["followers","following"]}`
 - `POST /api/scraper/pause` `{"paused":bool}`
-- `POST /api/scraper/budget` `{"list":n,"profile":n}`
-- `POST /api/settings/qualify` `{"on":bool,"auto"?:bool}` → `{"ok":true,"qualify":bool}` — `on` starts/stops the bios planner and LLM verdicts (rule verdicts always run). `qualify_auto` (default true) switches qualification on by itself once lists exist and none is queued/running.
+- `POST /api/scraper/budget` `{"list":n,"profile":n}` — list ≤ 3000/day; profile has no cap, `0` = no daily number (default).
+- `POST /api/scraper/snowball` `{"min_status"?:"good"|"client","limit"?:1-500}` → `{"ok","queued":n,"seeds":[...]}` — **opt-in** (never
+  automatic): queues the `following` list of each good+client (or client only) person that is not private, not parked and has no
+  following list yet (default limit 50, most recently marked first). Their people then pick up the same network signals.
+- `GET /api/llm` → `{"providers":[{"name":"proxy"|"openrouter","url","key":"sk-…abcd"|null,"disabled","cooldowns":{model:iso},
+  "requests_today":{model:n},"last_error"}],"models","daily_limit","workers","llm_min","laya":{"url","up":bool|null},
+  "verdicts":{"rules":n,"llm":n,"error":n}}` — never blocks on the sidecar (`up` = last health result).
+- `POST /api/settings/qualify` `{"on":bool,"auto"?:bool,"workers"?:1-16,"llm_min"?:0-100}` → `{"ok":true,"qualify":bool}` — `on` starts/stops the bios planner and LLM verdicts (rule verdicts always run). `qualify_auto` (default true) switches qualification on by itself once lists exist and none is queued/running.
 - `GET /img/{id}` → cached profile picture (downloaded once from the Instagram CDN into `data/pfp/`; https + `*.cdninstagram.com`/`*.fbcdn.net` only, redirects never followed), 404 if none → UI shows initials.
 
 ## Rules

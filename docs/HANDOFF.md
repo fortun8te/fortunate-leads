@@ -18,7 +18,7 @@ Read CONTRACT.md (API + schema) and RESEARCH.md (Instagram endpoints, limits) fi
 2. Soak test: run 10–15 of the 48 queued accounts back to back; confirm hours without 429 at 7–12 s gaps. Checklist + numbers: `ops/soak.md` (`/api/scraper` → `soak`, `ext.rate`).
 3. Extension: send `rate` {pages_hour, people_hour, last_hit_at} in the heartbeat (server accepts and exposes it; see CONTRACT). UI: use `lists`, `sort=connected`, `min_lists`, `/api/tags` facets (`count`/`total`/`source`), tag rules, saved views, bulk edit, map `seed_links` (all done server-side).
 4. A Cursor session in the old project (`~/Documents/Codex/2026-09-23/...`) keeps restarting the old server on 8766 — close it. Then on the Mac: `ops/install-launchagent.sh` (kills :8766/:8777, installs `com.fortunate.leads`, log `~/Library/Logs/fortunate-leads.log`). Not yet run on the Mac.
-5. Qualification is off by default. `POST /api/settings/qualify {"on":true}` starts the bios planner + LLM verdicts (fallback: rule verdict, retried after 30 min). With `qualify_auto` (default true) it switches on by itself once every queued list is done.
+5. Qualification is off by default. Bio reads have no daily cap (budget 0 = unlimited, paced by the gap). `POST /api/settings/qualify {"on":true}` starts the bios planner + LLM verdicts (fallback: rule verdict, retried after 30 min). With `qualify_auto` (default true) it switches on by itself once every queued list is done.
 
 ## Server changes 2026-09-24 (later)
 - Fixed: profile posts could mark a *list* job done when given its id; a late `/api/ext/error` could requeue an already finished job; `get_setting` returned the shared default dict (budget edits mutated defaults); LLM step could starve behind 50 failing rows.
@@ -37,6 +37,27 @@ Read CONTRACT.md (API + schema) and RESEARCH.md (Instagram endpoints, limits) fi
 - `/api/ext/error` challenge/login no longer set the global `paused` (the popup Resume could not clear it and scraping stayed stuck); the extension's own hold stops requests.
 - LLM: 90 s budget per verdict across models, any bad reply or exception falls back to the rule verdict (retried after 30 min).
 - Security audit: UI POSTs require a same-origin `Origin` (**ops/soak.md curl POSTs need `-H 'Origin: http://127.0.0.1:8777'`**); frame/nosniff headers on every response; profile websites only `http(s)://`, counts coerced to ints; clearing a status keeps the note; a new account taking an old handle no longer inherits its marks/edges; profile pictures never follow redirects.
+
+## LLM setup (OpenRouter, several keys)
+- Order: local proxy `127.0.0.1:18741` first, then OpenRouter direct with rotating keys (`server/llm.py`).
+- Keys: `export OPENROUTER_API_KEYS=sk-or-v1-aaa,sk-or-v1-bbb` before `python3 server/server.py`, or create `data/openrouter.json`
+  (gitignored): `{"keys": ["sk-or-v1-aaa", "sk-or-v1-bbb"], "models": ["z-ai/glm-5.2:free", "google/gemma-4-31b-it:free"], "daily_limit": 1000}`.
+  `models` and `daily_limit` are optional (defaults: the free models in `llm.MODELS`, 1000 requests per key and model per UTC day).
+  For a LaunchAgent put the env var in the plist, or use the JSON file. Restart the server after editing either (a 401 key stays disabled until then).
+- Check: `curl -s 127.0.0.1:8777/api/llm` — providers, masked keys (`sk-…abcd`), cooldowns, requests today, last error, pool size.
+- Pool size / threshold: `POST /api/settings/qualify {"on":true,"workers":4,"llm_min":40}` (UI POSTs need the Origin header).
+- Laya sidecar (optional): `python3 sidecar/laya_server.py` on 127.0.0.1:18742; the server uses it when `/health` answers, skips it otherwise.
+
+## Server changes 2026-09-24 (review + staged qualifier)
+- Fixed: negative Content-Length hung a handler thread; non-object JSON bodies gave 500; a malformed heartbeat `cooldown_until`
+  broke `/api/scraper` until the next heartbeat; a malformed `retry_at` left the job leased; `q=` treated `_`/`%` as wildcards;
+  parked `handle~id` rows were planned as profile reads (wasted Instagram requests on a non-existent handle); a late list page
+  after `done` flipped the list back to `running` forever (blocking qualify_auto); unknown person gave 400 instead of 404; huge
+  budget numbers gave 500; non-string profile fields gave 500 (outbox retried them 10x).
+- Bio reads: no hard cap; default profile budget 0 = no daily number (pacing = 35–70 s gap + cooldown ladder, one lane).
+- Qualifier: network signals (seed direction, seed yield from marks, links to Michael, closeness to clients) in the prefilter and
+  LLM packet; planner orders by likely fit; optional Laya soft signal; LLM rubric with evidence quotes, few-shot from marks,
+  batched calls, bounded worker pool; `POST /api/scraper/snowball` (opt-in, UI button still to add); `GET /api/llm`.
 
 ## Rules
 - Honour Instagram's own limits (429 / "please wait") with backoff; never retry through them.

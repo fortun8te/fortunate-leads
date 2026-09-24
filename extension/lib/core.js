@@ -9,7 +9,8 @@
     otherBase: 2 * MIN, otherCap: 30 * MIN, // unknown Instagram answers: escalating backoff so they never hammer
   };
   const KINDS = ['list', 'profile'];
-  const BUDGET = { list: 2000, profile: 150 }, PROFILE_CAP = 300; // pages/day, reads/day; profile hard cap
+  // pages/day, reads/day. profile 0 = no daily number: bios are paced only by the 35-70 s gap and the cooldown ladder.
+  const BUDGET = { list: 2000, profile: 0 };
   const BOX_MAX = 3000;
   const rand = (lo, hi, r = Math.random) => Math.round(lo + (hi - lo) * r());
 
@@ -243,7 +244,7 @@
 
   function budgetOf(budget) {
     const b = { ...BUDGET, ...(budget || {}) };
-    return { list: Math.max(0, Number(b.list) || 0), profile: Math.min(PROFILE_CAP, Math.max(0, Number(b.profile) || 0)) };
+    return { list: Math.max(0, Number(b.list) || 0), profile: Math.max(0, Number(b.profile) || 0) };
   }
   // Rows gained today, for the popup ("N people · M bios").
   function tally(st, now, people, bios) {
@@ -269,7 +270,7 @@
   function budgetLeft(st, budget, now) {
     rollDay(st, now);
     const b = budgetOf(budget);
-    return { list: Math.max(0, b.list - st.today.list), profile: Math.max(0, b.profile - st.today.profile) };
+    return { list: Math.max(0, b.list - st.today.list), profile: b.profile ? Math.max(0, b.profile - st.today.profile) : Infinity };
   }
 
   // ---- Instagram tab choice ------------------------------------------------
@@ -350,7 +351,7 @@
     return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
   }
 
-  const api = { PACE, BUDGET, PROFILE_CAP, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
+  const api = { PACE, BUDGET, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
   root.FL = api;

@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402
+import laya  # noqa: E402
+import llm  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
 
@@ -30,11 +32,20 @@ LEASE_MIN = 10
 PROFILE_MAX_ATTEMPTS = 5   # a profile job whose lease keeps expiring (tab crash, hang) is parked as 'error' after this
 BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
-BUDGET_MAX = {'list': 3000, 'profile': 300}
+BUDGET_MAX = {'list': 3000, 'profile': 10 ** 6}   # profile 0 = no daily number (paced by the extension)
+PLAN_BATCH = 200   # profile jobs kept queued at a time when the profile budget is unlimited
 
 
 class Bad(Exception):
     pass
+
+
+class NotFound(Bad):
+    pass
+
+
+def text_or_none(v):
+    return v if isinstance(v, str) else None
 
 
 def utc(s):
@@ -105,14 +116,17 @@ def ext_list_page(conn, q, b):
     if not seed or direction not in ('followers', 'following'):
         raise Bad('seed and direction required')
     ts = db.now()
-    fresh = not job or conn.execute('INSERT OR IGNORE INTO pages(job_id, cursor, at) VALUES(?,?,?)',
+    fresh = not job or job['state'] in ('queued', 'leased') and conn.execute('INSERT OR IGNORE INTO pages(job_id, cursor, at) VALUES(?,?,?)',
                                              (job['id'], b.get('next_cursor') or '', ts)).rowcount
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if b.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(b['ig_id']), seed))
     pids = []
-    for u in b.get('users') or []:
-        if u.get('handle'):
+    users = b.get('users') if isinstance(b.get('users'), list) else []
+    for u in users:
+        if isinstance(u, dict) and isinstance(u.get('handle'), str) and db.norm_handle(u['handle']):
+            u = dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
+                     ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None)
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
             db.add_edge(conn, seed, pid, direction, ts)
             pids.append(pid)
@@ -157,6 +171,11 @@ def ext_profile(conn, q, b):
     for k in ('followers', 'following', 'posts'):
         if k in p:
             p[k] = count_or_none(p[k])
+    for k in ('name', 'bio', 'category', 'pic_url'):
+        if k in p:
+            p[k] = text_or_none(p[k])
+    if not isinstance(p.get('ig_id'), (str, int)) or isinstance(p.get('ig_id'), bool):
+        p.pop('ig_id', None)
     ts = db.now()
     p['bio'] = p.get('bio') or ''
     p['bio_at'] = ts
@@ -176,8 +195,8 @@ def ext_error(conn, q, b):
     # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
     # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
     if code in ('rate_limit', 'soft_block'):
-        until = utc(b['retry_at']) if b.get('retry_at') else datetime.now(timezone.utc) + timedelta(minutes=15)
-        db.set_setting(conn, 'cooldown', iso(until))
+        until = clean_iso(b.get('retry_at')) or iso(datetime.now(timezone.utc) + timedelta(minutes=15))
+        db.set_setting(conn, 'cooldown', until)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts})
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     if job and code not in ('other', 'private', 'not_found'):
@@ -199,6 +218,13 @@ def ext_error(conn, q, b):
     return {}
 
 
+def clean_iso(v):
+    try:
+        return iso(utc(v)) if isinstance(v, str) and v else None
+    except ValueError:
+        return None
+
+
 def clean_rate(r):
     if not isinstance(r, dict):
         return None
@@ -215,7 +241,7 @@ def clean_rate(r):
 
 
 def ext_heartbeat(conn, q, b):
-    b = dict(b, rate=clean_rate(b.get('rate')))
+    b = dict(b, rate=clean_rate(b.get('rate')), cooldown_until=clean_iso(b.get('cooldown_until')))
     db.set_setting(conn, 'ext', dict(b, last_seen=db.now()))
     conn.commit()
     return ext_state(conn)
@@ -297,8 +323,9 @@ def lead_filter(q):
         within('(' + ' OR '.join(conds) + ')', named)
     text = q.get('q', [''])[0].strip()
     if text:
-        where.append('(p.handle LIKE ? OR p.name LIKE ? OR p.bio LIKE ?)')
-        args += [f'%{text}%'] * 3
+        where.append("(p.handle LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\' OR p.bio LIKE ? ESCAPE '\\')")
+        like = re.sub(r'([\\%_])', r'\\\1', text)
+        args += [f'%{like}%'] * 3
     min_lists = qint(q, 'min_lists') or 0
     if min_lists > 0:
         where.append(f'{LISTS}>=?')
@@ -357,7 +384,7 @@ def api_counts(conn, q, b):
 def person_row(conn, pid):
     row = conn.execute(LEAD_SQL + ' WHERE p.id=?', (pid,)).fetchone()
     if not row:
-        raise Bad('not found')
+        raise NotFound('not found')
     return row
 
 
@@ -566,6 +593,8 @@ def api_view_delete(conn, q, b, vid):
 
 def api_read(conn, q, b, pid):
     handle = person_row(conn, pid)['handle']
+    if '~' in handle:  # parked row of an account that gave up this handle: there is no profile to read under it
+        raise Bad('this account no longer has a handle to read')
     if not conn.execute("UPDATE jobs SET priority=? WHERE kind='profile' AND handle=? AND state IN ('queued','leased')",
                         (READ_PRIORITY, handle)).rowcount:
         conn.execute("INSERT INTO jobs(kind, handle, priority, created_at) VALUES('profile',?,?,?)", (handle, READ_PRIORITY, db.now()))
@@ -658,6 +687,7 @@ def api_scraper(conn, q, b):
                     'last_error': ext.get('last_error') or (db.get_setting(conn, 'last_error') or {}).get('message')},
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
+            'llm': api_llm(conn, q, b),
             'soak': soak(conn, now),
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': [dict(r) for r in conn.execute('SELECT seed, direction, state, received, total, updated_at, error FROM lists '
@@ -680,11 +710,49 @@ def soak(conn, now):
 def api_qualify(conn, q, b):
     if not isinstance(b.get('on'), bool):
         raise Bad('on must be true or false')
+    for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100)):
+        if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
+            raise Bad(f'{key} must be a whole number {lo}-{hi}')
     db.set_setting(conn, 'qualify', b['on'])
     if 'auto' in b:
         db.set_setting(conn, 'qualify_auto', bool(b['auto']))
+    if 'workers' in b:
+        db.set_setting(conn, 'llm_workers', b['workers'])
+    if 'llm_min' in b:
+        db.set_setting(conn, 'llm_min', b['llm_min'])
     conn.commit()
     return {'qualify': b['on']}
+
+
+def api_llm(conn, q, b):
+    """Providers (keys masked), cooldowns, requests today, last error; plus the Laya sidecar and the pool settings."""
+    out = llm.get().status()
+    out.update(workers=db.get_setting(conn, 'llm_workers'), llm_min=db.get_setting(conn, 'llm_min'),
+               laya={'url': laya.URL, 'up': laya.last_known()})
+    out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
+                                        'GROUP BY 1').fetchall())
+    return out
+
+
+SNOWBALL_MAX = 50
+
+
+def api_snowball(conn, q, b):
+    """Opt-in: queue the `following` lists of good/client leads as new seeds (their people then get the same network signals)."""
+    min_status = b.get('min_status', 'good')
+    if min_status not in ('good', 'client'):
+        raise Bad('min_status must be good or client')
+    limit = b.get('limit', SNOWBALL_MAX)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+        raise Bad('limit must be 1-500')
+    statuses = ('good', 'client') if min_status == 'good' else ('client',)
+    rows = conn.execute(f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id WHERE m.status IN ({','.join('?' * len(statuses))}) "
+                        "AND instr(p.handle, '~')=0 AND coalesce(p.is_private,0)=0 "
+                        "AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.seed=p.handle AND l.direction='following') "
+                        "ORDER BY m.updated_at DESC LIMIT ?", (*statuses, limit)).fetchall()
+    seeds = [r[0] for r in rows if db.queue_list(conn, r[0], 'following')]
+    conn.commit()
+    return {'queued': len(seeds), 'seeds': seeds}
 
 
 def api_seeds(conn, q, b):
@@ -722,7 +790,7 @@ ROUTES = [
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/scraper', api_scraper),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
-    ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/settings/qualify', api_qualify),
+    ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball), ('GET', r'/api/llm', api_llm), ('POST', r'/api/settings/qualify', api_qualify),
 ]
 
 
@@ -787,13 +855,19 @@ class Handler(BaseHTTPRequestHandler):
     def api(self, fn, q, groups, with_ok):
         try:
             n = int(self.headers.get('Content-Length') or 0)
+            if n < 0 or n > 64 * 1024 * 1024:
+                raise Bad('bad Content-Length')
             body = json.loads(self.rfile.read(n) or b'{}') if n else {}
+            if not isinstance(body, dict):
+                raise Bad('body must be a JSON object')
             conn = db.connect(CFG['db'])
             try:
                 out = fn(conn, q, body, *map(int, groups))
             finally:
                 conn.close()
-        except (Bad, ValueError, KeyError, TypeError) as e:
+        except NotFound as e:
+            return self.send(404, {'ok': False, 'error': str(e)})
+        except (Bad, ValueError, KeyError, TypeError, OverflowError) as e:
             return self.send(400, {'ok': False, 'error': str(e)})
         except Exception as e:
             traceback.print_exc()
@@ -820,21 +894,73 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------- background workers ----------
 
-def requalify(conn, p, me):
+def network_context(conn, pids, me=None):
+    """Network signals per person for the prefilter and the LLM packet:
+    seeds + direction, lists count, link to Michael (is_me seed), seed yield learned from marks (smoothed good+client / marked),
+    and how many of the person's seeds are people Michael marked good/client."""
+    pids = list(dict.fromkeys(pids))
+    if not pids:
+        return {}
+    me = me if me is not None else me_handle(conn)
+    yields = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT e.seed, count(DISTINCT CASE WHEN m.status IN ('good','client') THEN e.person_id END), count(DISTINCT e.person_id) "
+        "FROM edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
+    good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
+                                               "WHERE m.status IN ('good','client')")}
+    out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0} for p in pids}
+    for chunk in chunks(pids):
+        for e in conn.execute(f"SELECT person_id, seed, direction FROM edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
+                              'ORDER BY seed, direction', chunk):
+            out[e['person_id']]['seeds'].append((e['seed'], e['direction']))
+    for pid, n in out.items():
+        seeds = {s for s, _ in n['seeds']}
+        mine = {d for s, d in n['seeds'] if me and s == me}
+        others = seeds - ({me} if me else set())
+        n['lists'] = len(seeds)
+        n['me'] = 'mutual' if len(mine) == 2 else 'follows' if 'followers' in mine else 'followed' if mine else None
+        best = None
+        for s in others:
+            g, m = yields.get(s, (0, 0))
+            if m:
+                y = (g + 1) / (m + 4)   # prior 1 good in 4: a seed needs several marks before it moves anyone much
+                if best is None or y > best[0]:
+                    best = (y, m)
+        if best:
+            n['seed_yield'], n['seed_marked'] = round(best[0], 3), best[1]
+        n['client_seeds'] = len(others & good_handles)
+    return out
+
+
+def laya_row(conn, pid):
+    r = conn.execute('SELECT answers, fit FROM laya WHERE person_id=?', (pid,)).fetchone()
+    if not r:
+        return None, None
+    try:
+        return json.loads(r['answers'] or '{}'), r['fit']
+    except ValueError:
+        return None, None
+
+
+def requalify(conn, p, me, net=None):
     edges = edges_of(conn, p['id'])
-    pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}))
+    answers, lfit = laya_row(conn, p['id'])
+    pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
     old = conn.execute('SELECT model, input_hash FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges)
     if not keep_llm:  # the LLM's extra auto tags stay as long as its verdict does
         conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
-    conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in qualify.rule_tags(p, edges, me)])
+    auto = qualify.rule_tags(p, edges, me)
+    if answers:  # Laya tags only when it is very sure on its own (a rule tag that agrees is already there)
+        have = {t for t, _ in auto} | {r[0] for r in conn.execute('SELECT tag FROM tags WHERE person_id=?', (p['id'],))}
+        auto = auto + [(t, getattr(qualify, 'TAXONOMY', {}).get(t, 'signal')) for t in laya.tags(answers, have)]
+    conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in auto])
     if keep_llm:
         conn.execute('UPDATE verdicts SET prefilter=?, updated_at=? WHERE person_id=?', (pre, p['updated_at'], p['id']))
         return
     tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
     v = qualify.rule_verdict(p, tags)
-    conn.execute("INSERT OR REPLACE INTO verdicts VALUES(?,?,?,?,?,?,'rules',NULL,?)",
-                 (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], p['updated_at']))
+    conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at) "
+                 "VALUES(?,?,?,?,?,?,'rules',NULL,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], p['updated_at']))
 
 
 def qualify_batch(conn, limit=200):
@@ -842,9 +968,10 @@ def qualify_batch(conn, limit=200):
                         'WHERE v.person_id IS NULL OR v.updated_at < p.updated_at LIMIT ?', (limit,)).fetchall()
     me = me_handle(conn)
     rules.sync(conn, [r['id'] for r in rows])  # rule tags first, so the verdict sees them
+    nets = network_context(conn, [r['id'] for r in rows], me) if rows else {}
     for r in rows:
         try:
-            requalify(conn, dict(r), me)
+            requalify(conn, dict(r), me, nets.get(r['id']))
         except Exception:
             traceback.print_exc()
             conn.execute("INSERT OR REPLACE INTO verdicts(person_id, tier, model, updated_at) VALUES(?,'unread','error',?)",
@@ -853,35 +980,168 @@ def qualify_batch(conn, limit=200):
     return len(rows)
 
 
-def llm_step(conn, skip):
-    if not db.get_setting(conn, 'qualify'):
-        return None
-    t = datetime.now().timestamp()
-    for k in [k for k, until in skip.items() if until <= t]:
-        del skip[k]
-    held = list(skip)[:900]  # recently failed: skip in SQL so they can't starve everyone behind them
-    row = conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                       "AND v.model='rules' AND v.updated_at=p.updated_at "
-                       f"AND p.id NOT IN ({','.join('?' * len(held))}) ORDER BY v.prefilter DESC LIMIT 1", held).fetchone()
-    p = dict(row) if row else None
-    if not p:
-        return None
-    edges = edges_of(conn, p['id'])
-    tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
-    try:
-        v = qualify.llm_verdict(p, tags, edges)
-    except Exception:  # never let one bad reply spin the worker on the same row: fall back like 'no model'
-        traceback.print_exc()
-        v = None
-    if v is None:
-        skip[p['id']] = datetime.now().timestamp() + 1800
+# ---------- Laya (optional soft signal) ----------
+
+LAYA_BATCH = 64
+
+
+def laya_step(conn):
+    """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
+    if not laya.available():
         return False
-    if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=? WHERE person_id=? AND updated_at=?',
-                    (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, edges),
-                     p['id'], p['updated_at'])).rowcount:
-        conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in v.get('tags') or []])
+    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
+        FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
+        WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
+          AND (l.person_id IS NULL OR l.input_hash IS NOT (CASE WHEN coalesce(p.bio,'')='' THEN 'nobio' ELSE 'bio:' || length(p.bio) END))
+        ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    if not rows:
+        return False
+    answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
+    if not answers:
+        return False
+    ts = db.now()
+    done = [r for r in rows if r['id'] in answers]
+    conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
+                     [(r['id'], 'nobio' if not r['bio'] else f"bio:{len(r['bio'])}", json.dumps(answers[r['id']]),
+                       laya.fit(answers[r['id']]), ts) for r in done])
+    # the qualify batch folds the new signal into prefilter (and very sure tags) on its next pass
+    conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
     conn.commit()
     return True
+
+
+# ---------- LLM stage: bounded worker pool, few-shot from marks ----------
+
+FEWSHOT_MAX = 8
+FEWSHOT_CHANGE = 5    # re-run LLM verdicts when the good/client/no marks moved by this many (or 20 %)
+
+
+def fewshot(conn):
+    """The few-shot example set, frozen until Michael's marks change a lot; then older LLM verdicts are re-run."""
+    n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('good','client','no')").fetchone()[0]
+    cur = db.get_setting(conn, 'fewshot') or {}
+    if cur and abs(n - cur.get('n', 0)) < max(FEWSHOT_CHANGE, cur.get('n', 0) // 5):
+        return cur.get('examples') or []
+    ex = []
+    for label, statuses in (('good', "('good','client')"), ('no', "('no')")):
+        for r in conn.execute(f"SELECT p.handle, p.name, p.bio FROM marks m JOIN people p ON p.id=m.person_id WHERE m.status IN {statuses} "
+                              f"AND coalesce(p.bio,'')!='' ORDER BY m.updated_at DESC LIMIT ?", (FEWSHOT_MAX,)):
+            ex.append({'handle': r['handle'], 'name': r['name'], 'bio': (r['bio'] or '')[:200], 'label': label})
+    version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
+    if cur and version and version != cur.get('version'):
+        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ?", (version,))
+    db.set_setting(conn, 'fewshot', {'n': n, 'examples': ex, 'version': version})
+    conn.commit()
+    return ex
+
+
+def llm_candidates(conn, limit, exclude):
+    """Top candidates by combined signal (prefilter = list data + network + Laya; score = rules on the bio)."""
+    held = list(exclude)[:900]
+    return conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
+                        "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? "
+                        f"AND p.id NOT IN ({','.join('?' * len(held))}) "
+                        "ORDER BY coalesce(v.prefilter,0)+coalesce(v.score,0) DESC, p.id LIMIT ?",
+                        (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
+
+
+def run_llm(conn, rows, skip):
+    """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
+    rows = [dict(r) for r in rows]
+    me = me_handle(conn)
+    nets = network_context(conn, [p['id'] for p in rows], me)
+    items = [{'person': p, 'edges': edges_of(conn, p['id']), 'net': nets.get(p['id']),
+              'tags': [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]} for p in rows]
+    examples = fewshot(conn)
+    conn.commit()
+    try:
+        many = getattr(qualify, 'llm_verdicts', None)
+        vs = many(items, examples) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
+    except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
+        traceback.print_exc()
+        vs = [None] * len(items)
+    wrote = 0
+    for it, v in zip(items, vs):
+        p = it['person']
+        if v is None:
+            skip[p['id']] = datetime.now().timestamp() + 1800
+            continue
+        if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=? '
+                        'WHERE person_id=? AND updated_at=?',
+                        (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges']),
+                         v.get('prompt'), json.dumps(v.get('evidence') or []), p['id'], p['updated_at'])).rowcount:
+            conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in v.get('tags') or []])
+            wrote += 1
+    conn.commit()
+    return wrote
+
+
+def _expire(skip):
+    t = datetime.now().timestamp()
+    for k in [k for k, until in list(skip.items()) if until <= t]:
+        skip.pop(k, None)
+
+
+def llm_step(conn, skip):
+    """Synchronous single step (tests, tools): one person. The server itself runs LLMPool."""
+    if not db.get_setting(conn, 'qualify'):
+        return None
+    _expire(skip)
+    rows = llm_candidates(conn, 1, skip)
+    if not rows:
+        return None
+    return run_llm(conn, rows, skip) > 0
+
+
+class LLMPool:
+    """Bounded pool: at most `llm_workers` (setting, default 4) model calls in flight, each on its own DB connection.
+    The dispatcher only reads; results are written by the worker that got them. HTTP handlers and ingest never wait on it."""
+
+    def __init__(self, batch=None):
+        self.lock = threading.Lock()
+        self.inflight = set()
+        self.running = 0
+        self.skip = {}
+        self.batch = batch
+
+    def step(self, conn):
+        if not db.get_setting(conn, 'qualify'):
+            return False
+        workers = max(1, min(16, int(db.get_setting(conn, 'llm_workers') or 4)))
+        batch = self.batch or getattr(qualify, 'LLM_BATCH', 1)
+        with self.lock:
+            _expire(self.skip)
+            free = workers - self.running
+            exclude = set(self.inflight) | set(self.skip)
+        if free <= 0:
+            return False
+        rows = llm_candidates(conn, free * batch, exclude)
+        if not rows:
+            return False
+        groups = [rows[i:i + batch] for i in range(0, len(rows), batch)][:free]
+        with self.lock:
+            for g in groups:
+                self.running += 1
+                self.inflight.update(r['id'] for r in g)
+        for g in groups:
+            threading.Thread(target=self._work, args=(g,), daemon=True).start()
+        return True
+
+    def _work(self, rows):
+        conn = db.connect(CFG['db'])
+        try:
+            run_llm(conn, rows, self.skip)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            conn.close()
+            with self.lock:
+                self.running -= 1
+                self.inflight.difference_update(r['id'] for r in rows)
+
+    def idle(self):
+        with self.lock:
+            return self.running == 0
 
 
 def auto_qualify(conn):
@@ -898,8 +1158,9 @@ def auto_qualify(conn):
 
 
 def plan_priority(lists, prefilter):
-    """Lists count first, prefilter second; always below READ_PRIORITY (a read Michael asked for goes first)."""
-    return min(lists or 0, 9) * 1000 + max(0, min(999, prefilter or 0))
+    """Likely fit first (prefilter already weighs lists, seed yield, links to Michael and clients, Laya), lists count breaks
+    ties; always below READ_PRIORITY (a read Michael asked for goes first)."""
+    return max(0, min(100, prefilter or 0)) * 10 + min(lists or 0, 9)
 
 
 def retag_if_changed(conn):
@@ -923,16 +1184,16 @@ def plan_profiles(conn):
     today = datetime.now(timezone.utc).date().isoformat()
     used = (ext.get('today') or {}).get('profile', 0) if (ext.get('last_seen') or '').startswith(today) else 0
     active = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
-    need = budget['profile'] - used - active
+    need = (budget['profile'] - used if budget['profile'] else PLAN_BATCH) - active
     if need <= 0:
         return 0
     rows = conn.execute("""SELECT p.handle, v.prefilter, (SELECT count(DISTINCT seed) FROM edges e WHERE e.person_id=p.id) AS n
         FROM people p JOIN verdicts v ON v.person_id=p.id
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
-          AND p.handle NOT IN (SELECT handle FROM seeds)
+          AND p.handle NOT IN (SELECT handle FROM seeds) AND instr(p.handle, '~')=0
           AND p.id NOT IN (SELECT person_id FROM marks WHERE status='no')
-        ORDER BY n DESC, v.prefilter DESC, p.id LIMIT ?""", (need,)).fetchall()
+        ORDER BY v.prefilter DESC, n DESC, p.id LIMIT ?""", (need,)).fetchall()
     ts = db.now()
     conn.executemany("INSERT INTO jobs(kind, handle, priority, created_at) VALUES('profile',?,?,?)",
                      [(r['handle'], plan_priority(r['n'], r['prefilter']), ts) for r in rows])
@@ -991,8 +1252,8 @@ def worker(stop, step, busy_wait, idle_wait):
 
 
 def start_workers(stop):
-    skip = {}
-    loops = [(qualify_batch, 0, 1), (lambda c: llm_step(c, skip), 3, 10), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
+    pool = LLMPool()
+    loops = [(qualify_batch, 0, 1), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 

@@ -5,17 +5,16 @@ Precision over recall everywhere: a wrong tag is worse than a missing one.
 """
 from __future__ import annotations
 import hashlib
-import http.client
 import json
 import re
 import time
-import urllib.error
-import urllib.request
+
+import llm
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source')
-PROXY = 'http://127.0.0.1:18741/api/v1/chat/completions'
-MODELS = ('z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free')
-PROMPT_VERSION = 'q1'
+PROXY = llm.PROXY
+MODELS = llm.MODELS
+PROMPT_VERSION = 'q2'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't2'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
@@ -194,7 +193,32 @@ N_NEG = re.compile(r'(?<!\w)(?:coach(?:ing)?|mentor|podcast|learn|course|academy
                    r'photography|dj|artist|model|actor|actress|athlete|nft)(?!\w)', re.I)
 
 
-def prefilter(person: dict, seeds: list[str]) -> int:
+def network_score(net) -> int:
+    """Points from the follower/following network (net = server.network_context entry; None = no network data)."""
+    if not net:
+        return 0
+    score = 0
+    by = sum(1 for _, d in net.get('seeds', []) if d == 'following')   # a seed chose to follow them: stronger than the reverse
+    score += min(8, 4 * by)
+    y = net.get('seed_yield')
+    if y is not None and net.get('seed_marked'):
+        score += max(-8, min(16, round((y - 0.25) * 40)))
+    score += {'mutual': 12, 'follows': 8, 'followed': 6}.get(net.get('me'), 0)
+    score += min(12, 4 * int(net.get('client_seeds') or 0))
+    return score
+
+
+def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
+    """0-100 from list data only (no bio needed) plus network signals; Laya (optional) is one soft weighted signal."""
+    base = _prefilter(person, seeds) + network_score(net)
+    if person.get('is_private'):
+        base = min(base, 35)
+    if laya_fit is not None:
+        base = round(0.75 * base + 0.25 * laya_fit)
+    return max(0, min(100, int(base)))
+
+
+def _prefilter(person: dict, seeds: list[str]) -> int:
     handle = str(person.get('handle') or '').lower()
     name = str(person.get('name') or '')
     tokens = [t for t in re.split(r'[._\d]+', handle) if t]
@@ -242,7 +266,7 @@ def prefilter(person: dict, seeds: list[str]) -> int:
             score -= 10
     if person.get('is_private'):
         score = min(score - 20, 35)
-    return max(0, min(100, int(score)))
+    return int(score)
 
 
 # ---------------------------------------------------------------- rule tags
@@ -472,31 +496,38 @@ SCHEMA = """Reply with one compact JSON object only, no prose:
  "extra_tags": ["product niches from this list that the evidence clearly shows: %s"]}"""
 
 
-REPLY_MAX = 1_000_000
 LLM_BUDGET = 90   # seconds for one verdict across all models; the socket timeout alone does not bound a slow-drip reply
+LLM_BATCH = 4     # profiles per model call (one JSON reply with a result per id); failures fall back per person
+FEWSHOT_MAX = 8   # examples per label from Michael's own marks
+
+RUBRIC = """Scoring rubric (fit 0-100) for Fortunate's ideal client:
+- 80-100: founder, owner or decision-maker of a DTC physical-product brand (or that brand's own account), US-based or US-selling,
+  or Dutch selling to the US, big enough to pay about EUR 2,000+ (real shop, products, customers, team or growth talk).
+- 60-79: likely a product brand / its decision-maker but size, market or role is not fully clear.
+- 40-59: connector (e-com agency/freelancer who can refer) or a sparse profile with real business signs.
+- 0-39: creators/influencers, agencies for non-product clients, coaches and course sellers, personal accounts, suppliers and tools,
+  anyone without evidence of a product business. Reject these unless the evidence shows they also own a product brand."""
 
 
 def _call(model, messages, timeout):
-    body = {'model': model, 'messages': messages, 'max_tokens': 400, 'temperature': 0.1, 'reasoning': {'effort': 'low', 'exclude': True}}
-    req = urllib.request.Request(PROXY, data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+    """One model through the provider layer. -> (content, model used). Raises ValueError / OSError when unusable."""
     try:
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as r:
-            data = json.loads(r.read(REPLY_MAX))
-    except urllib.error.HTTPError as exc:
-        exc.close()
-        raise ValueError(f'{model}: HTTP {exc.code}') from None
-    if not isinstance(data, dict):
-        raise ValueError(f'{model}: reply is not an object')
-    if data.get('error'):
-        raise ValueError(str(data['error'])[:160])
-    returned = str(data.get('model') or model)
-    if returned.split(':')[0] != model.split(':')[0]:
-        raise ValueError(f'proxy substituted {returned}')
-    try:
-        content = data['choices'][0]['message']['content']
-    except (KeyError, IndexError, TypeError):
-        content = None
-    return content if isinstance(content, str) else '', model
+        return _providers().chat(messages, models=(model,), timeout=timeout, budget=timeout + 1)
+    except llm.Unavailable as e:
+        raise ValueError(str(e)) from None
+
+
+_PROVIDERS = {}
+
+
+def _providers():
+    """The shared provider layer; a PROXY override (tests, other ports) gets its own instance with the same keys."""
+    base = llm.get()
+    if PROXY == base.proxy:
+        return base
+    if PROXY not in _PROVIDERS:
+        _PROVIDERS[PROXY] = llm.Providers(base.keys, base.models, PROXY, base.daily_limit)
+    return _PROVIDERS[PROXY]
 
 
 def parse_json(text):
@@ -513,7 +544,31 @@ def parse_json(text):
     return None
 
 
-def _packet(person, tags, edges):
+def network_lines(net):
+    """Plain-language network signals for the LLM packet (net = server.network_context entry)."""
+    if not net:
+        return []
+    rows = []
+    by = [s for s, d in net.get('seeds', []) if d == 'following']
+    of = [s for s, d in net.get('seeds', []) if d == 'followers']
+    if by:
+        rows.append('Followed BY these operators (they chose to follow this account): ' + ', '.join('@' + s for s in sorted(by)[:10]))
+    if of:
+        rows.append('Follows these operators: ' + ', '.join('@' + s for s in sorted(of)[:10]))
+    if net.get('lists', 0) >= 2:
+        rows.append(f"In {net['lists']} of Michael's lists")
+    y = net.get('seed_yield')
+    if y is not None and net.get('seed_marked'):
+        rows.append(f"Best source list: {round(y * 100)}% of the people Michael marked from it were good/client")
+    if net.get('client_seeds'):
+        rows.append(f"Linked to {net['client_seeds']} account(s) Michael marked good/client")
+    me = {'mutual': 'follows Michael and he follows them', 'follows': 'follows Michael', 'followed': 'Michael follows them'}.get(net.get('me'))
+    if me:
+        rows.append('Connected to Michael (@fortun8te): ' + me)
+    return rows
+
+
+def _packet(person, tags, edges, net=None):
     others, mine = _seeds(edges, 'fortun8te')
     rows = [f"@{person.get('handle')}" + (f" · name: {person['name']}" if person.get('name') else '')]
     for label, key in (('Category label', 'category'), ('Bio', 'bio'), ('Link in bio', 'website')):
@@ -525,14 +580,57 @@ def _packet(person, tags, edges):
     flags = [n for n, k in (('business account', 'is_business'), ('verified', 'is_verified'), ('private', 'is_private')) if person.get(k)]
     if flags:
         rows.append('Account: ' + ', '.join(flags))
-    if others:
-        rows.append("Appears in the follower/following lists of these e-commerce/ads operators: " + ', '.join('@' + s for s in sorted(others)[:10]))
-    if mine:
-        rows.append('Connected to Michael (@fortun8te): ' + ', '.join(sorted({'followers': 'follows him', 'following': 'he follows them'}.get(d, d) for d in mine)))
+    if net:
+        rows += network_lines(net)
+    else:
+        if others:
+            rows.append("Appears in the follower/following lists of these e-commerce/ads operators: " + ', '.join('@' + s for s in sorted(others)[:10]))
+        if mine:
+            rows.append('Connected to Michael (@fortun8te): ' + ', '.join(sorted({'followers': 'follows him', 'following': 'he follows them'}.get(d, d) for d in mine)))
     rt = [t for t, gr in tags or [] if gr in ('role', 'niche', 'signal')]
     if rt:
         rows.append('Keyword rules matched (hint, may be wrong): ' + ', '.join(rt))
     return '\n'.join(rows)
+
+
+def fewshot_text(examples):
+    """examples = [{'handle','name','bio','label': 'good'|'no'}] from Michael's own marks."""
+    good = [e for e in examples or [] if e.get('label') == 'good'][:FEWSHOT_MAX]
+    bad = [e for e in examples or [] if e.get('label') == 'no'][:FEWSHOT_MAX]
+    if not good and not bad:
+        return ''
+    line = lambda e: f"- @{e.get('handle')}" + (f" ({e['name']})" if e.get('name') else '') + ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]  # noqa: E731
+    out = ["Michael's own past judgements (learn his taste from these):"]
+    if good:
+        out += ['Marked GOOD (he wants these):'] + [line(e) for e in good]
+    if bad:
+        out += ['Marked NO (not a fit):'] + [line(e) for e in bad]
+    return '\n'.join(out)
+
+
+def fewshot_version(examples):
+    key = sorted((str(e.get('handle')), e.get('label')) for e in examples or [])
+    return hashlib.sha256(json.dumps(key).encode()).hexdigest()[:8] if key else '0'
+
+
+def prompt_version(examples=None):
+    return f'{PROMPT_VERSION}:{fewshot_version(examples)}'
+
+
+SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
+{"id": <the id>, "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
+ "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
+ "evidence": ["up to 3 short exact quotes from the bio/name that support the verdict"],
+ "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"]}"""
+
+
+def _system(examples, n):
+    allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
+    fmt = SCHEMA_ONE % ', '.join(allowed)
+    fmt += ('\nOne profile: reply with that one object.' if n == 1 else
+            '\nSeveral profiles: reply {"results": [one object per profile, same ids]}.')
+    parts = [BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt]
+    return '\n\n'.join(p for p in parts if p)
 
 
 ROLE_TAG = {'buyer': 'Brand', 'connector': 'Agency', 'collaborator': 'Creative', 'supplier': 'Supplier'}
@@ -541,38 +639,82 @@ ROLE_TAG = {'buyer': 'Brand', 'connector': 'Agency', 'collaborator': 'Creative',
 ROLE_CAP = {'buyer': 100, 'connector': 80, 'collaborator': 60, 'unclear': 60, 'supplier': 50, 'peer': 40, 'unrelated': 30}
 
 
-def llm_verdict(person: dict, tags, edges, timeout: float = 45, models=MODELS, budget: float = LLM_BUDGET) -> dict | None:
-    """None when no model gives a usable answer in time: the caller keeps the rule verdict and retries later."""
+def _evidence(v, person):
+    hay = ' '.join(str(person.get(k) or '') for k in ('bio', 'name', 'category', 'website', 'handle')).lower()
+    out = []
+    for q in v.get('evidence') or []:
+        if isinstance(q, str) and 2 < len(q.strip()) <= 160 and q.strip().lower().strip('"\'') in hay:   # quotes only, never invented
+            out.append(q.strip())
+    return out[:3]
+
+
+def _verdict(v, person, tags, used, version):
+    if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
+        return None
     allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
-    system = BRIEF + '\n\n' + READING_INSTAGRAM + '\n\n' + SCHEMA % ', '.join(allowed)
-    msgs = [{'role': 'system', 'content': system}, {'role': 'user', 'content': _packet(person, tags, edges)}]
+    fit = int(max(0, min(100, v['fit'])))
+    g = _names(tags)
+    n = _seed_count(g)
+    score = fit + min(10, 4 * max(0, n - 1)) + 3 * ('knows you' in g.get('source', []))
+    score = max(0, min(ROLE_CAP[v['role']], score))
+    reason = re.sub(r'\s+', ' ', str(v.get('reason') or '')).strip()[:220] or rule_verdict(person, tags)['reason']
+    extra = [t for t in (v.get('extra_tags') or []) if isinstance(t, str) and t in allowed]
+    if isinstance(v.get('niche'), str) and v['niche'] in allowed:
+        extra.insert(0, v['niche'])
+    have = {t for t, _ in tags or []}
+    rt = ROLE_TAG.get(v['role'])
+    if rt and not (have & {'Brand', 'Store'} if rt == 'Brand' else have & {'Agency', 'Freelancer'} if rt == 'Agency' else rt in have):
+        extra.append(rt)
+    new = [(t, TAXONOMY[t]) for t in dict.fromkeys(extra) if t not in have]
+    if v['role'] == 'buyer' and v.get('decision_maker') is True and 'Founder' not in have:
+        new.append(('Founder', 'signal'))
+    fit_tag = 'Fit: strong' if fit >= 75 and v['role'] == 'buyer' else 'Fit: good' if fit >= 55 and v['role'] in ('buyer', 'connector') else None
+    if fit_tag:
+        new.append((fit_tag, 'signal'))
+    brand = v.get('brand_handle')
+    brand = brand.strip() if isinstance(brand, str) and re.fullmatch(r'@?[\w.]{2,30}', brand.strip()) else None
+    return {'score': score, 'role': v['role'], 'reason': reason, 'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
+            'model': used, 'fit': fit, 'tags': new, 'evidence': _evidence(v, person), 'brand_handle': brand, 'prompt': version}
+
+
+def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget: float = LLM_BUDGET) -> list:
+    """items = [{'person','tags','edges','net'?}] -> one verdict dict or None per item (None: rule verdict stays, retried later).
+    Profiles go LLM_BATCH per call; a batch reply missing someone leaves only that person at None."""
+    out = [None] * len(items)
+    version = prompt_version(examples)
     deadline = time.monotonic() + budget
-    for model in models:
+    for i in range(0, len(items), LLM_BATCH):
+        chunk = items[i:i + LLM_BATCH]
         left = deadline - time.monotonic()
         if left <= 1:
-            return None
+            break
+        user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
+        msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _call(model, msgs, min(timeout, left))
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, http.client.HTTPException):
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=350 * len(chunk) + 100)
+        except llm.Unavailable:
             continue
-        v = parse_json(text)
-        if not v or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)):
+        data = parse_json(text)
+        if not data:
             continue
-        fit = int(max(0, min(100, v['fit'])))
-        g = _names(tags)
-        n = _seed_count(g)
-        score = fit + min(10, 4 * max(0, n - 1)) + 3 * ('knows you' in g.get('source', []))
-        score = max(0, min(ROLE_CAP[v['role']], score))
-        reason = re.sub(r'\s+', ' ', str(v.get('reason') or '')).strip()[:220] or rule_verdict(person, tags)['reason']
-        extra = [t for t in (v.get('extra_tags') or []) if isinstance(t, str) and t in allowed]
-        have = {t for t, _ in tags or []}
-        rt = ROLE_TAG.get(v['role'])
-        if rt and not (have & {'Brand', 'Store'} if rt == 'Brand' else have & {'Agency', 'Freelancer'} if rt == 'Agency' else rt in have):
-            extra.append(rt)
-        new = [(t, TAXONOMY[t]) for t in dict.fromkeys(extra) if t not in have]
-        return {'score': score, 'role': v['role'], 'reason': reason, 'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
-                'model': used, 'fit': fit, 'tags': new}
-    return None
+        results = data.get('results') if isinstance(data.get('results'), list) else [data] if len(chunk) == 1 else []
+        for k, r in enumerate(results):
+            if not isinstance(r, dict):
+                continue
+            rid = r.get('id', k if len(chunk) > 1 else 0)
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= rid < len(chunk) and out[i + rid] is None:
+                it = chunk[rid]
+                out[i + rid] = _verdict(r, it['person'], it.get('tags'), used, version)
+    return out
+
+
+def llm_verdict(person: dict, tags, edges, timeout: float = 45, models=None, budget: float = LLM_BUDGET, net=None, examples=None) -> dict | None:
+    """None when no model gives a usable answer in time: the caller keeps the rule verdict and retries later."""
+    return llm_verdicts([{'person': person, 'tags': tags, 'edges': edges, 'net': net}], examples, timeout, models, budget)[0]
 
 
 def input_hash(person: dict, edges) -> str:

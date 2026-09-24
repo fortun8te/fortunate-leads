@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 stub = types.ModuleType('qualify')
-stub.prefilter = lambda p, seeds: 10 * len(seeds)
+stub.prefilter = lambda p, seeds, net=None, laya_fit=None: 10 * len(seeds)
 stub.rule_tags = lambda p, edges, me: [(f"via @{e['seed']}", 'source') for e in edges] + (
     [('founder', 'role')] if 'founder' in (p.get('bio') or '') else [])
 stub.rule_verdict = lambda p, tags: {'score': 80 if ('founder', 'role') in tags else 30, 'role': 'x', 'reason': 'r',
@@ -129,10 +129,10 @@ class ServerTest(Base):
         self.call('/api/scraper/seeds', {'handles': ['s1'], 'directions': ['following']})
         self.assertEqual(self.call('/api/ext/next?kinds=profile')[1]['job']['kind'], 'profile')
         nxt = self.call('/api/ext/next')[1]
-        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 2000, 'profile': 150}, False))
+        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 2000, 'profile': 0}, False))
         self.assertIsNone(self.call('/api/ext/next?kinds=list')[1]['job'])
         self.call('/api/scraper/pause', {'paused': True})
-        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 2000, 'profile': 150},
+        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 2000, 'profile': 0},
                                                          'job': None, 'cooldown_until': None})
         self.call('/api/scraper/pause', {'paused': False})
         self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})
@@ -284,7 +284,7 @@ class ServerTest(Base):
 
     def test_budget_defaults_not_mutated(self):
         self.call('/api/scraper/budget', {'profile': 7})
-        self.assertEqual(db.DEFAULTS['budget'], {'list': 2000, 'profile': 150})
+        self.assertEqual(db.DEFAULTS['budget'], {'list': 2000, 'profile': 0})
 
     def test_migration(self):
         old = Path(self.tmp.name) / 'old.sqlite'
@@ -574,7 +574,7 @@ class TagsViewsMapTest(Base):
         self.assertIsNone(self.call('/api/ext/next')[1]['job'])
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (j['id'],)).fetchone()[0], 'error')
 
-    def test_planner_lists_first_then_prefilter(self):
+    def test_planner_fit_first_then_lists(self):
         self.people({'one_hi': ('', None, ['s1']), 'three_lo': ('', None, ['s1', 's2', 's3']), 'two_hi': ('', None, ['s1', 's2']),
                      'two_lo': ('', None, ['s1', 's2'])})
         self.conn.execute('UPDATE people SET bio=NULL, bio_at=NULL')
@@ -584,9 +584,10 @@ class TagsViewsMapTest(Base):
         self.conn.commit()
         self.assertEqual(server.plan_profiles(self.conn), 4)
         order = [r[0] for r in self.conn.execute("SELECT handle FROM jobs WHERE kind='profile' ORDER BY priority DESC")]
-        self.assertEqual(order, ['three_lo', 'two_hi', 'two_lo', 'one_hi'])
+        self.assertEqual(order, ['one_hi', 'two_hi', 'two_lo', 'three_lo'])
         self.assertLess(server.plan_priority(50, 100), server.READ_PRIORITY)
-        self.assertEqual([self.call('/api/ext/next')[1]['job']['handle'] for _ in range(2)], ['three_lo', 'two_hi'])
+        self.assertGreater(server.plan_priority(2, 50), server.plan_priority(1, 50))  # lists break ties
+        self.assertEqual([self.call('/api/ext/next')[1]['job']['handle'] for _ in range(2)], ['one_hi', 'two_hi'])
 
     def test_llm_exception_falls_back(self):
         pid = self.people({'eve': ('founder', 10, ['s1'])})['eve']

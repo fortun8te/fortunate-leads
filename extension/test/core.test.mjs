@@ -103,10 +103,14 @@ test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when long
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
   for (let i = 0; i < 150; i++) FL.afterRequest(st, 'profile', T0);
-  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 2000, profile: 0 });
+  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 2000, profile: Infinity }); // default 0 = no daily number
   assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 2000, profile: 50 });
-  assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 300 }); // profile hard cap
-  assert.deepEqual(FL.budgetLeft(st, null, FL.nextMidnight(T0) + 1), { list: 2000, profile: 150 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, T0), { list: 2000, profile: 0 });
+  assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 5000 }); // no hard cap
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, FL.nextMidnight(T0) + 1), { list: 2000, profile: 150 });
+  // unlimited still paces: the next bio waits the 35-70 s gap
+  const p = FL.plan(st, FL.budgetLeft(st, null, T0), T0);
+  assert.ok(!p.kinds.includes('profile') && p.wait >= 35e3 - 1 && p.why === 'pace');
   FL.tally(st, T0 + DAY, 25, 1); FL.tally(st, T0 + DAY, 50, 0);
   assert.deepEqual([st.today.people, st.today.bios], [75, 1]);
 });

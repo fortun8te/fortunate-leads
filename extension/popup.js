@@ -10,9 +10,10 @@ let current = null, debug = null;
 function bucketText(b, what) {
   if (!b) return '–';
   if (b.until) return 'cooling until ' + hm(b.until) + ' · ' + b.hits + ' hit' + (b.hits === 1 ? '' : 's') + '/24h';
-  if (!b.left) return 'daily budget used';
+  if (b.left === 0) return 'daily budget used';
   const wait = b.readyAt ? secs(b.readyAt) : 0;
-  return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + n(b.left) + ' ' + what + ' left' + (b.infoOff ? ' · via page loads' : '');
+  const left = b.left == null ? 'no daily cap' : n(b.left) + ' ' + what + ' left'; // null = unlimited (Infinity does not survive storage)
+  return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + left + (b.infoOff ? ' · via page loads' : '');
 }
 function render(v) {
   if (!v) return;

@@ -110,7 +110,7 @@ async function status(st) {
   chrome.action.setBadgeText({ text: s.badge });
   chrome.action.setBadgeBackgroundColor({ color: s.badge === '!' ? '#b3261e' : '#555' });
   const bucket = (k) => ({ until: st.cool[k].until > now ? st.cool[k].until : 0, hits: st.cool[k].hits.filter((t) => now - t < FL.DAY).length,
-    left: left[k], readyAt: k === 'profile' ? Math.max(st.nextAt, st.profileNextAt) : st.nextAt });
+    left: Number.isFinite(left[k]) ? left[k] : null, readyAt: k === 'profile' ? Math.max(st.nextAt, st.profileNextAt) : st.nextAt });
   await set({ view: { ...s, today: st.today, budget, job: mem.job ? mem.label : '', nextAt: st.nextAt,
     lastError: st.hold ? st.hold.message : st.lastError, note: st.note, rate: FL.rateOf(st, now), at: now,
     buckets: { list: bucket('list'), profile: { ...bucket('profile'), infoOff: st.infoOffUntil > now } },
