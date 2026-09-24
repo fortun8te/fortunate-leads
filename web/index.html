@@ -22,6 +22,7 @@
       <a href="#/map" data-view="map">map</a>
       <a href="#/tags" data-view="tags">tags</a>
       <a href="#/scraper" data-view="scraper">scraper<span class="num" id="n-queue"></span></a>
+      <a href="#/accounts" data-view="accounts">accounts<span class="num" id="n-acc"></span></a>
     </nav>
     <div class="grow"></div>
     <button class="btn ghost hide-sm" id="density-btn" title="Density (d)">compact</button>
@@ -34,6 +35,7 @@
     <div class="status" id="status">
       <div class="st-l">
         <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">connecting</span></a>
+        <a class="st-lanes" id="st-lanes" href="#/accounts" hidden></a>
         <span class="st-act hide-md" id="st-act"></span>
         <span class="st"><span class="hide-sm">today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></span>
         <span class="st hide-sm"><span>pages/h</span><b class="num" id="st-pph">–</b></span>
@@ -173,6 +175,20 @@
         </div>
       </div>
     </section>
+
+    <section class="view" id="view-accounts">
+      <div class="scr accs">
+        <div class="alerts" id="acc-alerts"></div>
+        <div class="acc-head">
+          <h2>Accounts</h2>
+          <span class="num muted" id="acc-sum"></span>
+          <div class="grow"></div>
+          <button class="btn solid" id="acc-add">Add account</button>
+        </div>
+        <div class="panel wiz" id="wiz" hidden></div>
+        <div class="cards" id="acc-cards"></div>
+      </div>
+    </section>
   </main>
 </div>
 <datalist id="tag-dl"></datalist>
@@ -205,7 +221,7 @@
   <span><kbd>l</kbd></span><span>labels</span>
   <span><kbd>n</kbd></span><span>next search match</span>
   <h4>General</h4>
-  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd></span><span>leads, map, tags, scraper</span>
+  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd> <kbd>a</kbd></span><span>leads, map, tags, scraper, accounts</span>
   <span><kbd>d</kbd></span><span>density</span>
   <span><kbd>esc</kbd></span><span>close, clear selection</span>
 </div></div>
