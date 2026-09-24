@@ -1,11 +1,14 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-density="comfortable">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fortunate Leads</title>
 <script>
-  try { var t = localStorage.getItem('fl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  try {
+    var t = localStorage.getItem('fl-theme'); if (t === '"light"' || t === '"dark"') document.documentElement.dataset.theme = JSON.parse(t);
+    var d = localStorage.getItem('fl-density'); if (d === '"compact"') document.documentElement.dataset.density = 'compact';
+  } catch (e) {}
   if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
 </script>
 <link rel="stylesheet" href="app.css">
@@ -13,71 +16,123 @@
 <body>
 <div class="shell">
   <header class="top">
-    <div class="brand"><i></i><span>Fortunate Leads</span></div>
+    <a class="brand" href="#/leads"><i></i><span>Fortunate</span></a>
     <nav class="tabs">
-      <a href="#/leads" data-view="leads">Leads <span class="num" id="n-leads"></span></a>
-      <a href="#/map" data-view="map">Map</a>
-      <a href="#/scraper" data-view="scraper">Scraper <span class="num" id="n-queue"></span></a>
+      <a href="#/leads" data-view="leads">leads<span class="num" id="n-leads"></span></a>
+      <a href="#/map" data-view="map">map</a>
+      <a href="#/tags" data-view="tags">tags</a>
+      <a href="#/scraper" data-view="scraper">scraper<span class="num" id="n-queue"></span></a>
     </nav>
     <div class="grow"></div>
+    <button class="btn ghost hide-sm" id="density-btn" title="Density (d)">compact</button>
+    <button class="btn ghost" id="theme-btn">light</button>
     <button class="btn ghost hide-sm" id="help-btn" title="Keyboard shortcuts"><kbd>?</kbd></button>
-    <button class="btn ghost" id="theme-btn">Light</button>
   </header>
 
   <div>
     <div class="offline" id="offline" hidden>Server offline <span class="num" id="offline-t"></span></div>
     <div class="status" id="status">
-      <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">Connecting</span></a>
-      <span class="st-act" id="st-act"></span>
-      <span class="st"><span>Today</span><b class="num" id="st-today">–</b><span class="meter"><i id="st-meter"></i></span></span>
-      <span class="st"><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
-      <span class="st"><span>People/h</span><b class="num" id="st-peh">–</b></span>
-      <span class="st hide-sm"><span>Last hit</span><b class="num" id="st-hit">–</b></span>
-      <span class="grow"></span>
-      <button class="toggle" id="qualify-btn" title="Qualification"><i></i>Qualify</button>
-      <button class="btn" id="pause-btn">Pause</button>
+      <div class="st-l">
+        <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">connecting</span></a>
+        <span class="st-act hide-md" id="st-act"></span>
+        <span class="st"><span class="hide-sm">today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></span>
+        <span class="st hide-sm"><span>pages/h</span><b class="num" id="st-pph">–</b></span>
+        <span class="st hide-sm"><span>people/h</span><b class="num" id="st-peh">–</b></span>
+        <span class="st hide-md"><span>last limit</span><b class="num" id="st-hit">–</b></span>
+      </div>
+      <div class="st-r">
+        <button class="toggle" id="qualify-btn" title="Qualification"><i></i><span>qualify</span></button>
+        <button class="btn" id="pause-btn">pause</button>
+      </div>
     </div>
   </div>
 
   <main>
-    <section class="view" id="view-leads">
+    <section class="view" id="view-work">
       <aside class="filters" id="filters"></aside>
       <div class="pane">
-        <div class="bar">
-          <button class="btn fbtn" id="filters-btn">Filters</button>
-          <label class="search"><input class="input" id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false"><kbd>/</kbd></label>
-          <select class="select" id="sort">
-            <option value="connected">Most connected</option>
-            <option value="score">Default</option>
-            <option value="recent">Recent</option>
-            <option value="followers">Followers</option>
+        <div class="qbar">
+          <button class="btn fbtn" id="filters-btn" title="Filters ([)">filters<span class="num" id="fbtn-n"></span></button>
+          <div class="qbox" id="qbox">
+            <div class="tokens" id="tokens"></div>
+            <input id="q" type="text" placeholder="search, #tag, -#tag, ~#tag, lists:2+" autocomplete="off" spellcheck="false">
+            <kbd class="hide-sm">/</kbd>
+            <div class="suggest" id="suggest" hidden></div>
+          </div>
+          <select class="select" id="sort" title="Sort">
+            <option value="connected">most connected</option>
+            <option value="followers">followers</option>
+            <option value="recent">newest</option>
+            <option value="score">default</option>
           </select>
-          <div class="chips" id="chips"></div>
-          <div class="grow"></div>
-          <span class="count num" id="count"></span>
+          <button class="btn ghost hide-sm" id="save-view" title="Save view (v)">save view</button>
         </div>
-        <div class="thead">
-          <span></span><span>Person</span><span>Bio</span><span class="r">Followers</span><span class="r">Lists</span><span class="c-tags">Tags</span><span class="c-st">Status</span>
+
+        <div class="lpane" id="pane-leads">
+          <div class="bulk" id="bulk" hidden></div>
+          <div class="thead">
+            <span class="c-sel"><button class="ck" id="sel-page" title="Select all loaded"></button></span>
+            <span>person</span><span class="c-bio">bio</span><span class="r">followers</span><span class="r">lists</span><span class="c-tags">tags</span><span class="c-st">status</span>
+          </div>
+          <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
+          <div class="foot"><span class="num" id="count"></span><span class="grow"></span>
+            <span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>x</kbd> select</span><span><kbd>1</kbd>–<kbd>6</kbd> status</span><span><kbd>t</kbd> tag</span><span><kbd>#</kbd> filter tag</span><span><kbd>?</kbd> all keys</span></div>
         </div>
-        <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
-        <div class="foot"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>enter</kbd> open</span><span><kbd>m</kbd> mark</span><span><kbd>1</kbd>–<kbd>6</kbd> status</span><span><kbd>o</kbd> instagram</span><span><kbd>/</kbd> search</span><span><kbd>esc</kbd> close</span></div>
+
+        <div class="mpane" id="pane-map">
+          <div class="mbar">
+            <div class="seg" id="map-scope"><button data-v="leads" class="on" title="People in 2+ lists and likely brands">connected</button><button data-v="all">all</button></div>
+            <label class="search"><input class="input" id="map-q" type="search" placeholder="find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
+            <div class="grow"></div>
+            <span class="num muted hide-sm" id="map-count"></span>
+            <button class="btn" id="map-labels" title="Labels (l)">labels</button>
+            <button class="btn" id="map-fit" title="Zoom to fit (f)">fit</button>
+          </div>
+          <div class="stage" id="stage">
+            <canvas id="canvas"></canvas>
+            <div class="hover" id="hover" hidden></div>
+            <div class="zoom"><button id="zoom-in" title="Zoom in (+)">+</button><button id="zoom-out" title="Zoom out (-)">&minus;</button></div>
+            <div class="legend" id="legend">
+              <span><i class="lg-seed"></i>seed</span>
+              <span><i class="lg-l1"></i>1 list</span>
+              <span><i class="lg-l2"></i>2+ lists</span>
+              <span><i class="lg-mk"></i>marked</span>
+              <span><i class="lg-ss"></i>shared people</span>
+            </div>
+          </div>
+        </div>
       </div>
       <aside class="detail" id="detail" hidden></aside>
     </section>
 
-    <section class="view" id="view-map">
-      <div class="bar">
-        <div class="seg" id="map-scope"><button data-v="leads" class="on">Connected</button><button data-v="all">All</button></div>
-        <label class="search"><input class="input" id="map-q" type="search" placeholder="Find" autocomplete="off" spellcheck="false"></label>
-        <div class="grow"></div>
-        <span class="count num" id="map-count"></span>
-        <button class="btn" id="map-fit">Fit</button>
-      </div>
-      <div class="map-wrap">
-        <div class="stage" id="stage">
-          <canvas id="canvas"></canvas>
-          <div class="hover" id="hover" hidden></div>
-          <div class="legend"><span><i style="background:var(--fg)"></i>Seed</span><span><i style="border:1px solid var(--fg)"></i>2+ lists</span><span><i style="background:var(--fg3)"></i>Lead</span></div>
+    <section class="view" id="view-tags">
+      <div class="tg">
+        <div class="panel">
+          <div class="p-head"><h3>tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div>
+            <div class="seg" id="tg-src"><button data-v="" class="on">all</button><button data-v="manual">manual</button><button data-v="rule">rule</button><button data-v="auto">auto</button></div>
+            <input class="input" id="tg-q" type="search" placeholder="find tag" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="tg-merge" id="tg-merge" hidden></div>
+          <div class="tbl-wrap"><table class="tbl tg-tbl">
+            <thead><tr><th class="c-ck"><button class="ck" id="tg-all"></button></th><th>tag</th><th class="hide-sm">group</th><th class="hide-sm">source</th><th class="r">people</th><th class="r"></th></tr></thead>
+            <tbody id="tg-body"></tbody>
+          </table></div>
+        </div>
+        <div class="panel">
+          <div class="p-head"><h3>rules</h3><span class="num muted" id="rl-n"></span></div>
+          <form class="rule-form" id="rule-form">
+            <input class="input" id="rl-tag" placeholder="tag" list="tag-dl" autocomplete="off" required>
+            <span class="muted">when</span>
+            <select class="select" id="rl-field"><option value="bio">bio</option><option value="name">name</option><option value="handle">handle</option><option value="category">category</option><option value="website">website</option><option value="any">any field</option></select>
+            <span class="muted">matches</span>
+            <input class="input" id="rl-match" placeholder="words, comma separated, or /regex/" autocomplete="off" spellcheck="false" required>
+            <span class="num rl-prev" id="rl-prev"></span>
+            <button class="btn solid" id="rl-add" disabled>add rule</button>
+          </form>
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>tag</th><th>field</th><th>matches</th><th class="r">hits</th><th class="r"></th></tr></thead>
+            <tbody id="rl-body"></tbody>
+          </table></div>
         </div>
       </div>
     </section>
@@ -87,32 +142,32 @@
         <div class="kpis" id="kpis"></div>
         <div class="grid2">
           <div class="panel">
-            <div class="p-head"><h3>Extension</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></div>
+            <div class="p-head"><h3>extension</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></div>
             <div class="p-body"><div class="kv" id="ext-kv"></div>
-              <div class="row-flex budget"><span class="muted">Budget/day</span>
+              <div class="row-flex budget"><span class="muted">budget/day</span>
                 <input class="input" id="b-list" type="number" min="0" title="List pages"><span class="muted">pages</span>
                 <input class="input" id="b-profile" type="number" min="0" title="Profiles"><span class="muted">profiles</span>
-                <button class="btn" id="b-save">Save</button>
+                <button class="btn" id="b-save">save</button>
               </div>
             </div>
           </div>
           <div class="panel">
-            <div class="p-head"><h3>Add seeds</h3></div>
+            <div class="p-head"><h3>add seeds</h3></div>
             <div class="p-body">
               <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
               <div class="row-flex">
-                <div class="seg" id="seed-dir"><button data-v="followers" class="on">Followers</button><button data-v="following" class="on">Following</button></div>
+                <div class="seg" id="seed-dir"><button data-v="followers" class="on">followers</button><button data-v="following" class="on">following</button></div>
                 <div class="grow"></div>
                 <span class="muted num" id="seed-n"></span>
-                <button class="btn solid" id="seed-add" disabled>Queue</button>
+                <button class="btn solid" id="seed-add" disabled>queue</button>
               </div>
             </div>
           </div>
         </div>
         <div class="panel">
-          <div class="p-head"><h3>Lists</h3><span class="num muted" id="lists-n"></span><div class="grow"></div><div class="seg" id="lists-f"></div></div>
+          <div class="p-head"><h3>lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Account</th><th class="hide-sm">Direction</th><th class="prog">Progress</th><th class="r">Received</th><th>State</th><th class="r hide-sm">Updated</th></tr></thead>
+            <thead><tr><th>account</th><th class="hide-sm">direction</th><th class="prog">progress</th><th class="r">received</th><th>state</th><th class="r hide-sm">updated</th></tr></thead>
             <tbody id="lists-body"></tbody>
           </table></div>
         </div>
@@ -120,19 +175,39 @@
     </section>
   </main>
 </div>
+<datalist id="tag-dl"></datalist>
 <div class="toast" id="toast" hidden></div>
 <div class="help" id="help" hidden><div>
-  <h3>Keyboard</h3>
-  <span><kbd>j</kbd> <kbd>k</kbd></span><span>Next / previous</span>
-  <span><kbd>enter</kbd></span><span>Open detail</span>
-  <span><kbd>m</kbd></span><span>Cycle mark</span>
-  <span><kbd>1</kbd>–<kbd>6</kbd></span><span>Good, maybe, no, contacted, client, known</span>
-  <span><kbd>0</kbd></span><span>Clear mark</span>
-  <span><kbd>o</kbd></span><span>Open on Instagram</span>
-  <span><kbd>t</kbd></span><span>Add tag</span>
-  <span><kbd>/</kbd></span><span>Search</span>
-  <span><kbd>g</kbd> <kbd>l</kbd> / <kbd>g</kbd> <kbd>m</kbd> / <kbd>g</kbd> <kbd>s</kbd></span><span>Leads, map, scraper</span>
-  <span><kbd>esc</kbd></span><span>Close</span>
+  <h3>keyboard</h3>
+  <h4>list</h4>
+  <span><kbd>j</kbd> <kbd>k</kbd></span><span>next / previous</span>
+  <span><kbd>enter</kbd></span><span>open detail</span>
+  <span><kbd>x</kbd></span><span>select row</span>
+  <span><kbd>shift</kbd> <kbd>j</kbd> <kbd>k</kbd></span><span>extend selection</span>
+  <span><kbd>shift</kbd> <kbd>a</kbd></span><span>select everyone in filter</span>
+  <span><kbd>1</kbd>–<kbd>6</kbd> <kbd>0</kbd></span><span>good, maybe, no, contacted, client, known, clear</span>
+  <span><kbd>m</kbd></span><span>cycle good, maybe, no</span>
+  <span><kbd>t</kbd></span><span>tag current or selected</span>
+  <span><kbd>o</kbd></span><span>open on Instagram</span>
+  <h4>filter</h4>
+  <span><kbd>/</kbd></span><span>search</span>
+  <span><kbd>#</kbd></span><span>filter by tag</span>
+  <span><kbd>click</kbd></span><span>tag: all of, any of, none of, off</span>
+  <span><kbd>shift</kbd> click</span><span>any of</span>
+  <span><kbd>alt</kbd> click</span><span>none of</span>
+  <span><kbd>backspace</kbd></span><span>edit last filter token</span>
+  <span><kbd>c</kbd></span><span>clear filters</span>
+  <span><kbd>v</kbd></span><span>save view</span>
+  <span><kbd>[</kbd></span><span>toggle filter sidebar</span>
+  <h4>map</h4>
+  <span><kbd>f</kbd></span><span>zoom to fit</span>
+  <span><kbd>+</kbd> <kbd>-</kbd></span><span>zoom</span>
+  <span><kbd>l</kbd></span><span>labels</span>
+  <span><kbd>n</kbd></span><span>next search match</span>
+  <h4>general</h4>
+  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd></span><span>leads, map, tags, scraper</span>
+  <span><kbd>d</kbd></span><span>density</span>
+  <span><kbd>esc</kbd></span><span>close, clear selection</span>
 </div></div>
 <script src="vendor/d3-dispatch.min.js"></script>
 <script src="vendor/d3-timer.min.js"></script>

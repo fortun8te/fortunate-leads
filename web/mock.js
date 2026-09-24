@@ -1,202 +1,402 @@
 // Dev-only mock backend. Loaded only when the page URL has ?mock=1.
+// Implements the full UI API (see docs/CONTRACT.md) in memory, including shared filters,
+// tag facets, bulk edits, tag rules, saved views and the seed map.
 (function () {
-  let seed = 7;
+  let seed = 11;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const chance = (p) => rnd() < p;
+  const now = () => new Date().toISOString();
 
-  const SEEDS = ['fortun8te', 'dtcdaily', 'brandfounders.club', 'ecomcollective', 'skincarebusiness', 'cpgguild', 'shopify.founders', 'packagingstudy'];
   const ME = 'fortun8te';
-  const FIRST = ['Maya', 'Jonas', 'Sofia', 'Liam', 'Ava', 'Noah', 'Emma', 'Lucas', 'Chloe', 'Daan', 'Isla', 'Mateo', 'Nora', 'Eli', 'Zoe', 'Theo', 'Lena', 'Ravi', 'Priya', 'Jade', 'Marcus', 'Tessa', 'Owen', 'Ines', 'Kai', 'Freya', 'Sam', 'Anouk', 'Leo', 'Hana', 'Dylan', 'Mila', 'Ruben', 'Carla', 'Felix', 'Amara'];
-  const LAST = ['Carter', 'de Vries', 'Nguyen', 'Brooks', 'Janssen', 'Patel', 'Morales', 'Kim', 'Bakker', 'Hughes', 'Rossi', 'Walsh', 'Visser', 'Chen', 'Ellis', 'Park', 'Reyes', 'Smit', 'Hayes', 'Ortiz'];
-  const NICHES = {
-    Skincare: ['clean skincare for sensitive skin', 'barrier-first serums', 'SPF you actually reapply', 'skincare for men who hate skincare'],
-    Supplements: ['magnesium that tastes good', 'daily greens without the grass taste', 'creatine gummies', 'sleep stack, no melatonin'],
-    Apparel: ['heavyweight tees made in Portugal', 'running kit for bad weather', 'linen basics', 'golf apparel for people under 40'],
-    Coffee: ['single-origin cold brew cans', 'specialty coffee subscription', 'mushroom coffee, no jitters'],
-    Pet: ['dog treats with one ingredient', 'cat furniture that looks like furniture', 'raw dog food delivered'],
-    Home: ['candles poured in Brooklyn', 'ceramic cookware', 'bedding for hot sleepers'],
-    Haircare: ['scalp care for thinning hair', 'curl cream that holds', 'salt spray for men'],
-    Fitness: ['adjustable kettlebells', 'resistance bands that last', 'protein bars with real food'],
+  // Seeds with a rough niche bias and neighbours (people overlap mostly with neighbours).
+  const SEEDS = {
+    fortun8te: { bias: null, nb: ['dutchdtc', 'adcreativeclub', 'brandfounders.club'] },
+    dtcdaily: { bias: null, nb: ['ecomcollective', 'shopify.founders', 'brandfounders.club', 'foundersfeed'] },
+    'brandfounders.club': { bias: null, nb: ['dtcdaily', 'foundersfeed', 'cpgguild'] },
+    ecomcollective: { bias: null, nb: ['dtcdaily', 'shopify.founders', 'adcreativeclub'] },
+    skincarebusiness: { bias: 'Skincare', nb: ['beautyfounders', 'cpgguild'] },
+    beautyfounders: { bias: 'Beauty', nb: ['skincarebusiness', 'brandfounders.club'] },
+    cpgguild: { bias: 'Food & Drink', nb: ['packagingstudy', 'supplementbrands', 'brandfounders.club'] },
+    'shopify.founders': { bias: null, nb: ['ecomcollective', 'dtcdaily'] },
+    packagingstudy: { bias: 'Home', nb: ['cpgguild', 'adcreativeclub'] },
+    supplementbrands: { bias: 'Supplements', nb: ['cpgguild', 'fitfounders'] },
+    fitfounders: { bias: 'Fitness', nb: ['supplementbrands', 'apparelbrands'] },
+    apparelbrands: { bias: 'Apparel', nb: ['fitfounders', 'dtcdaily'] },
+    dutchdtc: { bias: null, nb: ['fortun8te', 'ecomcollective'] },
+    foundersfeed: { bias: null, nb: ['brandfounders.club', 'dtcdaily'] },
+    adcreativeclub: { bias: null, nb: ['ecomcollective', 'fortun8te', 'packagingstudy'] },
   };
-  const BRANDWORDS = ['luma', 'north', 'oat', 'kind', 'hale', 'fern', 'dune', 'mora', 'vela', 'solo', 'ember', 'tide', 'noon', 'pax', 'ruby', 'loft'];
-  const ROLES = ['Founder', 'Co-founder', 'CMO', 'Creative director', 'Head of growth', 'Marketer'];
+  const SEED_LIST = Object.keys(SEEDS);
+  const WEIGHT = SEED_LIST.map((s) => (s === ME ? 0.6 : s === 'dtcdaily' || s === 'ecomcollective' ? 1.8 : s === 'dutchdtc' ? 0.7 : 1));
+
+  const FIRST = ['Maya', 'Jonas', 'Sofia', 'Liam', 'Ava', 'Noah', 'Emma', 'Lucas', 'Chloe', 'Daan', 'Isla', 'Mateo', 'Nora', 'Eli', 'Zoe', 'Theo', 'Lena', 'Ravi', 'Priya', 'Jade', 'Marcus', 'Tessa', 'Owen', 'Ines', 'Kai', 'Freya', 'Sam', 'Anouk', 'Leo', 'Hana', 'Dylan', 'Mila', 'Ruben', 'Carla', 'Felix', 'Amara', 'Sven', 'Julia', 'Bram', 'Olivia'];
+  const LAST = ['Carter', 'de Vries', 'Nguyen', 'Brooks', 'Janssen', 'Patel', 'Morales', 'Kim', 'Bakker', 'Hughes', 'Rossi', 'Walsh', 'Visser', 'Chen', 'Ellis', 'Park', 'Reyes', 'Smit', 'Hayes', 'Ortiz', 'Meijer', 'Laurent'];
+  const NICHES = {
+    Skincare: ['clean skincare for sensitive skin', 'barrier-first serums', 'SPF you actually reapply'],
+    Beauty: ['lip oils in 12 shades', 'vegan nail polish', 'brow gel that lasts'],
+    Supplements: ['magnesium that tastes good', 'daily greens without the grass taste', 'creatine gummies'],
+    Apparel: ['heavyweight tees made in Portugal', 'running kit for bad weather', 'linen basics'],
+    Jewelry: ['recycled gold hoops', 'everyday silver', 'custom name necklaces'],
+    Home: ['candles poured in Brooklyn', 'ceramic cookware', 'bedding for hot sleepers'],
+    Pets: ['dog treats with one ingredient', 'cat furniture that looks like furniture'],
+    'Food & Drink': ['single-origin cold brew cans', 'hot sauce, small batch', 'protein bars with real food'],
+    Fitness: ['adjustable kettlebells', 'resistance bands that last', 'home rowing'],
+  };
+  const NICHE_KEYS = Object.keys(NICHES);
+  const BRANDWORDS = ['luma', 'north', 'oat', 'kind', 'hale', 'fern', 'dune', 'mora', 'vela', 'solo', 'ember', 'tide', 'noon', 'pax', 'ruby', 'loft', 'saga', 'wren', 'kiln', 'arlo'];
+  const ROLE_P = [['Brand', 0.34], ['Store', 0.1], ['Agency', 0.1], ['Freelancer', 0.07], ['Creative', 0.08], ['Creator', 0.1], ['Supplier', 0.05], ['SaaS', 0.05], ['Coach', 0.03], ['Personal', 0.08]];
+  const pickRole = () => { let x = rnd(); for (const [r, p] of ROLE_P) { if ((x -= p) < 0) return r; } return 'Personal'; };
+  const pickSeed = () => { let t = WEIGHT.reduce((a, b) => a + b, 0) * rnd(); for (let i = 0; i < SEED_LIST.length; i++) { if ((t -= WEIGHT[i]) < 0) return SEED_LIST[i]; } return SEED_LIST[0]; };
+  const size = (f) => f < 1000 ? '<1k' : f < 10000 ? '1k-10k' : f < 100000 ? '10k-100k' : f < 1000000 ? '100k-1M' : '1M+';
 
   const people = [];
-  const edges = [];
-  const tags = new Map();
-  const verdict = new Map();
+  const edges = new Map(); // id -> [{seed, direction}]
+  const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
   const notes = new Map();
-  const N = 1200;
+  const handles = new Set();
+  const N = 3200;
 
   for (let i = 1; i <= N; i++) {
+    const primary = pickSeed();
+    const bias = SEEDS[primary].bias;
+    const role = pickRole();
+    const niche = bias && chance(0.75) ? bias : pick(NICHE_KEYS);
+    const bw = pick(BRANDWORDS);
+    const brand = bw + pick(['', '.co', 'labs', 'goods', 'studio', '.' + niche.toLowerCase().replace(/[^a-z]/g, '').slice(0, 4)]);
     const f = pick(FIRST), l = pick(LAST);
-    const niche = pick(Object.keys(NICHES));
-    const brand = pick(BRANDWORDS) + (chance(0.5) ? '.' + niche.toLowerCase().slice(0, 4) : pick(['co', 'labs', 'goods', 'studio']));
-    const role = pick(ROLES);
-    const handle = (f + (chance(0.5) ? '.' : '') + l.split(' ').pop()).toLowerCase().replace(/[^a-z.]/g, '') + (chance(0.4) ? Math.floor(rnd() * 99) : '');
-    const hasBio = i <= 320 || chance(0.08);
-    const followers = Math.floor(Math.pow(10, 2.5 + rnd() * 3));
-    const p = {
-      id: i, handle: handle + (people.some((x) => x.handle === handle) ? i : ''), name: f + ' ' + l,
-      pic: null,
-      bio: hasBio ? `${role} @${brand} · ${pick(NICHES[niche])}${chance(0.5) ? ' · ships to the US' : ''}${chance(0.3) ? ' · prev. ' + pick(['Glossier', 'Gymshark', 'Allbirds', 'Olaplex', 'AG1']) : ''}` : null,
-      website: hasBio && chance(0.7) ? `https://${brand.replace('.', '')}.com` : null,
-      followers, following: Math.floor(200 + rnd() * 1800), posts: Math.floor(10 + rnd() * 900),
-      _niche: niche, _role: role,
-    };
-    people.push(p);
-    const nSeeds = chance(0.22) ? (chance(0.35) ? (chance(0.3) ? 5 : 3) : 2) : 1;
-    const ss = new Set();
-    while (ss.size < nSeeds) ss.add(pick(SEEDS));
-    ss.forEach((s) => edges.push({ seed: s, person_id: i, direction: chance(0.75) ? 'followers' : 'following' }));
-
-    const t = [];
-    const seeds = [...ss];
-    seeds.slice(0, 2).forEach((s) => t.push({ tag: 'via @' + s, grp: 'source', source: 'auto' }));
-    if (seeds.length >= 2) t.push({ tag: `in ${seeds.length} lists`, grp: 'source', source: 'auto' });
-    if (ss.has(ME)) t.push({ tag: 'knows you', grp: 'source', source: 'auto' });
-    if (hasBio) {
-      t.push({ tag: role === 'Co-founder' ? 'Founder' : role, grp: 'role', source: 'auto' });
-      t.push({ tag: niche, grp: 'niche', source: 'auto' });
-      if (p.website) t.push({ tag: 'Shop link', grp: 'signal', source: 'auto' });
-      if (chance(0.25)) t.push({ tag: 'Running ads', grp: 'signal', source: 'auto' });
-      if (chance(0.15)) t.push({ tag: 'Launching', grp: 'signal', source: 'auto' });
-      if (p.bio.includes('US')) t.push({ tag: 'US shipping', grp: 'signal', source: 'auto' });
-    }
-    t.push({ tag: followers > 100000 ? '100k+' : followers > 10000 ? '10k–100k' : followers > 1000 ? '1k–10k' : 'Under 1k', grp: 'size', source: 'auto' });
-    if (hasBio && chance(0.05)) t.push({ tag: pick(['Warm intro', 'Pitch Q4', 'Met at event']), grp: 'signal', source: 'manual' });
-    tags.set(i, t);
-
-    let score, tier, reason;
-    if (!hasBio) {
-      score = Math.floor(10 + rnd() * 40 + seeds.length * 8); tier = 'unread';
-      reason = seeds.length > 1 ? `Linked to ${seeds.length} seeds, bio not read yet` : 'Bio not read yet';
-    } else {
-      const base = (role.includes('ounder') ? 35 : role === 'Marketer' ? 10 : 22) + (p.website ? 12 : 0) + seeds.length * 7 + rnd() * 35;
-      score = Math.min(98, Math.floor(base)); tier = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
-      reason = tier === 'hot'
-        ? pick([`${role} of a ${niche.toLowerCase()} brand with a live shop, US customers`, `Runs a DTC ${niche.toLowerCase()} brand, sells physical product online`, `${role} at @${brand}, product brand at ad-spend size`])
-        : tier === 'warm' ? pick([`${niche} brand, unclear if they run paid social`, `Works at a product brand but not the decision maker`, `Small ${niche.toLowerCase()} shop, may be under budget`])
-        : pick(['Agency or service business, not a product brand', 'Personal account, no brand in bio', 'Creator, not a brand owner']);
-    }
-    verdict.set(i, { score, tier, role: hasBio ? role : null, reason, model: hasBio ? 'rules' : null });
+    const isBrandAcct = role === 'Brand' || role === 'Store' ? chance(0.55) : false;
+    let handle = isBrandAcct ? brand.replace(/\.$/, '') : (f + (chance(0.5) ? '.' : '') + l.split(' ').pop()).toLowerCase().replace(/[^a-z.]/g, '');
+    while (handles.has(handle)) handle += Math.floor(rnd() * 90 + 10);
+    handles.add(handle);
+    const hasBio = chance(0.7);
+    const followers = Math.floor(Math.pow(10, 2.3 + rnd() * 3.6));
+    const us = chance(0.4), nl = !us && chance(0.18), amazon = chance(0.12);
+    const title = { Brand: pick(['Founder', 'Co-founder', 'CEO']), Store: 'Owner', Agency: 'Growth agency for DTC', Freelancer: 'Freelance designer', Creative: 'Photographer', Creator: 'Creator', Supplier: 'Private label manufacturing', SaaS: 'Building software for Shopify brands', Coach: 'Ecom coach', Personal: 'Dad, runner' }[role];
+    const bio = !hasBio ? null : [
+      isBrandAcct ? pick(NICHES[niche]) : `${title}${role === 'Brand' || role === 'Store' ? ' @' + brand : ''}`,
+      role === 'Brand' || role === 'Store' ? (isBrandAcct ? null : pick(NICHES[niche])) : null,
+      us ? 'ships to the US' : nl ? 'Amsterdam / Rotterdam' : null,
+      amazon ? 'now on Amazon' : null,
+      chance(0.2) ? 'hello@' + brand.replace(/\./g, '') + '.com' : null,
+      chance(0.12) ? 'prev. ' + pick(['Glossier', 'Gymshark', 'Allbirds', 'Olaplex', 'AG1']) : null,
+    ].filter(Boolean).join(' · ');
+    const website = hasBio && chance(role === 'Brand' || role === 'Store' ? 0.85 : 0.35) ? `https://${brand.replace(/\./g, '')}.${nl ? 'nl' : 'com'}` : null;
+    people.push({
+      id: i, handle, name: isBrandAcct ? bw[0].toUpperCase() + bw.slice(1) + ' ' + niche.split(' ')[0] : f + ' ' + l,
+      pic: null, bio, website, category: hasBio && isBrandAcct ? pick(['Shopping & retail', 'Health/beauty', 'Product/service']) : null,
+      followers, following: Math.floor(150 + rnd() * 2200), posts: Math.floor(5 + rnd() * 1200),
+      is_verified: followers > 200000 && chance(0.4) ? 1 : 0, is_business: isBrandAcct ? 1 : 0,
+      first_seen: new Date(Date.now() - rnd() * 20 * 86400000).toISOString(),
+      _role: role, _niche: niche, _us: us, _nl: nl,
+    });
+    // Seeds: primary plus neighbours (overlap) plus occasional random.
+    const ss = new Set([primary]);
+    for (const nb of SEEDS[primary].nb) if (chance(0.16)) ss.add(nb);
+    if (chance(0.05)) ss.add(pickSeed());
+    if (ss.size >= 2 && chance(0.2)) ss.add(pickSeed());
+    edges.set(i, [...ss].map((s) => ({ seed: s, direction: s === ME ? (chance(0.6) ? 'followers' : 'following') : chance(0.75) ? 'followers' : 'following' })));
   }
-  for (let i = 1; i <= 14; i++) marks.set(i * 3, pick(['good', 'maybe', 'contacted']));
 
-  const via = (id) => edges.filter((e) => e.person_id === id).map((e) => e.seed);
-  const row = (p) => {
-    const v = verdict.get(p.id);
-    return { id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, followers: p.followers, following: p.following, posts: p.posts,
-      tier: v.tier, score: v.score, role: v.role, reason: v.reason, tags: tags.get(p.id), via: via(p.id), lists: new Set(via(p.id)).size, status: marks.get(p.id) || null, note: notes.get(p.id) || '' };
+  function autoTags(p) {
+    const t = [];
+    const add = (tag, grp) => { if (!t.some((x) => x.tag === tag)) t.push({ tag, grp, source: 'auto' }); };
+    if (p.bio) {
+      add(p._role, 'role');
+      if (!['Personal', 'Creator'].includes(p._role) || p.website) add(p._niche, 'niche');
+      if (/founder|ceo|owner/i.test(p.bio)) add('Founder', 'signal');
+      if (/hiring/i.test(p.bio)) add('Hiring', 'signal');
+      if (p.website && (p._role === 'Brand' || p._role === 'Store')) add('Shop Link', 'signal');
+      if (p.website && p.id % 3 === 0 && (p._role === 'Brand' || p._role === 'Store')) add('Shopify', 'signal');
+      if (/@\w+\.com/.test(p.bio)) add('Email', 'signal');
+      if (p._us) add('US', 'signal');
+      if (p._nl) add('NL', 'signal');
+    }
+    if (p.is_verified) add('Verified', 'signal');
+    if (p.is_business) add('Business', 'signal');
+    add(size(p.followers), 'size');
+    const es = edges.get(p.id);
+    const others = [...new Set(es.map((e) => e.seed))].filter((s) => s !== ME).sort();
+    others.forEach((s) => add('via @' + s, 'source'));
+    const mine = es.filter((e) => e.seed === ME);
+    const total = others.length + (mine.length ? 1 : 0);
+    if (total >= 2) add(`in ${total} lists`, 'source');
+    if (mine.length) add('knows you', 'source');
+    if (mine.some((e) => e.direction === 'followers')) add('follows you', 'source');
+    if (mine.some((e) => e.direction === 'following')) add('you follow', 'source');
+    return t;
+  }
+  people.forEach((p) => tags.set(p.id, autoTags(p)));
+  // Some manual tags and marks.
+  const MANUAL = ['Warm intro', 'Pitch Q4', 'Met at event', 'Follow up', 'Dream client'];
+  people.forEach((p) => { if (p.bio && chance(0.035)) tags.get(p.id).push({ tag: pick(MANUAL), grp: 'custom', source: 'manual' }); });
+  people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['good', 'good', 'maybe', 'contacted', 'contacted', 'client', 'no', 'known'])); });
+
+  // Tag rules.
+  let ruleId = 3;
+  const rules = [
+    { id: 1, tag: 'Amazon', field: 'bio', match: 'amazon' },
+    { id: 2, tag: 'Ex big brand', field: 'bio', match: 'prev.' },
+  ];
+  // Same semantics as server/rules.py: comma-separated keywords (whole word in bio/name/category, substring in
+  // handle/website, * = any word characters) or a /regex/.
+  const TEXT = ['bio', 'name', 'category'];
+  function compile(match) {
+    const m = String(match || '').trim();
+    if (!m) throw new Error('match required');
+    if (m.length >= 3 && m.startsWith('/') && m.endsWith('/')) { const rx = new RegExp(m.slice(1, -1), 'i'); return [rx, rx]; }
+    const words = m.split(',').map((w) => w.trim()).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '\\w*').replace(/\s+/g, '\\s+'));
+    return [new RegExp('(^|\\W)(' + words.join('|') + ')(?=\\W|$)', 'i'), new RegExp(words.join('|'), 'i')];
+  }
+  const ruleHits = (field, match) => {
+    const [word, sub] = compile(match);
+    const fields = field === 'any' ? ['bio', 'name', 'handle', 'category', 'website'] : [field];
+    return people.filter((p) => fields.some((f) => p[f] && (TEXT.includes(f) ? word : sub).test(p[f])));
   };
+  function applyRules() {
+    tags.forEach((t, id) => tags.set(id, t.filter((x) => x.source !== 'rule')));
+    rules.forEach((r) => {
+      r.hits = 0;
+      ruleHits(r.field, r.match).forEach((p) => {
+        r.hits++;
+        const t = tags.get(p.id);
+        if (!t.some((x) => x.tag === r.tag)) t.push({ tag: r.tag, grp: 'custom', source: 'rule' });
+      });
+    });
+  }
+  applyRules();
+
+  // Saved views.
+  let viewId = 4;
+  const views = [
+    { id: 1, name: 'Brands in 2+ lists', query: 'any=Brand,Store&min_lists=2' },
+    { id: 2, name: 'Founders, no agencies', query: 'tags=Founder&not=Agency,Freelancer' },
+    { id: 3, name: 'Contacted', query: 'status=contacted' },
+  ];
+
+  const lists = (id) => new Set(edges.get(id).map((e) => e.seed)).size;
+  const row = (p) => ({
+    id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
+    followers: p.followers, following: p.following, posts: p.posts, tier: p.bio ? 'warm' : 'unread', score: null, role: null, reason: null,
+    tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+  });
+  const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+  // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
+  function filtered(q) {
+    const all = csv(q, 'tags'), any = csv(q, 'any'), not = csv(q, 'not');
+    const sts = csv(q, 'status'), text = (q.get('q') || '').toLowerCase().trim();
+    const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
+    const fmin = q.get('followers_min'), fmax = q.get('followers_max');
+    return people.filter((p) => {
+      const m = marks.get(p.id) || null;
+      if (!sts.length ? m === 'no' : !sts.includes('all') && !sts.some((s) => (s === 'none' ? m === null : m === s))) return false;
+      if (ml && lists(p.id) < ml) return false;
+      if (hb === '1' && !p.bio) return false;
+      if (hb === '0' && p.bio) return false;
+      if (fmin !== null && fmin !== '' && p.followers < +fmin) return false;
+      if (fmax !== null && fmax !== '' && p.followers > +fmax) return false;
+      if (sd && !edges.get(p.id).some((e) => e.seed === sd)) return false;
+      if (all.length || any.length || not.length) {
+        const ts = new Set(tags.get(p.id).map((x) => x.tag));
+        if (!all.every((t) => ts.has(t))) return false;
+        if (any.length && !any.some((t) => ts.has(t))) return false;
+        if (not.some((t) => ts.has(t))) return false;
+      }
+      if (text && !(p.handle + ' ' + p.name + ' ' + (p.bio || '')).toLowerCase().includes(text)) return false;
+      return true;
+    });
+  }
+  function sorted(list, sort) {
+    const cmp = {
+      connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
+      followers: (a, b) => b.followers - a.followers,
+      recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
+      score: (a, b) => (b.bio ? 1 : 0) - (a.bio ? 1 : 0) || lists(b.id) - lists(a.id) || b.followers - a.followers,
+    }[sort] || ((a, b) => lists(b.id) - lists(a.id));
+    return list.sort((a, b) => cmp(a, b) || a.id - b.id);
+  }
+
+  // Seed overlap (shared people), computed over all people.
+  function seedLinks() {
+    const m = new Map();
+    edges.forEach((es) => {
+      const ss = [...new Set(es.map((e) => e.seed))].sort();
+      for (let a = 0; a < ss.length; a++) for (let b = a + 1; b < ss.length; b++) { const k = ss[a] + '|' + ss[b]; m.set(k, (m.get(k) || 0) + 1); }
+    });
+    return [...m].map(([k, shared]) => { const [a, b] = k.split('|'); return { source: 's:' + a, target: 's:' + b, shared }; });
+  }
 
   let mapRev = 1;
   let extraMap = 0;
-  setInterval(() => { mapRev++; extraMap += 6; }, 25000);
+  setInterval(() => { mapRev++; extraMap += 5; }, 25000);
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
     paused: false, qualify: false, budget: { list: 2000, profile: 150 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
-    lists: SEEDS.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
+    lists: SEED_LIST.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
       const total = Math.floor(400 + rnd() * 6000);
-      const st = i < 3 ? 'done' : i === 3 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
+      const st = i < 6 ? 'done' : i === 6 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
       return { seed: s, direction: d, state: st, received: st === 'done' ? total : st === 'running' ? Math.floor(total * 0.37) : 0, total: st === 'queued' && rnd() < 0.4 ? null : total,
         updated_at: new Date(Date.now() - rnd() * 3600000).toISOString(), error: null };
     })),
     nextAt: Date.now() + 8000,
   };
   function tickScraper() {
-    const now = Date.now();
-    if (scraper.paused || now < scraper.nextAt) return;
-    let l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
+    const t = Date.now();
+    if (scraper.paused || t < scraper.nextAt) return;
+    const l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
     if (!l) return;
     l.state = 'running';
-    const size = l.direction === 'following' ? 50 : 25;
-    const got = Math.min(size, (l.total ?? 99999) - l.received);
-    l.received += got; l.updated_at = new Date().toISOString();
+    const got = Math.min(l.direction === 'following' ? 50 : 25, (l.total ?? 99999) - l.received);
+    l.received += got; l.updated_at = now();
     scraper.today.list++; scraper.peopleToday += Math.round(got * 0.6);
     if (l.total != null && l.received >= l.total) l.state = 'done';
-    scraper.nextAt = now + 7000 + rnd() * 5000;
+    scraper.nextAt = t + 7000 + rnd() * 5000;
   }
   setInterval(tickScraper, 1000);
   function scraperView() {
     const l = scraper.lists.find((x) => x.state === 'running');
     const secs = Math.max(0, Math.round((scraper.nextAt - Date.now()) / 1000));
     const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
+    const w = (k) => ({ pages: Math.round(342 / k), people: Math.round(11280 / k), new_people: Math.round(6400 / k), profiles: 0 });
     return {
       ext: { online: true, version: '3.1.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
-        last_seen: new Date().toISOString(), last_error: null,
+        last_seen: now(), last_error: null,
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
-      paused: scraper.paused, qualify: scraper.qualify, people_today: scraper.peopleToday, lists: scraper.lists,
+      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: true, soak: { '1h': w(1), '6h': w(1 / 5.6) },
+      people_today: scraper.peopleToday, lists: scraper.lists,
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
     };
+  }
+
+  function editTags(id, add, remove) {
+    const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source === 'auto');
+    (add || []).forEach((a) => {
+      a = String(a).trim();
+      if (!a) return;
+      const i = t.findIndex((x) => x.tag === a);
+      if (i >= 0 && t[i].source !== 'manual') t.splice(i, 1);
+      if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'custom', source: 'manual' });
+    });
+    tags.set(id, t);
   }
 
   function route(method, url, body) {
     const u = new URL(url, location.origin);
     const q = u.searchParams;
     const path = u.pathname;
+    let m;
     if (path === '/api/leads') {
-      let list = people.map(row);
-      const tiers = (q.get('tier') || '').split(',').filter(Boolean);
-      if (tiers.length) list = list.filter((r) => tiers.includes(r.tier));
-      const st = q.get('status');
-      if (st) list = list.filter((r) => r.status === st); else list = list.filter((r) => r.status !== 'no');
-      const tg = (q.get('tags') || '').split(',').filter(Boolean);
-      if (tg.length) list = list.filter((r) => tg.every((t) => r.tags.some((x) => x.tag === t)));
-      const ml = +q.get('min_lists') || 0;
-      if (ml) list = list.filter((r) => r.lists >= ml);
-      const s = (q.get('q') || '').toLowerCase();
-      if (s) list = list.filter((r) => (r.handle + ' ' + r.name + ' ' + (r.bio || '')).toLowerCase().includes(s));
-      const sort = q.get('sort') || 'score';
-      list.sort(sort === 'connected' ? (a, b) => b.lists - a.lists || b.followers - a.followers : sort === 'followers' ? (a, b) => b.followers - a.followers : sort === 'recent' ? (a, b) => b.id - a.id : (a, b) => b.score - a.score);
-      const off = +q.get('offset') || 0, lim = +q.get('limit') || 50;
-      return { total: list.length, rows: list.slice(off, off + lim) };
+      const list = sorted(filtered(q), q.get('sort') || 'score');
+      const off = +q.get('offset') || 0, lim = Math.min(500, +q.get('limit') || 50);
+      return { total: list.length, rows: list.slice(off, off + lim).map(row) };
     }
     if (path === '/api/tags') {
+      const inSet = new Set(filtered(q).map((p) => p.id));
       const c = new Map();
-      tags.forEach((t) => t.forEach((x) => { const k = x.tag + '|' + x.source; const e = c.get(k) || { tag: x.tag, grp: x.grp, count: 0, source: x.source }; e.count++; c.set(k, e); }));
-      return [...c.values()].sort((a, b) => b.count - a.count);
+      tags.forEach((t, id) => t.forEach((x) => {
+        const k = x.tag + '|' + x.source;
+        const e = c.get(k) || { tag: x.tag, grp: x.grp, source: x.source, count: 0, total: 0 };
+        e.total++; if (inSet.has(id)) e.count++;
+        c.set(k, e);
+      }));
+      return [...c.values()].sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
+    }
+    // Rename / delete touch manual tags only (like the server). Rename onto an existing tag merges, result is manual.
+    if (path === '/api/tags/rename') {
+      const from = String(body.from || ''), to = String(body.to || '').trim();
+      if (!from || !to) return { ok: false, error: 'from and to required' };
+      let renamed = 0;
+      tags.forEach((t, id) => {
+        if (!t.some((x) => x.tag === from && x.source === 'manual')) return;
+        renamed++;
+        const grp = (t.find((x) => x.tag === to) || {}).grp || 'custom';
+        tags.set(id, [...t.filter((x) => !(x.tag === from && x.source === 'manual') && x.tag !== to), { tag: to, grp, source: 'manual' }]);
+      });
+      return { renamed };
+    }
+    if (path === '/api/tags/delete') {
+      let deleted = 0;
+      tags.forEach((t, id) => { const n = t.filter((x) => !(x.tag === body.tag && x.source === 'manual')); if (n.length !== t.length) { deleted++; tags.set(id, n); } });
+      return { deleted };
+    }
+    if (path === '/api/people/bulk') {
+      const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
+      ids.forEach((id) => {
+        if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
+        if ('status' in body) { if (body.status) marks.set(id, body.status); else marks.delete(id); }
+      });
+      return { ok: true, changed: ids.length };
+    }
+    if (path === '/api/tag-rules' && method === 'GET') return rules.map((r) => ({ ...r }));
+    if (path === '/api/tag-rules/preview') { try { return { hits: ruleHits(q.get('field') || 'any', q.get('match')).length }; } catch (e) { return { ok: false, error: 'bad match: ' + e.message }; } }
+    if (path === '/api/tag-rules' && method === 'POST') {
+      const tag = String(body.tag || '').trim(), match = String(body.match || '').trim();
+      if (!tag || !match || !['bio', 'name', 'handle', 'category', 'website', 'any'].includes(body.field)) return { ok: false, error: 'bad rule' };
+      try { compile(match); } catch (e) { return { ok: false, error: 'bad regex: ' + e.message }; }
+      const r = { id: ruleId++, tag, field: body.field, match };
+      rules.push(r); applyRules();
+      return { ...r };
+    }
+    if ((m = path.match(/^\/api\/tag-rules\/(\d+)\/delete$/))) {
+      const i = rules.findIndex((r) => r.id === +m[1]);
+      if (i >= 0) rules.splice(i, 1);
+      applyRules();
+      return { ok: true };
+    }
+    if (path === '/api/views' && method === 'GET') return views.map((v) => ({ ...v }));
+    if (path === '/api/views' && method === 'POST') {
+      const v = { id: viewId++, name: String(body.name || 'View').trim(), query: String(body.query || '') };
+      views.push(v); return { ok: true, id: v.id };
+    }
+    if ((m = path.match(/^\/api\/views\/(\d+)\/delete$/))) {
+      const i = views.findIndex((v) => v.id === +m[1]);
+      if (i >= 0) views.splice(i, 1);
+      return { ok: true };
     }
     if (path === '/api/counts') {
-      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, contacted: 0, total: 0, with_bio: 0 };
-      people.forEach((p) => { const v = verdict.get(p.id); const m = marks.get(p.id); if (m === 'no') return; c[v.tier]++; c.total++; if (p.bio) c.with_bio++; if (m && c[m] !== undefined) c[m]++; });
+      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, total: 0, with_bio: 0 };
+      people.forEach((p) => { const s = marks.get(p.id); if (s) c[s]++; if (s === 'no') return; c.total++; if (p.bio) c.with_bio++; });
       return c;
     }
-    let m;
     if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
-      if (!m[3]) return { ...row(p), edges: edges.filter((e) => e.person_id === id).map((e) => ({ seed: e.seed, direction: e.direction })), verdict: verdict.get(id), note: notes.get(id) || '' };
+      if (!p) return null;
+      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: null, note: notes.get(id) || '' };
       if (m[3] === 'mark') { if (body.status) marks.set(id, body.status); else marks.delete(id); if (body.note !== undefined) notes.set(id, body.note); return { ok: true }; }
-      if (m[3] === 'tags') {
-        const t = tags.get(id).filter((x) => !(body.remove || []).includes(x.tag));
-        (body.add || []).forEach((a) => { if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'signal', source: 'manual' }); });
-        tags.set(id, t); return { ok: true };
-      }
+      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
       if (m[3] === 'read') return { ok: true };
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
-      let ids = people.map((p) => p.id);
-      if (scope === 'leads') ids = ids.filter((id) => verdict.get(id).score >= 50 || via(id).length >= 2).slice(0, 400 + extraMap);
-      else ids = ids.slice(0, 1100 + extraMap);
-      const set = new Set(ids);
-      const nodes = SEEDS.map((s) => ({ id: 's:' + s, kind: 'seed', label: s, tier: null, score: null, pic: null, degree: edges.filter((e) => e.seed === s && set.has(e.person_id)).length }));
-      ids.forEach((id) => { const p = people[id - 1]; const v = verdict.get(id); nodes.push({ id: 'p:' + id, kind: 'lead', label: p.name, handle: p.handle, tier: v.tier, score: v.score, pic: p.pic, degree: via(id).length, tags: tags.get(id).map((x) => x.tag), reason: v.reason }); });
-      const links = edges.filter((e) => set.has(e.person_id)).map((e) => ({ source: 's:' + e.seed, target: 'p:' + e.person_id, direction: e.direction }));
-      return { nodes, links, rev: mapRev * 10 + (scope === 'leads' ? 1 : 2) };
+      const limit = Math.min(5000, +q.get('limit') || 400);
+      let list = filtered(q);
+      if (scope === 'leads') list = list.filter((p) => lists(p.id) >= 2 || (tags.get(p.id).some((x) => x.tag === 'Brand' || x.tag === 'Founder') && p.followers > 3000));
+      list = sorted(list, 'connected').slice(0, limit + (scope === 'leads' ? extraMap : 0));
+      const set = new Set(list.map((p) => p.id));
+      const deg = new Map();
+      edges.forEach((es) => new Set(es.map((e) => e.seed)).forEach((s) => deg.set(s, (deg.get(s) || 0) + 1)));
+      const nodes = SEED_LIST.map((s) => ({ id: 's:' + s, kind: 'seed', label: s, handle: s, pic: null, degree: deg.get(s) || 0, is_me: s === ME }));
+      const links = [];
+      list.forEach((p) => {
+        const ss = [...new Set(edges.get(p.id).map((e) => e.seed))];
+        nodes.push({ id: 'p:' + p.id, kind: 'lead', label: p.handle, handle: p.handle, name: p.name, pic: p.pic, degree: ss.length, lists: ss.length,
+          status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag), seeds: ss });
+        edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction }); });
+      });
+      return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
-    if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true }; }
+    if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true, qualify: scraper.qualify }; }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
     if (path === '/api/scraper/seeds') {
       let queued = 0;
-      body.handles.forEach((h) => body.directions.forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) { queued++; scraper.lists.push({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: new Date().toISOString(), error: null }); } }));
+      body.handles.forEach((h) => body.directions.forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) { queued++; scraper.lists.push({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: now(), error: null }); } }));
       return { ok: true, queued };
     }
     return null;
@@ -207,7 +407,9 @@
     const s = String(url);
     if (!s.startsWith('/api/')) return realFetch(url, opts);
     const body = opts.body ? JSON.parse(opts.body) : null;
-    const res = route(opts.method || 'GET', s, body);
-    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: res ? 200 : 404, headers: { 'Content-Type': 'application/json' } })), 60 + Math.random() * 90));
+    let res;
+    try { res = route(opts.method || 'GET', s, body); } catch (e) { console.warn('mock', s, e); res = null; }
+    const bad = res && res.ok === false;
+    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: !res ? 404 : bad ? 400 : 200, headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };
 })();
