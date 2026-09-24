@@ -8,6 +8,8 @@ import threading
 import traceback
 import urllib.request
 import zlib
+from collections import Counter, OrderedDict
+from itertools import chain, combinations
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -402,6 +404,10 @@ def api_leads(conn, q, b):
 
 
 def api_tags(conn, q, b):
+    return cached(conn, 'tags', q, lambda: tag_facets(conn, q))
+
+
+def tag_facets(conn, q):
     """Facets: per (tag, source) the people in the current filtered set (`count`) and overall (`total`). One grouped scan."""
     where, args = lead_filter(q)
     counts = dict(((r[0], r[1]), r[2]) for r in conn.execute(
@@ -645,10 +651,37 @@ def api_read(conn, q, b, pid):
 # ---------- map ----------
 
 def data_rev(conn):
-    r = conn.execute('SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), '
-                     '(SELECT count(*) FROM edges), (SELECT count(*) FROM seeds), (SELECT max(updated_at) FROM marks), '
-                     '(SELECT count(*) FROM marks), (SELECT count(*) FROM tags)').fetchone()
+    """Changes whenever anything the lead list, tag facets or map show changes (llm_rev: LLM verdicts keep updated_at)."""
+    r = conn.execute("SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), "
+                     "(SELECT count(*) FROM edges), (SELECT count(*) FROM seeds), (SELECT max(updated_at) FROM marks), "
+                     "(SELECT count(*) FROM marks), (SELECT count(*) FROM tags), (SELECT count(*) FROM tag_rules), "
+                     "(SELECT value FROM settings WHERE key='llm_rev')").fetchone()
     return zlib.crc32('|'.join(map(str, r)).encode())
+
+
+CACHE = OrderedDict()   # (endpoint, db, query, data_rev) -> response; small LRU for /api/tags and /api/map
+CACHE_MAX = 32
+CACHE_LOCK = threading.Lock()
+
+
+def cached(conn, name, q, compute):
+    key = (name, CFG['db'], tuple(sorted((k, tuple(v)) for k, v in q.items())), data_rev(conn))
+    with CACHE_LOCK:
+        if key in CACHE:
+            CACHE.move_to_end(key)
+            return CACHE[key]
+    out = compute()
+    with CACHE_LOCK:
+        CACHE[key] = out
+        while len(CACHE) > CACHE_MAX:
+            CACHE.popitem(last=False)
+    return out
+
+
+def clear_caches():
+    with CACHE_LOCK:
+        CACHE.clear()
+    SEED_LINKS[0] = None
 
 
 SEED_LINKS = [None]   # [(key, computed_at, links)]: replaced whole, never mutated, so readers can't race a writer
@@ -661,16 +694,21 @@ def seed_links(conn):
     cached, now = SEED_LINKS[0], datetime.now().timestamp()
     if cached and (cached[0] == key or (cached[0][0] == key[0] and now - cached[1] < SEED_LINKS_MIN_AGE)):
         return cached[2]
-    rows = conn.execute("""WITH ps AS (SELECT DISTINCT seed, person_id FROM edges WHERE person_id IN
-            (SELECT person_id FROM edges GROUP BY person_id HAVING count(DISTINCT seed)>1))
-        SELECT a.seed AS a, b.seed AS b, count(*) AS shared FROM ps a JOIN ps b ON b.person_id=a.person_id AND b.seed>a.seed
-        GROUP BY a.seed, b.seed ORDER BY shared DESC, a.seed, b.seed LIMIT ?""", (SEED_LINKS_TOP,)).fetchall()
-    links = [{'source': f"s:{r['a']}", 'target': f"s:{r['b']}", 'shared': r['shared']} for r in rows]
+    # one pass over the covering index; people linked to a single seed (most of them) never reach Python
+    rows = conn.execute('SELECT group_concat(seed, char(10)) FROM edges GROUP BY person_id HAVING min(seed)<max(seed)')
+    pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split('\n'))), 2) for r in rows))
+    top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
+    links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
     SEED_LINKS[0] = (key, now, links)
     return links
 
 
 def api_map(conn, q, b):
+    # seed_links has its own (time-throttled) cache and is structural, so it stays outside the per-filter one
+    return dict(cached(conn, 'map', q, lambda: map_graph(conn, q)), seed_links=seed_links(conn))
+
+
+def map_graph(conn, q):
     limit = min(3000, max(10, qint(q, 'limit') or 400))
     where, args = lead_filter(q)
     cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds)'] + where)
@@ -711,7 +749,7 @@ def api_map(conn, q, b):
                'tier': r['tier'] or 'unread', 'score': r['score'], 'reason': r['reason'], 'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
-    return {'nodes': nodes, 'links': links, 'seed_links': seed_links(conn), 'rev': data_rev(conn)}
+    return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
 
 
 def ext_aggregate(conn, accts, now):
@@ -1089,14 +1127,20 @@ def qualify_batch(conn, limit=200):
 LAYA_BATCH = 64
 
 
+def laya_hash(bio):
+    """What a Laya answer was computed from: a bio edit of the same length still counts as a change."""
+    return f"bio:{zlib.crc32(bio.encode()):08x}" if bio else 'nobio'
+
+
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
     if not laya.available():
         return False
+    conn.create_function('laya_hash', 1, laya_hash, deterministic=True)
     rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
         FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
         WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
-          AND (l.person_id IS NULL OR l.input_hash IS NOT (CASE WHEN coalesce(p.bio,'')='' THEN 'nobio' ELSE 'bio:' || length(p.bio) END))
+          AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.bio))
         ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     if not rows:
         return False
@@ -1106,7 +1150,7 @@ def laya_step(conn):
     ts = db.now()
     done = [r for r in rows if r['id'] in answers]
     conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
-                     [(r['id'], 'nobio' if not r['bio'] else f"bio:{len(r['bio'])}", json.dumps(answers[r['id']]),
+                     [(r['id'], laya_hash(r['bio']), json.dumps(answers[r['id']]),
                        laya.fit(answers[r['id']]), ts) for r in done])
     # the qualify batch folds the new signal into prefilter (and very sure tags) on its next pass
     conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
@@ -1118,6 +1162,7 @@ def laya_step(conn):
 
 FEWSHOT_MAX = 8
 FEWSHOT_CHANGE = 5    # re-run LLM verdicts when the good/client/no marks moved by this many (or 20 %)
+FEWSHOT_RERUN = 35    # ... but only those at or near warm (45): a new example set will not lift a clear cold one
 
 
 def fewshot(conn):
@@ -1133,7 +1178,8 @@ def fewshot(conn):
             ex.append({'handle': r['handle'], 'name': r['name'], 'bio': (r['bio'] or '')[:200], 'label': label})
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if cur and version and version != cur.get('version'):
-        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ?", (version,))
+        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ? AND coalesce(score,0)>=?",
+                     (version, FEWSHOT_RERUN))
     db.set_setting(conn, 'fewshot', {'n': n, 'examples': ex, 'version': version})
     conn.commit()
     return ex
@@ -1176,6 +1222,8 @@ def run_llm(conn, rows, skip):
                          v.get('prompt'), json.dumps(v.get('evidence') or []), p['id'], p['updated_at'])).rowcount:
             conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in v.get('tags') or []])
             wrote += 1
+    if wrote:
+        db.set_setting(conn, 'llm_rev', (db.get_setting(conn, 'llm_rev') or 0) + 1)
     conn.commit()
     return wrote
 
@@ -1362,7 +1410,7 @@ def worker(stop, step, busy_wait, idle_wait):
 
 def start_workers(stop):
     pool = LLMPool()
-    loops = [(qualify_batch, 0, 1), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
+    loops = [(qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 

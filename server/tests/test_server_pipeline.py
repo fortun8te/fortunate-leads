@@ -129,7 +129,9 @@ class PipelineTest(Base):
         try:
             ids = self.people({f'g{i}': ('bio', []) for i in range(12)})
             self.assertEqual(server.fewshot(self.conn), [])
-            self.conn.execute("INSERT OR REPLACE INTO verdicts(person_id, model, prompt, updated_at) VALUES(?, 'm', 'v0', '')", (ids['g0'],))
+            for who, score in (('g0', 50), ('g11', 10)):   # a warm LLM verdict and a clearly cold one
+                self.conn.execute("INSERT OR REPLACE INTO verdicts(person_id, model, prompt, score, updated_at) VALUES(?, 'm', 'v0', ?, '')",
+                                  (ids[who], score))
             server.set_status(self.conn, [ids['g1']], status='good')
             self.conn.commit()
             self.assertEqual(server.fewshot(self.conn), [])            # one new mark: examples stay frozen
@@ -139,6 +141,7 @@ class PipelineTest(Base):
             self.assertEqual(len(ex), 8)
             self.assertEqual({e['label'] for e in ex}, {'good'})
             self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (ids['g0'],)).fetchone()[0], 'rules')
+            self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (ids['g11'],)).fetchone()[0], 'm')
         finally:
             del server.qualify.prompt_version
 
@@ -157,6 +160,9 @@ class PipelineTest(Base):
             self.assertTrue(server.laya_step(self.conn))
             self.assertEqual(self.conn.execute('SELECT count(*) FROM laya').fetchone()[0], 2)   # list-only people too
             self.assertFalse(server.laya_step(self.conn))   # nothing new to score
+            self.conn.execute("UPDATE people SET bio='we make kandles' WHERE id=?", (ids['withbio'],))   # same length, new text
+            self.conn.commit()
+            self.assertTrue(server.laya_step(self.conn))
             server.qualify_batch(self.conn)
             after = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['nobio'],)).fetchone()[0]
             self.assertNotEqual(before, after)
@@ -198,3 +204,33 @@ class PipelineTest(Base):
         self.assertEqual(cols[-2:], ['prompt', 'evidence'])
         self.people({'x': ('founder', [('s1', 'followers')])})
         self.assertEqual(server.qualify_batch(self.conn), 1)
+
+
+class PerfTest(Base):
+    def test_indexes_and_pragmas(self):
+        idx = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertTrue({'edges_person_seed', 'people_bio_at'} <= idx)
+        self.assertNotIn('edges_person', idx)
+        self.assertEqual(self.conn.execute('PRAGMA temp_store').fetchone()[0], 2)   # MEMORY
+
+    def test_tags_and_map_are_cached_until_data_changes(self):
+        pid = db.upsert_person(self.conn, {'handle': 'ann', 'bio': 'founder'})
+        db.add_edge(self.conn, 's1', pid, 'followers')
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        first = self.call('/api/map')[1]
+        self.assertIs(server.api_tags(self.conn, {}, {}), server.api_tags(self.conn, {}, {}))
+        # an LLM verdict keeps verdicts.updated_at, yet the map must show it
+        server.qualify.llm_verdicts = lambda items, ex: [{'score': 99, 'tier': 'hot', 'role': 'buyer', 'reason': 'r', 'model': 'm'}
+                                                         for _ in items]
+        try:
+            rows = self.conn.execute('SELECT * FROM people').fetchall()
+            self.assertEqual(server.run_llm(self.conn, rows, {}), 1)
+        finally:
+            del server.qualify.llm_verdicts
+        second = self.call('/api/map')[1]
+        self.assertNotEqual(first['rev'], second['rev'])
+        self.assertEqual([n['score'] for n in second['nodes'] if n['kind'] == 'lead'], [99])
+        self.conn.execute("INSERT INTO tag_rules(tag, field, match) VALUES('x', 'bio', 'nothing matches')")
+        self.conn.commit()
+        self.assertNotEqual(self.call('/api/map')[1]['rev'], second['rev'])   # rule count is part of the rev

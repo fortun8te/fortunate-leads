@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
   list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
-CREATE INDEX IF NOT EXISTS edges_person ON edges(person_id);
+CREATE INDEX IF NOT EXISTS edges_person_seed ON edges(person_id, seed);   -- covering: lists count, seeds per person
 CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp);   -- covering: facets, rule hits, tag filters
 CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag);
 CREATE INDEX IF NOT EXISTS verdicts_tier ON verdicts(tier, score);
@@ -38,6 +38,7 @@ CREATE INDEX IF NOT EXISTS verdicts_score ON verdicts(score);
 CREATE INDEX IF NOT EXISTS people_updated ON people(updated_at);
 CREATE INDEX IF NOT EXISTS people_followers ON people(followers);
 CREATE INDEX IF NOT EXISTS people_first_seen ON people(first_seen);
+CREATE INDEX IF NOT EXISTS people_bio_at ON people(bio_at);
 CREATE INDEX IF NOT EXISTS marks_status ON marks(status);
 CREATE INDEX IF NOT EXISTS jobs_next ON jobs(state, kind, priority);
 CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
@@ -63,6 +64,8 @@ def connect(path):
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA busy_timeout=15000')
     conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA mmap_size=268435456')
+    conn.execute('PRAGMA temp_store=MEMORY')
     return conn
 
 
@@ -97,8 +100,10 @@ def init(path):
     conn.executescript(SCHEMA)
     migrate_tags(conn)
     conn.execute('DROP INDEX IF EXISTS tags_tag')  # superseded by the covering tags_tag_src
+    conn.execute('DROP INDEX IF EXISTS edges_person')  # superseded by the covering edges_person_seed
     # columns added after the first release: ALTER only when missing, so any older DB opens as is
-    for table, col, decl in (('pages', 'at', 'TEXT'), ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
+    for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
+                             ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'),
                              ('jobs', 'lane', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
                              ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
