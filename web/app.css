@@ -795,3 +795,27 @@ details.more > summary::-webkit-details-marker { display: none; }
   .ql-hint { display: none; }
   .ql-based li { grid-template-columns: 90px minmax(0, 1fr); }
 }
+
+/* ==== control strip (web/controls.js) — BEGIN. Self-contained: only .fl-ctl* selectors, token fallbacks. ==== */
+.fl-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 16px; min-height: 44px;
+  border-bottom: 1px solid var(--line, #1a1a1a); background: var(--bg1, #0c0c0c); color: var(--fg, #ededed);
+  font: var(--fs-sm, 12px)/1.3 var(--sans, system-ui, sans-serif); font-variant-numeric: tabular-nums; }
+.fl-ctl-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.fl-ctl-pill { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 3px 0 10px; border-radius: 999px;
+  border: 1px solid var(--line2, #242424); background: var(--bg2, #141414); cursor: default; white-space: nowrap; }
+.fl-ctl-pill b { font-weight: 600; }
+.fl-ctl-word { color: var(--fg2, #a3a3a3); min-width: 0; }
+.fl-ctl-pill.paused .fl-ctl-word, .fl-ctl-pill.idle .fl-ctl-word { color: var(--fg3, #707070); }
+.fl-ctl-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg4, #474747); flex: none; }
+.fl-ctl-dot.on { background: var(--online, #34c759); box-shadow: 0 0 0 3px var(--online-soft, rgba(52,199,89,.16)); }
+.fl-ctl-btn, .fl-ctl-all { height: 22px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line3, #333);
+  background: var(--bg3, #1d1d1d); color: var(--fg, #ededed); font: inherit; font-weight: 500; cursor: pointer; }
+.fl-ctl-btn:hover, .fl-ctl-all:hover { border-color: var(--fg3, #707070); }
+.fl-ctl-btn:focus-visible, .fl-ctl-all:focus-visible { outline: 2px solid var(--focus, rgba(255,255,255,.28)); outline-offset: 1px; }
+.fl-ctl-btn:disabled, .fl-ctl-all:disabled { opacity: .5; cursor: wait; }
+.fl-ctl-now { flex: 1 1 200px; min-width: 0; color: var(--fg2, #a3a3a3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-ctl-all { height: 28px; padding: 0 12px; margin-left: auto; }
+.fl-ctl-all.stop { background: var(--fg, #ededed); color: var(--inv, #050505); border-color: var(--fg, #ededed); }
+.fl-ctl-msg { color: var(--fg3, #707070); }
+@media (max-width: 640px) { .fl-ctl { padding: 8px 12px; } .fl-ctl-now { order: 3; flex-basis: 100%; } }
+/* ==== control strip — END ==== */
