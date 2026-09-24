@@ -2,6 +2,7 @@ import argparse
 import json
 import mimetypes
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -336,8 +337,9 @@ def qint(q, key):
         raise Bad(f'{key} must be a whole number') from None
 
 
-def lead_filter(q):
-    """Shared by /api/leads, /api/tags (facets) and /api/map. -> (where clauses on p/v/m, args)."""
+def lead_filter(q, status_default=True):
+    """Shared by /api/leads, /api/counts, /api/tags (facets) and /api/map. -> (where clauses on p/v/m, args).
+    status_default: without a status filter, leave out people marked no."""
     where, args = [], []
 
     def within(sql, values):  # sql has one {} for the placeholders
@@ -355,7 +357,8 @@ def lead_filter(q):
         within('p.id NOT IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'not'))
     statuses = csv(q, 'status')
     if not statuses:
-        where.append("coalesce(m.status,'')!='no'")
+        if status_default:
+            where.append("coalesce(m.status,'')!='no'")
     elif 'all' not in statuses:
         named = [s for s in statuses if s != 'none']
         if any(s not in STATUSES for s in named):
@@ -389,11 +392,20 @@ def lead_filter(q):
     return where, args
 
 
+TIER_RANK = "CASE coalesce(v.tier,'unread') WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END"
+FIT = {'hot': 'strong', 'warm': 'good', 'cold': 'weak'}   # the UI's name for a tier; anything else is 'unread'
+SORTS = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
+         'connected': 'lists DESC, p.followers IS NULL, p.followers DESC',
+         'fit': f'{TIER_RANK}, lists DESC, v.score IS NULL, v.score DESC, p.followers IS NULL, p.followers DESC',
+         'score': 'v.score IS NULL, v.score DESC, p.followers DESC'}
+
+
 def api_leads(conn, q, b):
     where, args = lead_filter(q)
-    order = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
-             'connected': 'lists DESC, p.followers IS NULL, p.followers DESC'}.get(
-        q.get('sort', ['score'])[0], 'v.score IS NULL, v.score DESC, p.followers DESC')
+    sort = q.get('sort', ['score'])[0]
+    if sort not in SORTS:
+        raise Bad('sort must be one of ' + ', '.join(SORTS))
+    order = SORTS[sort]
     offset = max(0, qint(q, 'offset') or 0)
     limit = min(500, max(1, qint(q, 'limit') or 50))
     sql_where = ' WHERE ' + ' AND '.join([NOT_ME] + where)
@@ -418,10 +430,17 @@ def tag_facets(conn, q):
 
 
 def api_counts(conn, q, b):
-    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', 'good', 'maybe', 'contacted'), 0)
-    out.update(conn.execute("SELECT coalesce(v.tier,'unread'), count(*) FROM people p "
-                            "LEFT JOIN verdicts v ON v.person_id=p.id GROUP BY 1").fetchall())
-    out.update(conn.execute('SELECT status, count(*) FROM marks WHERE status IS NOT NULL GROUP BY 1').fetchall())
+    return cached(conn, 'counts', q, lambda: counts(conn, q))
+
+
+def counts(conn, q):
+    """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible);
+    total / with_bio: everyone in the database."""
+    out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', 'good', 'maybe', 'no', 'contacted', 'client', 'known'), 0)
+    for drop, sql in (('tier', "SELECT coalesce(v.tier,'unread'), count(*)"), ('status', 'SELECT m.status, count(*)')):
+        where, args = lead_filter({k: v for k, v in q.items() if k != drop}, **({'status_default': False} if drop == 'status' else {}))
+        out.update((k, n) for k, n in conn.execute(f"{sql} {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} GROUP BY 1", args)
+                   if k is not None)
     out['total'], out['with_bio'] = conn.execute("SELECT count(*), count(nullif(bio,'')) FROM people").fetchone()
     return out
 
@@ -436,7 +455,14 @@ def person_row(conn, pid):
 def api_person(conn, q, b, pid):
     row = person_row(conn, pid)
     v = conn.execute('SELECT * FROM verdicts WHERE person_id=?', (pid,)).fetchone()
-    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=dict(v) if v else None, note=row['note'])
+    verdict = dict(v) if v else None
+    if verdict:
+        try:
+            ev = json.loads(verdict.get('evidence') or '[]')
+        except ValueError:
+            ev = []
+        verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
+    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'])
 
 
 KEEP = object()   # "leave this field as it is"
@@ -745,7 +771,8 @@ def map_graph(conn, q):
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
               'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me'])} for s in seeds]
     nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
-               'tier': r['tier'] or 'unread', 'score': r['score'], 'reason': r['reason'], 'tags': tags.get(r['id'], []),
+               'tier': r['tier'] or 'unread', 'fit': FIT.get(r['tier'], 'unread'), 'score': r['score'], 'reason': r['reason'],
+               'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
     return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
@@ -810,12 +837,14 @@ def soak(conn, now):
 
 
 def api_qualify(conn, q, b):
-    if not isinstance(b.get('on'), bool):
+    """{"on"?, "auto"?, "workers"?, "llm_min"?, "bio_min"?}: an absent key is left alone."""
+    if 'on' in b and not isinstance(b['on'], bool):
         raise Bad('on must be true or false')
     for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
-    db.set_setting(conn, 'qualify', b['on'])
+    if 'on' in b:
+        db.set_setting(conn, 'qualify', b['on'])
     if 'auto' in b:
         db.set_setting(conn, 'qualify_auto', bool(b['auto']))
     if 'workers' in b:
@@ -824,17 +853,63 @@ def api_qualify(conn, q, b):
         if key in b:
             db.set_setting(conn, key, b[key])
     conn.commit()
-    return {'qualify': b['on']}
+    return {'qualify': bool(db.get_setting(conn, 'qualify'))}
 
 
 def api_llm(conn, q, b):
     """Providers (keys masked), cooldowns, requests today, last error; plus the Laya sidecar and the pool settings."""
     out = llm.get().status()
     out.update(workers=db.get_setting(conn, 'llm_workers'), llm_min=db.get_setting(conn, 'llm_min'),
-               laya={'url': laya.URL, 'up': laya.last_known()})
+               bio_min=db.get_setting(conn, 'bio_min'), laya={'url': laya.URL, 'up': laya.last_known()},
+               config=str(llm.CONFIG.relative_to(ROOT)) if llm.CONFIG.is_relative_to(ROOT) else str(llm.CONFIG))
     out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
                                         'GROUP BY 1').fetchall())
     return out
+
+
+def api_llm_health(conn, q, b):
+    """Probes now: is the local OpenRouter proxy listening, does the Laya sidecar answer /health."""
+    url = urlparse(llm.get().proxy)
+    try:
+        socket.create_connection((url.hostname, url.port or 80), timeout=1).close()
+        proxy = True
+    except OSError:
+        proxy = False
+    laya.reset()
+    return {'proxy': {'url': f'{url.scheme}://{url.netloc}', 'up': proxy}, 'laya': {'url': laya.URL, 'up': laya.available()}}
+
+
+def api_llm_key_add(conn, q, b):
+    try:
+        return {'id': llm.add_key(b.get('key'))}
+    except ValueError as e:
+        raise Bad(str(e)) from None
+
+
+def api_llm_key_remove(conn, q, b, pid):
+    try:
+        llm.remove_key(pid)
+    except LookupError:
+        raise NotFound('no such key') from None
+    except ValueError as e:
+        raise Bad(str(e)) from None
+    return {}
+
+
+def api_llm_key_test(conn, q, b, pid):
+    try:
+        return llm.get().test(pid)
+    except LookupError:
+        raise NotFound('no such key') from None
+
+
+def api_llm_models(conn, q, b):
+    try:
+        llm.set_models(b.get('models'), b.get('daily_limit'))
+    except ValueError as e:
+        raise Bad(str(e)) from None
+    st = llm.get().status()
+    return {'models': st['models'], 'daily_limit': st['daily_limit']}
 
 
 SNOWBALL_MAX = 50
@@ -899,7 +974,7 @@ def api_account_settings(conn, q, b):
 def api_account_edit(conn, q, b, lane):
     conn.execute('BEGIN IMMEDIATE')
     try:
-        row = accounts.edit(conn, str(lane), b)
+        row = accounts.edit(conn, lane, b)
     except LookupError:
         conn.rollback()
         raise NotFound('no such account') from None
@@ -912,7 +987,7 @@ def api_account_edit(conn, q, b, lane):
 
 def api_account_remove(conn, q, b, lane):
     conn.execute('BEGIN IMMEDIATE')
-    n = accounts.remove(conn, str(lane))
+    n = accounts.remove(conn, lane)
     conn.commit()
     return {'removed': n}
 
@@ -925,7 +1000,8 @@ def api_setup(conn, q, b):
             'lanes': conn.execute('SELECT count(*) FROM accounts').fetchone()[0]}
 
 
-LANE = r'([A-Za-z0-9_-]{1,64})'
+LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
+KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
@@ -943,7 +1019,11 @@ ROUTES = [
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/scraper', api_scraper),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
-    ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball), ('GET', r'/api/llm', api_llm), ('POST', r'/api/settings/qualify', api_qualify),
+    ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
+    ('POST', r'/api/settings/qualify', api_qualify),
+    ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
+    ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
+    ('POST', r'/api/llm/models', api_llm_models),
 ]
 
 
@@ -998,14 +1078,16 @@ class Handler(BaseHTTPRequestHandler):
         for m, rx, fn in ROUTES:
             match = re.fullmatch(rx, url.path)
             if m == method and match:
-                return self.api(fn, parse_qs(url.query), match.groups(), method == 'POST' or '/ext/' in url.path)
+                named = set(match.re.groupindex.values())
+                args = [g if i in named else int(g) for i, g in enumerate(match.groups(), 1)]
+                return self.api(fn, parse_qs(url.query), args, method == 'POST' or '/ext/' in url.path)
         if method == 'GET' and url.path.startswith('/img/'):
             return self.image(url.path[5:])
         if method == 'GET' and not url.path.startswith('/api/'):
             return self.static(url.path)
         self.send(404, {'ok': False, 'error': 'not found'})
 
-    def api(self, fn, q, groups, with_ok):
+    def api(self, fn, q, args, with_ok):
         try:
             n = int(self.headers.get('Content-Length') or 0)
             if n < 0 or n > 64 * 1024 * 1024:
@@ -1015,7 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise Bad('body must be a JSON object')
             conn = db.connect(CFG['db'])
             try:
-                out = fn(conn, q, body, *(int(g) if g.isdigit() and '/accounts/' not in self.path else g for g in groups))
+                out = fn(conn, q, body, *args)
             finally:
                 conn.close()
         except NotFound as e:

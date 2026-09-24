@@ -1,7 +1,9 @@
 """Server side of the staged qualifier: network context, Laya stage, LLM worker pool, few-shot re-runs, snowball, /api/llm."""
 import json
+import os
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from test_server import Base, db, server
@@ -250,3 +252,61 @@ class PerfTest(Base):
         self.conn.execute("INSERT INTO tag_rules(tag, field, match) VALUES('x', 'bio', 'nothing matches')")
         self.conn.commit()
         self.assertNotEqual(self.call('/api/map')[1]['rev'], second['rev'])   # rule count is part of the rev
+
+
+class LLMSettingsTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.cfg = Path(self.tmp.name) / 'openrouter.json'
+        self.old = (server.llm.CONFIG, server.llm.PROVIDERS[0], server.llm.OPENROUTER)
+        server.llm.CONFIG = self.cfg
+        server.llm.OPENROUTER = 'http://127.0.0.1:9/down'
+        server.llm.PROVIDERS[0] = server.llm.Providers.load(self.cfg)
+
+    def tearDown(self):
+        server.llm.CONFIG, server.llm.PROVIDERS[0], server.llm.OPENROUTER = self.old
+        super().tearDown()
+
+    def test_keys_models_and_test_button(self):
+        key = 'sk-or-v1-' + 'a' * 40 + 'wxyz'
+        self.assertEqual(self.call('/api/llm/keys', {'key': 'short'})[0], 400)
+        kid = self.call('/api/llm/keys', {'key': key})[1]['id']
+        self.assertEqual(self.call('/api/llm/keys', {'key': key})[0], 400)            # already there
+        self.assertEqual(self.cfg.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.cfg.read_text())['keys'], [key])
+        out = self.call('/api/llm')[1]
+        self.assertNotIn('aaaa', json.dumps(out))                                   # never the key itself
+        self.assertEqual([(p['id'], p['key'], p['source']) for p in out['providers']], [('proxy', None, None), (kid, 'sk-…wxyz', 'file')])
+        t = self.call(f'/api/llm/keys/{kid}/test', {})[1]
+        self.assertEqual((t['passed'], t['error']), (False, 'not reachable (URLError)'))
+        self.assertEqual(self.call('/api/llm/keys/0123456789/test', {})[0], 404)
+        self.assertEqual(self.call('/api/llm/models', {'models': ['bad model']})[0], 400)
+        m = self.call('/api/llm/models', {'models': ['a/b:free', 'c/d'], 'daily_limit': 50})[1]
+        self.assertEqual((m['models'], m['daily_limit']), (['a/b:free', 'c/d'], 50))
+        self.assertEqual(json.loads(self.cfg.read_text())['keys'], [key])            # other fields kept
+        self.assertEqual(self.call('/api/llm/keys', {'key': key}, origin='http://evil.test')[0], 403)
+        self.assertEqual(self.call(f'/api/llm/keys/{kid}/remove', {})[1], {'ok': True})
+        self.assertEqual(len(self.call('/api/llm')[1]['providers']), 1)
+        self.assertEqual(self.call(f'/api/llm/keys/{kid}/remove', {})[0], 404)
+        h = self.call('/api/llm/health')[1]
+        self.assertEqual(set(h), {'proxy', 'laya'})
+        self.assertIn('up', h['proxy'])
+
+    def test_env_keys_cannot_be_removed_here(self):
+        key = 'sk-or-v1-' + 'e' * 40
+        server.llm.PROVIDERS[0] = server.llm.Providers([key], env_keys=[key])
+        kid = server.llm.key_id(key)
+        self.assertEqual(self.call('/api/llm')[1]['providers'][1]['source'], 'env')
+        old = os.environ.get('OPENROUTER_API_KEYS')
+        os.environ['OPENROUTER_API_KEYS'] = key
+        try:
+            self.assertEqual(self.call(f'/api/llm/keys/{kid}/remove', {})[0], 400)
+        finally:
+            if old is None:
+                del os.environ['OPENROUTER_API_KEYS']
+            else:
+                os.environ['OPENROUTER_API_KEYS'] = old
+
+    def test_settings_without_on_leave_qualify_alone(self):
+        self.assertEqual(self.call('/api/settings/qualify', {'workers': 3, 'llm_min': 30})[1], {'ok': True, 'qualify': False})
+        self.assertEqual((self.call('/api/llm')[1]['workers'], self.call('/api/llm')[1]['llm_min']), (3, 30))

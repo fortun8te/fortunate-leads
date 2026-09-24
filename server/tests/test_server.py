@@ -191,7 +191,8 @@ class ServerTest(Base):
         self.assertEqual(rows('tier=hot'), ['ben'])
         self.assertEqual(rows('status=no'), ['ann'])
         counts = self.call('/api/counts')[1]
-        self.assertEqual((counts['hot'], counts['unread'], counts['with_bio'], counts['total']), (2, 1, 3, 4))
+        self.assertEqual((counts['hot'], counts['unread'], counts['with_bio'], counts['total']), (1, 1, 3, 4))  # like the list: no 'no'
+        self.assertEqual(self.call('/api/counts?status=all')[1]['hot'], 2)
         m = self.call('/api/map?scope=all')[1]
         self.assertNotEqual(m['rev'], rev)
         self.assertEqual({n['id'] for n in m['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2'})
@@ -365,6 +366,26 @@ class TagsViewsMapTest(Base):
 
     SPEC = {'ann': ('founder of glow skincare', 5000, ['s1', 's2']), 'ben': ('founder', 300, ['s1']),
             'cat': ('hobby', 90000, ['s2']), 'dan': (None, None, ['s3'])}
+
+    def test_fit_sort_counts_filter_evidence_and_map_fit(self):
+        ids = self.people({'ann': ('founder', 10, ['s1']), 'ben': ('founder', 20, ['s1', 's2']), 'cat': ('hobby', 30, ['s1', 's2', 's3']),
+                           'dan': (None, 40, ['s1', 's2', 's3', 's4'])})
+        # stub tiers: founder -> hot (80), hobby -> cold (30), no bio -> unread; lists break ties inside a tier
+        self.assertEqual(self.rows('sort=fit'), ['ben', 'ann', 'cat', 'dan'])
+        self.assertEqual(self.call('/api/leads?sort=nope')[0], 400)
+        self.call('/api/people/bulk', {'ids': [ids['ben']], 'status': 'good'})
+        self.call('/api/people/bulk', {'ids': [ids['cat']], 'status': 'no'})
+        c = self.call('/api/counts?min_lists=2&tier=hot')[1]
+        self.assertEqual((c['hot'], c['cold'], c['unread'], c['good'], c['no'], c['total']), (1, 0, 1, 1, 0, 4))  # own dimension ignored
+        self.assertEqual(self.call('/api/counts?min_lists=2')[1]['no'], 1)
+        self.assertEqual(self.call('/api/counts?q=zzz')[1]['hot'], 0)
+        self.conn.execute("UPDATE verdicts SET evidence=? WHERE person_id=?", (json.dumps(['founder']), ids['ann']))
+        self.conn.execute("UPDATE verdicts SET evidence='not json' WHERE person_id=?", (ids['ben'],))
+        self.conn.commit()
+        self.assertEqual(self.call(f"/api/person/{ids['ann']}")[1]['verdict']['evidence'], ['founder'])
+        self.assertEqual(self.call(f"/api/person/{ids['ben']}")[1]['verdict']['evidence'], [])
+        fits = {n['label']: n['fit'] for n in self.call('/api/map?scope=all&status=all')[1]['nodes'] if n['kind'] == 'lead'}
+        self.assertEqual(fits, {'ann': 'strong', 'ben': 'strong', 'cat': 'weak', 'dan': 'unread'})
 
     def test_shared_filter(self):
         ids = self.people(self.SPEC)
