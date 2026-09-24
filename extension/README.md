@@ -1,6 +1,6 @@
 # Fortunate Leads extension (3.0.0)
 Install: chrome://extensions → Developer mode → remove the old "Follower export" → Load unpacked → this folder (same extension id).
-Needs one open instagram.com tab (logged in) and the server on http://127.0.0.1:8766. It never opens Instagram tabs itself.
+Needs one open instagram.com tab (logged in) and the server on http://127.0.0.1:8777. It never opens Instagram tabs itself.
 What it does: asks the server for one job at a time (list page or profile read), runs it inside your Instagram tab, posts the result.
 Passive: bios Instagram already loads while you browse are sent too (zero extra requests, once per handle per 6 h).
 Pacing: list pages 7–14 s apart, a 3–6 min break every 20–30 pages; profile reads 35–70 s apart. One request lane.

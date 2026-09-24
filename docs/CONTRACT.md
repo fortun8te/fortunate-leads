@@ -14,9 +14,9 @@ data/        leads.sqlite, pfp/ (gitignored)
 docs/        CONTRACT.md, RESEARCH.md
 ```
 
-Server: `python3 server/server.py` → serves `http://127.0.0.1:8766` (UI at `/`, static from `web/`). DB path `data/leads.sqlite` (override `--db`). Bind 127.0.0.1 only.
+Server: `python3 server/server.py` → serves `http://127.0.0.1:8777` (UI at `/`, static from `web/`). DB path `data/leads.sqlite` (override `--db`). Bind 127.0.0.1 only.
 
-Write endpoints under `/api/ext/*` accept requests only when `Origin` is `chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf` (the manifest `key` keeps that id). UI endpoints accept only same-origin (Host 127.0.0.1:8766 / localhost:8766). No tokens, no pairing.
+Write endpoints under `/api/ext/*` accept requests only when `Origin` is `chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf` (the manifest `key` keeps that id). UI endpoints accept only same-origin (Host 127.0.0.1:8777 / localhost:8777). No tokens, no pairing.
 
 ## Data model (SQLite, WAL)
 

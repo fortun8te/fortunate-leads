@@ -1,6 +1,6 @@
 // Fortunate Leads: paced executor. Server owns the queue; this worker owns pacing, budgets and cooldowns.
 importScripts('lib/core.js');
-const SERVER = 'http://127.0.0.1:8766';
+const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
 const mem = { looping: false, serverPaused: false, offline: false, noTab: false, budgetDone: false, job: null, label: '',
@@ -17,8 +17,8 @@ const iso = (t) => (t ? new Date(t).toISOString() : null);
 
 // ---- server I/O ----------------------------------------------------------
 async function api(path, body) {
-  const r = await fetch(SERVER + path, body === undefined ? {} :
-    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await fetch(SERVER + path, body === undefined ? { headers: { 'X-FL': '1' } } :
+    { method: 'POST', headers: { 'content-type': 'application/json', 'X-FL': '1' }, body: JSON.stringify(body) });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 }
 async function sendItem(item) {
@@ -68,13 +68,15 @@ async function status(st) {
 }
 
 // ---- Instagram requests: one lane, inside a real instagram.com tab ---------
+// A frozen or navigating tab can leave executeScript pending forever; never let that stall the loop.
+const withTimeout = (ms, p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('Instagram tab did not respond')), ms))]);
 async function igTab() {
-  const tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter((t) => !t.discarded);
+  const tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter((t) => !t.discarded && !t.frozen && t.status === 'complete');
   return tabs.find((t) => t.active) || tabs[0] || null;
 }
 async function inTab(tabId, url) {
   try {
-    const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', args: [url], func: async (u) => {
+    const [r] = await withTimeout(40e3, chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', args: [url], func: async (u) => {
       const csrf = decodeURIComponent((document.cookie.match(/(?:^|; )csrftoken=([^;]+)/) || [])[1] || '');
       let claim = '0'; try { claim = sessionStorage.getItem('www-claim-v2') || '0'; } catch {}
       const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 30e3);
@@ -86,7 +88,7 @@ async function inTab(tabId, url) {
         if (claimOut) try { sessionStorage.setItem('www-claim-v2', claimOut); } catch {}
         return { status: res.status, text: await res.text(), retryAfter: res.headers.get('retry-after') };
       } catch (e) { return { status: 0, text: String(e) }; } finally { clearTimeout(timer); }
-    } });
+    } }));
     const p = (r && r.result) || { status: 0, text: '' };
     try { p.json = JSON.parse(p.text); } catch { p.json = null; }
     return p;
@@ -238,3 +240,11 @@ chrome.runtime.onInstalled.addListener(boot);
 chrome.runtime.onStartup.addListener(boot);
 chrome.alarms.onAlarm.addListener(() => { heartbeat(); loop(); });
 loop();
+
+// The workspace can reload the extension after an update (loopback origin only).
+chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {
+  if (sender.origin !== SERVER || msg?.type !== 'RELOAD') return false;
+  respond({ ok: true, version: VERSION });
+  setTimeout(() => chrome.runtime.reload(), 200);
+  return false;
+});

@@ -20,7 +20,7 @@ import qualify  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
 EXT_ORIGIN = 'chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf'
-CFG = {'db': str(ROOT / 'data' / 'leads.sqlite'), 'port': 8766}
+CFG = {'db': str(ROOT / 'data' / 'leads.sqlite'), 'port': 8777}
 STATUSES = ('good', 'maybe', 'no', 'contacted', 'client', 'known')
 PIC_HOSTS = ('.cdninstagram.com', '.fbcdn.net')
 PIC_MAX = 2 * 1024 * 1024
@@ -392,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Origin') != EXT_ORIGIN:
             return self.send(403, b'', 'text/plain')
         self.send(204, b'', 'text/plain', {'Access-Control-Allow-Methods': 'GET, POST',
-                                            'Access-Control-Allow-Headers': 'Content-Type'})
+                                            'Access-Control-Allow-Headers': 'Content-Type, X-FL'})
 
     def send(self, code, body, ctype='application/json', headers=None):
         if not isinstance(body, bytes):
@@ -414,7 +414,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
             return self.send(403, {'ok': False, 'error': 'host'})
         if url.path.startswith('/api/ext/'):
-            if origin != EXT_ORIGIN:
+            # Extension GETs carry no Origin; a custom header can't be sent cross-site without a (refused) preflight.
+            if origin != EXT_ORIGIN and not (origin is None and self.headers.get('X-FL') == '1'):
                 return self.send(403, {'ok': False, 'error': 'origin'})
         elif origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
             return self.send(403, {'ok': False, 'error': 'origin'})
