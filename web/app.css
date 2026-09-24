@@ -1,9 +1,10 @@
-/* Fortunate Leads. Black mono, square, hairlines. Light theme is a strict inverse. */
+/* Fortunate Leads. Soft black mono, small radii, hairlines. Light theme is a strict inverse. */
 :root {
-  --bg: #000; --bg1: #0a0a0a; --bg2: #131313; --bg3: #1d1d1d;
-  --line: #222; --line2: #333; --line3: #4a4a4a;
-  --fg: #f2f2f2; --fg2: #c2c2c2; --fg3: #8f8f8f; --fg4: #5a5a5a;
-  --inv: #000; --sel: #161616; --hi: #fff;
+  --bg: #0c0c0c; --bg1: #121212; --bg2: #191919; --bg3: #222;
+  --line: #1f1f1f; --line2: #2b2b2b; --line3: #404040;
+  --fg: #e8e8e8; --fg2: #b4b4b4; --fg3: #858585; --fg4: #555;
+  --inv: #0c0c0c; --sel: #171717; --hi: #f4f4f4;
+  --r: 6px; --r2: 4px;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, "DejaVu Sans Mono", monospace;
   --top: 44px; --row: 64px; --av: 40px; --side: 252px; --det: 400px;
@@ -470,3 +471,25 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .tg .p-head .input { width: 100%; }
 }
 :root[data-density="compact"] .who > .bio2 { display: none; }
+
+/* Softening: small radii, gentle transitions, calmer caps. */
+.btn, .input, .select, .seg, textarea, .toast, .panel, .card, .qbar, .query, .bulk, .menu, .pop, .sheet, dialog { border-radius: var(--r); }
+.seg button:first-child { border-radius: var(--r) 0 0 var(--r); }
+.seg button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+.chip, .tag, kbd, .av, .avatar, .toggle i, .check, .badge { border-radius: var(--r2); }
+.toggle i { border-radius: 8px; } .toggle i::after { border-radius: 50%; }
+.btn, .seg button, .chip, .tag, .input, .select, tr, .row { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+.cap { font-weight: 500; letter-spacing: .06em; color: var(--fg4); }
+.bulk { background: var(--bg3); color: var(--fg); border-bottom: 1px solid var(--line2); }
+.bulk .btn, .bulk .input, .bulk .select { background: var(--bg2); color: var(--fg); border-color: var(--line3); }
+.bulk .btn:hover { background: var(--bg); color: var(--fg); border-color: var(--fg3); }
+.fseg, .kpi, .prog, .prog i { border-radius: var(--r2); }
+.bulk .input::placeholder { color: var(--fg4); opacity: 1; }
+.bulk .sep { background: var(--line3); opacity: 1; }
+.bulk .link { color: var(--fg2); }
+.bulk .st-b button { border-color: var(--line3); color: var(--fg2); background: var(--bg2); }
+.bulk .st-b button:hover { background: var(--bg); color: var(--fg); }
+.bulk .st-b button:first-child { border-radius: var(--r) 0 0 var(--r); }
+.bulk .st-b button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+.toast { background: var(--bg3); color: var(--fg); border: 1px solid var(--line3); }
+.toast button { color: var(--fg); }
