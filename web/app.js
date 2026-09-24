@@ -75,7 +75,7 @@ document.addEventListener('error', (e) => {
 // ---------- constants ----------
 const STATUSES = ['good', 'maybe', 'no', 'contacted', 'client', 'known'];
 const CYCLE = [null, 'good', 'maybe', 'no'];
-const GROUPS = [['role', 'role'], ['niche', 'niche'], ['signal', 'signal'], ['size', 'size']];
+const GROUPS = [['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
 const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
 const BIO_OPTS = [['1', 'yes'], ['0', 'no']];
 const FOL_OPTS = [['lt1k', '<1k', null, 999], ['1k', '1k+', 1000, null], ['10k', '10k+', 10000, null], ['100k', '100k+', 100000, null]];
@@ -348,16 +348,16 @@ function renderFilters() {
   const qs = toQuery().toString();
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
-  let h = `<div class="fsec"><h4>views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">clear</button>' : ''}<button id="v-new" title="Save view (v)">save</button></h4>
+  let h = `<div class="fsec"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
     ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="view name" autocomplete="off"><button class="btn solid">save</button></form>` : ''}
     <button class="fi${!active ? ' on' : ''}" data-view=""><span>everyone</span><b>${fmt(c.total)}</b></button>
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
-    <div class="fsec"><h4>status</h4>
+    <div class="fsec"><h4>Status</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>open</span><b>${fmt(c.total)}</b></button>
     ${STATUSES.map((s, i) => `<button class="fi${S.f.status === s ? ' on' : ''}" data-status="${s}"><span>${s}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>unmarked</span><b></b></button>
     <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>all, incl. no</span><b></b></button></div>
-    <div class="fsec fsegs"><h4>shape</h4>
+    <div class="fsec fsegs"><h4>Shape</h4>
       <div class="fseg"><span>lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -367,13 +367,13 @@ function renderFilters() {
   const own = tags.filter((t) => t.kind === 'manual');
   const rule = tags.filter((t) => t.kind === 'rule');
   const auto = tags.filter((t) => t.kind === 'auto');
-  h += tagSection('own', 'your tags', own);
-  if (!own.length && !S.tagFind) h += `<div class="fsec"><h4>your tags</h4><span class="fnone">none yet, press t on a lead</span></div>`;
-  h += tagSection('rule', 'rule tags', rule);
-  h += tagSection('via', 'seeds', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
+  h += tagSection('own', 'Your tags', own);
+  if (!own.length && !S.tagFind) h += `<div class="fsec"><h4>Your tags</h4><span class="fnone">none yet, press t on a lead</span></div>`;
+  h += tagSection('rule', 'Rule tags', rule);
+  h += tagSection('via', 'Seeds', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
   for (const [g, title] of GROUPS) h += tagSection(g, title, auto.filter((t) => t.grp === g));
-  h += tagSection('src', 'you', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
-  h += tagSection('other', 'other', auto.filter((t) => !['source', ...GROUPS.map((g) => g[0])].includes(t.grp)));
+  h += tagSection('src', 'You', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
+  h += tagSection('other', 'Other', auto.filter((t) => !['source', ...GROUPS.map((g) => g[0])].includes(t.grp)));
   const el = $('#filters');
   const st = el.scrollTop, focus = document.activeElement?.id === 'f-find', pos = focus ? document.activeElement.selectionStart : 0;
   el.innerHTML = h;
@@ -881,11 +881,11 @@ function renderDetail() {
         <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">instagram <kbd style="color:inherit;border-color:currentColor">o</kbd></a>
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}
         ${!p.bio && !p.loading ? '<button class="btn" id="d-read">read profile</button>' : ''}</div></div>
-    <div class="d-sec"><h4>status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${s}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4>tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">none</span>'}</div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${s}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">none</span>'}</div>
       <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">add <kbd>t</kbd></button></form></div>
-    <div class="d-sec"><h4>found in</h4><div class="edges">${edges.length ? edges.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by this seed"><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'followed by' : e.direction === 'followers' ? 'follows' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
-    <div class="d-sec"><h4>note</h4><textarea class="input" id="note" placeholder="note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
+    <div class="d-sec"><h4>Found in</h4><div class="edges">${edges.length ? edges.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by this seed"><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'followed by' : e.direction === 'followers' ? 'follows' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
+    <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
   if (focused === 'tag-in') $('#tag-in').focus();
 }
 $('#detail').addEventListener('click', async (e) => {
@@ -1688,8 +1688,8 @@ function renderSeedCard() {
       ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'knows you')}">filter to ${n.is_me ? 'people who know you' : '@' + esc(n.label)}</button>` : ''}
       <button class="btn" data-only="${esc(n.label)}">seed:@${esc(n.label)}</button>
       <a class="btn" href="https://www.instagram.com/${encodeURIComponent(n.label)}/" target="_blank" rel="noopener">instagram</a></div></div>
-    ${ls.length ? `<div class="d-sec"><h4>lists</h4><div class="ov">${ls.map((l) => `<span>${esc(l.direction)}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(l.state)}</span>`).join('')}</div></div>` : ''}
-    <div class="d-sec"><h4>shared people</h4>${ov.length ? `<div class="ov">${ov.map(([id, s]) => `<button data-focus="${esc(id)}">@${esc(M.byId.get(id)?.label)}</button><span class="num">${int(s)}</span><span><span class="bar-p done"><i style="width:${(s / mx) * 100}%"></i></span></span>`).join('')}</div>` : '<span class="muted">none</span>'}</div>`;
+    ${ls.length ? `<div class="d-sec"><h4>Lists</h4><div class="ov">${ls.map((l) => `<span>${esc(l.direction)}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(l.state)}</span>`).join('')}</div></div>` : ''}
+    <div class="d-sec"><h4>Shared people</h4>${ov.length ? `<div class="ov">${ov.map(([id, s]) => `<button data-focus="${esc(id)}">@${esc(M.byId.get(id)?.label)}</button><span class="num">${int(s)}</span><span><span class="bar-p done"><i style="width:${(s / mx) * 100}%"></i></span></span>`).join('')}</div>` : '<span class="muted">none</span>'}</div>`;
 }
 function seedCardClick(e) {
   const sf = e.target.closest('[data-sf]');
