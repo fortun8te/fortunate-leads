@@ -124,7 +124,7 @@ const S = {
   cur: -1, open: null, person: null, seedCard: null,
   pick: new Set(), anchor: -1, picking: false,
   tagMore: {}, tagFind: '', saving: false,
-  side: store.get('side', true),
+  side: store.get('side', true), fmore: store.get('fmore', false),
 };
 
 // ---------- filter <-> query string ----------
@@ -260,6 +260,7 @@ function route() {
 window.addEventListener('popstate', route);
 window.addEventListener('hashchange', route);
 
+const WORK_SUB = { leads: 'Everyone the scraper found, best fit first.', map: 'Who is connected to whom. Click a dot to open that person.' };
 function setView(v) {
   const prev = S.view;
   S.view = v;
@@ -272,6 +273,7 @@ function setView(v) {
   $('#view-settings').classList.toggle('on', v === 'settings');
   $('#pane-leads').classList.toggle('on', v === 'leads');
   $('#pane-map').classList.toggle('on', v === 'map');
+  if (work) { $('#work-h').textContent = v === 'map' ? 'Map' : 'Leads'; $('#work-p').textContent = WORK_SUB[v]; }
   syncTabs();
   if (v === 'map') M.show(); else if (prev === 'map') M.hide();
   if (v === 'leads' && prev !== 'leads') renderRows();
@@ -307,6 +309,7 @@ function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   $('#theme-btn').textContent = t === 'dark' ? 'Light' : 'Dark';
   store.set('theme', t);
+  syncLook();
   M.draw();
 }
 $('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
@@ -314,8 +317,16 @@ function applyDensity(d) {
   document.documentElement.dataset.density = d;
   $('#density-btn').textContent = d === 'compact' ? 'Comfortable' : 'Compact';
   store.set('density', d);
+  syncLook();
   renderRows();
 }
+function syncLook() {
+  const r = document.documentElement.dataset;
+  $$('#set-theme button').forEach((b) => b.classList.toggle('on', b.dataset.v === r.theme));
+  $$('#set-density button').forEach((b) => b.classList.toggle('on', b.dataset.v === (r.density || 'comfortable')));
+}
+$('#set-theme').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyTheme(b.dataset.v); };
+$('#set-density').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyDensity(b.dataset.v); };
 $('#density-btn').onclick = () => applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
 const narrow = () => window.innerWidth <= 900;
 function toggleSide() {
@@ -383,7 +394,7 @@ function tagSection(key, title, list, labelFn) {
   list = [...list].sort((a, b) => (!!modeOf(b.tag) - !!modeOf(a.tag)) || (b.count > 0) - (a.count > 0) || b.count - a.count || b.total - a.total || a.tag.localeCompare(b.tag));
   const lim = S.tagMore[key] || q ? 500 : 8;
   const shown = list.slice(0, Math.max(lim, list.filter((t) => modeOf(t.tag)).length));
-  return `<div class="fsec"><h4>${esc(title)}<span class="grow"></span><span class="num">${list.length}</span></h4>
+  return `<div class="fsec f-x"><h4>${esc(title)}<span class="grow"></span><span class="num">${list.length}</span></h4>
     ${shown.map((t) => tagItem(t, labelFn && labelFn(t))).join('')}
     ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">Less</button>` : ''}</div>`;
 }
@@ -392,7 +403,7 @@ function renderFilters() {
   const qs = toQuery().toString();
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
-  let h = `<div class="fsec"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
+  let h = `<div class="fsec f-x"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
     ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="View name" autocomplete="off"><button class="btn solid">Save</button></form>` : ''}
     <button class="fi${!active ? ' on' : ''}" data-view=""><span>Everyone</span><b>${fmt(c.total)}</b></button>
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
@@ -403,24 +414,29 @@ function renderFilters() {
     <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including Not a fit"><span>All</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
     <div class="fsec"><h4>Fit</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
-    <div class="fsec fsegs"><h4>Shape</h4>
+    <div class="fsec fsegs f-x"><h4>Shape</h4>
       <div class="fseg"><span>Lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     </div>
-    <div class="fsec"><input class="input ffind" id="f-find" type="search" placeholder="Find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"></div>`;
+    <div class="fsec f-x"><input class="input ffind" id="f-find" type="search" placeholder="Find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"></div>`;
   const tags = S.tagList;
   const own = tags.filter((t) => t.kind === 'manual');
   const rule = tags.filter((t) => t.kind === 'rule');
   const auto = tags.filter((t) => t.kind === 'auto');
   h += tagSection('own', 'Your tags', own);
-  if (!own.length && !S.tagFind) h += `<div class="fsec"><h4>Your tags</h4><span class="fnone">None yet</span></div>`;
+  if (!own.length && !S.tagFind) h += `<div class="fsec f-x"><h4>Your tags</h4><span class="fnone">None yet</span></div>`;
   h += tagSection('rule', 'Rule tags', rule);
   h += tagSection('via', 'Seeds', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
   for (const [g, title] of GROUPS) h += tagSection(g, title, auto.filter((t) => t.grp === g));
   h += tagSection('src', 'You', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
   h += tagSection('other', 'Other', auto.filter((t) => !['source', ...GROUPS.map((g) => g[0])].includes(t.grp)));
+  const hid = S.f.tags.length + S.f.any.length + S.f.not.length + !!S.f.min + !!S.f.bio + !!S.f.seed + (S.f.fmin != null || S.f.fmax != null);
+  const open = S.fmore || !!S.tagFind || S.saving;
+  h += `<div class="f-tog"><button class="fi" id="f-more"><span>${open ? 'Fewer filters' : 'More filters'}</span>${hid && !open ? `<b>${hid} on</b>` : ''}</button>
+    ${active ? '<button class="fi" id="f-clear" title="Clear filters (c)"><span>Clear all</span></button>' : ''}</div>`;
   const el = $('#filters');
+  el.classList.toggle('xo', open);
   const st = el.scrollTop, focus = document.activeElement?.id === 'f-find', pos = focus ? document.activeElement.selectionStart : 0;
   el.innerHTML = h;
   el.scrollTop = st;
@@ -432,7 +448,8 @@ $('#filters').addEventListener('click', async (e) => {
   const more = t.closest('[data-more]'), less = t.closest('[data-less]');
   if (more) { S.tagMore[more.dataset.more] = true; return renderFilters(); }
   if (less) { S.tagMore[less.dataset.less] = false; return renderFilters(); }
-  if (t.id === 'f-reset') return clearFilters();
+  if (t.id === 'f-reset' || t.closest('#f-clear')) return clearFilters();
+  if (t.closest('#f-more')) { S.fmore = !(S.fmore || S.tagFind || S.saving); S.tagFind = ''; S.saving = false; store.set('fmore', S.fmore); return renderFilters(); }
   if (t.id === 'v-new') { S.saving = !S.saving; return renderFilters(); }
   const vdel = t.closest('[data-vdel]');
   if (vdel) { e.stopPropagation(); return deleteView(vdel.dataset.vdel); }
@@ -496,7 +513,7 @@ function startSaveView() {
 }
 $('#save-view').onclick = startSaveView;
 function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; }
-$('#filters-btn').onclick = (e) => { e.stopPropagation(); setDrawer(!$('#filters').classList.contains('show')); };
+$('#filters-btn').onclick = (e) => { e.stopPropagation(); toggleSide(); };
 $('#scrim').onclick = () => setDrawer(false);
 
 // ---------- query bar ----------
@@ -671,18 +688,31 @@ async function loadMore(gen = S.gen, n = PAGE, replace = false) {
   }
 }
 const rowH = () => parseFloat(css('--row')) || 64;
+// Importance: top = best-fit markers; key = what makes a lead (AI verdict, product category, decision maker, US);
+// min = how they were found and audience size. Everything else sits in between.
+const TOP_TAGS = new Set(['AI: Top fit', 'Fit: strong']);
+const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
+function tagTier(t) {
+  const name = tagName(t);
+  if (TOP_TAGS.has(name)) return 'top';
+  if (t.grp === 'ai' || t.grp === 'niche' || KEY_TAGS.has(name)) return 'key';
+  if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
+  return '';
+}
+const TIER_ORDER = { top: 0, key: 1, '': 2, min: 3 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = isViaTag(t.tag) ? t.tag.slice(4) : t.tag;
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  const tier = tagTier(t);
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
 const GORDER = { ai: -1, role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
 // Tags that describe the person, not how they were found or what the fit badge already says.
 function rowTags(r) {
   return (r.tags || []).filter((t) => t.grp !== 'source' && t.grp !== 'size' && !isFitTag(t.tag))
-    .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
+    .sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
 }
 function whyHTML(r) {
   if (r.reason) return esc(r.reason);
@@ -690,6 +720,8 @@ function whyHTML(r) {
   return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
 }
 const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}" title="${esc(SDESC[s])}"><i></i>${slabel(s)}</span>` : '';
+// One-click "open on Instagram": a plain link, so the row / map click underneath never fires.
+const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${encodeURIComponent(h)}/" target="_blank" rel="noopener" title="Open on Instagram (o)" aria-label="Open @${esc(h)} on Instagram"><svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></a>`;
 const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
 function rowHTML(r, i, h) {
   const n = lists(r);
@@ -698,7 +730,7 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
+    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${igLink(r.handle)}${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
@@ -739,6 +771,7 @@ window.addEventListener('resize', debounce(() => { renderRows(); M.resize(); }, 
 $('#rows').addEventListener('click', (e) => {
   if (e.target.id === 'retry') return resetLeads();
   if (e.target.closest('#clear-all')) return clearFilters();
+  if (e.target.closest('[data-ig]')) { e.stopPropagation(); return; }
   const row = e.target.closest('.row');
   if (!row) return;
   const i = +row.dataset.i;
@@ -947,7 +980,7 @@ function renderDetail() {
   const role = p.role || v.role;
   $('#detail').innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
+      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
     <div class="d-sec d-fit">
       <div class="d-fit-h">${p.loading ? '' : fitBadge({ ...p, tier: p.tier || v.tier, score: p.score ?? v.score }, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
@@ -1113,7 +1146,7 @@ const T = {
     $('#tg-body').innerHTML = rows.length ? rows.map((t) => {
       const can = this.editable(t);
       const on = this.checked.has(t.tag);
-      const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
+      const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tagTier(t) ? ' t-' + tagTier(t) : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
         <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
@@ -1126,39 +1159,33 @@ const T = {
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
     this.renderMerge();
   },
-  // Overview: every automatic tag, grouped in plain words, with how many people have it. Click = filter Leads.
+  // Overview: the tags that make a lead first, then every other automatic tag grouped in plain words. Click = filter Leads.
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
-    const kinds = [
-      ['AI', this.list.filter((t) => t.grp === 'ai').length, 'Added only after the AI read the full profile. Most reliable.'],
-      ['Automatic', this.list.filter((t) => t.kind === 'auto' && t.grp !== 'ai').length, 'Added by fixed keyword checks on name, bio and link.'],
-      ['Keyword rules', this.list.filter((t) => t.kind === 'rule').length, 'Your own word rules, set up at the bottom.'],
-      ['Yours', this.list.filter((t) => t.kind === 'manual').length, 'Tags you typed on a person yourself.'],
-    ];
-    $('#tg-kinds').innerHTML = kinds.map(([k, n, d]) => `<div class="tg-kind"><b>${k}</b><span class="num">${plural(n, 'tag')}</span><p class="muted">${d}</p></div>`).join('');
+    const top = auto.filter((t) => tagTier(t)).filter((t) => tagTier(t) !== 'min');
+    const rest = auto.filter((t) => !top.includes(t));
     const G = [
-      ['ai', 'AI verdict', 'What the AI concluded after reading the profile: product type, stage, ads, US market, decision maker.'],
       ['role', 'What they are', 'Brand, store, agency, creator and so on.'],
-      ['niche', 'What they sell', 'Product category, from their bio and link.'],
-      ['signal', 'Signals in their profile', 'Founder, hiring, shop link, country and similar hints.'],
+      ['signal', 'Other hints in their profile', 'Hiring, shop link, country and similar.'],
       ['size', 'Audience size', 'Follower count bands.'],
-      ['via', 'Where we found them', 'The account whose follower or following list they came from.'],
+      ['via', 'Where we found them', 'The account whose list they came from.'],
       ['source', 'Link to you', 'In several lists, follows you, you follow them.'],
     ];
-    const pick = (g) => g === 'via' ? auto.filter((t) => isViaTag(t.tag)) : g === 'source' ? auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
-      : auto.filter((t) => (t.grp || 'custom') === g);
-    const known = new Set(['ai', 'role', 'niche', 'signal', 'size', 'source']);
-    const other = auto.filter((t) => !known.has(t.grp));
-    const card = (key, title, desc, list) => {
-      if (!list.length && key !== 'ai') return '';
-      list = [...list].sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : 14;
-      return `<div class="panel tg-card${key === 'ai' ? ' ai' : ''}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
-        <div class="tg-chips">${list.length ? list.slice(0, lim).map((t) => `<button class="tchip g-${esc(t.grp || 'custom')}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`).join('')
-          : '<span class="muted">None yet. These appear once AI scoring (Qualify) has checked people.</span>'}
-        ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></div>`;
+    const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
+      : rest.filter((t) => (t.grp || 'custom') === g);
+    const known = new Set(['role', 'signal', 'size', 'source']);
+    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
+    const sec = (key, title, desc, list, cls = '') => {
+      if (!list.length && key !== 'top') return '';
+      list = [...list].sort((a, b) => (key === 'top' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : key === 'top' ? 40 : 12;
+      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
+        <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
+          : '<span class="muted">None yet. AI tags appear once the AI has checked people.</span>'}
+        ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    $('#tg-groups').innerHTML = G.map(([k, t, d]) => card(k, t, d, pick(k))).join('') + card('other', 'Other', 'Automatic tags outside the groups above.', other);
+    $('#tg-groups').innerHTML = sec('top', 'Most useful', 'What makes a lead: the AI verdict, top fit, product category, decision maker, US market.', top, 'tg-top')
+      + `<div class="tg-rest">${G.map(([k, t, d]) => sec(k, t, d, pick(k))).join('') + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div>`;
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
@@ -1330,7 +1357,7 @@ function renderStatus() {
   $('#st-dot').className = 'dot ' + st.dot;
   $('#st-label').textContent = window.innerWidth <= 640 ? st.short : st.label;
   const run = sc?.lists?.find((l) => l.state === 'running');
-  $('#st-act').textContent = x.last_error && !x.online ? x.last_error : x.activity || (run ? `@${run.seed} ${run.direction}` : x.text || '');
+  $('#st-act').textContent = sc && !x.online ? 'Open Chrome with Instagram logged in' : x.activity || (run ? `@${run.seed} ${run.direction}` : x.text || '');
   const t = x.today?.list, b = x.budget?.list;
   $('#st-today').textContent = t == null ? '–' : `${int(t)}/${b == null ? '–' : int(b)}`;
   $('#st-meter').style.width = t != null && b ? Math.min(100, (t / b) * 100) + '%' : '0';
@@ -1394,16 +1421,24 @@ function renderScraper() {
   const x = sc.ext || {}, ls = sc.lists || [], pr = sc.progress || {};
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
-  let now;
-  if (sc.paused) now = 'Paused. Press Resume at the top to continue.';
-  else if (!x.online) now = `The Chrome extension is not connected${x.last_seen ? ' (last seen ' + ago(x.last_seen) + ' ago)' : ''}. Open Chrome with Instagram logged in.`;
-  else if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) now = `Taking a break so Instagram does not block you, back in ${left(x.cooldown_until)}.`;
-  else if (run) now = `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}: ${int(run.received)}${run.total ? ' of ' + int(run.total) : ''}.`;
-  else now = ucf(x.activity || x.text || 'Idle');
+  const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
+  const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
+  let now, sub = '';
+  if (sc.paused) { now = 'Paused'; sub = 'Press Resume at the top to carry on.'; }
+  else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
+  else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} people so far.`; }
+  else { now = 'Online, waiting for work'; sub = 'Add accounts to scrape below.'; }
   const accs = sc.accounts || [];
-  const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${ST_DOT[a.status] || ''}"></i>${esc(a.name || a.handle || a.lane_id)}</span>`).join('')
+  const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} this hour` : 'offline'}</span></span>`).join('')
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
-  $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live run' : 'off'}"></i><span>${esc(now)}</span></div><div class="conns">${conn}</div>`;
+  $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
+  const h1 = sc.soak?.['1h'] || {};
+  const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
+  $('#scr-counts').innerHTML = tile('Scraped in the last hour', int(h1.new_people ?? h1.people ?? 0), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
+    + tile('Scraped today', int(sc.people_today ?? 0), 'new people')
+    + tile('Scraped in total', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
   const recv = ls.reduce((a, l) => a + (l.received || 0), 0), tot = recv + (L.left || 0);
   const stage = (title, line, pct, when) => `<div class="stg"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
@@ -1424,20 +1459,27 @@ function renderScraper() {
     ['Today', `${int(tl)} of ${int(bl)} list pages, ${int(tp)} of ${int(bp)} bios`],
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
-  const bL = $('#b-list'), bP = $('#b-profile');
-  if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bl ?? ''; bP.value = bp ?? ''; }
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused'].includes(l.state)) };
   $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
   const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
-  const rows = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
+  const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
+  const rows = listsAll ? all : all.slice(0, 8);
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
     return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
       <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
       <td class="r num">${int(l.received)}${l.total ? ' of ' + int(l.total) : ''}</td>
       <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(LIST_STATE[l.state] || ucf(l.state))}</span></td></tr>`;
-  }).join('') : `<tr><td colspan="5" class="muted">No lists yet. Add an account above.</td></tr>`;
+  }).join('') + (all.length > rows.length ? `<tr><td colspan="5"><button class="btn ghost" id="lists-all">Show all ${int(all.length)}</button></td></tr>` : '')
+    : `<tr><td colspan="5" class="muted">No lists yet. Add an account above.</td></tr>`;
 }
+let listsAll = false;
+$('#lists-body').addEventListener('click', (e) => { if (e.target.closest('#lists-all')) { listsAll = true; renderScraper(); } });
+function backIn(t) {
+  const m = Math.ceil(Math.max(0, Date.parse(t) - Date.now()) / 60000);
+  return m <= 1 ? 'in about a minute' : m < 90 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`;
+}
+$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
 $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1548,7 +1590,7 @@ function renderAccounts() {
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
   const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
-  const kpi = (label, val, sub) => `<div class="kpi"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const kpi = (label, val, sub) => `<div class="tile"><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   $('#acc-kpis').innerHTML = [
     kpi('Online', `${online}/${accs.length}`, accs.length ? plural(accs.filter((a) => a.status === 'running').length, 'working', 'working') : 'No accounts yet'),
     kpi('Pages/hour', int(r.pages_last_hour), 'All accounts'),
@@ -1703,6 +1745,9 @@ function renderSettings() {
   $('#set-q-auto').classList.toggle('on', !!sc?.qualify_auto);
   const f = $('#set-q');
   if (l && !f.contains(document.activeElement)) { $('#set-workers').value = l.workers; $('#set-llm-min').value = l.llm_min; $('#set-bio-min').value = l.bio_min; }
+  const bL = $('#b-list'), bP = $('#b-profile'), bud = sc?.ext?.budget || {};
+  if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bud.list ?? ''; bP.value = bud.profile ?? ''; }
+  syncLook();
   if (SET.share != null && document.activeElement?.id !== 'set-share') $('#set-share').value = Math.round(SET.share * 100);
   renderServices();
   const keys = (l?.providers || []).filter((p) => p.key);
@@ -1823,10 +1868,12 @@ const Q = {
     const on = Qp.on ?? S.sc?.qualify;
     const pct = s.verdicts ? Math.round((s.ai / s.verdicts) * 100) : 0;
     const when = !on ? 'AI scoring is off' : !Qp.left ? 'Everyone waiting has been checked' : eta(Qp.eta_h) ? eta(Qp.eta_h) + ' left' : 'starting';
-    const kpi = (v, l) => `<div class="ql-k"><b class="num">${v}</b><span>${l}</span></div>`;
-    $('#ql-prog').innerHTML = `<div class="ql-kpis">${kpi(fmt(s.ai ?? 0), 'checked by AI')}${kpi(fmt(s.rules ?? 0), 'keyword check only')}${kpi(fmt(Qp.left ?? 0), 'waiting for AI')}${kpi(Qp.per_hour ? fmt(Qp.per_hour) : '–', 'AI checks per hour')}</div>
+    const kpi = (v, l) => `<div class="tile"><span>${l}</span><b class="num">${v}</b></div>`;
+    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour ? int(Qp.per_hour) : '–', 'AI checks per hour')}</div>
       <div class="ql-pbar"><div class="bar-p ${on && Qp.left ? 'run' : 'done'}"><i style="width:${pct}%"></i></div>
-      <span class="muted"><i class="dot ${on ? 'live' : 'off'}"></i> ${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ' · turn on Qualify at the top to start'}</span></div>`;
+      <span class="muted">${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ''}</span></div>`;
+    $('#ql-toggle').textContent = on ? 'Pause AI checks' : 'Start AI checks';
+    $('#ql-toggle').classList.toggle('solid', !on);
     $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
   },
   card(r) {
@@ -1889,6 +1936,7 @@ $('#ql-view').addEventListener('click', (e) => { const b = e.target.closest('[da
 $('#ql-q').addEventListener('input', debounce((e) => { Q.q = e.target.value.trim(); Q.load(); }, 250));
 $('#ql-sort').addEventListener('change', (e) => { Q.sort = e.target.value; Q.load(); });
 $('#ql-more').onclick = () => Q.load(true);
+$('#ql-toggle').onclick = async () => { await $('#qualify-btn').onclick(); Q.renderProg(); };
 $('#ql-list').addEventListener('click', (e) => {
   const d = e.target.closest('[data-deep]'); if (d) return Q.deeper(+d.dataset.deep);
   const o = e.target.closest('[data-open]');
@@ -2360,7 +2408,7 @@ function renderSeedCard() {
   if (!n) return;
   $('#detail').innerHTML = `
     <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
-      <div class="who"><b>@${esc(n.label)}</b><span>${n.is_me ? 'You' : 'Seed'}</span></div>
+      <div class="who"><b>@${esc(n.label)}${igLink(n.label)}</b><span>${n.is_me ? 'You' : 'Seed'}</span></div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
     <div class="d-sec"><span class="muted">Not read as a person yet, so no status or tags. Its bio is read when a list reaches it.</span></div>
     ${seedBlock(n)}`;
