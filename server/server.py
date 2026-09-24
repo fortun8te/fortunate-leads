@@ -26,7 +26,7 @@ PIC_HOSTS = ('.cdninstagram.com', '.fbcdn.net')
 PIC_MAX = 2 * 1024 * 1024
 READ_PRIORITY = 10000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
-BUDGET_MAX = {'list': 600, 'profile': 300}
+BUDGET_MAX = {'list': 3000, 'profile': 300}
 
 
 class Bad(Exception):
@@ -63,13 +63,13 @@ def ext_state(conn):
 
 def ext_next(conn, q, b):
     st, ts = ext_state(conn), db.now()
-    cooldown = db.get_setting(conn, 'cooldown')
     kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
-    if st['paused'] or (cooldown and cooldown > ts):
-        return dict(st, job=None, cooldown_until=cooldown if cooldown and cooldown > ts else None)
+    if st['paused']:  # cooldowns are the extension's job; the server only records them for display
+        return dict(st, job=None, cooldown_until=None)
     conn.execute('BEGIN IMMEDIATE')
     job = conn.execute(f"SELECT * FROM jobs WHERE (state='queued' OR (state='leased' AND leased_until<?)) "
-                       f"AND kind IN ({','.join('?' * len(kinds))}) ORDER BY kind='list' DESC, priority DESC, id LIMIT 1",
+                       f"AND kind IN ({','.join('?' * len(kinds))}) ORDER BY kind='list' DESC, priority DESC, "
+                       f"EXISTS(SELECT 1 FROM lists l WHERE l.seed=jobs.seed AND l.direction=jobs.direction AND l.state='running') DESC, id LIMIT 1",
                        (ts, *kinds)).fetchone()
     if not job:
         conn.commit()
@@ -79,7 +79,8 @@ def ext_next(conn, q, b):
     if job['kind'] == 'list':
         conn.execute("UPDATE lists SET state='running', updated_at=? WHERE seed=? AND direction=?",
                      (ts, job['seed'], job['direction']))
-        seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (job['seed'],)).fetchone()
+        seed = conn.execute('SELECT coalesce(s.ig_id, p.ig_id) AS ig_id FROM seeds s LEFT JOIN people p ON p.handle=s.handle '
+                            'WHERE s.handle=?', (job['seed'],)).fetchone()
         lst = conn.execute('SELECT cursor FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
         out = {'id': job['id'], 'kind': 'list', 'seed': job['seed'], 'ig_id': seed and seed['ig_id'],
                'direction': job['direction'], 'cursor': lst and lst['cursor']}
@@ -110,10 +111,14 @@ def ext_list_page(conn, q, b):
         conn.commit()
         return {'received': received, 'duplicate': True}
     done = bool(b.get('done'))
+    total = b.get('total')
+    if total is None:  # the seed's own profile (often captured passively) knows the list size
+        row = conn.execute(f"SELECT {'followers' if direction == 'followers' else 'following'} FROM people WHERE handle=?", (seed,)).fetchone()
+        total = row[0] if row else None
     conn.execute('INSERT INTO lists(seed, direction, state, cursor, received, total, updated_at) VALUES(?,?,?,?,?,?,?) '
                  'ON CONFLICT DO UPDATE SET state=excluded.state, cursor=excluded.cursor, received=excluded.received, '
                  'total=coalesce(excluded.total, total), error=NULL, updated_at=excluded.updated_at',
-                 (seed, direction, 'done' if done else 'running', b.get('next_cursor'), received, b.get('total'), ts))
+                 (seed, direction, 'done' if done else 'running', b.get('next_cursor'), received, total, ts))
     conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0 WHERE kind='list' AND seed=? AND direction=? "
                  "AND state IN ('queued','leased')", ('done' if done else 'queued', seed, direction))
     conn.commit()
@@ -141,7 +146,7 @@ def ext_error(conn, q, b):
     code, ts = b.get('code'), db.now()
     if code in ('challenge', 'login'):  # needs Michael; the UI resume clears it
         db.set_setting(conn, 'paused', True)
-    if code in ('rate_limit', 'soft_block') or b.get('retry_at'):
+    if code in ('rate_limit', 'soft_block'):
         until = utc(b['retry_at']) if b.get('retry_at') else datetime.now(timezone.utc) + timedelta(minutes=15)
         db.set_setting(conn, 'cooldown', iso(until))
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts})
@@ -334,7 +339,7 @@ def api_scraper(conn, q, b):
                     'version': ext.get('version'), 'state': ext.get('state'),
                     'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
                     'today': ext.get('today'), 'budget': db.get_setting(conn, 'budget'),
-                    'last_seen': ext.get('last_seen'),
+                    'last_seen': ext.get('last_seen'), 'activity': ext.get('activity'), 'text': ext.get('text'),
                     'last_error': ext.get('last_error') or (db.get_setting(conn, 'last_error') or {}).get('message')},
             'paused': bool(db.get_setting(conn, 'paused')),
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
@@ -498,6 +503,8 @@ def qualify_batch(conn, limit=200):
 
 
 def llm_step(conn, skip):
+    if not db.get_setting(conn, 'qualify'):
+        return None
     rows = conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                         "AND v.model='rules' AND v.updated_at=p.updated_at ORDER BY v.prefilter DESC LIMIT 50").fetchall()
     p = next((dict(r) for r in rows if skip.get(r['id'], 0) < datetime.now().timestamp()), None)
@@ -518,6 +525,8 @@ def llm_step(conn, skip):
 
 
 def plan_profiles(conn):
+    if not db.get_setting(conn, 'qualify'):  # collection first: bios are read only once qualification is switched on
+        return 0
     budget = db.get_setting(conn, 'budget')
     ext = db.get_setting(conn, 'ext') or {}
     today = datetime.now(timezone.utc).date().isoformat()
@@ -559,7 +568,7 @@ def fetch_pic(url):
 def pfp_step(conn):
     r = conn.execute('SELECT p.id, p.pic_url FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                      'WHERE p.pic_url IS NOT NULL AND p.pic_file IS NULL '
-                     'ORDER BY v.score IS NULL, v.score DESC, p.first_seen DESC LIMIT 1').fetchone()
+                     'ORDER BY p.updated_at DESC LIMIT 1').fetchone()
     if not r:
         return False
     data = fetch_pic(r['pic_url'])

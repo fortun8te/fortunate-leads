@@ -63,18 +63,18 @@ test('mapProfile: web_profile_info / GraphQL shape, private', () => {
   assert.equal(FL.mapProfile({ pk: 1 }), null);
 });
 
-test('pacing: list gaps 7-14 s, break of 3-6 min every 20-30 pages', () => {
-  const st = FL.fresh(); st.breakEvery = 20;
+test('pacing: list gaps 7-12 s, break of 90-180 s every 40-60 pages', () => {
+  const st = FL.fresh(); st.breakEvery = 40;
   let t = T0;
-  for (let i = 1; i <= 19; i++) {
+  for (let i = 1; i <= 39; i++) {
     FL.afterRequest(st, 'list', t);
-    assert.ok(st.nextAt - t >= 7e3 && st.nextAt - t <= 14e3);
+    assert.ok(st.nextAt - t >= 7e3 && st.nextAt - t <= 12e3);
     t = st.nextAt;
   }
   FL.afterRequest(st, 'list', t);
-  assert.ok(st.nextAt - t >= 7e3 + 3 * MIN && st.nextAt - t <= 14e3 + 6 * MIN);
-  assert.ok(st.breakEvery >= 20 && st.breakEvery <= 30);
-  assert.equal(st.pages, 0); assert.equal(st.today.list, 20);
+  assert.ok(st.nextAt - t >= 7e3 + 90e3 && st.nextAt - t <= 12e3 + 180e3);
+  assert.ok(st.breakEvery >= 40 && st.breakEvery <= 60);
+  assert.equal(st.pages, 0); assert.equal(st.today.list, 40);
 });
 test('pacing: profile gap 35-70 s', () => {
   for (const r of [() => 0, () => 1, Math.random]) {
@@ -83,10 +83,10 @@ test('pacing: profile gap 35-70 s', () => {
     assert.equal(st.profileNextAt, st.nextAt);
   }
 });
-test('cooldown escalates 30 → 60 min, then 3 strikes stops until midnight', () => {
+test('cooldown escalates 10 → 20 min, then 3 strikes stops until midnight', () => {
   const st = FL.fresh();
-  FL.applyHit(st, T0, null); assert.equal(st.cooldownUntil, T0 + 30 * MIN);
-  FL.applyHit(st, T0 + HOUR, null); assert.equal(st.cooldownUntil, T0 + HOUR + 60 * MIN);
+  FL.applyHit(st, T0, null); assert.equal(st.cooldownUntil, T0 + 10 * MIN);
+  FL.applyHit(st, T0 + HOUR, null); assert.equal(st.cooldownUntil, T0 + HOUR + 20 * MIN);
   FL.applyHit(st, T0 + 3 * HOUR, null);
   assert.equal(st.cooldownUntil, FL.nextMidnight(T0)); // 10:00 + 3h + 2h < midnight
 });
@@ -94,7 +94,7 @@ test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when long
   const st = FL.fresh();
   FL.applyHit(st, T0, null);
   FL.applyHit(st, T0 + DAY + 1, null);
-  assert.equal(st.hits.length, 1); assert.equal(st.cooldownUntil, T0 + DAY + 1 + 30 * MIN);
+  assert.equal(st.hits.length, 1); assert.equal(st.cooldownUntil, T0 + DAY + 1 + 10 * MIN);
   const s2 = FL.fresh(); FL.applyHit(s2, T0, T0 + 5 * HOUR); assert.equal(s2.cooldownUntil, T0 + 5 * HOUR);
   const s3 = FL.fresh(); s3.hits = [T0 - 1, T0 - 2, T0 - 3, T0 - 4, T0 - 5, T0 - 6, T0 - 7, T0 - 8, T0 - 9, T0 - 10, T0 - 11];
   FL.applyHit(s3, T0, null); assert.ok(s3.cooldownUntil <= T0 + DAY);
@@ -102,10 +102,10 @@ test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when long
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
   for (let i = 0; i < 150; i++) FL.afterRequest(st, 'profile', T0);
-  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 500, profile: 0 });
-  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 500, profile: 50 });
+  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 2000, profile: 0 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 2000, profile: 50 });
   assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 300 }); // profile hard cap
-  assert.deepEqual(FL.budgetLeft(st, null, FL.nextMidnight(T0) + 1), { list: 500, profile: 150 });
+  assert.deepEqual(FL.budgetLeft(st, null, FL.nextMidnight(T0) + 1), { list: 2000, profile: 150 });
   FL.tally(st, T0 + DAY, 25, 1); FL.tally(st, T0 + DAY, 50, 0);
   assert.deepEqual([st.today.people, st.today.bios], [75, 1]);
 });
@@ -119,7 +119,8 @@ test('outbox: keeps order, stops on offline, drops rejected', async () => {
 });
 test('statusOf: badge and state', () => {
   const st = FL.fresh();
-  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Running', badge: '' });
+  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Scraping', badge: '' });
+  assert.equal(FL.statusOf({ ...st, nextAt: T0 + 8e3 }, {}, T0).text, 'Next request in 8s');
   assert.equal(FL.statusOf(st, { localPaused: true }, T0).badge, '‖');
   assert.equal(FL.statusOf(st, { noTab: true }, T0).text, 'Open Instagram');
   assert.equal(FL.statusOf({ ...st, cooldownUntil: T0 + 25 * MIN }, {}, T0).badge, '25m');

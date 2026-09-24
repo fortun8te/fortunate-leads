@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 
 PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified', 'bio', 'website', 'category',
                  'followers', 'following', 'posts', 'is_business', 'bio_at')
-DEFAULTS = {'paused': False, 'budget': {'list': 500, 'profile': 150}}
+DEFAULTS = {'paused': False, 'budget': {'list': 2000, 'profile': 150}}
 
 
 def now():

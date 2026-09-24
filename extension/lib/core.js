@@ -2,10 +2,10 @@
 (function (root) {
   const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
   const PACE = {
-    listGap: [7e3, 14e3], breakEvery: [20, 30], breakLen: [3 * MIN, 6 * MIN],
-    profileGap: [35e3, 70e3], cooldownBase: 30 * MIN, cooldownCap: DAY, strikes: 3,
+    listGap: [7e3, 12e3], breakEvery: [40, 60], breakLen: [90e3, 180e3],
+    profileGap: [35e3, 70e3], cooldownBase: 10 * MIN, cooldownCap: DAY, strikes: 3,
   };
-  const BUDGET = { list: 500, profile: 150 }, PROFILE_CAP = 300; // pages/day, reads/day; profile hard cap
+  const BUDGET = { list: 2000, profile: 150 }, PROFILE_CAP = 300; // pages/day, reads/day; profile hard cap
   const rand = (lo, hi, r = Math.random) => Math.round(lo + (hi - lo) * r());
 
   // ---- Instagram response classification -------------------------------
@@ -147,7 +147,9 @@
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!' };
     if (ctx.noTab) return { state: 'idle', text: 'Open Instagram', badge: '!' };
     if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '' };
-    return { state: ctx.job ? 'running' : 'idle', text: ctx.job ? 'Running' : 'Idle, queue empty', badge: '' };
+    if (ctx.job) return { state: 'running', text: 'Scraping', badge: '' };
+    if (st.nextAt > now) return { state: 'running', text: 'Next request in ' + Math.ceil((st.nextAt - now) / 1e3) + 's', badge: '' };
+    return { state: 'idle', text: 'Idle, queue empty', badge: '' };
   }
 
   const api = { PACE, BUDGET, PROFILE_CAP, budgetOf, tally, MIN, HOUR, DAY, classify, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight,

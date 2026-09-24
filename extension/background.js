@@ -50,7 +50,8 @@ async function heartbeat(force) {
   const st = await loadSt(), s = await status(st);
   try {
     const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: st.cooldownUntil > Date.now() ? iso(st.cooldownUntil) : null,
-      today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')), last_error: st.hold ? st.hold.message : st.lastError });
+      today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')), last_error: st.hold ? st.hold.message : st.lastError,
+      activity: mem.label || null, text: s.text, people_today: st.today.people || 0 });
     mem.offline = false;
     await applyServer(r.json);
   } catch { mem.offline = true; }
@@ -138,9 +139,9 @@ async function runList(job, tab) {
   let igId = job.ig_id, total = null;
   mem.label = '@' + job.seed + ' ' + job.direction + ' · page ' + ((mem.pages[key] || 0) + 1);
   if (!igId) {
-    const { res, bad } = await igRequest(tab, IG + '/api/v1/users/web_profile_info/?username=' + encodeURIComponent(job.seed), 'list');
-    const p = !bad && FL.mapProfile(FL.userOf(res.json));
-    if (bad || !p || !p.ig_id) return fail(job, bad || { code: 'not_found', status: res.status }, '@' + job.seed + ' lookup');
+    // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
+    const p = await lookupViaPage(job.seed);
+    if (!p || !p.ig_id) return fail(job, { code: 'other', status: 0 }, '@' + job.seed + ' lookup');
     igId = p.ig_id;
     total = job.direction === 'followers' ? p.followers : p.following;
     if (!(await waitUntil((await loadSt()).nextAt))) return;
@@ -158,11 +159,15 @@ async function runList(job, tab) {
 }
 async function runProfile(job, tab) {
   mem.label = '@' + job.handle + ' profile';
-  const url = job.ig_id ? IG + '/api/v1/users/' + job.ig_id + '/info/'
-    : IG + '/api/v1/users/web_profile_info/?username=' + encodeURIComponent(job.handle);
-  const { res, bad } = await igRequest(tab, url, 'profile');
-  const p = !bad && FL.mapProfile(FL.userOf(res.json));
-  if (bad || !p) return fail(job, bad ? { ...bad, status: res.status } : { code: 'other', status: res.status }, mem.label);
+  let p;
+  if (job.ig_id) {
+    const { res, bad } = await igRequest(tab, IG + '/api/v1/users/' + job.ig_id + '/info/', 'profile');
+    p = !bad && FL.mapProfile(FL.userOf(res.json));
+    if (bad || !p) return fail(job, bad ? { ...bad, status: res.status } : { code: 'other', status: res.status }, mem.label);
+  } else {
+    p = await lookupViaPage(job.handle);
+    if (!p) return fail(job, { code: 'not_found', status: 0 }, mem.label);
+  }
   await markSeen(p.handle);
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
   await queue('/api/ext/profile', { job_id: job.id, profile: p });
@@ -219,8 +224,23 @@ async function loop() {
 }
 
 // ---- passive capture from normal browsing (zero extra requests) -----------
+const waiters = {};
+async function lookupViaPage(handle) {
+  const key = handle.toLowerCase();
+  let tab;
+  try {
+    const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
+    tab = await chrome.tabs.create({ url: IG + '/' + encodeURIComponent(handle) + '/', active: false });
+    await editSt((st) => FL.afterRequest(st, 'list', Date.now()));
+    return await got;
+  } finally {
+    delete waiters[key];
+    if (tab) chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
 async function passive(user) {
   const p = FL.mapProfile(user);
+  if (p && p.handle && waiters[p.handle.toLowerCase()]) waiters[p.handle.toLowerCase()](p);
   if (!p || !p.ig_id || p.bio === null || !(await markSeen(p.handle))) return;
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
   await queue('/api/ext/profile', { job_id: null, profile: p });
@@ -245,6 +265,8 @@ loop();
 chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {
   if (sender.origin !== SERVER || msg?.type !== 'RELOAD') return false;
   respond({ ok: true, version: VERSION });
-  setTimeout(() => chrome.runtime.reload(), 200);
+  // clearCooldown: only for hits that weren't account limits (e.g. the retired web_profile_info lookup).
+  const clear = msg.clearCooldown ? editSt((st) => { st.cooldownUntil = 0; st.hits = []; st.lastError = null; }) : Promise.resolve();
+  clear.finally(() => setTimeout(() => chrome.runtime.reload(), 200));
   return false;
 });

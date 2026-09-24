@@ -111,10 +111,7 @@ class ServerTest(unittest.TestCase):
         s = self.call('/api/scraper')[1]
         self.assertTrue(s['ext']['cooldown_until'].startswith('2099-01-01'))
         self.assertEqual(s['queue']['list'], 1)
-        self.assertIsNone(self.call('/api/ext/next')[1]['job'])
-        db.set_setting(self.conn, 'cooldown', None)
-        self.conn.commit()
-        job = self.call('/api/ext/next')[1]['job']
+        job = self.call('/api/ext/next')[1]['job']  # the extension enforces cooldowns; the server just records them
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'private', 'retry_at': None, 'message': 'private'})
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='a'").fetchone()[0], 'private')
         self.assertIsNone(self.call('/api/ext/next')[1]['job'])
@@ -126,15 +123,15 @@ class ServerTest(unittest.TestCase):
         self.call('/api/scraper/seeds', {'handles': ['s1'], 'directions': ['following']})
         self.assertEqual(self.call('/api/ext/next?kinds=profile')[1]['job']['kind'], 'profile')
         nxt = self.call('/api/ext/next')[1]
-        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 500, 'profile': 150}, False))
+        self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 2000, 'profile': 150}, False))
         self.assertIsNone(self.call('/api/ext/next?kinds=list')[1]['job'])
         self.call('/api/scraper/pause', {'paused': True})
-        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 500, 'profile': 150},
+        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 2000, 'profile': 150},
                                                          'job': None, 'cooldown_until': None})
         self.call('/api/scraper/pause', {'paused': False})
         self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})
         hb = self.call('/api/ext/heartbeat', {'version': '1', 'state': 'idle', 'today': {'list': 1, 'profile': 2}})[1]
-        self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 600, 'profile': 200}})
+        self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}})
         self.assertTrue(self.call('/api/scraper')[1]['ext']['online'])
         self.call('/api/ext/error', {'job_id': None, 'code': 'challenge', 'retry_at': None, 'message': 'checkpoint'})
         self.assertTrue(self.call('/api/ext/next')[1]['paused'])
@@ -148,6 +145,8 @@ class ServerTest(unittest.TestCase):
         db.set_setting(self.conn, 'budget', {'list': 10, 'profile': 2})
         self.conn.commit()
         server.qualify_batch(self.conn)
+        self.assertEqual(server.plan_profiles(self.conn), 0)  # off until qualification is switched on
+        db.set_setting(self.conn, 'qualify', True)
         self.assertEqual(server.plan_profiles(self.conn), 2)
         self.assertEqual([r[0] for r in self.conn.execute("SELECT handle FROM jobs ORDER BY priority DESC")], ['p1', 'p0'])
         self.assertEqual(server.plan_profiles(self.conn), 0)
