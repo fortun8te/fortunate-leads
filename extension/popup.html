@@ -2,13 +2,22 @@
 <html><head><meta charset="utf-8"><link rel="stylesheet" href="popup.css"><title>Fortunate Leads</title></head>
 <body>
   <div class="state"><i id="sq" class="sq"></i><span id="state">Loading</span><span id="ver" class="dim"></span></div>
+  <div id="detail" class="job"></div>
   <div id="job" class="job"></div>
   <dl>
     <dt>Today</dt><dd id="today">–</dd>
-    <dt>Speed</dt><dd id="speed">–</dd>
     <dt>Last hour</dt><dd id="hour">–</dd>
+    <dt>Lists</dt><dd id="lists">–</dd>
+    <dt>Bios</dt><dd id="bios">–</dd>
+    <dt>Limits</dt><dd id="limits">–</dd>
+    <dt id="boxdt" hidden>Outbox</dt><dd id="box" hidden>–</dd>
   </dl>
-  <div id="error" class="error"></div>
-  <div class="row"><button id="toggle">Pause</button><button id="open">Open workspace</button></div>
+  <div id="note" class="note"></div>
+  <div id="errwrap" class="error" hidden>
+    <div id="error"></div>
+    <details id="raw"><summary id="rawsum">Raw sample</summary><pre id="sample"></pre></details>
+  </div>
+  <div class="row"><button id="toggle">Pause</button><button id="copy">Copy debug</button></div>
+  <div class="row"><button id="open">Open workspace</button></div>
   <script src="popup.js"></script>
 </body></html>

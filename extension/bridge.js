@@ -11,7 +11,7 @@
   function scan(text) {
     if (typeof text !== 'string' || text.length > 8e6 || !text.includes('biography')) return;
     for (const line of text.split('\n')) {
-      let root; try { root = JSON.parse(line); } catch { continue; }
+      let root; try { root = JSON.parse(line.replace(/^\s*for\s*\(;;\);/, '')); } catch { continue; }
       const stack = [root];
       for (let n = 0; stack.length && n < 30000; n++) {
         const o = stack.pop();

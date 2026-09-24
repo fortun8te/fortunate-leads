@@ -19,7 +19,7 @@ test('classify: soft blocks', () => {
 });
 test('classify: rate limits incl. Retry-After and 401 please-wait', () => {
   const r = FL.classify({ status: 429, text: '', retryAfter: '120' }, 'list', T0);
-  assert.deepEqual(r, { code: 'rate_limit', retryAt: T0 + 120e3 });
+  assert.deepEqual(r, { code: 'rate_limit', retryAt: T0 + 120e3, reason: 'http_429' });
   assert.equal(FL.classify(res({ status: 'fail', message: 'Please wait a few minutes before you try again.' }), 'list').code, 'rate_limit');
   assert.equal(FL.classify({ status: 401, text: '{"message":"Please wait a few minutes"}' }, 'list').code, 'rate_limit');
 });
@@ -34,7 +34,7 @@ test('classify: challenge and login', () => {
 test('classify: not found, private, network', () => {
   assert.equal(FL.classify({ status: 404, text: '' }, 'profile').code, 'not_found');
   assert.equal(FL.classify(res({ message: 'Not authorized to view user', status: 'fail' }), 'list').code, 'private');
-  assert.equal(FL.classify({ status: 0, text: 'TypeError' }, 'list').code, 'other');
+  assert.equal(FL.classify({ status: 0, text: 'TypeError' }, 'list').code, 'network'); // local: never posted as a job error
 });
 
 test('parsePage maps users to contract fields', () => {
@@ -85,19 +85,20 @@ test('pacing: profile gap 35-70 s', () => {
 });
 test('cooldown escalates 10 → 20 min, then 3 strikes stops until midnight', () => {
   const st = FL.fresh();
-  FL.applyHit(st, T0, null); assert.equal(st.cooldownUntil, T0 + 10 * MIN);
-  FL.applyHit(st, T0 + HOUR, null); assert.equal(st.cooldownUntil, T0 + HOUR + 20 * MIN);
+  FL.applyHit(st, T0, null); assert.equal(st.cool.list.until, T0 + 10 * MIN);
+  FL.applyHit(st, T0 + HOUR, null); assert.equal(st.cool.list.until, T0 + HOUR + 20 * MIN);
   FL.applyHit(st, T0 + 3 * HOUR, null);
-  assert.equal(st.cooldownUntil, FL.nextMidnight(T0)); // 10:00 + 3h + 2h < midnight
+  assert.equal(st.cool.list.until, FL.nextMidnight(T0)); // 10:00 + 3h + 2h < midnight
+  assert.equal(st.cool.profile.until, 0); // bios have their own bucket
 });
 test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when longer', () => {
   const st = FL.fresh();
   FL.applyHit(st, T0, null);
   FL.applyHit(st, T0 + DAY + 1, null);
-  assert.equal(st.hits.length, 1); assert.equal(st.cooldownUntil, T0 + DAY + 1 + 10 * MIN);
-  const s2 = FL.fresh(); FL.applyHit(s2, T0, T0 + 5 * HOUR); assert.equal(s2.cooldownUntil, T0 + 5 * HOUR);
-  const s3 = FL.fresh(); s3.hits = [T0 - 1, T0 - 2, T0 - 3, T0 - 4, T0 - 5, T0 - 6, T0 - 7, T0 - 8, T0 - 9, T0 - 10, T0 - 11];
-  FL.applyHit(s3, T0, null); assert.ok(s3.cooldownUntil <= T0 + DAY);
+  assert.equal(st.cool.list.hits.length, 1); assert.equal(st.cool.list.until, T0 + DAY + 1 + 10 * MIN);
+  const s2 = FL.fresh(); FL.applyHit(s2, T0, T0 + 5 * HOUR); assert.equal(s2.cool.list.until, T0 + 5 * HOUR);
+  const s3 = FL.fresh(); s3.cool.list.hits = [T0 - 2 * HOUR, T0 - 3 * HOUR, T0 - 4 * HOUR, T0 - 5 * HOUR, T0 - 6 * HOUR, T0 - 7 * HOUR, T0 - 8 * HOUR];
+  FL.applyHit(s3, T0, null); assert.ok(s3.cool.list.until <= T0 + DAY);
 });
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
@@ -119,12 +120,13 @@ test('outbox: keeps order, stops on offline, drops rejected', async () => {
 });
 test('statusOf: badge and state', () => {
   const st = FL.fresh();
-  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Scraping', badge: '' });
+  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Scraping', badge: '', key: 'run' });
   assert.equal(FL.statusOf({ ...st, nextAt: T0 + 8e3 }, {}, T0).text, 'Next request in 8s');
   assert.equal(FL.statusOf(st, { localPaused: true }, T0).badge, '‖');
   assert.equal(FL.statusOf(st, { noTab: true }, T0).text, 'Open Instagram');
-  assert.equal(FL.statusOf({ ...st, cooldownUntil: T0 + 25 * MIN }, {}, T0).badge, '25m');
-  assert.equal(FL.statusOf({ ...st, cooldownUntil: T0 + 5 * HOUR }, {}, T0).state, 'cooldown');
+  const cool = (l, p) => ({ ...st, cool: { list: { until: l, hits: [] }, profile: { until: p, hits: [] } } });
+  assert.equal(FL.statusOf(cool(T0 + 25 * MIN, T0 + 25 * MIN), {}, T0).badge, '25m');
+  assert.equal(FL.statusOf(cool(T0 + 5 * HOUR, T0 + 5 * HOUR), {}, T0).state, 'cooldown');
   assert.equal(FL.statusOf({ ...st, hold: { message: 'x' } }, {}, T0).badge, '!');
 });
 
@@ -161,9 +163,9 @@ test('rate: pages/people in last hour and last hit', () => {
   FL.logPage(st, T0 - 2 * HOUR, 50);
   FL.logPage(st, T0 - 10 * MIN, 25);
   FL.logPage(st, T0, 20);
-  assert.deepEqual(FL.rateOf(st, T0), { pages_hour: 2, people_hour: 45, last_hit_at: null });
+  assert.deepEqual(FL.rateOf(st, T0), { pages_hour: 2, people_hour: 45, bios_hour: 0, requests_hour: 0, hits_24h: 0, last_hit_at: null });
   assert.equal(st.log.length, 2);
   FL.applyHit(st, T0 - 5 * MIN);
   assert.equal(FL.rateOf(st, T0).last_hit_at, new Date(T0 - 5 * MIN).toISOString());
-  assert.deepEqual(FL.rateOf({}, T0), { pages_hour: 0, people_hour: 0, last_hit_at: null });
+  assert.deepEqual(FL.rateOf({}, T0), { pages_hour: 0, people_hour: 0, bios_hour: 0, requests_hour: 0, hits_24h: 0, last_hit_at: null });
 });
