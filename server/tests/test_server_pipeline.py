@@ -279,7 +279,8 @@ class LLMSettingsTest(Base):
         self.assertNotIn('aaaa', json.dumps(out))                                   # never the key itself
         self.assertEqual([(p['id'], p['key'], p['source']) for p in out['providers']], [('proxy', None, None), (kid, 'sk-…wxyz', 'file')])
         t = self.call(f'/api/llm/keys/{kid}/test', {})[1]
-        self.assertEqual((t['passed'], t['error']), (False, 'not reachable (URLError)'))
+        self.assertEqual((t['passed'], t['state']), (False, 'unreachable'))
+        self.assertTrue(t['error'].startswith('not reachable ('))
         self.assertEqual(self.call('/api/llm/keys/0123456789/test', {})[0], 404)
         self.assertEqual(self.call('/api/llm/models', {'models': ['bad model']})[0], 400)
         m = self.call('/api/llm/models', {'models': ['a/b:free', 'c/d'], 'daily_limit': 50})[1]

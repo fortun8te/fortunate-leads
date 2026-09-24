@@ -147,20 +147,19 @@ class LaneTest(Base):
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
         self.seeds('s1')
-        got = self.nxt('a')['job']                     # Michael's own account: auto main, bios only
-        self.assertEqual(got['kind'], 'profile')
+        got = self.nxt('a', 'list')['job']              # Michael's own account, alone: auto main, but still reads lists
+        self.assertEqual(got['kind'], 'list')
         self.assertTrue(self.call('/api/accounts')[1]['accounts'][0]['is_main'])
-        self.assertIsNone(self.nxt('a', 'list')['job'])
-        self.assertIn('No online account takes lists — set one to lists or both', [x['text'] for x in self.call('/api/accounts')[1]['alerts']])
-        jb = self.nxt('b')['job']
+        self.assertIn('Your main account is the only one online, so it reads lists too — add a second account to protect it',
+                      [x['text'] for x in self.call('/api/accounts')[1]['alerts']])
+        jb = self.nxt('b')['job']                       # a second (non-main) account takes over the lists
         self.assertEqual(jb['kind'], 'list')
-        self.call('/api/accounts/lane-b', {'is_main': True})   # b made main while it holds a list: the list is freed
-        self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (jb['id'],))
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        self.assertEqual(self.nxt('a', 'list,profile')['job']['kind'], 'profile')   # main: bios only now
+        self.call('/api/accounts/lane-b', {'role': 'bios'})   # nobody else takes lists: the main account does again
+        self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE kind='list'")
         self.conn.commit()
-        self.assertIsNone(self.nxt('b', 'list')['job'])
-        db.set_setting(self.conn, 'main_list_share', 0.25)
-        self.conn.commit()
-        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 's1')   # a low list share when nobody else is busy
+        self.assertEqual(self.nxt('a', 'list')['job']['kind'], 'list')
 
     def test_default_lane_backwards_compatible(self):
         self.seeds('s1')

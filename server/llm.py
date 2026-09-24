@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import re
+import ssl
 import threading
 import time
 import urllib.error
@@ -28,6 +29,44 @@ REPLY_MAX = 1_000_000
 BACKOFF_BASE, BACKOFF_CAP = 30, 3600       # s, per (provider, model) after 429 / 402 / 5xx without Retry-After
 DOWN_BASE, DOWN_CAP = 10, 300              # s, whole provider after a transport error (proxy not running)
 FREE_DAILY = 1000                          # requests per key and free model per UTC day (OpenRouter free tier with credits)
+MODELS_URL = 'https://openrouter.ai/api/v1/models'
+KEY_URL = 'https://openrouter.ai/api/v1/key'
+MODELS_EVERY = 24 * 3600                   # s between refreshes of the free / stealth model list
+
+
+def _ssl():
+    """python.org / Homebrew Pythons ship without a CA bundle: every https call to OpenRouter failed with
+    CERTIFICATE_VERIFY_FAILED and showed as 'not reachable'. Use the system bundle (or certifi when installed)."""
+    for f in ('/etc/ssl/cert.pem', '/opt/homebrew/etc/ca-certificates/cert.pem'):
+        if Path(f).is_file():
+            return ssl.create_default_context(cafile=f)
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+SSL = _ssl()
+
+
+def _opener(direct):
+    """direct: the local proxy (no system proxy settings in between)."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}) if direct else urllib.request.BaseHandler(),
+                                       urllib.request.HTTPSHandler(context=SSL))
+
+
+def _is_spent(code, text):
+    """429 / 402 that means 'this key used up its free requests for today' rather than 'slow down'."""
+    t = (text or '').lower()
+    return code == 402 or code == 429 and ('per-day' in t or 'per day' in t or 'daily' in t or 'free-models-per' in t)
+
+
+def _next_midnight():
+    d = datetime.now(timezone.utc)
+    return (d.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() + 86400)
+
+
 HEADERS = {'Content-Type': 'application/json', 'HTTP-Referer': 'http://127.0.0.1:8777', 'X-Title': 'Fortunate Leads'}
 
 
@@ -79,6 +118,8 @@ class Providers:
         self.disabled = set()  # pid (bad key)
         self.count = {}       # (pid, model) -> (day, n)
         self.errors = {}      # pid -> str
+        self.spent = {}       # pid -> epoch s: this key's free daily requests are used up until then
+        self.checked = {}     # pid -> (epoch s, state) from the last test
         self.rr = 0
         self.configure(keys, models, daily_limit, env_keys)
 
@@ -93,6 +134,8 @@ class Providers:
                 for k in [k for k in d if k[0] not in live]:
                     del d[k]
             self.disabled &= live
+            self.spent = {k: v for k, v in self.spent.items() if k in live}
+            self.checked = {k: v for k, v in self.checked.items() if k in live}
             self.errors = {k: v for k, v in self.errors.items() if k in live}
 
     @classmethod
@@ -106,7 +149,7 @@ class Providers:
         return [('proxy', self.proxy, None)] + [(key_id(k), OPENROUTER, k) for k in self.keys]
 
     def _usable(self, pid, key, model, now):
-        if pid in self.disabled:
+        if pid in self.disabled or self.spent.get(pid, 0) > now:
             return False
         for k in ((pid, model), (pid, '*')):
             if self.cool.get(k, (0, 0))[0] > now:
@@ -154,11 +197,13 @@ class Providers:
                 try:
                     content = _post(url, key, model, messages, min(timeout, left), max_tokens, json_mode)
                 except _Http as e:
-                    last = f'{model}: HTTP {e.code}'
+                    last = f'{model}: HTTP {e.code}' + (f' {e.text[:120]}' if e.text else '')
                     with self.lock:
                         self.errors[pid] = last
                         if e.code in (401, 403) and key:
                             self.disabled.add(pid)
+                        elif key and _is_spent(e.code, e.text):
+                            self.spent[pid] = e.reset or _next_midnight()
                         elif e.code in (402, 408, 429) or e.code >= 500:
                             self._backoff((pid, model), e.retry_after, BACKOFF_BASE, BACKOFF_CAP)
                     continue
@@ -176,40 +221,81 @@ class Providers:
                 with self.lock:
                     self.cool.pop((pid, model), None)
                     self.cool.pop((pid, '*'), None)
+                    self.errors.pop(pid, None)
+                    self.checked[pid] = (time.time(), 'ok')
                 return content, model
         raise Unavailable(last)
 
     def test(self, pid, timeout=20):
-        """One tiny request with this key (or the proxy) on the first model. -> {passed, model, ms, error}.
+        """One tiny request with this key (or the proxy) on the first usable model -> {passed, state, model, ms, error}.
+        state: ok | spent (free daily requests used up; back at `until`) | broken (key refused) | unreachable | error.
         A key that answers is enabled again (a 401 had disabled it until restart)."""
         with self.lock:
             found = next(((u, k) for p, u, k in self._providers() if p == pid), None)
-            model = self.models[0]
+            models = list(self.models)
         if not found:
             raise LookupError('no such key')
         url, key = found
         t = time.monotonic()
         msgs = [{'role': 'user', 'content': 'Reply with the JSON object {"ok": true}.'}]
-        try:
-            _post(url, key, model, msgs, timeout, 20, True)
-        except _Http as e:
-            err = f'HTTP {e.code}' + {401: ' (key refused)', 402: ' (no credits)', 429: ' (rate limited)'}.get(e.code, '')
-        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
-            err = 'not reachable (' + type(e).__name__ + ')'
-        except ValueError as e:
-            err = str(e)[:160]
-        else:
-            err = None
+        err, state, until, model = None, 'ok', None, models[0]
+        for model in models[:3]:   # a model that is down right now says nothing about the key
+            try:
+                _post(url, key, model, msgs, timeout, 20, True)
+            except _Http as e:
+                if e.code in (401, 403):
+                    err, state = f'HTTP {e.code} (key refused)', 'broken' if key else 'error'
+                    break
+                if key and _is_spent(e.code, e.text):
+                    until = e.reset or _next_midnight()
+                    err, state = 'free requests for today used up', 'spent'
+                    break
+                err, state = f'HTTP {e.code}' + (' (rate limited)' if e.code == 429 else
+                                                 ' (proxy could not reach OpenRouter)' if not key and e.code == 502 else ''), 'error'
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+                reason = getattr(e, 'reason', None)
+                err, state = 'not reachable (' + (str(reason)[:80] if reason else type(e).__name__) + ')', 'unreachable'
+                break
+            except ValueError as e:
+                err, state = str(e)[:160], 'error'
+                continue
+            err, state = None, 'ok'
+            break
         with self.lock:
             if key:
                 self._bump(pid, model)
-            if err is None:
+            self.checked[pid] = (time.time(), state)
+            if state == 'ok':
                 self.disabled.discard(pid)
+                self.spent.pop(pid, None)
+                self.errors.pop(pid, None)
                 self.cool.pop((pid, model), None)
                 self.cool.pop((pid, '*'), None)
             else:
                 self.errors[pid] = f'{model}: {err}'
-        return {'passed': err is None, 'model': model, 'ms': round((time.monotonic() - t) * 1000), 'error': err}
+                if state == 'spent':
+                    self.spent[pid] = until
+        return {'passed': state == 'ok', 'state': state, 'model': model, 'ms': round((time.monotonic() - t) * 1000),
+                'error': err, 'until': _iso(until) if until else None}
+
+    def state_of(self, pid, key, now):
+        """Honest one-word status for the UI: ok | spent | broken | cooling | unreachable | error | untested."""
+        if pid in self.disabled:
+            return 'broken'
+        if self.spent.get(pid, 0) > now:
+            return 'spent'
+        if key and self.daily_limit and self.models and all(
+                self.count.get((pid, m), ('', 0)) >= (_today(), self.daily_limit) for m in self.models):
+            return 'spent'
+        if any(u > now for (i, _), (u, _) in self.cool.items() if i == pid):
+            err = self.errors.get(pid) or ''
+            return 'unreachable' if not any(u > now for (i, m), (u, _) in self.cool.items() if i == pid and m != '*') \
+                and 'HTTP' not in err else 'cooling'
+        chk = self.checked.get(pid)
+        if chk:
+            return chk[1] if chk[1] in ('ok', 'error', 'unreachable') else 'ok'
+        return 'error' if self.errors.get(pid) else 'untested'
 
     def status(self):
         now = time.time()
@@ -221,7 +307,9 @@ class Providers:
                 out.append({'id': pid, 'name': 'proxy' if not key else 'openrouter', 'url': url, 'key': mask(key),
                             'source': None if not key else 'env' if key in self.env_keys else 'file',
                             'disabled': pid in self.disabled, 'cooldowns': cools, 'requests_today': today,
-                            'last_error': self.errors.get(pid)})
+                            'last_error': self.errors.get(pid), 'state': self.state_of(pid, key, now),
+                            'spent_until': _iso(self.spent[pid]) if self.spent.get(pid, 0) > now else None,
+                            'checked_at': _iso(self.checked[pid][0]) if pid in self.checked else None})
             return {'providers': out, 'models': list(self.models), 'daily_limit': self.daily_limit}
 
 
@@ -254,8 +342,77 @@ def settings(path=None):
     keys = env + [k.strip() for k in cfg.get('keys') or [] if isinstance(k, str) and k.strip()]
     models = cfg.get('models') if isinstance(cfg.get('models'), list) and cfg['models'] \
         and all(isinstance(m, str) for m in cfg['models']) else None
+    models = model_order(models, cfg.get('auto_models'))
     limit = cfg['daily_limit'] if isinstance(cfg.get('daily_limit'), int) and not isinstance(cfg['daily_limit'], bool) else FREE_DAILY
     return {'keys': keys, 'models': models, 'daily_limit': limit, 'env_keys': env}
+
+
+# ---------- free and stealth models (refreshed daily from the public model list; no key needed) ----------
+
+def is_free(m):
+    pr = m.get('pricing') or {}
+    return str(m.get('id', '')).endswith(':free') or (str(pr.get('prompt')) == '0' and str(pr.get('completion')) == '0')
+
+
+def is_stealth(m):
+    """OpenRouter lists cloaked pre-release models under the `stealth/` namespace ('anonymous model' in the text)."""
+    mid, text = str(m.get('id', '')), (str(m.get('description') or '') + ' ' + str(m.get('name') or '')).lower()
+    return mid.startswith('stealth/') or 'stealth' in text or 'cloaked' in text or 'anonymous' in text and 'model' in text
+
+
+def usable(m):
+    arch = m.get('architecture') or {}
+    outs, ins = arch.get('output_modalities') or ['text'], arch.get('input_modalities') or ['text']
+    mid = str(m.get('id', ''))
+    return 'text' in outs and outs == ['text'] and 'text' in ins and MODEL_RX.fullmatch(mid) is not None \
+        and not mid.startswith('openrouter/') and 'safety' not in mid and 'guard' not in mid
+
+
+def pick_models(data):
+    """-> {'stealth': [...], 'free': [...]} newest first, from the /models JSON."""
+    rows = [m for m in (data.get('data') if isinstance(data, dict) else None) or [] if isinstance(m, dict)]
+    rows = sorted((m for m in rows if is_free(m) and usable(m)), key=lambda m: -(m.get('created') or 0))
+    return {'stealth': [m['id'] for m in rows if is_stealth(m)], 'free': [m['id'] for m in rows if not is_stealth(m)]}
+
+
+def model_order(chosen, auto):
+    """Stealth models first (auto-added), then the chosen list (or the built-in fallback). Models that vanished from
+    the live free list are dropped, but the built-in fallback always stays so there is a working order."""
+    auto = auto if isinstance(auto, dict) else {}
+    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m)]
+    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str)}
+    base = list(chosen or MODELS)
+    if live:
+        base = [m for m in base if m in live] or [m for m in MODELS if m in live] or list(MODELS)
+    return tuple(list(dict.fromkeys(stealth[:3] + base))[:MODELS_MAX])
+
+
+def refresh_models(path=None, force=False, fetch=None):
+    """Fetch the public model list at most once a day; store the free / stealth ids in data/openrouter.json
+    ('auto_models') and reload the pool. Returns the stored record. Never raises on network trouble."""
+    cfg = read_config(path)
+    cur = cfg.get('auto_models') if isinstance(cfg.get('auto_models'), dict) else {}
+    if not force and time.time() - (cur.get('checked') or 0) < MODELS_EVERY:
+        return cur
+    try:
+        if fetch:
+            data = fetch()
+        else:
+            req = urllib.request.Request(MODELS_URL, headers={'User-Agent': 'fortunate-leads', 'Accept': 'application/json'})
+            with _opener(False).open(req, timeout=20) as r:
+                data = json.loads(r.read(20_000_000))
+        picked = pick_models(data)
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
+        rec = dict(cur, checked=time.time(), error=type(e).__name__)
+    else:
+        new = [m for m in picked['stealth'] if m not in (cur.get('stealth') or [])]
+        rec = dict(picked, checked=time.time(), at=_iso(time.time()), error=None, new_stealth=new or cur.get('new_stealth') or [])
+    cfg = read_config(path)   # re-read: keys may have changed meanwhile
+    cfg['auto_models'] = rec
+    write_config(cfg, path)
+    if PROVIDERS[0] is not None:
+        get().reload(path)
+    return rec
 
 
 def add_key(key, path=None):
@@ -299,9 +456,19 @@ def set_models(models=None, daily_limit=None, path=None):
 
 
 class _Http(Exception):
-    def __init__(self, code, retry_after):
+    def __init__(self, code, retry_after, text='', reset=None):
         super().__init__(code)
-        self.code, self.retry_after = code, retry_after
+        self.code, self.retry_after, self.text, self.reset = code, retry_after, text or '', reset
+
+
+def _reset(v):
+    """X-RateLimit-Reset: epoch ms (OpenRouter) or s."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    x = x / 1000 if x > 1e11 else x
+    return x if time.time() < x < time.time() + 2 * 86400 else None
 
 
 def _retry_after(v):
@@ -319,20 +486,24 @@ def _post(url, key, model, messages, timeout, max_tokens, json_mode):
     headers = dict(HEADERS, **({'Authorization': 'Bearer ' + key} if key else {}))
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
     try:
-        with urllib.request.build_opener(urllib.request.ProxyHandler({}) if not key else urllib.request.BaseHandler()).open(
-                req, timeout=timeout) as r:
+        with _opener(not key).open(req, timeout=timeout) as r:
             data = json.loads(r.read(REPLY_MAX))
     except urllib.error.HTTPError as exc:
-        code, ra = exc.code, _retry_after(exc.headers.get('Retry-After') if exc.headers else None)
+        h = exc.headers
+        code, ra = exc.code, _retry_after(h.get('Retry-After') if h else None)
+        try:
+            text = exc.read(4000).decode('utf-8', 'replace')
+        except OSError:
+            text = ''
         exc.close()
-        raise _Http(code, ra) from None
+        raise _Http(code, ra, _error_text(text), _reset(h.get('X-RateLimit-Reset') if h else None)) from None
     if not isinstance(data, dict):
         raise ValueError(f'{model}: reply is not an object')
     if data.get('error'):
         err = data['error']
         code = err.get('code') if isinstance(err, dict) else None
         if isinstance(code, int) and code in (401, 402, 403, 429) or isinstance(code, int) and code >= 500:
-            raise _Http(code, None)
+            raise _Http(code, None, _error_text(json.dumps(data)))
         raise ValueError(f'{model}: ' + str(err)[:160])
     returned = str(data.get('model') or model)
     if returned.split(':')[0] != model.split(':')[0]:
@@ -344,6 +515,17 @@ def _post(url, key, model, messages, timeout, max_tokens, json_mode):
     if not isinstance(content, str) or not content.strip():
         raise ValueError(f'{model}: empty reply')
     return content
+
+
+def _error_text(text):
+    """The human part of an OpenRouter error body (never contains the key)."""
+    try:
+        d = json.loads(text)
+        e = d.get('error') if isinstance(d, dict) else None
+        msg = e.get('message') if isinstance(e, dict) else e
+        return str(msg or '')[:300]
+    except ValueError:
+        return (text or '')[:300]
 
 
 def _today():
