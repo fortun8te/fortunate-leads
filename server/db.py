@@ -12,8 +12,12 @@ CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE TABLE IF NOT EXISTS edges(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
   PRIMARY KEY(seed,person_id,direction));
-CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual')),
+CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
   PRIMARY KEY(person_id,tag));
+CREATE TABLE IF NOT EXISTS tag_rules(id INTEGER PRIMARY KEY, tag TEXT NOT NULL, grp TEXT NOT NULL DEFAULT 'signal',
+  field TEXT NOT NULL CHECK(field IN('bio','name','handle','category','website','any')), match TEXT NOT NULL, created_at TEXT);
+CREATE TABLE IF NOT EXISTS saved_views(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, query TEXT NOT NULL,
+  created_at TEXT);
 CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TEXT, reason TEXT,
   model TEXT, input_hash TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
@@ -22,7 +26,8 @@ CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN(
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
 CREATE INDEX IF NOT EXISTS edges_person ON edges(person_id);
-CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
+CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp);   -- covering: facets, rule hits, tag filters
+CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag);
 CREATE INDEX IF NOT EXISTS verdicts_tier ON verdicts(tier, score);
 CREATE INDEX IF NOT EXISTS verdicts_score ON verdicts(score);
 CREATE INDEX IF NOT EXISTS people_updated ON people(updated_at);
@@ -51,9 +56,37 @@ def connect(path):
     return conn
 
 
+TAGS_V2 = """CREATE TABLE tags_v2(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
+  PRIMARY KEY(person_id,tag))"""
+
+
+def migrate_tags(conn):
+    """DBs created before tag rules have CHECK(source IN('auto','manual')); SQLite can't alter a CHECK, so rebuild the table."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tags'").fetchone()[0]
+    if "'rule'" in sql:
+        return False
+    conn.commit()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('DROP TABLE IF EXISTS tags_v2')
+        conn.execute(TAGS_V2)
+        conn.execute('INSERT INTO tags_v2(person_id, tag, grp, source) SELECT person_id, tag, grp, source FROM tags')
+        conn.execute('DROP TABLE tags')
+        conn.execute('ALTER TABLE tags_v2 RENAME TO tags')
+        conn.execute('CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp)')
+        conn.execute('CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag)')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return True
+
+
 def init(path):
     conn = connect(path)
     conn.executescript(SCHEMA)
+    migrate_tags(conn)
+    conn.execute('DROP INDEX IF EXISTS tags_tag')  # superseded by the covering tags_tag_src
     if 'at' not in {r[1] for r in conn.execute('PRAGMA table_info(pages)')}:  # DBs created before pages were timestamped
         conn.execute('ALTER TABLE pages ADD COLUMN at TEXT')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
@@ -81,6 +114,10 @@ def upsert_person(conn, u, ts=None):
         vals['handle'] = norm_handle(vals['handle'])
     by_id = vals.get('ig_id') and conn.execute('SELECT id FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
     by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id FROM people WHERE handle=?', (vals['handle'],)).fetchone()
+    if not by_id and by_handle and by_handle['ig_id'] and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
+        # a different account now holds this handle: the old row keeps its marks/edges/tags under a parked handle
+        conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
+        by_handle = None
     if by_id and by_handle and by_id['id'] != by_handle['id']:
         if by_handle['ig_id']:  # the handle now belongs to this ig_id; the old holder renamed
             conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))

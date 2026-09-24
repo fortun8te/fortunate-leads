@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402
 import qualify  # noqa: E402
+import rules  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
@@ -25,6 +26,9 @@ STATUSES = ('good', 'maybe', 'no', 'contacted', 'client', 'known')
 PIC_HOSTS = ('.cdninstagram.com', '.fbcdn.net')
 PIC_MAX = 2 * 1024 * 1024
 READ_PRIORITY = 10000
+LEASE_MIN = 10
+PROFILE_MAX_ATTEMPTS = 5   # a profile job whose lease keeps expiring (tab crash, hang) is parked as 'error' after this
+BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
 BUDGET_MAX = {'list': 3000, 'profile': 300}
 
@@ -67,6 +71,9 @@ def ext_next(conn, q, b):
     if st['paused']:  # cooldowns are the extension's job; the server only records them for display
         return dict(st, job=None, cooldown_until=None)
     conn.execute('BEGIN IMMEDIATE')
+    # expired leases are re-leased below; a profile read that never comes back after N leases is parked, not retried forever
+    conn.execute("UPDATE jobs SET state='error', leased_until=NULL WHERE kind='profile' AND state='leased' AND leased_until<? "
+                 "AND attempts>=?", (ts, PROFILE_MAX_ATTEMPTS))
     job = conn.execute(f"SELECT * FROM jobs WHERE (state='queued' OR (state='leased' AND leased_until<?)) "
                        f"AND kind IN ({','.join('?' * len(kinds))}) ORDER BY kind='list' DESC, priority DESC, "
                        f"EXISTS(SELECT 1 FROM lists l WHERE l.seed=jobs.seed AND l.direction=jobs.direction AND l.state='running') DESC, id LIMIT 1",
@@ -75,7 +82,7 @@ def ext_next(conn, q, b):
         conn.commit()
         return dict(st, job=None)
     conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1 WHERE id=?",
-                 (iso(datetime.now(timezone.utc) + timedelta(minutes=10)), job['id']))
+                 (iso(datetime.now(timezone.utc) + timedelta(minutes=LEASE_MIN)), job['id']))
     if job['kind'] == 'list':
         conn.execute("UPDATE lists SET state='running', updated_at=? WHERE seed=? AND direction=?",
                      (ts, job['seed'], job['direction']))
@@ -103,10 +110,13 @@ def ext_list_page(conn, q, b):
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if b.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(b['ig_id']), seed))
+    pids = []
     for u in b.get('users') or []:
         if u.get('handle'):
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
             db.add_edge(conn, seed, pid, direction, ts)
+            pids.append(pid)
+    rules.sync(conn, pids)
     received = conn.execute('SELECT count(*) FROM edges WHERE seed=? AND direction=?', (seed, direction)).fetchone()[0]
     if not fresh:  # outbox retry of a page we already have: never move the cursor back
         conn.commit()
@@ -126,14 +136,32 @@ def ext_list_page(conn, q, b):
     return {'received': received}
 
 
+def count_or_none(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, float) and v == v and abs(v) < 1e12:
+        v = int(v)
+    if isinstance(v, str) and re.fullmatch(r'\s*\d[\d,]*\s*', v):
+        v = int(v.replace(',', ''))
+    return v if isinstance(v, int) and 0 <= v < 10 ** 12 else None
+
+
 def ext_profile(conn, q, b):
-    p = dict(b.get('profile') or {})
-    if not p.get('handle'):
+    p = dict(b.get('profile') or {}) if isinstance(b.get('profile'), dict) else {}
+    if not p.get('handle') or not isinstance(p['handle'], str):
         raise Bad('profile.handle required')
+    if not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
+        p.pop('website', None)  # javascript:, data:, bare text: never stored, never rendered as a link
+    else:
+        p['website'] = p['website'].strip()
+    for k in ('followers', 'following', 'posts'):
+        if k in p:
+            p[k] = count_or_none(p[k])
     ts = db.now()
     p['bio'] = p.get('bio') or ''
     p['bio_at'] = ts
     pid = db.upsert_person(conn, p, ts)
+    rules.sync(conn, [pid])
     handle = db.norm_handle(p['handle'])
     if p.get('ig_id'):
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(p['ig_id']), handle))
@@ -145,13 +173,18 @@ def ext_profile(conn, q, b):
 
 def ext_error(conn, q, b):
     code, ts = b.get('code'), db.now()
-    if code in ('challenge', 'login'):  # needs Michael; the UI resume clears it
-        db.set_setting(conn, 'paused', True)
+    # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
+    # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
     if code in ('rate_limit', 'soft_block'):
         until = utc(b['retry_at']) if b.get('retry_at') else datetime.now(timezone.utc) + timedelta(minutes=15)
         db.set_setting(conn, 'cooldown', iso(until))
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts})
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
+    if job and code not in ('other', 'private', 'not_found'):
+        # rate limits, soft blocks, login walls say nothing about this job: give the lease back to its attempt count,
+        # so attempts = leases that ended in 'other' or expired (the ones that may mean the job itself is broken)
+        conn.execute('UPDATE jobs SET attempts=max(attempts-1, 0) WHERE id=?', (job['id'],))
+        job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if job:  # a late error for a job that already finished must not requeue it
         final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL WHERE id=?',
@@ -191,8 +224,19 @@ def ext_heartbeat(conn, q, b):
 # ---------- UI endpoints ----------
 
 LISTS = '(SELECT count(DISTINCT e.seed) FROM edges e WHERE e.person_id=p.id)'  # distinct seeds a person is linked to
-LEAD_SQL = (f'SELECT p.*, v.tier, v.score, v.role, v.reason, m.status, m.note, {LISTS} AS lists FROM people p '
-            'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id')
+PEOPLE_FROM = 'FROM people p LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id'
+LEAD_SQL = f'SELECT p.*, v.tier, v.score, v.role, v.reason, m.status, m.note, {LISTS} AS lists {PEOPLE_FROM}'
+NOT_ME = 'p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)'
+# manual first, then rule tags, then auto; inside a source: role, niche, signal, size, source
+TAG_ORDER = ("CASE t.source WHEN 'manual' THEN 0 WHEN 'rule' THEN 1 ELSE 2 END, "
+             "CASE t.grp WHEN 'role' THEN 0 WHEN 'niche' THEN 1 WHEN 'signal' THEN 2 WHEN 'size' THEN 3 ELSE 4 END, t.tag")
+MAP_TAGS = 4
+
+
+def chunks(ids, n=900):
+    ids = list(ids)
+    for i in range(0, len(ids), n):
+        yield ids[i:i + n]
 
 
 def lead_rows(conn, rows):
@@ -201,7 +245,7 @@ def lead_rows(conn, rows):
         return []
     marks = ','.join('?' * len(ids))
     tags, via = {}, {}
-    for t in conn.execute(f'SELECT * FROM tags WHERE person_id IN ({marks}) ORDER BY grp, tag', ids):
+    for t in conn.execute(f'SELECT * FROM tags t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
         tags.setdefault(t['person_id'], []).append({'tag': t['tag'], 'grp': t['grp'], 'source': t['source']})
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         via.setdefault(e['person_id'], []).append(e['seed'])
@@ -212,46 +256,93 @@ def lead_rows(conn, rows):
 
 
 def csv(q, key):
-    return [x for x in (q.get(key, [''])[0]).split(',') if x.strip()]
+    return [x.strip() for x in (q.get(key, [''])[0]).split(',') if x.strip()]
 
 
-def api_leads(conn, q, b):
-    where, args = ["p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)"], []
+def qint(q, key):
+    v = q.get(key, [''])[0].strip()
+    if not v:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        raise Bad(f'{key} must be a whole number') from None
+
+
+def lead_filter(q):
+    """Shared by /api/leads, /api/tags (facets) and /api/map. -> (where clauses on p/v/m, args)."""
+    where, args = [], []
+
+    def within(sql, values):  # sql has one {} for the placeholders
+        where.append(sql.format(','.join('?' * len(values))))
+        args.extend(values)
+
     tiers = csv(q, 'tier')
     if tiers:
-        where.append(f"coalesce(v.tier,'unread') IN ({','.join('?' * len(tiers))})")
-        args += tiers
-    for t in csv(q, 'tags'):
-        where.append('p.id IN (SELECT person_id FROM tags WHERE tag=?)')
-        args.append(t)
-    status = q.get('status', [''])[0]
-    if status:
-        where.append('m.status=?')
-        args.append(status)
-    else:
+        within("coalesce(v.tier,'unread') IN ({})", tiers)
+    for t in dict.fromkeys(csv(q, 'tags')):  # all of
+        within('p.id IN (SELECT person_id FROM tags WHERE tag={})', [t])
+    if csv(q, 'any'):  # at least one of
+        within('p.id IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'any'))
+    if csv(q, 'not'):  # none of
+        within('p.id NOT IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'not'))
+    statuses = csv(q, 'status')
+    if not statuses:
         where.append("coalesce(m.status,'')!='no'")
+    elif 'all' not in statuses:
+        named = [s for s in statuses if s != 'none']
+        if any(s not in STATUSES for s in named):
+            raise Bad('bad status')
+        conds = (['m.status IS NULL'] if 'none' in statuses else []) + (['m.status IN ({})'] if named else [])
+        within('(' + ' OR '.join(conds) + ')', named)
     text = q.get('q', [''])[0].strip()
     if text:
         where.append('(p.handle LIKE ? OR p.name LIKE ? OR p.bio LIKE ?)')
         args += [f'%{text}%'] * 3
-    min_lists = int(q.get('min_lists', ['0'])[0] or 0)
+    min_lists = qint(q, 'min_lists') or 0
     if min_lists > 0:
         where.append(f'{LISTS}>=?')
         args.append(min_lists)
+    has_bio = q.get('has_bio', [''])[0].strip()
+    if has_bio in ('1', 'true'):
+        where.append("coalesce(p.bio,'')!=''")
+    elif has_bio in ('0', 'false'):
+        where.append("coalesce(p.bio,'')=''")
+    elif has_bio:
+        raise Bad('has_bio must be 1 or 0')
+    for s in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):  # linked to every listed seed
+        where.append('p.id IN (SELECT person_id FROM edges WHERE seed=?)')
+        args.append(s)
+    for key, op in (('followers_min', '>='), ('followers_max', '<=')):
+        n = qint(q, key)
+        if n is not None:
+            where.append(f'p.followers {op} ?')
+            args.append(n)
+    return where, args
+
+
+def api_leads(conn, q, b):
+    where, args = lead_filter(q)
     order = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
              'connected': 'lists DESC, p.followers IS NULL, p.followers DESC'}.get(
         q.get('sort', ['score'])[0], 'v.score IS NULL, v.score DESC, p.followers DESC')
-    offset = max(0, int(q.get('offset', ['0'])[0]))
-    limit = min(500, max(1, int(q.get('limit', ['50'])[0])))
-    sql_where = ' WHERE ' + ' AND '.join(where)
-    total = conn.execute('SELECT count(*) FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
-                         'LEFT JOIN marks m ON m.person_id=p.id' + sql_where, args).fetchone()[0]
+    offset = max(0, qint(q, 'offset') or 0)
+    limit = min(500, max(1, qint(q, 'limit') or 50))
+    sql_where = ' WHERE ' + ' AND '.join([NOT_ME] + where)
+    total = conn.execute(f'SELECT count(*) {PEOPLE_FROM}{sql_where}', args).fetchone()[0]
     rows = conn.execute(f'{LEAD_SQL}{sql_where} ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
     return {'total': total, 'rows': lead_rows(conn, rows)}
 
 
 def api_tags(conn, q, b):
-    return [dict(r) for r in conn.execute('SELECT tag, grp, count(*) AS count, source FROM tags GROUP BY tag, grp, source ORDER BY count DESC, tag, source')]
+    """Facets: per (tag, source) the people in the current filtered set (`count`) and overall (`total`). One grouped scan."""
+    where, args = lead_filter(q)
+    counts = dict(((r[0], r[1]), r[2]) for r in conn.execute(
+        f"""WITH f AS MATERIALIZED (SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)})
+        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id GROUP BY t.tag, t.source""", args))
+    out = [{'tag': r[0], 'grp': r[2], 'source': r[1], 'count': counts.get((r[0], r[1]), 0), 'total': r[3]}  # totals: covering index
+           for r in conn.execute('SELECT tag, source, min(grp), count(*) FROM tags GROUP BY tag, source')]
+    return sorted(out, key=lambda f: (-f['count'], -f['total'], f['tag'], f['source']))
 
 
 def api_counts(conn, q, b):
@@ -276,30 +367,201 @@ def api_person(conn, q, b, pid):
     return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=dict(v) if v else None, note=row['note'])
 
 
+KEEP = object()   # "leave this field as it is"
+
+
+def set_status(conn, pids, status=KEEP, note=KEEP):
+    """Upsert marks. KEEP leaves a field alone; None / '' clears it. A row with neither status nor note is removed."""
+    ts = db.now()
+    sets = [f'{col}=excluded.{col}' for col, v in (('status', status), ('note', note)) if v is not KEEP]
+    if sets:
+        rows = [(p, None if status is KEEP else status, None if note is KEEP else (note or None), ts) for p in pids]
+        conn.executemany('INSERT INTO marks(person_id, status, note, updated_at) VALUES(?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET '
+                         + ', '.join(sets + ['updated_at=excluded.updated_at']), rows)
+    for chunk in chunks(pids):
+        conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
+
+
 def api_mark(conn, q, b, pid):
+    """{"status"?: null|STATUS, "note"?: str|null}: an absent key is left alone, null clears (note '' clears too)."""
     person_row(conn, pid)
-    status, note = b.get('status'), b.get('note')
-    if status is not None and status not in STATUSES:
+    status, note = b.get('status', KEEP), b.get('note', KEEP)
+    if status is not KEEP and status is not None and status not in STATUSES:
         raise Bad('bad status')
-    if status is None and not note:
-        conn.execute('DELETE FROM marks WHERE person_id=?', (pid,))
-    else:
-        conn.execute('INSERT INTO marks VALUES(?,?,?,?) ON CONFLICT DO UPDATE SET status=excluded.status, '
-                     'note=coalesce(excluded.note, note), updated_at=excluded.updated_at', (pid, status, note, db.now()))
+    if note is not KEEP and note is not None and (not isinstance(note, str) or len(note) > 5000):
+        raise Bad('note must be text')
+    set_status(conn, [pid], status, note)
     conn.commit()
     return {}
+
+
+def clean_tag(t):
+    if not isinstance(t, str):
+        raise Bad('tag must be a string')
+    t = re.sub(r'\s+', ' ', t).strip()
+    if not t or len(t) > 64 or ',' in t:
+        raise Bad('tag must be 1-64 characters without commas')
+    return t
+
+
+def tag_group(conn, tag, default='signal'):
+    row = conn.execute("SELECT grp FROM tags WHERE tag=? ORDER BY source='manual' DESC LIMIT 1", (tag,)).fetchone()
+    return row[0] if row else default
+
+
+def touch(conn, pids):
+    """Bump updated_at: the qualify batch re-derives verdicts (manual role tags count) and the map rev changes."""
+    ts = db.now()
+    conn.executemany('UPDATE people SET updated_at=? WHERE id=?', [(ts, p) for p in dict.fromkeys(pids)])
+
+
+def add_manual(conn, pids, tags):
+    for t in tags:
+        grp = tag_group(conn, t)
+        conn.executemany("INSERT OR REPLACE INTO tags VALUES(?,?,?,'manual')", [(p, t, grp) for p in pids])
 
 
 def api_tag_edit(conn, q, b, pid):
     person_row(conn, pid)
-    for t in b.get('add') or []:
-        grp = conn.execute('SELECT grp FROM tags WHERE tag=? LIMIT 1', (t,)).fetchone()
-        conn.execute("INSERT OR REPLACE INTO tags VALUES(?,?,?,'manual')", (pid, t, grp[0] if grp else 'signal'))
+    add_manual(conn, [pid], [clean_tag(t) for t in b.get('add') or []])
     for t in b.get('remove') or []:
-        conn.execute('DELETE FROM tags WHERE person_id=? AND tag=?', (pid, t))
-    conn.execute('UPDATE people SET updated_at=? WHERE id=?', (db.now(), pid))
+        if isinstance(t, str):
+            conn.execute('DELETE FROM tags WHERE person_id=? AND tag=?', (pid, t))
+    touch(conn, [pid])
     conn.commit()
     return {}
+
+
+def api_tag_rename(conn, q, b):
+    src, dst = clean_tag(b.get('from')), clean_tag(b.get('to'))
+    if src == dst:
+        return {'renamed': 0}
+    pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (src,))]
+    grp = tag_group(conn, dst, tag_group(conn, src))
+    # merge: someone who already has `to` (any source) keeps one tag, now manual
+    conn.execute("INSERT INTO tags(person_id, tag, grp, source) SELECT person_id, ?, ?, 'manual' FROM tags WHERE tag=? AND source='manual' "
+                 "ON CONFLICT(person_id, tag) DO UPDATE SET source='manual'", (dst, grp, src))
+    conn.execute("DELETE FROM tags WHERE tag=? AND source='manual'", (src,))
+    touch(conn, pids)
+    conn.commit()
+    return {'renamed': len(pids)}
+
+
+def api_tag_delete(conn, q, b):
+    tag = clean_tag(b.get('tag'))
+    pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (tag,))]
+    conn.execute("DELETE FROM tags WHERE tag=? AND source='manual'", (tag,))
+    touch(conn, pids)
+    conn.commit()
+    return {'deleted': len(pids)}
+
+
+def api_bulk(conn, q, b):
+    ids = b.get('ids')
+    if not isinstance(ids, list) or len(ids) > BULK_MAX or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
+        raise Bad(f'ids must be a list of up to {BULK_MAX} ids')
+    add = [clean_tag(t) for t in b.get('add') or []]
+    remove = [t for t in b.get('remove') or [] if isinstance(t, str)]
+    status = b.get('status')
+    if 'status' in b and status is not None and status not in STATUSES:
+        raise Bad('bad status')
+    pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
+            for r in conn.execute(f"SELECT id FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
+    add_manual(conn, pids, add)
+    conn.executemany('DELETE FROM tags WHERE person_id=? AND tag=?', [(p, t) for p in pids for t in remove])
+    if 'status' in b:  # absent = leave marks alone; null = clear the status (a note is kept)
+        set_status(conn, pids, status=status)
+    touch(conn, pids)
+    conn.commit()
+    return {'updated': len(pids)}
+
+
+# ---------- tag rules and saved views ----------
+
+def rule_out(conn, r):
+    hits = conn.execute("SELECT count(*) FROM tags WHERE tag=? AND source='rule'", (r['tag'],)).fetchone()[0]
+    return {'id': r['id'], 'tag': r['tag'], 'grp': r['grp'], 'field': r['field'], 'match': r['match'], 'hits': hits}
+
+
+def api_rules(conn, q, b):
+    return [rule_out(conn, r) for r in conn.execute('SELECT * FROM tag_rules ORDER BY tag, id')]
+
+
+def api_rule_add(conn, q, b):
+    tag, field = clean_tag(b.get('tag')), b.get('field')
+    match = b.get('match').strip() if isinstance(b.get('match'), str) else b.get('match')
+    try:
+        rules.compile_match(field, match)
+    except ValueError as e:
+        raise Bad(str(e)) from None
+    grp = b.get('grp') if b.get('grp') in rules.GROUPS else tag_group(conn, tag)
+    row = conn.execute('SELECT * FROM tag_rules WHERE tag=? AND field=? AND match=?', (tag, field, match)).fetchone()
+    if row:
+        return rule_out(conn, row)
+    rule, started = {'tag': tag, 'grp': grp, 'field': field, 'match': match}, db.now()
+    try:
+        pids = rules.matching_ids(conn, rule)  # read-only scan: ingest keeps writing meanwhile
+    except ValueError as e:
+        raise Bad(str(e)) from None
+    rid = conn.execute('INSERT INTO tag_rules(tag, grp, field, match, created_at) VALUES(?,?,?,?,?)',
+                       (tag, grp, field, match, db.now())).lastrowid
+    rules.write_rule_tags(conn, rule, pids)
+    # people ingested while we scanned did not know this rule yet
+    rules.sync(conn, [r[0] for r in conn.execute('SELECT id FROM people WHERE updated_at>=?', (started,))])
+    conn.commit()
+    return rule_out(conn, conn.execute('SELECT * FROM tag_rules WHERE id=?', (rid,)).fetchone())
+
+
+def api_rule_preview(conn, q, b):
+    """How many people a rule would tag, without saving anything. Same matcher and guards as create."""
+    rule = {'field': q.get('field', [''])[0], 'match': q.get('match', [''])[0].strip()}
+    try:
+        rules.compile_match(rule['field'], rule['match'])
+        return {'hits': len(rules.matching_ids(conn, rule, budget=rules.PREVIEW_BUDGET))}
+    except ValueError as e:
+        raise Bad(str(e)) from None
+
+
+def api_rule_delete(conn, q, b, rid):
+    row = conn.execute('SELECT * FROM tag_rules WHERE id=?', (rid,)).fetchone()
+    if not row:
+        return {'deleted': 0}
+    keep = []
+    for other in rules.load(conn):  # another rule may give the same tag: scan for it before taking the write lock
+        if other['tag'] == row['tag'] and other['id'] != rid:
+            try:
+                keep.append((other, rules.matching_ids(conn, other)))
+            except ValueError:
+                pass
+    conn.execute('DELETE FROM tag_rules WHERE id=?', (rid,))
+    conn.execute("DELETE FROM tags WHERE tag=? AND source='rule'", (row['tag'],))
+    for other, pids in keep:
+        rules.write_rule_tags(conn, other, pids)
+    conn.commit()
+    return {'deleted': 1}
+
+
+def api_views(conn, q, b):
+    return [dict(r) for r in conn.execute('SELECT id, name, query FROM saved_views ORDER BY name COLLATE NOCASE, id')]
+
+
+def api_view_save(conn, q, b):
+    name, query = b.get('name'), b.get('query')
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+        raise Bad('name must be 1-80 characters')
+    if not isinstance(query, str) or len(query) > 4000:
+        raise Bad('query must be a URL query string')
+    name, query = name.strip(), query.strip().lstrip('?')
+    conn.execute('INSERT INTO saved_views(name, query, created_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET query=excluded.query',
+                 (name, query, db.now()))
+    conn.commit()
+    return {'id': conn.execute('SELECT id FROM saved_views WHERE name=?', (name,)).fetchone()[0], 'name': name, 'query': query}
+
+
+def api_view_delete(conn, q, b, vid):
+    n = conn.execute('DELETE FROM saved_views WHERE id=?', (vid,)).rowcount
+    conn.commit()
+    return {'deleted': n}
 
 
 def api_read(conn, q, b, pid):
@@ -311,47 +573,76 @@ def api_read(conn, q, b, pid):
     return {}
 
 
+# ---------- map ----------
+
 def data_rev(conn):
     r = conn.execute('SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), '
                      '(SELECT count(*) FROM edges), (SELECT count(*) FROM seeds), (SELECT max(updated_at) FROM marks), '
-                     '(SELECT count(*) FROM marks)').fetchone()
+                     '(SELECT count(*) FROM marks), (SELECT count(*) FROM tags)').fetchone()
     return zlib.crc32('|'.join(map(str, r)).encode())
 
 
+SEED_LINKS = [None]   # [(key, computed_at, links)]: replaced whole, never mutated, so readers can't race a writer
+SEED_LINKS_TOP = 50
+SEED_LINKS_MIN_AGE = 30   # s: while a list is streaming in, recompute the overlap at most this often (same db)
+
+
+def seed_links(conn):
+    key = (CFG['db'], *conn.execute('SELECT count(*), max(rowid) FROM edges').fetchone())
+    cached, now = SEED_LINKS[0], datetime.now().timestamp()
+    if cached and (cached[0] == key or (cached[0][0] == key[0] and now - cached[1] < SEED_LINKS_MIN_AGE)):
+        return cached[2]
+    rows = conn.execute("""WITH ps AS (SELECT DISTINCT seed, person_id FROM edges WHERE person_id IN
+            (SELECT person_id FROM edges GROUP BY person_id HAVING count(DISTINCT seed)>1))
+        SELECT a.seed AS a, b.seed AS b, count(*) AS shared FROM ps a JOIN ps b ON b.person_id=a.person_id AND b.seed>a.seed
+        GROUP BY a.seed, b.seed ORDER BY shared DESC, a.seed, b.seed LIMIT ?""", (SEED_LINKS_TOP,)).fetchall()
+    links = [{'source': f"s:{r['a']}", 'target': f"s:{r['b']}", 'shared': r['shared']} for r in rows]
+    SEED_LINKS[0] = (key, now, links)
+    return links
+
+
 def api_map(conn, q, b):
-    limit = min(3000, max(10, int(q.get('limit', ['400'])[0])))
-    base = ('SELECT p.id, p.handle, p.name, p.pic_file, v.tier, v.score, v.reason, count(DISTINCT e.seed) AS degree FROM people p '
-            'JOIN edges e ON e.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id '
-            "WHERE coalesce(m.status,'')!='no' AND p.handle NOT IN (SELECT handle FROM seeds) GROUP BY p.id")
-    by_score = 'ORDER BY v.score IS NULL, v.score DESC, degree DESC LIMIT ?'
-    if q.get('scope', ['leads'])[0] == 'all':
-        people = conn.execute(f'{base} {by_score}', (limit,)).fetchall()
-    else:
-        multi = conn.execute(f'{base} HAVING degree>=2 ORDER BY degree DESC, v.score DESC LIMIT ?', (limit * 3 // 5,)).fetchall()
-        seen = {r['id'] for r in multi}
-        people = multi + [r for r in conn.execute(f'{base} {by_score}', (limit,)) if r['id'] not in seen][:limit - len(multi)]
+    limit = min(3000, max(10, qint(q, 'limit') or 400))
+    where, args = lead_filter(q)
+    cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds)'] + where)
+    # one materialized pass over the filtered people; both picks below sort that set (cost follows the filter's size)
+    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.reason, m.status, '
+            'count(DISTINCT e.seed) AS degree FROM people p JOIN edges e ON e.person_id=p.id '
+            f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
+    by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
+    multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
+    rows = conn.execute(f"""WITH b AS MATERIALIZED ({base})
+        SELECT * FROM (SELECT 0 AS part, * FROM b WHERE degree>=2 ORDER BY degree DESC, score DESC, id LIMIT ?)
+        UNION ALL SELECT * FROM (SELECT 1 AS part, * FROM b {by_score})""", (*args, multi_n, limit)).fetchall()
+    multi = [r for r in rows if r['part'] == 0]
+    seen = {r['id'] for r in multi}
+    people = multi + [r for r in rows if r['part'] == 1 and r['id'] not in seen][:limit - len(multi)]
     seeds = conn.execute('SELECT s.handle, (SELECT count(*) FROM edges e WHERE e.seed=s.handle) AS degree, p.id AS pid, '
-                         'p.pic_file, v.tier, v.score FROM (SELECT handle FROM seeds UNION SELECT seed FROM edges) s '
-                         'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id').fetchall()
-    nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
-              'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree']} for s in seeds]
-    tags = {}
-    for i in range(0, len(people), 900):
-        chunk = [r['id'] for r in people[i:i + 900]]
-        for t in conn.execute(f"SELECT person_id, tag FROM tags WHERE person_id IN ({','.join('?' * len(chunk))})", chunk):
-            tags.setdefault(t['person_id'], []).append(t['tag'])
-    nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
-               'tier': r['tier'] or 'unread', 'score': r['score'], 'reason': r['reason'], 'tags': tags.get(r['id'], []),
-               'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree']} for r in people]
+                         'p.pic_file, p.followers, v.tier, v.score, m.status, coalesce(sd.is_me, 0) AS is_me '
+                         'FROM (SELECT handle FROM seeds UNION SELECT seed FROM edges) s LEFT JOIN seeds sd ON sd.handle=s.handle '
+                         'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
+                         'LEFT JOIN marks m ON m.person_id=p.id').fetchall()
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
-    ids = list(node_of)
-    links = []
-    for i in range(0, len(ids), 900):
-        chunk = ids[i:i + 900]
-        links += [{'source': f"s:{e['seed']}", 'target': node_of[e['person_id']], 'direction': e['direction']}
-                  for e in conn.execute(f"SELECT * FROM edges WHERE person_id IN ({','.join('?' * len(chunk))})", chunk)]
-    return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
+    links, seeds_of, tags = [], {}, {}
+    for chunk in chunks(node_of):
+        marks = ','.join('?' * len(chunk))
+        for e in conn.execute(f'SELECT * FROM edges WHERE person_id IN ({marks}) ORDER BY seed, direction', chunk):
+            links.append({'source': f"s:{e['seed']}", 'target': node_of[e['person_id']], 'direction': e['direction']})
+            if e['seed'] not in seeds_of.setdefault(e['person_id'], []):
+                seeds_of[e['person_id']].append(e['seed'])
+        for t in conn.execute(f'SELECT t.person_id, t.tag FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
+            if len(tags.setdefault(t['person_id'], [])) < MAP_TAGS:
+                tags[t['person_id']].append(t['tag'])
+    nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
+              'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
+              'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
+              'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me'])} for s in seeds]
+    nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
+               'tier': r['tier'] or 'unread', 'score': r['score'], 'reason': r['reason'], 'tags': tags.get(r['id'], []),
+               'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
+               'status': r['status'], 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
+    return {'nodes': nodes, 'links': links, 'seed_links': seed_links(conn), 'rev': data_rev(conn)}
 
 
 def api_scraper(conn, q, b):
@@ -422,12 +713,20 @@ ROUTES = [
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
+    ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
+    ('POST', r'/api/people/bulk', api_bulk),
+    ('GET', r'/api/tag-rules', api_rules), ('POST', r'/api/tag-rules', api_rule_add), ('GET', r'/api/tag-rules/preview', api_rule_preview),
+    ('POST', r'/api/tag-rules/(\d+)/delete', api_rule_delete),
+    ('GET', r'/api/views', api_views), ('POST', r'/api/views', api_view_save), ('POST', r'/api/views/(\d+)/delete', api_view_delete),
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/scraper', api_scraper),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/settings/qualify', api_qualify),
 ]
+
+
+SECURITY_HEADERS = {'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -454,6 +753,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         if self.headers.get('Origin') == EXT_ORIGIN:
             self.send_header('Access-Control-Allow-Origin', EXT_ORIGIN)
+        for k, v in SECURITY_HEADERS.items():
+            self.send_header(k, v)
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -471,6 +772,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, {'ok': False, 'error': 'origin'})
         elif origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
             return self.send(403, {'ok': False, 'error': 'origin'})
+        elif method == 'POST' and not origin:  # browsers always send Origin on POST; a missing one is not our page
+            return self.send(403, {'ok': False, 'error': 'origin required'})
         for m, rx, fn in ROUTES:
             match = re.fullmatch(rx, url.path)
             if m == method and match:
@@ -538,6 +841,7 @@ def qualify_batch(conn, limit=200):
     rows = conn.execute('SELECT p.* FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                         'WHERE v.person_id IS NULL OR v.updated_at < p.updated_at LIMIT ?', (limit,)).fetchall()
     me = me_handle(conn)
+    rules.sync(conn, [r['id'] for r in rows])  # rule tags first, so the verdict sees them
     for r in rows:
         try:
             requalify(conn, dict(r), me)
@@ -564,7 +868,11 @@ def llm_step(conn, skip):
         return None
     edges = edges_of(conn, p['id'])
     tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
-    v = qualify.llm_verdict(p, tags, edges)
+    try:
+        v = qualify.llm_verdict(p, tags, edges)
+    except Exception:  # never let one bad reply spin the worker on the same row: fall back like 'no model'
+        traceback.print_exc()
+        v = None
     if v is None:
         skip[p['id']] = datetime.now().timestamp() + 1800
         return False
@@ -589,6 +897,23 @@ def auto_qualify(conn):
     return True
 
 
+def plan_priority(lists, prefilter):
+    """Lists count first, prefilter second; always below READ_PRIORITY (a read Michael asked for goes first)."""
+    return min(lists or 0, 9) * 1000 + max(0, min(999, prefilter or 0))
+
+
+def retag_if_changed(conn):
+    """When the rule taxonomy changes (qualify.TAGS_VERSION), let the qualify batch re-derive everyone's auto tags.
+    LLM verdicts survive: requalify keeps them while the input hash is unchanged."""
+    version = getattr(qualify, 'TAGS_VERSION', None)
+    if version is None or db.get_setting(conn, 'tags_version') == version:
+        return False
+    conn.execute("UPDATE verdicts SET updated_at=''")
+    db.set_setting(conn, 'tags_version', version)
+    conn.commit()
+    return True
+
+
 def plan_profiles(conn):
     auto_qualify(conn)
     if not db.get_setting(conn, 'qualify'):  # collection first: bios are read only once qualification is switched on
@@ -607,12 +932,20 @@ def plan_profiles(conn):
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
           AND p.handle NOT IN (SELECT handle FROM seeds)
           AND p.id NOT IN (SELECT person_id FROM marks WHERE status='no')
-        ORDER BY n>=2 DESC, v.prefilter DESC, n DESC LIMIT ?""", (need,)).fetchall()
+        ORDER BY n DESC, v.prefilter DESC, p.id LIMIT ?""", (need,)).fetchall()
     ts = db.now()
     conn.executemany("INSERT INTO jobs(kind, handle, priority, created_at) VALUES('profile',?,?,?)",
-                     [(r['handle'], (r['prefilter'] or 0) + (1000 if r['n'] >= 2 else 0), ts) for r in rows])
+                     [(r['handle'], plan_priority(r['n'], r['prefilter']), ts) for r in rows])
     conn.commit()
     return len(rows)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None   # urllib then raises HTTPError(3xx): nothing is fetched from the redirect target
+
+
+PIC_OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=SSL))
 
 
 def fetch_pic(url):
@@ -621,7 +954,7 @@ def fetch_pic(url):
         return None
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10, context=SSL) as r:
+        with PIC_OPENER.open(req, timeout=10) as r:
             if not (urlparse(r.geturl()).hostname or '').endswith(PIC_HOSTS):
                 return None
             data = r.read(PIC_MAX + 1)
@@ -671,7 +1004,9 @@ def main():
     a = ap.parse_args()
     CFG.update(db=str(Path(a.db).resolve()), port=a.port)
     Path(CFG['db']).parent.mkdir(parents=True, exist_ok=True)
-    db.init(CFG['db']).close()
+    conn = db.init(CFG['db'])
+    retag_if_changed(conn)
+    conn.close()
     start_workers(threading.Event())
     print(f'Fortunate Leads on http://127.0.0.1:{a.port}  db={CFG["db"]}', flush=True)
     ThreadingHTTPServer(('127.0.0.1', a.port), Handler).serve_forever()

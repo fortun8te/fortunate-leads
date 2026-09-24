@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import sqlite3
 import sys
@@ -7,7 +9,7 @@ import types
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,7 +31,7 @@ import server  # noqa: E402
 EXT = server.EXT_ORIGIN
 
 
-class ServerTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         server.CFG['db'] = str(Path(self.tmp.name) / 'leads.sqlite')
@@ -51,6 +53,8 @@ class ServerTest(unittest.TestCase):
                                      data=json.dumps(body).encode() if body is not None else None)
         if origin is None and path.startswith('/api/ext/'):
             origin = EXT
+        elif origin is None and body is not None:  # browsers always send Origin on POST
+            origin = f'http://127.0.0.1:{port}'
         if origin:
             req.add_header('Origin', origin)
         req.add_header('Host', host or f'127.0.0.1:{port}')
@@ -65,6 +69,8 @@ class ServerTest(unittest.TestCase):
         return self.call('/api/ext/list-page', {'job_id': job['id'], 'seed': job['seed'], 'ig_id': '99', 'direction': job['direction'],
                                                 'users': users, 'next_cursor': cursor, 'done': done, 'total': 3})
 
+
+class ServerTest(Base):
     def test_origin_and_host_checks(self):
         self.assertEqual(self.call('/api/ext/next', origin='https://evil.example')[0], 403)
         self.assertEqual(self.call('/api/ext/next', origin='http://127.0.0.1:%d' % server.CFG['port'])[0], 403)
@@ -134,7 +140,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}})
         self.assertTrue(self.call('/api/scraper')[1]['ext']['online'])
         self.call('/api/ext/error', {'job_id': None, 'code': 'challenge', 'retry_at': None, 'message': 'checkpoint'})
-        self.assertTrue(self.call('/api/ext/next')[1]['paused'])
+        self.assertFalse(self.call('/api/ext/next')[1]['paused'])  # the extension's own hold stops requests, not a global pause
+        self.assertEqual(self.call('/api/scraper')[1]['ext']['last_error'], 'checkpoint')
 
     def test_planner(self):
         for i, seeds in enumerate([['s1'], ['s1', 's2'], []]):
@@ -181,7 +188,8 @@ class ServerTest(unittest.TestCase):
         self.assertNotEqual(m['rev'], rev)
         self.assertEqual({n['id'] for n in m['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2'})
         self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'}, m['links'])
-        self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree'})
+        self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
+                                              'tags', 'seeds', 'is_me'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
 
     def test_connected_sort_min_lists_and_tag_sources(self):
@@ -202,8 +210,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual({n['label']: n['degree'] for n in m['nodes'] if n['kind'] == 'lead'}, {'ann': 3, 'ben': 2, 'cat': 2, 'dan': 1})
         self.call(f"/api/person/{ids['ann']}/tags", {'add': ['via @s1']})  # same tag name, manual on ann
         tags = self.call('/api/tags')[1]
-        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 3, 'source': 'auto'}, tags)
-        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 1, 'source': 'manual'}, tags)
+        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 3, 'total': 3, 'source': 'auto'}, tags)
+        self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 1, 'total': 1, 'source': 'manual'}, tags)
 
     def test_heartbeat_rate_and_soak(self):
         self.call('/api/ext/heartbeat', {'version': '2', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
@@ -322,6 +330,481 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(n.execute("SELECT is_me FROM seeds WHERE handle='fortun8te'").fetchone()[0], 1)
         self.assertEqual(tuple(n.execute('SELECT status, note FROM marks').fetchone()), ('client', 'client: Worked with them'))
         n.close()
+
+
+class TagsViewsMapTest(Base):
+    """Shared lead filter, tag facets, tag management, tag rules, saved views, map v2, queue safety."""
+
+    def people(self, spec):
+        """spec: handle -> (bio, followers, seeds). Qualifies with the stub (seed tags 'via @s', 'founder' role tag)."""
+        ids = {}
+        for h, (bio, fol, seeds) in spec.items():
+            ids[h] = db.upsert_person(self.conn, {'handle': h, 'bio': bio, 'followers': fol, 'name': h.title()})
+            for s in seeds:
+                db.add_edge(self.conn, s, ids[h], 'followers')
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        return ids
+
+    def rows(self, qs, path='/api/leads?'):
+        code, out = self.call(path + qs)
+        self.assertEqual(code, 200, out)
+        return [r['handle'] for r in out['rows']]
+
+    def tagset(self, pid, source=None):
+        sql = 'SELECT tag FROM tags WHERE person_id=?' + (' AND source=?' if source else '')
+        return {r[0] for r in self.conn.execute(sql, (pid, source) if source else (pid,))}
+
+    SPEC = {'ann': ('founder of glow skincare', 5000, ['s1', 's2']), 'ben': ('founder', 300, ['s1']),
+            'cat': ('hobby', 90000, ['s2']), 'dan': (None, None, ['s3'])}
+
+    def test_shared_filter(self):
+        ids = self.people(self.SPEC)
+        self.call('/api/people/bulk', {'ids': [ids['ben'], ids['cat']], 'add': ['vip']})
+        self.call('/api/people/bulk', {'ids': [ids['cat']], 'add': ['nl']})
+        self.assertEqual(self.rows('tags=founder,vip&sort=followers'), ['ben'])
+        self.assertEqual(self.rows('any=vip,via%20@s3&sort=followers'), ['cat', 'ben', 'dan'])
+        self.assertEqual(self.rows('any=vip&not=nl'), ['ben'])
+        self.assertEqual(self.rows('not=founder&sort=followers'), ['cat', 'dan'])
+        self.assertEqual(self.rows('has_bio=0'), ['dan'])
+        self.assertEqual(sorted(self.rows('has_bio=1')), ['ann', 'ben', 'cat'])
+        self.assertEqual(self.rows('seed=s2&sort=followers'), ['cat', 'ann'])
+        self.assertEqual(self.rows('seed=@S1,s2'), ['ann'])
+        self.assertEqual(self.rows('followers_min=300&followers_max=5000&sort=followers'), ['ann', 'ben'])
+        self.assertEqual(self.rows('followers_min=100000'), [])
+        self.call(f"/api/person/{ids['ben']}/mark", {'status': 'no'})
+        self.call(f"/api/person/{ids['cat']}/mark", {'status': 'good'})
+        self.assertNotIn('ben', self.rows(''))
+        self.assertEqual(self.rows('status=no'), ['ben'])
+        self.assertEqual(sorted(self.rows('status=none')), ['ann', 'dan'])
+        self.assertEqual(sorted(self.rows('status=good,none')), ['ann', 'cat', 'dan'])
+        self.assertEqual(len(self.rows('status=all')), 4)
+        for bad in ('has_bio=maybe', 'followers_min=lots', 'status=weird', 'limit=x'):
+            self.assertEqual(self.call('/api/leads?' + bad)[0], 400, bad)
+        self.assertEqual(self.call('/api/map?has_bio=2')[0], 400)
+
+    def test_facets_and_tag_order(self):
+        ids = self.people(self.SPEC)
+        self.call(f"/api/person/{ids['ann']}/tags", {'add': ['zz manual']})
+        server.qualify_batch(self.conn)
+        facets = {(f['tag'], f['source']): f for f in self.call('/api/tags?seed=s2')[1]}
+        self.assertEqual(facets[('founder', 'auto')], {'tag': 'founder', 'grp': 'role', 'source': 'auto', 'count': 1, 'total': 2})
+        self.assertEqual(facets[('via @s1', 'auto')]['count'], 1)
+        self.assertEqual((facets[('via @s3', 'auto')]['count'], facets[('via @s3', 'auto')]['total']), (0, 1))
+        self.assertEqual({(f['count'], f['total']) for f in self.call('/api/tags')[1] if f['tag'] == 'founder'}, {(2, 2)})
+        self.assertEqual(self.call('/api/tags?tags=nothing')[1][0]['count'], 0)
+        ann = self.call(f"/api/person/{ids['ann']}")[1]
+        self.assertEqual(ann['tags'][0], {'tag': 'zz manual', 'grp': 'signal', 'source': 'manual'})
+        self.assertEqual([t['grp'] for t in ann['tags'][1:]], ['role', 'source', 'source'])
+
+    def test_rename_and_delete_manual_tags(self):
+        ids = self.people(self.SPEC)
+        self.call('/api/people/bulk', {'ids': [ids['ann'], ids['ben']], 'add': ['warm lead']})
+        self.call('/api/people/bulk', {'ids': [ids['ben']], 'add': ['priority']})
+        self.assertEqual(self.call('/api/tags/rename', {'from': 'warm lead', 'to': 'priority'})[1], {'ok': True, 'renamed': 2})
+        rows = {(r['tag'], r['person_id'], r['source']) for r in self.conn.execute("SELECT * FROM tags WHERE tag IN ('warm lead','priority')")}
+        self.assertEqual(rows, {('priority', ids['ann'], 'manual'), ('priority', ids['ben'], 'manual')})  # merged, no duplicate
+        # renaming onto an auto tag name upgrades that person's tag to manual (it survives requalify)
+        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['x']})
+        self.call('/api/tags/rename', {'from': 'x', 'to': 'founder'})
+        server.qualify_batch(self.conn)
+        self.assertEqual(self.conn.execute("SELECT source, grp FROM tags WHERE tag='founder' AND person_id=?", (ids['ann'],)).fetchone()[:],
+                         ('manual', 'role'))
+        self.assertEqual(self.call('/api/tags/delete', {'tag': 'founder'})[1], {'ok': True, 'deleted': 1})  # manual only
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='founder'").fetchone()[0], 1)  # ben's auto one
+        self.assertEqual(self.call('/api/tags/rename', {'from': '', 'to': 'a'})[0], 400)
+        self.assertEqual(self.call('/api/tags/rename', {'from': 'a,b', 'to': 'c'})[0], 400)
+        self.assertEqual(self.call('/api/tags/delete', {})[0], 400)
+
+    def test_bulk(self):
+        ids = self.people(self.SPEC)
+        allids = list(ids.values())
+        out = self.call('/api/people/bulk', {'ids': allids + [999999], 'add': ['  batch   one ', 'b2'], 'status': 'maybe'})[1]
+        self.assertEqual(out, {'ok': True, 'updated': 4})
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='batch one' AND source='manual'").fetchone()[0], 4)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status='maybe'").fetchone()[0], 4)
+        self.call(f"/api/person/{ids['ann']}/mark", {'status': 'good', 'note': 'call'})
+        self.call('/api/people/bulk', {'ids': allids, 'remove': ['b2']})  # no status key: marks untouched
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status IS NOT NULL").fetchone()[0], 4)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='b2'").fetchone()[0], 0)
+        self.call('/api/people/bulk', {'ids': allids, 'status': None})
+        self.assertEqual([tuple(r) for r in self.conn.execute('SELECT person_id, status, note FROM marks')], [(ids['ann'], None, 'call')])
+        self.assertEqual(self.call('/api/people/bulk', {'ids': list(range(5001))})[0], 400)
+        self.assertEqual(self.call('/api/people/bulk', {'ids': ['1']})[0], 400)
+        self.assertEqual(self.call('/api/people/bulk', {'ids': allids, 'status': 'meh'})[0], 400)
+        self.assertEqual(self.call('/api/people/bulk', {'ids': [], 'add': ['x']})[1], {'ok': True, 'updated': 0})
+
+    def test_tag_rules(self):
+        ids = self.people(self.SPEC)
+        self.call('/api/people/bulk', {'ids': [ids['cat']], 'add': ['Skincare']})  # manual tag with the same name
+        code, rule = self.call('/api/tag-rules', {'tag': 'Skincare', 'field': 'bio', 'match': 'skin care, skincare, serum*', 'grp': 'niche'})
+        self.assertEqual(code, 200, rule)
+        self.assertEqual({k: rule[k] for k in ('tag', 'grp', 'field', 'hits')}, {'tag': 'Skincare', 'grp': 'niche', 'field': 'bio', 'hits': 1})
+        self.assertEqual(self.tagset(ids['ann'], 'rule'), {'Skincare'})
+        self.assertEqual(self.tagset(ids['cat'], 'manual'), {'Skincare'})  # manual tag untouched
+        # the same rule again is not duplicated
+        self.assertEqual(self.call('/api/tag-rules', {'tag': 'Skincare', 'field': 'bio', 'match': 'skin care, skincare, serum*'})[1]['id'], rule['id'])
+        # regex on handle; rules re-apply on list ingest (handle/name known) and profile ingest (bio known)
+        r2 = self.call('/api/tag-rules', {'tag': 'Shop handle', 'field': 'handle', 'match': '/^shop|shop$/'})[1]
+        self.assertEqual(r2['hits'], 0)
+        self.call('/api/scraper/seeds', {'handles': ['s9'], 'directions': ['followers']})
+        job = self.call('/api/ext/next')[1]['job']
+        self.page(job, [{'ig_id': '71', 'handle': 'shopglow'}, {'ig_id': '72', 'handle': 'eve'}], cursor='c1')
+        glow = self.conn.execute("SELECT id FROM people WHERE handle='shopglow'").fetchone()[0]
+        eve = self.conn.execute("SELECT id FROM people WHERE handle='eve'").fetchone()[0]
+        self.assertEqual(self.tagset(glow, 'rule'), {'Shop handle'})
+        self.call('/api/ext/profile', {'job_id': None, 'profile': {'ig_id': '72', 'handle': 'eve', 'bio': 'Serums for dry skin'}})
+        self.assertEqual(self.tagset(eve, 'rule'), {'Skincare'})
+        self.call('/api/ext/profile', {'job_id': None, 'profile': {'ig_id': '72', 'handle': 'eve', 'bio': 'now a baker'}})
+        self.assertEqual(self.tagset(eve, 'rule'), set())  # stale rule tag removed
+        self.call('/api/ext/profile', {'job_id': None, 'profile': {'ig_id': '72', 'handle': 'eve', 'bio': 'SERUM lab'}})
+        # rule tags survive requalify (which only rebuilds 'auto') and show up as a facet with source 'rule'
+        server.qualify_batch(self.conn)
+        self.assertEqual(self.tagset(eve, 'rule'), {'Skincare'})
+        self.assertIn({'tag': 'Skincare', 'grp': 'niche', 'source': 'rule', 'count': 2, 'total': 2}, self.call('/api/tags')[1])
+        self.assertEqual(self.rows('tags=Skincare&sort=followers'), ['cat', 'ann', 'eve'])
+        # a second rule for the same tag keeps its people when the first is deleted
+        r3 = self.call('/api/tag-rules', {'tag': 'Skincare', 'field': 'any', 'match': 'glow'})[1]
+        listed = {r['id']: r for r in self.call('/api/tag-rules')[1]}
+        self.assertEqual(set(listed), {rule['id'], r2['id'], r3['id']})
+        self.assertEqual(set(listed[r3['id']]), {'id', 'tag', 'grp', 'field', 'match', 'hits'})
+        self.assertEqual(self.call(f"/api/tag-rules/{rule['id']}/delete", {})[1], {'ok': True, 'deleted': 1})
+        self.assertEqual(self.tagset(ids['ann'], 'rule'), {'Skincare'})   # still matches 'glow'
+        self.assertEqual(self.tagset(glow, 'rule'), {'Shop handle', 'Skincare'})
+        self.assertEqual(self.tagset(eve, 'rule'), set())
+        self.assertEqual(self.tagset(ids['cat'], 'manual'), {'Skincare'})
+        self.assertEqual(self.call('/api/tag-rules/99999/delete', {})[1], {'ok': True, 'deleted': 0})
+        for bad in ({'tag': 'x', 'field': 'bio', 'match': '/(unclosed/'}, {'tag': 'x', 'field': 'bio', 'match': '/(a+)+$/'},
+                    {'tag': 'x', 'field': 'bio', 'match': '/' + 'a' * 201 + '/'}, {'tag': 'x', 'field': 'email', 'match': 'a'},
+                    {'tag': 'x', 'field': 'bio', 'match': ' , '}, {'tag': '', 'field': 'bio', 'match': 'a'},
+                    {'tag': 'x', 'field': 'bio', 'match': '/(a)\\1/'}, {'tag': 'x', 'field': 'bio', 'match': '/a.*b.*c.*d.*/'}):
+            code, out = self.call('/api/tag-rules', bad)
+            self.assertEqual((code, out['ok']), (400, False), bad)
+        self.assertEqual(len(self.call('/api/tag-rules')[1]), 2)
+
+    def test_saved_views(self):
+        self.assertEqual(self.call('/api/views')[1], [])
+        v = self.call('/api/views', {'name': ' Skincare US ', 'query': '?tags=Skincare,US&sort=connected'})[1]
+        self.assertEqual((v['ok'], v['name'], v['query']), (True, 'Skincare US', 'tags=Skincare,US&sort=connected'))
+        self.call('/api/views', {'name': 'Agencies', 'query': 'tags=Agency'})
+        self.call('/api/views', {'name': 'skincare us', 'query': 'tags=Skincare'})  # same name (any case) overwrites
+        views = self.call('/api/views')[1]
+        self.assertEqual([(x['name'], x['query']) for x in views], [('Agencies', 'tags=Agency'), ('Skincare US', 'tags=Skincare')])
+        self.assertEqual(set(views[0]), {'id', 'name', 'query'})
+        self.assertEqual(self.call(f"/api/views/{v['id']}/delete", {})[1], {'ok': True, 'deleted': 1})
+        self.assertEqual([x['name'] for x in self.call('/api/views')[1]], ['Agencies'])
+        self.assertEqual(self.call('/api/views', {'name': '', 'query': 'a=b'})[0], 400)
+        self.assertEqual(self.call('/api/views', {'name': 'x', 'query': None})[0], 400)
+
+    def test_map_filter_nodes_and_seed_links(self):
+        ids = self.people({'ann': ('founder', 5000, ['s1', 's2', 's3']), 'ben': ('founder', 300, ['s1', 's2']),
+                           'cat': ('hobby', 90000, ['s2', 's3']), 'dan': (None, None, ['s1'])})
+        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['m1', 'm2'], 'status': 'good'})
+        server.qualify_batch(self.conn)
+        m = self.call('/api/map?scope=all')[1]
+        leads = {n['label']: n for n in m['nodes'] if n['kind'] == 'lead'}
+        ann = leads['ann']
+        self.assertEqual((ann['lists'], ann['degree'], ann['status'], ann['followers'], ann['seeds']), (3, 3, 'good', 5000, ['s1', 's2', 's3']))
+        self.assertEqual(ann['tags'], ['m1', 'm2', 'founder', 'via @s1'])  # max 4, manual first
+        self.assertEqual(leads['dan']['tags'], ['via @s1'])
+        self.assertEqual(m['seed_links'], [{'source': 's:s1', 'target': 's:s2', 'shared': 2},
+                                           {'source': 's:s2', 'target': 's:s3', 'shared': 2},
+                                           {'source': 's:s1', 'target': 's:s3', 'shared': 1}])
+        f = self.call('/api/map?scope=all&tags=founder&seed=s2')[1]
+        self.assertEqual({n['label'] for n in f['nodes'] if n['kind'] == 'lead'}, {'ann', 'ben'})
+        self.assertEqual({n['id'] for n in f['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2', 's:s3'})
+        self.assertTrue(all(link['target'] in {f"p:{ids['ann']}", f"p:{ids['ben']}"} for link in f['links']))
+        self.assertEqual(f['seed_links'], m['seed_links'])  # audience overlap is structural, not filtered
+        self.assertEqual({n['label'] for n in self.call('/api/map?any=m1&not=m2')[1]['nodes'] if n['kind'] == 'lead'}, set())
+        self.assertEqual({n['label'] for n in self.call('/api/map?status=good')[1]['nodes'] if n['kind'] == 'lead'}, {'ann'})
+        rev = m['rev']
+        self.call('/api/tag-rules', {'tag': 'Hobby', 'field': 'bio', 'match': 'hobby'})
+        self.assertNotEqual(self.call('/api/map')[1]['rev'], rev)  # rule tags change the map
+        db.add_edge(self.conn, 's3', ids['dan'], 'following')
+        self.conn.commit()
+        shared = lambda: [x['shared'] for x in self.call('/api/map')[1]['seed_links']]  # noqa: E731
+        self.assertEqual(shared(), [2, 2, 1])  # recomputed at most every SEED_LINKS_MIN_AGE s while edges stream in
+        old, server.SEED_LINKS_MIN_AGE = server.SEED_LINKS_MIN_AGE, 0
+        try:
+            self.assertEqual(shared(), [2, 2, 2])
+        finally:
+            server.SEED_LINKS_MIN_AGE = old
+
+    def test_rule_preview(self):
+        self.people(self.SPEC)
+        prev = lambda qs: self.call('/api/tag-rules/preview?' + qs)  # noqa: E731
+        self.assertEqual(prev('field=bio&match=founder'), (200, {'hits': 2}))
+        self.assertEqual(prev('field=bio&match=%2Fglow%20skin%5Cw%2B%2F'), (200, {'hits': 1}))   # /glow skin\w+/
+        self.assertEqual(prev('field=handle&match=an'), (200, {'hits': 2}))  # ann, dan: substring
+        self.assertEqual(prev('field=any&match=zzz'), (200, {'hits': 0}))
+        for bad in ('field=bio&match=%2F(a%2B)%2B%2F', 'field=bio&match=', 'field=email&match=x', 'field=bio&match=%2F(%2F'):
+            code, out = prev(bad)
+            self.assertEqual((code, out['ok'], bool(out['error'])), (400, False, True), bad)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM tag_rules').fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE source='rule'").fetchone()[0], 0)
+
+    def test_map_marks_my_seed(self):
+        pid = db.upsert_person(self.conn, {'handle': 'friend'})
+        db.add_edge(self.conn, 'fortun8te', pid, 'followers')
+        db.add_edge(self.conn, 'other', pid, 'followers')
+        self.conn.execute("INSERT INTO seeds(handle, is_me) VALUES('fortun8te', 1)")
+        self.conn.commit()
+        seeds = {n['id']: n['is_me'] for n in self.call('/api/map')[1]['nodes'] if n['kind'] == 'seed'}
+        self.assertEqual(seeds, {'s:fortun8te': True, 's:other': False})
+
+    def test_leases_expire_and_requeue(self):
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        job = self.call('/api/ext/next')[1]['job']
+        self.assertIsNone(self.call('/api/ext/next')[1]['job'])  # leased
+        self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (job['id'],))
+        self.conn.commit()
+        again = self.call('/api/ext/next')[1]['job']
+        self.assertEqual(again['id'], job['id'])
+        self.assertEqual(self.conn.execute('SELECT attempts FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 2)
+        # a profile read whose lease keeps expiring is parked after PROFILE_MAX_ATTEMPTS
+        self.page(again, [], done=True)
+        pid = db.upsert_person(self.conn, {'handle': 'hang'})
+        self.conn.commit()
+        self.call(f'/api/person/{pid}/read', {})
+        for i in range(server.PROFILE_MAX_ATTEMPTS):
+            j = self.call('/api/ext/next')[1]['job']
+            self.assertEqual(j['handle'], 'hang', i)
+            self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (j['id'],))
+            self.conn.commit()
+        self.assertIsNone(self.call('/api/ext/next')[1]['job'])
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (j['id'],)).fetchone()[0], 'error')
+
+    def test_planner_lists_first_then_prefilter(self):
+        self.people({'one_hi': ('', None, ['s1']), 'three_lo': ('', None, ['s1', 's2', 's3']), 'two_hi': ('', None, ['s1', 's2']),
+                     'two_lo': ('', None, ['s1', 's2'])})
+        self.conn.execute('UPDATE people SET bio=NULL, bio_at=NULL')
+        for h, pre in (('one_hi', 99), ('three_lo', 1), ('two_hi', 80), ('two_lo', 5)):
+            self.conn.execute('UPDATE verdicts SET prefilter=? WHERE person_id=(SELECT id FROM people WHERE handle=?)', (pre, h))
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
+        self.assertEqual(server.plan_profiles(self.conn), 4)
+        order = [r[0] for r in self.conn.execute("SELECT handle FROM jobs WHERE kind='profile' ORDER BY priority DESC")]
+        self.assertEqual(order, ['three_lo', 'two_hi', 'two_lo', 'one_hi'])
+        self.assertLess(server.plan_priority(50, 100), server.READ_PRIORITY)
+        self.assertEqual([self.call('/api/ext/next')[1]['job']['handle'] for _ in range(2)], ['three_lo', 'two_hi'])
+
+    def test_llm_exception_falls_back(self):
+        pid = self.people({'eve': ('founder', 10, ['s1'])})['eve']
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
+
+        def boom(p, tags, edges):
+            raise RuntimeError('bad reply')
+        server.qualify.llm_verdict = boom
+        try:
+            skip = {}
+            with contextlib.redirect_stderr(io.StringIO()):  # the worker logs the traceback; expected here
+                self.assertFalse(server.llm_step(self.conn, skip))
+            self.assertIn(pid, skip)
+        finally:
+            server.qualify.llm_verdict = lambda p, tags, edges: None
+        self.assertEqual(self.conn.execute('SELECT model, tier FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('rules', 'hot'))
+
+    def test_retag_on_taxonomy_change(self):
+        pid = self.people({'eve': ('founder', 10, ['s1'])})['eve']
+        self.conn.execute("UPDATE verdicts SET model='m', score=91, input_hash='h'")  # an LLM verdict (stub hash is 'h')
+        self.conn.execute("DELETE FROM tags WHERE source='auto'")  # stands in for tags from an older taxonomy
+        self.conn.commit()
+        self.assertFalse(server.retag_if_changed(self.conn))  # stub has no TAGS_VERSION
+        server.qualify.TAGS_VERSION = 't9'
+        try:
+            self.assertTrue(server.retag_if_changed(self.conn))
+            self.assertFalse(server.retag_if_changed(self.conn))  # once per version
+            self.assertEqual(server.qualify_batch(self.conn), 1)
+        finally:
+            del server.qualify.TAGS_VERSION
+        self.assertEqual(self.tagset(pid, 'auto'), {'founder', 'via @s1'})  # re-derived
+        self.assertEqual(self.conn.execute('SELECT model, score FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('m', 91))
+        self.assertEqual(server.qualify_batch(self.conn), 0)
+
+    def test_old_tags_table_is_migrated(self):
+        path = str(Path(self.tmp.name) / 'old.sqlite')
+        c = sqlite3.connect(path)
+        c.executescript("""CREATE TABLE tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual')),
+                             PRIMARY KEY(person_id,tag));
+                           CREATE INDEX tags_tag ON tags(tag);
+                           INSERT INTO tags VALUES(1,'vip','signal','manual'),(1,'Brand','role','auto');""")
+        c.commit()
+        c.close()
+        for _ in range(2):  # idempotent
+            n = db.init(path)
+            self.assertEqual(sorted(tuple(r) for r in n.execute('SELECT * FROM tags')), [(1, 'Brand', 'role', 'auto'), (1, 'vip', 'signal', 'manual')])
+            n.execute("INSERT INTO tags VALUES(2,'x','signal','rule')")
+            self.assertRaises(sqlite3.IntegrityError, n.execute, "INSERT INTO tags VALUES(3,'x','signal','bogus')")
+            self.assertRaises(sqlite3.IntegrityError, n.execute, "INSERT INTO tags VALUES(1,'vip','signal','rule')")
+            idx = {r[0] for r in n.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='tags'")}
+            self.assertIn('tags_tag_src', idx)
+            self.assertNotIn('tags_tag', idx)
+            n.rollback()
+            n.close()
+
+
+class Redirector(BaseHTTPRequestHandler):
+    hits = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        Redirector.hits.append(self.path)
+        self.send_response(302)
+        self.send_header('Location', '/elsewhere')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+
+class AuditTest(Base):
+    """Fixes from the 2026-09-24 security/bug audit."""
+
+    def raw(self, path, body=None, headers=None):
+        port = server.CFG['port']
+        req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', method='POST' if body is not None else 'GET',
+                                     data=json.dumps(body).encode() if body is not None else None, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, dict(r.headers)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, dict(e.headers)
+
+    def test_mark_keeps_note_when_status_cleared(self):
+        pid = db.upsert_person(self.conn, {'handle': 'ann'})
+        self.conn.commit()
+        mark = lambda: self.conn.execute('SELECT status, note FROM marks WHERE person_id=?', (pid,)).fetchone()  # noqa: E731
+        self.call(f'/api/person/{pid}/mark', {'status': 'good', 'note': 'met at expo'})
+        self.call(f'/api/person/{pid}/mark', {'status': None})
+        self.assertEqual(mark()[:], (None, 'met at expo'))
+        self.call(f'/api/person/{pid}/mark', {'status': 'maybe'})
+        self.assertEqual(mark()[:], ('maybe', 'met at expo'))
+        self.call(f'/api/person/{pid}/mark', {'note': 'follow up'})  # status absent: kept
+        self.assertEqual(mark()[:], ('maybe', 'follow up'))
+        self.call(f'/api/person/{pid}/mark', {'note': ''})
+        self.assertEqual(mark()[:], ('maybe', None))
+        self.call(f'/api/person/{pid}/mark', {'status': None})
+        self.assertIsNone(mark())  # nothing left: row removed
+        self.assertEqual(self.call(f'/api/person/{pid}/mark', {'note': 5})[0], 400)
+
+    def test_handle_taken_by_new_account(self):
+        old = db.upsert_person(self.conn, {'ig_id': '100', 'handle': 'glow'})
+        db.add_edge(self.conn, 's1', old, 'followers')
+        self.conn.execute("INSERT INTO marks VALUES(?, 'client', 'x', 't')", (old,))
+        new = db.upsert_person(self.conn, {'ig_id': '200', 'handle': 'glow', 'name': 'New Glow'})
+        self.assertNotEqual(new, old)
+        self.assertEqual(self.conn.execute('SELECT handle FROM people WHERE id=?', (old,)).fetchone()[0], f'glow~{old}')
+        self.assertIsNone(self.conn.execute('SELECT 1 FROM marks WHERE person_id=?', (new,)).fetchone())
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM edges WHERE person_id=?', (new,)).fetchone()[0], 0)
+        self.assertEqual(db.upsert_person(self.conn, {'ig_id': '200', 'handle': 'glow'}), new)  # stable afterwards
+        same = db.upsert_person(self.conn, {'handle': 'solo'})
+        self.assertEqual(db.upsert_person(self.conn, {'ig_id': '300', 'handle': 'solo'}), same)  # first ig_id: same account
+
+    def test_profile_fields_sanitised(self):
+        for site, stored in (('javascript:alert(1)', None), ('data:text/html,x', None), ('glow.com', None),
+                             (' https://glow.com/shop ', 'https://glow.com/shop'), ('HTTP://x.co', 'HTTP://x.co')):
+            h = f'p{abs(hash(site)) % 10 ** 6}'
+            self.call('/api/ext/profile', {'job_id': None, 'profile': {'handle': h, 'website': site, 'followers': '1,234',
+                                                                         'following': 'many', 'posts': True}})
+            row = self.conn.execute('SELECT website, followers, following, posts FROM people WHERE handle=?', (h,)).fetchone()
+            self.assertEqual(row[:], (stored, 1234, None, None), site)
+        self.call('/api/ext/profile', {'job_id': None, 'profile': {'handle': 'keep', 'website': 'https://a.co', 'followers': 12.0}})
+        self.call('/api/ext/profile', {'job_id': None, 'profile': {'handle': 'keep', 'website': 'vbscript:x', 'followers': -5}})
+        self.assertEqual(self.conn.execute("SELECT website, followers FROM people WHERE handle='keep'").fetchone()[:], ('https://a.co', 12))
+        self.assertEqual(self.call('/api/ext/profile', {'job_id': None, 'profile': 'x'})[0], 400)
+
+    def test_security_headers_everywhere(self):
+        for path in ('/api/counts', '/api/nothing', '/img/1', '/', '/missing.css'):
+            code, headers = self.raw(path)
+            with self.subTest(path=path, code=code):
+                self.assertEqual(headers.get('X-Frame-Options'), 'DENY')
+                self.assertEqual(headers.get('Content-Security-Policy'), "frame-ancestors 'none'")
+                self.assertEqual(headers.get('X-Content-Type-Options'), 'nosniff')
+
+    def test_ui_posts_need_same_origin(self):
+        self.assertEqual(self.raw('/api/scraper/pause', {'paused': True})[0], 403)  # no Origin
+        self.assertEqual(self.raw('/api/scraper/pause', {'paused': True}, {'Origin': 'null'})[0], 403)
+        self.assertEqual(self.raw('/api/scraper/pause', {'paused': True}, {'Origin': f"http://localhost:{server.CFG['port']}"})[0], 200)
+        self.assertEqual(self.raw('/api/counts')[0], 200)  # GETs stay open to curl
+        self.assertTrue(db.get_setting(self.conn, 'paused'))  # only the same-origin call got through
+
+    def test_pictures_never_follow_redirects(self):
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), Redirector)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        Redirector.hits = []
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                server.PIC_OPENER.open(f'http://127.0.0.1:{httpd.server_address[1]}/pic.jpg', timeout=5)
+            cm.exception.close()
+            self.assertEqual(cm.exception.code, 302)
+            self.assertEqual(Redirector.hits, ['/pic.jpg'])  # the redirect target was never requested
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertIsNone(server.fetch_pic('https://evil.example/a.jpg'))
+        self.assertIsNone(server.fetch_pic('http://x.cdninstagram.com/a.jpg'))
+
+    def test_seed_links_threads(self):
+        pid = db.upsert_person(self.conn, {'handle': 'a'})
+        for s in ('s1', 's2'):
+            db.add_edge(self.conn, s, pid, 'followers')
+        self.conn.commit()
+        results = []
+
+        def hit():
+            for i in range(5):
+                c = db.connect(server.CFG['db'])
+                try:
+                    if i % 2:
+                        server.SEED_LINKS[0] = None  # force recomputes to interleave
+                    results.append(server.seed_links(c))
+                finally:
+                    c.close()
+        threads = [threading.Thread(target=hit) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(len(results), 30)
+        self.assertTrue(all(r == [{'source': 's:s1', 'target': 's:s2', 'shared': 1}] for r in results))
+
+    def test_only_real_errors_park_a_list(self):
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        for code in ['rate_limit'] * 6 + ['soft_block', 'login'] + ['other'] * 4:
+            job = self.call('/api/ext/next')[1]['job']
+            self.assertIsNotNone(job, code)
+            self.call('/api/ext/error', {'job_id': job['id'], 'code': code, 'message': code})
+        self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'queued')
+        job = self.call('/api/ext/next')[1]['job']
+        self.call('/api/ext/error', {'job_id': job['id'], 'code': 'other', 'message': 'boom'})  # 5th real error
+        self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'error')
+        self.assertIsNone(self.call('/api/ext/next')[1]['job'])
+
+    def test_rule_regex_guard_and_scan(self):
+        for m in (r'/.{0,99}.{0,99}.{0,99}.{0,99}.{0,99}#/', r'/(?:a?){26}a{26}/', '/(ab|cd)+e/', '/(x)\\1/'):
+            self.assertEqual(self.call('/api/tag-rules', {'tag': 'x', 'field': 'bio', 'match': m})[0], 400, m)
+        for m in (r'/shop(ify)?/', r'/(?:founder|ceo) @\w+/'):
+            self.assertEqual(self.call('/api/tag-rules', {'tag': 'ok', 'field': 'bio', 'match': m})[0], 200, m)
+        db.upsert_person(self.conn, {'handle': 'p1', 'bio': 'Founder @glow'})
+        self.conn.commit()
+        c = db.connect(server.CFG['db'])
+        try:
+            rule = {'tag': 't', 'grp': 'signal', 'field': 'bio', 'match': 'founder'}
+            self.assertEqual(len(server.rules.matching_ids(c, rule)), 1)
+            self.assertFalse(c.in_transaction)  # the scan never holds the write lock
+            old = server.rules.SCAN_BUDGET
+            server.rules.SCAN_BUDGET = -1
+            try:
+                for i in range(1200):
+                    db.upsert_person(self.conn, {'handle': f'bulk{i}'})
+                self.conn.commit()
+                code, out = self.call('/api/tag-rules', {'tag': 'slow', 'field': 'bio', 'match': 'zzz'})
+                self.assertEqual((code, 'longer than' in out['error']), (400, True))
+                self.assertIsNone(self.conn.execute("SELECT 1 FROM tag_rules WHERE tag='slow'").fetchone())
+            finally:
+                server.rules.SCAN_BUDGET = old
+        finally:
+            c.close()
 
 
 if __name__ == '__main__':
