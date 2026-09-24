@@ -1,0 +1,3 @@
+# Laya pulls in torch>=2.0, transformers>=4.48, safetensors, huggingface_hub, numpy.
+# On Apple Silicon the default PyPI torch wheel includes MPS support.
+laya==0.3.20

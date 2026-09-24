@@ -1,0 +1,16 @@
+{
+  "_comment": "Default Fortunate ideal-client questions for the Laya sidecar. No 'labels' = yes/no (Laya 'noul', p = P(yes)). 'labels' = single-choice (Laya 'choice', p = prob of top label). 'multi': true with labels = one yes/no per label (Laya has no native multi-label type).",
+  "questions": [
+    {"key": "dtc_founder", "q": "Is this person a founder, owner or decision-maker of a direct-to-consumer brand that sells its own physical products?"},
+    {"key": "brand_account", "q": "Is this the official account of a brand or company rather than a personal account?"},
+    {"key": "creator", "q": "Is this person mainly a content creator, influencer or UGC creator who makes content for other brands?"},
+    {"key": "service_provider", "q": "Is this an agency, freelancer, consultant or other service provider selling services rather than products?"},
+    {"key": "supplier", "q": "Is this a supplier, manufacturer, factory or wholesaler that makes products for other brands?"},
+    {"key": "us_market", "q": "Is this person or business based in the United States or selling to customers in the United States?"},
+    {"key": "netherlands", "q": "Is this person or business based in the Netherlands?"},
+    {"key": "revenue_size", "q": "How large does the business appear to be?",
+     "labels": ["no business or pre-launch", "small side project or early stage", "established small brand", "large scaling brand with team, retail or seven-figure revenue"]},
+    {"key": "niche", "q": "Which product category does the brand sell?", "multi": true,
+     "labels": ["skincare or beauty", "fashion or apparel", "jewelry or accessories", "food, coffee or beverage", "health, supplements or fitness", "home or lifestyle", "pets", "baby or kids", "tech or gadgets"]}
+  ]
+}
