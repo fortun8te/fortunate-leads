@@ -37,7 +37,7 @@ async function api(path, body, ms = 15e3) {
   } finally { clearTimeout(timer); }
 }
 async function sendItem(item) {
-  try { const r = await api(item.path, item.body); return r.status >= 500 ? 'retry' : 'ok'; } catch { return 'retry'; }
+  try { const r = await api(item.path, item.body); return r.status >= 500 ? 'fail' : 'ok'; } catch { return 'retry'; }
 }
 // Outbox: items stay in storage until the server took them; single-flight, never holds the storage lock over the network.
 let flushing = null;
@@ -48,8 +48,19 @@ function flushBox() {
       for (;;) {
         const box = (await get('box')) || [];
         if (!box.length) { mem.offline = false; return true; }
-        if ((await sendItem(box[0])) === 'retry') { mem.offline = true; return false; }
-        await locked(async () => { const b = (await get('box')) || []; b.shift(); await set({ box: b }); });
+        const r = await sendItem(box[0]);
+        if (r === 'retry') { mem.offline = true; return false; }
+        mem.offline = false;
+        // Server error (5xx): retry a few rounds, then park the item so one bad result can't block the queue forever.
+        const tries = (box[0].tries || 0) + 1;
+        if (r === 'fail' && tries < 10) {
+          await locked(async () => { const b = (await get('box')) || []; if (b[0]) { b[0].tries = tries; await set({ box: b }); } });
+          return false;
+        }
+        await locked(async () => {
+          const b = (await get('box')) || [], item = b.shift();
+          await set(r === 'fail' && item ? { box: b, dead: ((await get('dead')) || []).concat(item).slice(-50) } : { box: b });
+        });
         mem.beat = Date.now();
       }
     } finally { flushing = null; }
