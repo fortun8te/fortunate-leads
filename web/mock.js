@@ -40,14 +40,14 @@
     const followers = Math.floor(Math.pow(10, 2.5 + rnd() * 3));
     const p = {
       id: i, handle: handle + (people.some((x) => x.handle === handle) ? i : ''), name: f + ' ' + l,
-      pic: chance(0.82) ? `https://randomuser.me/api/portraits/${chance(0.5) ? 'women' : 'men'}/${Math.floor(rnd() * 99)}.jpg` : null,
+      pic: null,
       bio: hasBio ? `${role} @${brand} · ${pick(NICHES[niche])}${chance(0.5) ? ' · ships to the US' : ''}${chance(0.3) ? ' · prev. ' + pick(['Glossier', 'Gymshark', 'Allbirds', 'Olaplex', 'AG1']) : ''}` : null,
       website: hasBio && chance(0.7) ? `https://${brand.replace('.', '')}.com` : null,
       followers, following: Math.floor(200 + rnd() * 1800), posts: Math.floor(10 + rnd() * 900),
       _niche: niche, _role: role,
     };
     people.push(p);
-    const nSeeds = chance(0.2) ? (chance(0.35) ? 3 : 2) : 1;
+    const nSeeds = chance(0.22) ? (chance(0.35) ? (chance(0.3) ? 5 : 3) : 2) : 1;
     const ss = new Set();
     while (ss.size < nSeeds) ss.add(pick(SEEDS));
     ss.forEach((s) => edges.push({ seed: s, person_id: i, direction: chance(0.75) ? 'followers' : 'following' }));
@@ -66,7 +66,7 @@
       if (p.bio.includes('US')) t.push({ tag: 'US shipping', grp: 'signal', source: 'auto' });
     }
     t.push({ tag: followers > 100000 ? '100k+' : followers > 10000 ? '10k–100k' : followers > 1000 ? '1k–10k' : 'Under 1k', grp: 'size', source: 'auto' });
-    if (hasBio && chance(0.04)) t.push({ tag: 'Warm intro', grp: 'signal', source: 'manual' });
+    if (hasBio && chance(0.05)) t.push({ tag: pick(['Warm intro', 'Pitch Q4', 'Met at event']), grp: 'signal', source: 'manual' });
     tags.set(i, t);
 
     let score, tier, reason;
@@ -89,7 +89,7 @@
   const row = (p) => {
     const v = verdict.get(p.id);
     return { id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, followers: p.followers, following: p.following, posts: p.posts,
-      tier: v.tier, score: v.score, role: v.role, reason: v.reason, tags: tags.get(p.id), via: via(p.id), status: marks.get(p.id) || null };
+      tier: v.tier, score: v.score, role: v.role, reason: v.reason, tags: tags.get(p.id), via: via(p.id), lists: new Set(via(p.id)).size, status: marks.get(p.id) || null, note: notes.get(p.id) || '' };
   };
 
   let mapRev = 1;
@@ -98,7 +98,7 @@
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
-    paused: false, budget: { list: 2000, profile: 150 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
+    paused: false, qualify: false, budget: { list: 2000, profile: 150 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
     lists: SEEDS.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
       const total = Math.floor(400 + rnd() * 6000);
       const st = i < 3 ? 'done' : i === 3 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
@@ -128,9 +128,10 @@
     return {
       ext: { online: true, version: '3.1.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
         last_seen: new Date().toISOString(), last_error: null,
+        rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
-      paused: scraper.paused, people_today: scraper.peopleToday, lists: scraper.lists,
+      paused: scraper.paused, qualify: scraper.qualify, people_today: scraper.peopleToday, lists: scraper.lists,
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
     };
   }
@@ -147,16 +148,18 @@
       if (st) list = list.filter((r) => r.status === st); else list = list.filter((r) => r.status !== 'no');
       const tg = (q.get('tags') || '').split(',').filter(Boolean);
       if (tg.length) list = list.filter((r) => tg.every((t) => r.tags.some((x) => x.tag === t)));
+      const ml = +q.get('min_lists') || 0;
+      if (ml) list = list.filter((r) => r.lists >= ml);
       const s = (q.get('q') || '').toLowerCase();
       if (s) list = list.filter((r) => (r.handle + ' ' + r.name + ' ' + (r.bio || '')).toLowerCase().includes(s));
       const sort = q.get('sort') || 'score';
-      list.sort(sort === 'followers' ? (a, b) => b.followers - a.followers : sort === 'recent' ? (a, b) => b.id - a.id : (a, b) => b.score - a.score);
+      list.sort(sort === 'connected' ? (a, b) => b.lists - a.lists || b.followers - a.followers : sort === 'followers' ? (a, b) => b.followers - a.followers : sort === 'recent' ? (a, b) => b.id - a.id : (a, b) => b.score - a.score);
       const off = +q.get('offset') || 0, lim = +q.get('limit') || 50;
       return { total: list.length, rows: list.slice(off, off + lim) };
     }
     if (path === '/api/tags') {
       const c = new Map();
-      tags.forEach((t) => t.forEach((x) => { const k = x.tag; const e = c.get(k) || { tag: k, grp: x.grp, count: 0 }; e.count++; c.set(k, e); }));
+      tags.forEach((t) => t.forEach((x) => { const k = x.tag + '|' + x.source; const e = c.get(k) || { tag: x.tag, grp: x.grp, count: 0, source: x.source }; e.count++; c.set(k, e); }));
       return [...c.values()].sort((a, b) => b.count - a.count);
     }
     if (path === '/api/counts') {
@@ -189,6 +192,7 @@
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
+    if (path === '/api/settings/qualify') { scraper.qualify = !!body.on; return { ok: true }; }
     if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
     if (path === '/api/scraper/seeds') {
       let queued = 0;

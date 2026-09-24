@@ -1,986 +1,766 @@
 'use strict';
-/* Fortunate Leads workspace: scraping progress, people table, map. No qualification UI. */
+/* Fortunate Leads UI. Plain JS, no build step. */
 
+// ---------- utilities ----------
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (n) => (n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n));
-const int = (n) => (n == null ? '–' : Math.round(n).toLocaleString('en-US'));
-const ig = (h) => 'https://www.instagram.com/' + encodeURIComponent(h) + '/';
-const initials = (name, handle) => {
-  const src = (name || '').replace(/[^\p{L}\p{N} ]/gu, ' ').trim() || (handle || '').replace(/[^a-z0-9]/gi, ' ').trim();
-  const w = src.split(/\s+/).filter(Boolean);
-  return ((w[0] || '?')[0] + (w.length > 1 ? w[w.length - 1][0] : (w[0] || '')[1] || '')).toUpperCase();
+const fmt = (n) => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+const int = (n) => n == null ? '–' : Number(n).toLocaleString('en-US');
+const initials = (s) => (s || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?';
+const ago = (t) => {
+  if (!t) return '–';
+  const s = Math.max(0, (Date.now() - Date.parse(t)) / 1000);
+  return s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
 };
+const left = (t) => {
+  const s = Math.max(0, Math.round((Date.parse(t) - Date.now()) / 1000));
+  return s >= 3600 ? Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+};
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 const store = {
-  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  get(k, d) { try { const v = localStorage.getItem('fl-' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('fl-' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
 };
+
+let offlineSince = null;
+function setOnline(ok) {
+  if (ok) { offlineSince = null; $('#offline').hidden = true; return; }
+  offlineSince = offlineSince || Date.now();
+  $('#offline').hidden = false;
+  $('#offline-t').textContent = ago(new Date(offlineSince).toISOString());
+}
 const api = {
-  async get(u) { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); },
-  async post(u, b) {
-    const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || 'HTTP ' + r.status);
-    return j;
+  async req(url, opts) {
+    let r;
+    try { r = await fetch(url, { cache: 'no-store', ...opts }); } catch (e) { setOnline(false); throw e; }
+    setOnline(true);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
   },
+  get(url) { return this.req(url); },
+  post(url, body) { return this.req(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); },
 };
+
 let toastT;
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 2400); }
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, 2200);
+}
 
-const STATUSES = [['good', 'Good'], ['maybe', 'Maybe'], ['no', 'No'], ['contacted', 'Contacted'], ['client', 'Client'], ['known', 'Known']];
-const STATUS_LABEL = Object.fromEntries(STATUSES);
-// Bio-derived tags from the qualifier; hidden while qualification is off.
-const AUTO_SIGNAL = new Set(['Business', 'Email', 'Founder', 'Hiring', 'Link Hub', 'NL', 'Scaling', 'Shop Link', 'Shopify', 'UK', 'US', 'Verified']);
-const LISTS_RX = /^in (\d+) lists$/;
-const REL_RX = /^(knows you|you follow|follows you|follows @|followed by @)/;
+function avatar(pic, name, cls = '') {
+  const i = esc(initials(name));
+  if (!pic) return `<span class="av ${cls}">${i}</span>`;
+  return `<span class="av ${cls}" data-i="${i}"><img src="${esc(pic)}" alt="" loading="lazy"></span>`;
+}
+// Broken pictures fall back to initials (error events do not bubble, so capture).
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img.tagName === 'IMG' && img.parentElement?.classList.contains('av')) img.parentElement.textContent = img.parentElement.dataset.i || '?';
+}, true);
 
+// ---------- constants ----------
+const STATUSES = ['good', 'maybe', 'no', 'contacted', 'client', 'known'];
+const LABEL = { good: 'Good', maybe: 'Maybe', no: 'No', contacted: 'Contacted', client: 'Client', known: 'Known' };
+const CYCLE = [null, 'good', 'maybe', 'no'];
+const GROUPS = [['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
+const PAGE = 100;
+const isListTag = (t) => /^in \d+ lists$/.test(t);
+const isViaTag = (t) => t.startsWith('via @');
+
+// ---------- state ----------
 const S = {
   view: 'leads',
-  f: { q: '', via: '', lists: 0, status: '', tag: '', sort: 'connected', ...store.get('fl-filters', {}) },
-  tags: [], manual: new Set(store.get('fl-manual-tags', [])),
-  counts: null, sc: null,
+  f: { q: '', sort: store.get('sort', 'connected'), status: '', min: 0, tags: [] },
+  tags: [], counts: null, sc: null,
+  rows: [], total: null, done: false, loading: false, error: false, gen: 0,
+  sel: -1, open: null, person: null,
+  tagMore: {},
 };
-S.f.q = '';
 
-function isShownTag(t) { return t.grp === 'source' || t.source === 'manual'; }
-function tagClass(tag, source) {
-  if (source === 'manual' || S.manual.has(tag)) return 'man';
-  if (LISTS_RX.test(tag)) return 'lists';
-  if (REL_RX.test(tag)) return 'rel';
-  return 'via';
+// ---------- theme ----------
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $('#theme-btn').textContent = t === 'dark' ? 'Light' : 'Dark';
+  store.set('theme', t);
+  if (M.sim) M.draw();
 }
-const tagChip = (t, removable) => `<span class="tag ${tagClass(t.tag, t.source)}">${esc(t.tag)}${removable ? `<button data-rm="${esc(t.tag)}" aria-label="Remove">×</button>` : ''}</span>`;
-function noteManual(rows) {
-  let changed = false;
-  rows.forEach((r) => (r.tags || []).forEach((t) => { if (t.source === 'manual' && !S.manual.has(t.tag)) { S.manual.add(t.tag); changed = true; } }));
-  if (changed) { store.set('fl-manual-tags', [...S.manual]); renderTagSelects(); }
-}
-function manualTagList() {
-  const counts = new Map(S.tags.map((t) => [t.tag, t.count]));
-  const set = new Set(S.manual);
-  S.tags.forEach((t) => { if (t.grp === 'signal' && !AUTO_SIGNAL.has(t.tag)) set.add(t.tag); });
-  return [...set].map((tag) => ({ tag, count: counts.get(tag) || 0 })).filter((t) => t.count > 0).sort((a, b) => b.count - a.count);
-}
-const connections = (r) => (r.via || []).length;
+$('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 
-function pfp(p, size) {
-  const pic = p.pic ? `<img src="${esc(p.pic)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : '';
-  return `<div class="pfp${size ? ' ' + size : ''}">${esc(initials(p.name, p.handle))}${pic}</div>`;
-}
-
-/* ---------- Theme ---------- */
-function theme() { return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'; }
-function paintTheme() { document.querySelectorAll('#theme-seg button').forEach((b) => b.classList.toggle('on', b.dataset.theme === theme())); }
-$('#theme-seg').onclick = (e) => {
-  const b = e.target.closest('button'); if (!b) return;
-  document.documentElement.dataset.theme = b.dataset.theme;
-  try { localStorage.setItem('fl-theme', b.dataset.theme); } catch (err) {}
-  paintTheme(); MapView.themeChanged();
-};
-paintTheme();
-
-/* ---------- Routing ---------- */
+// ---------- routing ----------
 function route() {
   const v = (location.hash.match(/^#\/(\w+)/) || [])[1];
   S.view = ['leads', 'map', 'scraper'].includes(v) ? v : 'leads';
-  document.querySelectorAll('.view').forEach((el) => el.classList.toggle('on', el.id === 'view-' + S.view));
-  document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === S.view));
-  if (S.view === 'map') MapView.show(); else MapView.hide();
-  if (S.view === 'leads') renderList();
+  $$('.view').forEach((el) => el.classList.toggle('on', el.id === 'view-' + S.view));
+  $$('.tabs a').forEach((a) => a.classList.toggle('on', a.dataset.view === S.view));
+  const detail = $('#detail');
+  if (S.view === 'map') { $('.map-wrap').appendChild(detail); M.show(); }
+  else { $('#view-leads').appendChild(detail); M.hide(); }
   if (S.view === 'scraper') renderScraper();
 }
 window.addEventListener('hashchange', route);
 
-/* ---------- Tags + counts ---------- */
+// ---------- tags & counts ----------
+function mergedTags() {
+  const m = new Map();
+  for (const t of S.tags) {
+    const e = m.get(t.tag) || { tag: t.tag, grp: t.grp, count: 0, manual: false };
+    e.count += t.count; if (t.source === 'manual') e.manual = true;
+    m.set(t.tag, e);
+  }
+  return [...m.values()];
+}
 async function loadTags() {
   try { S.tags = await api.get('/api/tags'); } catch (e) { return; }
-  renderTagSelects();
-  $('#tag-options').innerHTML = manualTagList().map((t) => `<option value="${esc(t.tag)}">`).join('');
-}
-function renderTagSelects() {
-  const via = S.tags.filter((t) => t.grp === 'source' && /^via @/.test(t.tag)).sort((a, b) => b.count - a.count);
-  const viaHTML = (cur) => `<option value="">All sources</option>` + via.map((t) => `<option value="${esc(t.tag)}"${t.tag === cur ? ' selected' : ''}>${esc(t.tag)} · ${int(t.count)}</option>`).join('');
-  const man = manualTagList();
-  const tagHTML = (cur) => `<option value="">All tags</option>` + man.map((t) => `<option value="${esc(t.tag)}"${t.tag === cur ? ' selected' : ''}>${esc(t.tag)} · ${int(t.count)}</option>`).join('')
-    + (cur && !man.some((t) => t.tag === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : '');
-  $('#f-via').innerHTML = viaHTML(S.f.via);
-  $('#f-tag').innerHTML = tagHTML(S.f.tag);
-  $('#f-tag').hidden = !man.length && !S.f.tag;
-  $('#m-via').innerHTML = viaHTML(MapView.filters.via);
-  $('#m-tag').innerHTML = tagHTML(MapView.filters.tag);
-  $('#m-tag').hidden = !man.length && !MapView.filters.tag;
+  renderFilters();
+  const dl = $('#tag-dl') || document.body.appendChild(Object.assign(document.createElement('datalist'), { id: 'tag-dl' }));
+  dl.innerHTML = mergedTags().filter((t) => t.grp !== 'source').map((t) => `<option value="${esc(t.tag)}">`).join('');
 }
 async function loadCounts() {
   try { S.counts = await api.get('/api/counts'); } catch (e) { return; }
-  $('#nav-leads').textContent = fmt(S.counts.total);
+  $('#n-leads').textContent = fmt(S.counts.total);
+  renderFilters();
 }
 
-/* ---------- Leads: streamed rows, windowed rendering ---------- */
-const ROW = 56, PAGE = 200;
-const L = { gen: 0, rows: [], ids: new Set(), total: 0, off: 0, done: false, loading: false, sel: -1, error: false };
+// ---------- filters ----------
+function fitem(key, val, label, count, on, box = '') {
+  return `<button class="fitem${on ? ' on' : ''}" data-k="${key}" data-v="${esc(val)}">${box ? `<i class="box ${box}"></i>` : ''}<span>${esc(label)}</span>${count != null ? `<b class="num">${fmt(count)}</b>` : ''}</button>`;
+}
+function tagSection(key, title, list, box) {
+  if (!list.length) return '';
+  const lim = S.tagMore[key] ? 200 : 8;
+  const sel = list.filter((t) => S.f.tags.includes(t.tag));
+  const shown = list.slice(0, lim);
+  sel.forEach((t) => { if (!shown.includes(t)) shown.push(t); });
+  return `<div class="fsec"><h4>${esc(title)}</h4>${shown.map((t) => fitem('tag', t.tag, isViaTag(t.tag) ? t.tag.slice(4) : t.tag, t.count, S.f.tags.includes(t.tag), box)).join('')}
+    ${list.length > lim ? `<button class="fmore" data-more="${key}">${list.length - lim} more</button>` : ''}</div>`;
+}
+function renderFilters() {
+  const c = S.counts || {};
+  const tags = mergedTags();
+  const own = tags.filter((t) => t.manual);
+  const via = tags.filter((t) => isViaTag(t.tag));
+  let h = `<div class="fsec"><h4>Status ${S.f.status || S.f.min || S.f.tags.length ? '<button id="f-reset">Reset</button>' : ''}</h4>
+    ${fitem('status', '', 'Open', c.total, !S.f.status)}
+    ${STATUSES.map((s) => fitem('status', s, LABEL[s], c[s] ?? null, S.f.status === s)).join('')}</div>
+    <div class="fsec"><h4>Lists</h4>
+    ${[[0, 'Any'], [2, 'In 2+ lists'], [3, 'In 3+ lists'], [5, 'In 5+ lists']].map(([n, l]) => fitem('min', n, l, null, S.f.min === n)).join('')}</div>`;
+  h += tagSection('own', 'Your tags', own, '');
+  h += tagSection('via', 'Seeds', via, 'dash');
+  for (const [g, title] of GROUPS) h += tagSection(g, title, tags.filter((t) => t.grp === g && !t.manual), 'dash');
+  if (!own.length) h += `<div class="fsec"><h4>Your tags</h4><span class="muted">None yet</span></div>`;
+  $('#filters').innerHTML = h;
+  renderChips();
+}
+$('#filters').addEventListener('click', (e) => {
+  const more = e.target.closest('[data-more]');
+  if (more) { S.tagMore[more.dataset.more] = true; renderFilters(); return; }
+  if (e.target.id === 'f-reset') { Object.assign(S.f, { status: '', min: 0, tags: [] }); return refilter(); }
+  const b = e.target.closest('.fitem');
+  if (!b) return;
+  const { k, v } = b.dataset;
+  if (k === 'status') S.f.status = v;
+  else if (k === 'min') S.f.min = +v;
+  else if (k === 'tag') S.f.tags = S.f.tags.includes(v) ? S.f.tags.filter((t) => t !== v) : [...S.f.tags, v];
+  refilter();
+});
+function renderChips() {
+  const chips = [];
+  if (S.f.status) chips.push(['status', LABEL[S.f.status]]);
+  if (S.f.min) chips.push(['min', `${S.f.min}+ lists`]);
+  S.f.tags.forEach((t) => chips.push(['tag:' + t, t]));
+  $('#chips').innerHTML = chips.map(([k, l]) => `<button class="chip-x" data-k="${esc(k)}">${esc(l)}</button>`).join('');
+}
+$('#chips').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-k]');
+  if (!b) return;
+  const k = b.dataset.k;
+  if (k === 'status') S.f.status = ''; else if (k === 'min') S.f.min = 0; else S.f.tags = S.f.tags.filter((t) => 'tag:' + t !== k);
+  refilter();
+});
+function refilter() { renderFilters(); resetLeads(); }
+$('#filters-btn').onclick = () => $('#filters').classList.toggle('show');
+document.addEventListener('click', (e) => {
+  const f = $('#filters');
+  if (f.classList.contains('show') && !f.contains(e.target) && e.target.id !== 'filters-btn') f.classList.remove('show');
+});
 
-function leadParams(extraTag) {
+$('#q').addEventListener('input', debounce((e) => { S.f.q = e.target.value.trim(); resetLeads(); }, 180));
+$('#sort').value = S.f.sort;
+$('#sort').onchange = (e) => { S.f.sort = e.target.value; store.set('sort', S.f.sort); resetLeads(); };
+
+// ---------- leads list ----------
+function leadParams() {
   const p = new URLSearchParams();
-  const tags = [S.f.via, S.f.tag, extraTag].filter(Boolean);
-  if (tags.length) p.set('tags', tags.join(','));
-  if (S.f.status) p.set('status', S.f.status);
   if (S.f.q) p.set('q', S.f.q);
+  if (S.f.status) p.set('status', S.f.status);
+  if (S.f.min) p.set('min_lists', S.f.min);
+  if (S.f.tags.length) p.set('tags', S.f.tags.join(','));
+  p.set('sort', S.f.sort);
   return p;
 }
-function sortRows(rows) {
-  const by = S.f.sort;
-  rows.sort((a, b) => (by === 'followers' ? (b.followers ?? -1) - (a.followers ?? -1) || connections(b) - connections(a)
-    : by === 'newest' ? b.id - a.id
-    : connections(b) - connections(a) || (b.followers ?? -1) - (a.followers ?? -1)) || b.id - a.id);
-  return rows;
+const lists = (r) => r.lists ?? (r.via ? new Set(r.via).size : 0);
+
+async function resetLeads(keep) {
+  const gen = ++S.gen;
+  if (!keep) { S.rows = []; S.total = null; S.sel = -1; $('#scroll').scrollTop = 0; }
+  S.done = false; S.error = false; S.loading = false;
+  renderRows();
+  await loadMore(gen, keep ? Math.max(PAGE, S.rows.length) : PAGE, keep);
 }
-// Everyone in >= min lists, via the server's "in N lists" tags (AND with the other filters).
-async function gatherMulti(min, gen) {
-  const ks = S.tags.map((t) => +(t.tag.match(LISTS_RX) || [])[1]).filter((k) => k >= min);
-  const out = new Map();
-  const one = async (k) => {
-    for (let off = 0; ;) {
-      const p = leadParams(`in ${k} lists`); p.set('sort', 'followers'); p.set('offset', off); p.set('limit', 500);
-      const d = await api.get('/api/leads?' + p);
-      if (gen !== L.gen) return;
-      d.rows.forEach((r) => out.set(r.id, r));
-      off += d.rows.length;
-      if (!d.rows.length || off >= d.total) break;
-    }
-  };
-  // Two lanes: a handful of small requests, never a burst.
-  const q = [...ks];
-  await Promise.all([0, 1].map(async () => { while (q.length && gen === L.gen) await one(q.shift()); }));
-  return [...out.values()];
-}
-async function resetLeads(keepScroll) {
-  const gen = ++L.gen;
-  L.stale = keepScroll && L.rows.length ? L.rows : null;
-  const min = S.f.lists >= 2 ? S.f.lists : S.f.sort === 'connected' ? 2 : 0;
-  // gathering blocks the scroll-triggered loadMore until the multi-list head is in place.
-  Object.assign(L, { rows: [], ids: new Set(), off: 0, done: false, loading: false, error: false, gathering: !!min });
-  if (!keepScroll) { $('#list-scroll').scrollTop = 0; L.sel = -1; }
-  syncFilterUI();
-  renderList();
+async function loadMore(gen = S.gen, n = PAGE, replace = false) {
+  if (S.loading || (S.done && !replace)) return;
+  S.loading = true; renderRows();
+  const p = leadParams();
+  p.set('offset', replace ? 0 : S.rows.length); p.set('limit', Math.min(500, n));
   try {
-    if (!S.tags.length) await loadTags();
-    if (min) {
-      const head = sortRows(await gatherMulti(min, gen));
-      if (gen === L.gen) L.gathering = false;
-      if (gen !== L.gen) return;
-      L.rows = head; head.forEach((r) => L.ids.add(r.id));
-      noteManual(head);
-      if (S.f.lists >= 2) { L.total = head.length; L.done = true; }
-    }
-    if (!L.done) await loadMore(gen);
-  } catch (e) { if (gen === L.gen) { L.error = true; L.done = true; L.gathering = false; } }
-  if (gen === L.gen) renderList();
-}
-async function loadMore(gen = L.gen) {
-  if (L.loading || L.done || L.gathering) return;
-  L.loading = true;
-  try {
-    const p = leadParams();
-    p.set('sort', { connected: 'score', newest: 'recent', followers: 'followers' }[S.f.sort] || 'score');
-    p.set('offset', L.off); p.set('limit', PAGE);
     const d = await api.get('/api/leads?' + p);
-    if (gen !== L.gen) return;
-    L.total = d.total; L.off += d.rows.length;
-    for (const r of d.rows) if (!L.ids.has(r.id)) { L.ids.add(r.id); L.rows.push(r); }
-    noteManual(d.rows);
-    if (!d.rows.length || L.off >= d.total) L.done = true;
-  } catch (e) { if (gen === L.gen) { L.error = true; L.done = true; } }
-  finally { if (gen === L.gen) L.loading = false; }
-  if (gen === L.gen) renderList();
+    if (gen !== S.gen) return;
+    S.total = d.total;
+    if (replace) S.rows = d.rows; else S.rows.push(...d.rows);
+    S.done = S.rows.length >= d.total || !d.rows.length;
+  } catch (e) {
+    if (gen === S.gen) S.error = true;
+  } finally {
+    if (gen === S.gen) { S.loading = false; renderRows(); }
+  }
 }
 
+const rowH = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row')) || 44;
 function rowHTML(r, i) {
-  const tags = (r.tags || []).filter(isShownTag)
-    .sort((a, b) => (tagClass(b.tag, b.source) === 'man') - (tagClass(a.tag, a.source) === 'man') || (LISTS_RX.test(b.tag) - LISTS_RX.test(a.tag)));
-  const n = connections(r);
-  return `<div class="row${i === L.sel ? ' sel' : ''}${r.status === 'no' && S.f.status !== 'no' ? ' muted-row' : ''}" data-i="${i}" style="top:${i * ROW}px">
-    ${pfp(r)}
-    <div class="who"><div class="nm">${esc(r.name || r.handle)}</div><a class="hd" href="${ig(r.handle)}" target="_blank" rel="noopener">@${esc(r.handle)}</a></div>
-    <div class="bio${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : ''}</div>
-    <div class="r num">${fmt(r.followers)}</div>
-    <div class="r num">${n || '–'}</div>
-    <div class="tags">${tags.map((t) => tagChip(t)).join('')}</div>
-    <div>${r.status ? `<span class="mark ${esc(r.status)}">${esc(STATUS_LABEL[r.status] || r.status)}</span>` : ''}</div>
+  const n = lists(r);
+  const tags = (r.tags || []).filter((t) => t.grp !== 'source' || t.tag === 'knows you')
+    .sort((a, b) => (b.source === 'manual') - (a.source === 'manual')).slice(0, 5);
+  const cls = ['row', i === S.sel ? 'sel' : '', S.open === r.id ? 'open' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
+  return `<div class="${cls}" data-i="${i}" style="top:${i * rowH()}px">
+    ${avatar(r.pic, r.name || r.handle)}
+    <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span></div>
+    <div class="bio${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'No bio'}</div>
+    <span class="num r">${fmt(r.followers)}</span>
+    <span class="num r lists-n${n >= 2 ? ' hi' : ''}">${n}</span>
+    <div class="tags c-tags">${tags.map((t) => `<span class="tag${t.source === 'manual' ? ' man' : ''}">${esc(t.tag)}</span>`).join('')}</div>
+    <span class="stat c-st ${r.status || ''}">${r.status ? `<b></b>${LABEL[r.status]}` : ''}</span>
   </div>`;
 }
-let lastWin = '';
-function renderList(force) {
-  if (S.view !== 'leads') return;
-  const sc = $('#list-scroll'), box = $('#list');
-  if (L.stale && (L.rows.length || L.done)) L.stale = null;
-  const rows = L.stale || L.rows;
-  const extra = L.done || L.stale ? 0 : 3;
-  const n = rows.length;
-  box.style.height = (n + extra) * ROW + 'px';
-  const h = sc.clientHeight || 800;
-  const a = Math.max(0, Math.floor(sc.scrollTop / ROW) - 6), b = Math.min(n + extra, Math.ceil((sc.scrollTop + h) / ROW) + 6);
-  const key = [L.gen, a, b, n, L.sel, L.done, L.error, !!L.stale].join(':');
-  if (key !== lastWin || force) {
-    lastWin = key;
-    let html = '';
-    for (let i = a; i < b; i++) html += i < n ? rowHTML(rows[i], i) : `<div class="row ph" style="top:${i * ROW}px"><div class="pfp"></div><div><i></i></div><div><i></i></div></div>`;
-    if (!n && L.done) html = `<div class="empty">${L.error ? 'Could not load people. Server offline?' : 'No people match these filters.'}</div>`;
-    box.innerHTML = html;
-  }
-  $('#list-total').textContent = L.done || L.total ? `· ${int(Math.max(L.total, n))}` : '';
-  if (!L.stale && !L.gathering && !L.done && !L.loading && b >= n - 20) loadMore();
-}
-$('#list-scroll').addEventListener('scroll', () => renderList(), { passive: true });
-new ResizeObserver(() => renderList()).observe($('#list-scroll'));
-
-$('#list').addEventListener('click', (e) => {
-  if (e.target.closest('a')) return;
-  const row = e.target.closest('.row[data-i]'); if (!row) return;
-  select(+row.dataset.i, false);
-  openDrawer(L.rows[L.sel].id);
-});
-function select(i, scroll = true) {
-  if (!L.rows.length) return;
-  L.sel = Math.max(0, Math.min(L.rows.length - 1, i));
-  if (scroll) {
-    const sc = $('#list-scroll'), top = L.sel * ROW;
-    if (top < sc.scrollTop) sc.scrollTop = top;
-    else if (top + ROW > sc.scrollTop + sc.clientHeight) sc.scrollTop = top + ROW - sc.clientHeight;
-  }
-  renderList(true);
-}
-function patchRow(id, fields) {
-  const r = L.rows.find((x) => x.id === id);
-  if (r) { Object.assign(r, fields); renderList(true); }
-}
-
-/* filters */
-function saveFilters() { const { q, ...rest } = S.f; store.set('fl-filters', rest); }
-function syncFilterUI() {
-  $('#f-via').value = S.f.via; $('#f-lists').value = String(S.f.lists); $('#f-status').value = S.f.status;
-  $('#f-tag').value = S.f.tag; $('#sort').value = S.f.sort;
-  [['#f-via', S.f.via], ['#f-lists', S.f.lists], ['#f-status', S.f.status], ['#f-tag', S.f.tag]].forEach(([s, v]) => $(s).classList.toggle('set', !!+v || (!!v && v !== '0')));
-  $('#f-clear').hidden = !(S.f.via || S.f.lists || S.f.status || S.f.tag || S.f.q);
-}
-const onFilter = (key, parse = (v) => v) => (e) => { S.f[key] = parse(e.target.value); saveFilters(); resetLeads(); };
-$('#f-via').onchange = onFilter('via');
-$('#f-lists').onchange = onFilter('lists', Number);
-$('#f-status').onchange = onFilter('status');
-$('#f-tag').onchange = onFilter('tag');
-$('#sort').onchange = onFilter('sort');
-$('#f-clear').onclick = () => { Object.assign(S.f, { via: '', lists: 0, status: '', tag: '', q: '' }); $('#q').value = ''; saveFilters(); resetLeads(); };
-let qT;
-$('#q').addEventListener('input', (e) => { clearTimeout(qT); qT = setTimeout(() => { S.f.q = e.target.value.trim(); resetLeads(); }, 220); });
-
-async function mark(id, status) {
-  const r = L.rows.find((x) => x.id === id);
-  const prev = r ? r.status : null;
-  const next = prev === status ? null : status;
-  patchRow(id, { status: next });
-  try { await api.post(`/api/person/${id}/mark`, { status: next }); } catch (e) { patchRow(id, { status: prev }); toast('Could not save'); return; }
-  if (D.id === id) { D.p.status = next; renderDrawer(); }
-  loadCounts();
-}
-
-/* keyboard */
-document.addEventListener('keydown', (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
-  if (e.key === 'Escape') { if (typing) document.activeElement.blur(); else closeDrawer(); return; }
-  if (typing) return;
-  if (e.key === '/') { e.preventDefault(); location.hash = '#/leads'; $('#q').focus(); return; }
-  if (S.view !== 'leads') return;
-  const cur = L.rows[L.sel];
-  const keys = { j: () => { select(L.sel + 1); if (!$('#drawer').hidden) openDrawer(L.rows[L.sel].id); },
-    k: () => { select(L.sel - 1); if (!$('#drawer').hidden) openDrawer(L.rows[L.sel].id); },
-    Enter: () => cur && openDrawer(cur.id), o: () => cur && window.open(ig(cur.handle), '_blank', 'noopener'),
-    g: () => cur && mark(cur.id, 'good'), m: () => cur && mark(cur.id, 'maybe'), x: () => cur && mark(cur.id, 'no'), c: () => cur && mark(cur.id, 'contacted') };
-  if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
-});
-
-/* ---------- Drawer ---------- */
-const D = { id: null, p: null, seq: 0 };
-async function openDrawer(id) {
-  const seq = ++D.seq;
-  D.id = id;
-  const row = L.rows.find((r) => r.id === id);
-  if (row && (!D.p || D.p.id !== id)) { D.p = { ...row, edges: null }; renderDrawer(); }
-  $('#drawer').hidden = false;
-  try {
-    const p = await api.get('/api/person/' + id);
-    if (seq !== D.seq) return;
-    D.p = p; noteManual([p]); renderDrawer();
-  } catch (e) { if (!row) toast('Could not load person'); }
-}
-function closeDrawer() { $('#drawer').hidden = true; D.id = null; D.p = null; }
-function renderDrawer() {
-  const p = D.p; if (!p) return;
-  const tags = (p.tags || []).filter(isShownTag);
-  const manual = tags.filter((t) => t.source === 'manual');
-  const auto = tags.filter((t) => t.source !== 'manual');
-  const edges = p.edges || (p.via || []).map((s) => ({ seed: s, direction: null }));
-  const site = p.website ? p.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
-  $('#drawer-body').innerHTML = `
-    <div class="dw-top"><span class="num">#${p.id}</span><button class="btn sm" id="dw-close">Close</button></div>
-    ${pfp(p, 'dw-pfp')}
-    <div class="dw-name">${esc(p.name || p.handle)}</div>
-    <a class="dw-handle hd" href="${ig(p.handle)}" target="_blank" rel="noopener">@${esc(p.handle)} ↗</a>
-    <div class="dw-stats num">
-      <div><b>${fmt(p.followers)}</b><span>Followers</span></div>
-      <div><b>${fmt(p.following)}</b><span>Following</span></div>
-      <div><b>${fmt(p.posts)}</b><span>Posts</span></div>
-      <div><b>${connections(p) || '–'}</b><span>Lists</span></div>
-    </div>
-    ${p.bio ? `<div class="dw-bio">${esc(p.bio)}</div>` : `<div class="muted">No bio yet</div>`}
-    ${site ? `<a class="dw-site" href="${esc(p.website)}" target="_blank" rel="noopener">${esc(site)}</a>` : ''}
-    ${!p.bio ? `<div style="margin-top:8px"><button class="btn sm" id="dw-read">Read profile</button></div>` : ''}
-    <div class="dw-sec"><h4>Status</h4><div class="marks">${STATUSES.map(([k, l]) => `<button data-mark="${k}" class="${p.status === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-    <div class="dw-sec"><h4>Note</h4><textarea id="dw-note" rows="3">${esc(p.note || '')}</textarea></div>
-    <div class="dw-sec"><h4>Lists</h4><div class="dw-edges">${edges.map((e) => `<div><a class="hd" href="${ig(e.seed)}" target="_blank" rel="noopener">@${esc(e.seed)}</a><span>${e.direction === 'followers' ? 'follows them' : e.direction === 'following' ? 'followed by them' : ''}</span></div>`).join('') || '<div><span>None</span></div>'}</div></div>
-    <div class="dw-sec"><h4>Tags</h4>
-      <div class="dw-tags" id="dw-tags">${manual.map((t) => tagChip(t, true)).join('')}${auto.map((t) => tagChip(t)).join('')}</div>
-      <form class="tag-add" id="dw-tag-form"><input id="dw-tag-in" list="tag-options" placeholder="Add tag" autocomplete="off"><button class="btn sm" type="submit">Add</button></form>
-    </div>`;
-}
-$('#drawer').addEventListener('click', async (e) => {
-  if (e.target.closest('#dw-close')) return closeDrawer();
-  const m = e.target.closest('[data-mark]');
-  if (m && D.p) {
-    const id = D.p.id, next = D.p.status === m.dataset.mark ? null : m.dataset.mark;
-    D.p.status = next; renderDrawer(); patchRow(id, { status: next });
-    try { await api.post(`/api/person/${id}/mark`, { status: next }); loadCounts(); } catch (err) { toast('Could not save'); }
+function renderRows() {
+  const box = $('#rows'), sc = $('#scroll'), h = rowH();
+  $('#count').textContent = S.total == null ? '' : int(S.total) + (S.total === 1 ? ' person' : ' people');
+  if (!S.rows.length) {
+    box.style.height = '100%';
+    if (S.loading || S.total == null && !S.error) {
+      box.innerHTML = Array.from({ length: 14 }, (_, i) => `<div class="skel" style="top:${i * h}px"><i></i><i style="width:${120 + (i * 37) % 80}px"></i><i style="width:${200 + (i * 53) % 160}px"></i></div>`).join('');
+    } else if (S.error) {
+      box.innerHTML = `<div class="empty"><b>Could not load leads</b><button class="btn" id="retry">Retry</button></div>`;
+    } else {
+      const filtered = S.f.q || S.f.status || S.f.min || S.f.tags.length;
+      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b>${filtered ? '<button class="btn" id="clear-all">Clear filters</button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
+    }
     return;
   }
+  box.style.height = S.rows.length * h + 'px';
+  const from = Math.max(0, Math.floor(sc.scrollTop / h) - 8);
+  const to = Math.min(S.rows.length, Math.ceil((sc.scrollTop + sc.clientHeight) / h) + 8);
+  let out = '';
+  for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i);
+  box.innerHTML = out;
+  if (!S.done && to >= S.rows.length - 20) loadMore();
+}
+$('#scroll').addEventListener('scroll', () => requestAnimationFrame(renderRows), { passive: true });
+window.addEventListener('resize', debounce(() => { renderRows(); M.resize(); }, 60));
+$('#rows').addEventListener('click', (e) => {
+  if (e.target.id === 'retry') return resetLeads();
+  if (e.target.id === 'clear-all') { Object.assign(S.f, { q: '', status: '', min: 0, tags: [] }); $('#q').value = ''; return refilter(); }
+  const row = e.target.closest('.row');
+  if (!row) return;
+  select(+row.dataset.i);
+  openDetail(S.rows[S.sel].id);
+});
+
+function select(i, scroll) {
+  if (!S.rows.length) return;
+  S.sel = Math.max(0, Math.min(S.rows.length - 1, i));
+  if (scroll) {
+    const sc = $('#scroll'), h = rowH(), top = S.sel * h;
+    if (top < sc.scrollTop) sc.scrollTop = top;
+    else if (top + h > sc.scrollTop + sc.clientHeight) sc.scrollTop = top + h - sc.clientHeight;
+  }
+  renderRows();
+}
+function patchRow(id, patch) {
+  const r = S.rows.find((x) => x.id === id);
+  if (r) Object.assign(r, patch);
+  if (S.person && S.person.id === id) Object.assign(S.person, patch);
+  renderRows();
+}
+
+// ---------- marking ----------
+async function mark(id, status) {
+  const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
+  const prev = r ? r.status : null;
+  patchRow(id, { status });
+  if (S.person?.id === id) renderDetail();
+  try { await api.post(`/api/person/${id}/mark`, { status }); loadCounts(); }
+  catch (e) { patchRow(id, { status: prev }); if (S.person?.id === id) renderDetail(); toast('Could not save'); }
+}
+function current() { return S.open ? S.person || S.rows.find((r) => r.id === S.open) : S.rows[S.sel]; }
+
+// ---------- detail ----------
+async function openDetail(id) {
+  S.open = id;
+  const base = S.rows.find((r) => r.id === id);
+  S.person = base ? { ...base, loading: true } : { id, loading: true, handle: '', tags: [] };
+  $('#detail').hidden = false;
+  renderDetail(); renderRows();
+  try {
+    const p = await api.get('/api/person/' + id);
+    if (S.open !== id) return;
+    S.person = p;
+  } catch (e) {
+    if (S.open !== id) return;
+    S.person.loading = false; S.person.failed = true;
+  }
+  renderDetail();
+}
+function closeDetail() {
+  S.open = null; S.person = null;
+  $('#detail').hidden = true;
+  renderRows();
+}
+function renderDetail() {
+  const p = S.person;
+  if (!p) return;
+  const edges = p.edges || (p.via || []).map((s) => ({ seed: s }));
+  const n = p.lists ?? new Set(edges.map((e) => e.seed)).size;
+  const tags = (p.tags || []).filter((t) => t.grp !== 'source' || t.source === 'manual');
+  const site = p.website ? p.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
+  $('#detail').innerHTML = `
+    <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
+      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}</span></div>
+      <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
+    <div class="d-stats">
+      <div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div>
+      <div><b>${fmt(p.posts)}</b><span>Posts</span></div><div><b>${n || '–'}</b><span>Lists</span></div></div>
+    <div class="d-sec"><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : 'No bio read yet'}</div>
+      <div class="d-links" style="margin-top:10px">
+        <a class="btn" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>
+        ${site ? `<a class="btn" href="${esc(p.website)}" target="_blank" rel="noopener">${esc(site)}</a>` : ''}
+        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read profile</button>' : ''}</div></div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${LABEL[s]}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => t.source === 'manual'
+      ? `<span class="tag man">${esc(t.tag)}<button data-rm="${esc(t.tag)}" title="Remove">&times;</button></span>`
+      : `<span class="tag">${esc(t.tag)}</span>`).join('') : '<span class="muted">None</span>'}</div>
+      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off"><button class="btn">Add</button></form></div>
+    <div class="d-sec"><h4>Found in</h4><div class="edges">${edges.length ? edges.map((e) => `<div><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'followed by' : e.direction === 'followers' ? 'follows' : ''}</span></div>`).join('') : '<span class="muted">–</span>'}</div></div>
+    <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="Note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
+}
+$('#detail').addEventListener('click', async (e) => {
+  const p = S.person;
+  if (!p) return;
+  if (e.target.id === 'd-close') return closeDetail();
+  const m = e.target.closest('[data-s]');
+  if (m) return mark(p.id, p.status === m.dataset.s ? null : m.dataset.s);
   const rm = e.target.closest('[data-rm]');
-  if (rm && D.p) return editTags(D.p.id, [], [rm.dataset.rm]);
-  if (e.target.closest('#dw-read') && D.p) {
-    try { await api.post(`/api/person/${D.p.id}/read`); toast('Queued'); } catch (err) { toast('Could not queue'); }
+  if (rm) return editTags(p.id, [], [rm.dataset.rm]);
+  if (e.target.id === 'd-read') {
+    try { await api.post(`/api/person/${p.id}/read`); toast('Profile read queued'); } catch (err) { toast('Could not queue'); }
   }
 });
-$('#drawer').addEventListener('submit', (e) => {
+$('#detail').addEventListener('submit', (e) => {
   e.preventDefault();
-  const v = $('#dw-tag-in').value.trim();
-  if (v && D.p) editTags(D.p.id, [v], []);
+  const v = $('#tag-in').value.trim();
+  if (v && S.person) editTags(S.person.id, [v], []);
 });
-$('#drawer').addEventListener('change', async (e) => {
-  if (e.target.id !== 'dw-note' || !D.p) return;
-  try { await api.post(`/api/person/${D.p.id}/mark`, { status: D.p.status || null, note: e.target.value }); D.p.note = e.target.value; } catch (err) { toast('Could not save note'); }
+const saveNote = debounce(async (id, note) => {
+  try {
+    await api.post(`/api/person/${id}/mark`, { status: S.person?.id === id ? S.person.status || null : null, note });
+    if (S.person?.id === id) { S.person.note = note; $('#note-st').textContent = 'Saved'; }
+  } catch (e) { if ($('#note-st')) $('#note-st').textContent = 'Not saved'; }
+}, 600);
+$('#detail').addEventListener('input', (e) => {
+  if (e.target.id === 'note' && S.person) { $('#note-st').textContent = ''; saveNote(S.person.id, e.target.value); }
 });
 async function editTags(id, add, remove) {
   try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('Could not save tag'); return; }
-  add.forEach((t) => S.manual.add(t)); store.set('fl-manual-tags', [...S.manual]);
-  const p = await api.get('/api/person/' + id).catch(() => null);
-  if (p && D.id === id) { D.p = p; renderDrawer(); $('#dw-tag-in') && $('#dw-tag-in').focus(); }
-  if (p) patchRow(id, { tags: p.tags });
+  try {
+    const p = await api.get('/api/person/' + id);
+    if (S.person?.id === id) { S.person = p; renderDetail(); $('#tag-in')?.focus(); }
+    patchRow(id, { tags: p.tags });
+  } catch (e) { /* offline banner covers it */ }
   loadTags();
 }
 
-/* ---------- Scraper state, speed, ETA ---------- */
-const PAGE_SIZE = { followers: 25, following: 50 };
-const SPEED_WINDOW = 15 * 60e3;
-const SPEED_KEY = /[?&]mock=1\b/.test(location.search) ? 'fl-speed-mock' : 'fl-speed';
-const SP = { textAt: 0, samples: store.get(SPEED_KEY, []).filter((s) => Date.now() - s.t < 30 * 60e3), prev: null, active: null, activeAt: 0, idleSince: 0 };
-const keyOf = (l) => l.seed + '|' + l.direction;
-const hhmm = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-function ago(iso) {
-  const s = (Date.now() - new Date(iso)) / 1000;
-  if (!isFinite(s)) return '';
-  return s < 60 ? Math.max(0, Math.round(s)) + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago';
-}
-function dur(h) {
-  if (h == null || !isFinite(h)) return '–';
-  const m = Math.round(h * 60);
-  if (m < 1) return '<1m';
-  if (m < 60) return m + 'm';
-  if (m < 48 * 60) return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
-  return Math.round(m / 1440) + 'd';
-}
-const pagesLeft = (l) => (l.total == null ? null : Math.ceil(Math.max(0, l.total - (l.received || 0)) / (PAGE_SIZE[l.direction] || 25)));
-const isDone = (l) => l.state === 'done' || l.state === 'private';
-
-function sample(sc) {
-  const now = Date.now();
-  const recv = sc.lists.reduce((a, l) => a + (l.received || 0), 0);
-  SP.samples.push({ t: now, recv, pages: sc.ext && sc.ext.today ? sc.ext.today.list || 0 : null, pt: sc.people_today || 0 });
-  SP.samples = SP.samples.filter((s) => now - s.t < 30 * 60e3);
-  if (SP.samples.length > 600) SP.samples = SP.samples.slice(-600);
-  store.set(SPEED_KEY, SP.samples);
-  // The list whose received count moved is the one being scraped.
-  const cur = new Map(sc.lists.map((l) => [keyOf(l), l.received || 0]));
-  if (SP.prev) for (const [k, v] of cur) if (v > (SP.prev.get(k) ?? v)) { SP.active = k; SP.activeAt = now; }
-  SP.prev = cur;
-}
-function rates() {
-  const now = Date.now();
-  const w = SP.samples.filter((s) => now - s.t <= SPEED_WINDOW);
-  if (w.length < 2) return null;
-  const min = (w[w.length - 1].t - w[0].t) / 60e3;
-  if (min < 1) return null;
-  let recv = 0, pages = 0, pt = 0;
-  for (let i = 1; i < w.length; i++) {
-    recv += Math.max(0, w[i].recv - w[i - 1].recv);
-    if (w[i].pages != null && w[i - 1].pages != null) pages += Math.max(0, w[i].pages - w[i - 1].pages);
-    pt += Math.max(0, w[i].pt - w[i - 1].pt);
-  }
-  return { ppm: recv / min, pph: (pages / min) * 60, newpm: pt / min, span: min };
-}
-function activeList(sc) {
-  const byKey = new Map(sc.lists.map((l) => [keyOf(l), l]));
-  const m = String((sc.ext && sc.ext.activity) || '').match(/^@([\w.]+)\s+(followers|following)/);
-  if (m && byKey.has(m[1].toLowerCase() + '|' + m[2])) return byKey.get(m[1].toLowerCase() + '|' + m[2]);
-  if (SP.active && byKey.has(SP.active) && !isDone(byKey.get(SP.active))) return byKey.get(SP.active);
-  const run = sc.lists.find((l) => l.state === 'running');
-  if (run) return run;
-  // Most recently touched list that has progress and is not finished.
-  return sc.lists.filter((l) => !isDone(l) && l.state !== 'paused' && l.state !== 'error' && (l.received || 0) > 0)
-    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0] || null;
-}
-function lastPageAt(sc) {
-  const t = Math.max(SP.activeAt, ...sc.lists.filter((l) => (l.received || 0) > 0).map((l) => +new Date(l.updated_at) || 0));
-  return t || 0;
-}
-// Status text from the extension (v3.1+): "Scraping", "Next request in 8s", "Cooldown until 16:40", "Paused", ...
-function stateFromText(sc) {
-  const e = sc.ext || {}, t = String(e.text || '').trim(), now = Date.now();
-  if (!t) return null;
-  let m;
-  if (/^Scraping/i.test(t)) return { key: 'run', label: 'Scraping', sub: '' };
-  if ((m = t.match(/^Next request in (\d+)\s*s/i))) {
-    const left = Math.max(0, Math.round((SP.textAt + +m[1] * 1000 - now) / 1000));
-    return { key: 'wait', label: left ? `Waiting ${left}s` : 'Scraping', sub: '' };
-  }
-  if ((m = t.match(/^Next request in (\d+)\s*m/i))) return { key: 'wait', label: `Waiting ${m[1]}m`, sub: '' };
-  if (/^Cooldown/i.test(t)) {
-    const cd = e.cooldown_until ? new Date(e.cooldown_until) : null;
-    return { key: 'cool', label: t, sub: cd && cd > now ? dur((cd - now) / 3600e3) + ' left' : '' };
-  }
-  if (/^Needs attention:?/i.test(t)) return { key: 'off', label: 'Needs attention', sub: t.replace(/^Needs attention:?\s*/i, '') };
-  if (/^Paused/i.test(t)) return { key: 'stop', label: 'Paused', sub: /workspace/i.test(t) ? 'from workspace' : '' };
-  if (/Open Instagram/i.test(t)) return { key: 'off', label: 'Open Instagram', sub: '' };
-  if (/Server offline/i.test(t)) return { key: 'off', label: 'Server offline', sub: '' };
-  if (/^Idle/i.test(t)) return { key: 'stop', label: 'Idle', sub: /queue empty/i.test(t) ? 'queue empty' : '' };
-  return { key: e.state === 'running' ? 'run' : 'stop', label: t, sub: '' };
-}
-function scraperState(sc) {
-  const e = sc.ext || {};
-  const now = Date.now();
-  const cd = e.cooldown_until ? new Date(e.cooldown_until) : null;
-  const budgetHit = e.budget && e.today && e.today.list >= e.budget.list;
-  if (!e.online) return { key: 'off', label: 'Extension offline', sub: e.last_seen ? 'last seen ' + ago(e.last_seen) : 'not connected' };
-  if (sc.paused && !/^Paused|^Needs attention/i.test(e.text || '')) return { key: 'stop', label: 'Paused', sub: 'from workspace' };
-  const fromText = stateFromText(sc);
-  if (fromText) return fromText;
-  // Fallback for extensions older than v3.1 (no status text in the heartbeat).
-
-  if (sc.paused || e.state === 'paused') return { key: 'stop', label: 'Paused', sub: e.last_error && /log in|security|attention/i.test(e.last_error) ? e.last_error : '' };
-  if (cd && cd > now) return { key: 'cool', label: 'Cooldown until ' + hhmm(cd), sub: dur((cd - now) / 3600e3) + ' left' };
-  // The lists table updates on every page; the heartbeat state can lag by up to 30 s.
-  if (e.state === 'running' || sc.lists.some((l) => l.state === 'running')) {
-    const since = (now - lastPageAt(sc)) / 1000;
-    return since > 25 && isFinite(since) ? { key: 'wait', label: 'Waiting', sub: `last page ${ago(new Date(lastPageAt(sc)))}` } : { key: 'run', label: 'Scraping', sub: '' };
-  }
-  if (budgetHit) return { key: 'stop', label: 'Daily budget reached', sub: '' };
-  const queued = (sc.queue && (sc.queue.list + sc.queue.profile)) || 0;
-  if (!queued) return { key: 'stop', label: 'Idle', sub: 'queue empty' };
-  // Idle with work queued for a while: the extension has no usable Instagram tab.
-  if (SP.idleSince && now - SP.idleSince > 90e3) return { key: 'off', label: 'Open Instagram', sub: 'queue waiting' };
-  return { key: 'wait', label: 'Waiting', sub: '' };
-}
-function activityText(sc, st) {
-  if (sc.ext && sc.ext.activity) return esc(sc.ext.activity).replace(/^(@[\w.]+)/, '<b>$1</b>');
-  const l = activeList(sc);
-  if (!l) return sc.queue && sc.queue.profile && sc.ext && sc.ext.state === 'running' ? '<b>Reading profiles</b>' : '';
-  const page = Math.floor((l.received || 0) / (PAGE_SIZE[l.direction] || 25)) + 1;
-  const pre = st.key === 'run' || st.key === 'wait' ? '' : 'next · ';
-  return `${pre}<b>@${esc(l.seed)}</b> ${esc(l.direction)} · page ${int(page)}${l.total ? ` of ${int(Math.ceil(l.total / (PAGE_SIZE[l.direction] || 25)))}` : ''}`;
-}
-function totals(sc) {
-  const lists = sc.lists;
-  const open = lists.filter((l) => !isDone(l));
-  const known = open.filter((l) => l.total != null);
-  const rem = known.reduce((a, l) => a + pagesLeft(l), 0);
-  return { done: lists.length - open.length, all: lists.length, people: lists.reduce((a, l) => a + (l.received || 0), 0), rem, unknown: open.length - known.length };
-}
-
-async function loadScraper() {
-  let sc;
-  try { sc = await api.get('/api/scraper'); } catch (e) { sc = null; }
-  if (!sc) { paintStatus(null); return; }
-  if (!S.sc || (S.sc.ext || {}).text !== (sc.ext || {}).text) SP.textAt = Date.now();
-  S.sc = sc;
-  const e = sc.ext || {};
-  if (e.online && e.state === 'idle' && !sc.lists.some((l) => l.state === 'running') && !(e.cooldown_until && new Date(e.cooldown_until) > Date.now())) SP.idleSince = SP.idleSince || Date.now();
-  else SP.idleSince = 0;
-  sample(sc);
-  paintStatus(sc);
-  if (S.view === 'scraper') renderScraper();
-}
-function paintStatus(sc) {
-  if (!sc) {
-    $('#st-sq').className = 'sq off'; $('#st-label').textContent = 'Server offline'; $('#st-activity').textContent = '';
+// ---------- keyboard ----------
+let gPending = 0;
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  if (e.key === 'Escape') {
+    if (!$('#help').hidden) { $('#help').hidden = true; return; }
+    if (typing) { e.target.blur(); return; }
+    if ($('#filters').classList.contains('show')) { $('#filters').classList.remove('show'); return; }
+    if (S.open) { closeDetail(); return; }
+    if (S.view === 'leads' && S.sel >= 0) { S.sel = -1; renderRows(); }
     return;
   }
-  const st = scraperState(sc), r = rates(), t = totals(sc);
-  $('#st-sq').className = 'sq ' + st.key;
-  $('#st-label').textContent = st.label;
-  const act = activityText(sc, st);
-  $('#st-activity').innerHTML = [act, st.sub ? esc(st.sub) : ''].filter(Boolean).join(' · ');
-  $('#st-ppm').textContent = r ? (r.ppm >= 10 ? int(r.ppm) : r.ppm.toFixed(1)) : '–';
-  $('#st-pph').textContent = r ? int(r.pph) : '–';
-  $('#st-today').textContent = int(sc.people_today);
-  $('#st-eta').textContent = r && r.pph > 0 ? dur(t.rem / r.pph) : '–';
-  $('#st-pause').textContent = sc.paused ? 'Resume' : 'Pause';
-  $('#nav-scraper').textContent = t.all - t.done ? String(t.all - t.done) : '';
-  document.title = (st.key === 'run' ? 'Scraping · ' : '') + 'Fortunate Leads';
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (gPending && Date.now() - gPending < 800) {
+    gPending = 0;
+    const to = { l: 'leads', m: 'map', s: 'scraper' }[e.key];
+    if (to) { location.hash = '#/' + to; e.preventDefault(); }
+    return;
+  }
+  const k = e.key;
+  if (k === 'g') { gPending = Date.now(); return; }
+  if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
+  if (k === '/') { e.preventDefault(); (S.view === 'map' ? $('#map-q') : $('#q')).focus(); return; }
+  if (S.view !== 'leads') {
+    const p = S.person;
+    if (p && /^[0-6]$/.test(k)) mark(p.id, k === '0' ? null : STATUSES[+k - 1]);
+    if (p && k === 'o') window.open(`https://www.instagram.com/${encodeURIComponent(p.handle)}/`, '_blank', 'noopener');
+    return;
+  }
+  if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp') {
+    e.preventDefault();
+    select(S.sel < 0 ? 0 : S.sel + (k === 'j' || k === 'ArrowDown' ? 1 : -1), true);
+    if (S.open && S.rows[S.sel]) openDetail(S.rows[S.sel].id);
+    return;
+  }
+  const r = current();
+  if (k === 'Enter' && S.rows[S.sel]) { openDetail(S.rows[S.sel].id); return; }
+  if (!r) return;
+  if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
+  if (/^[0-6]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
+  if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
+  if (k === 't') { e.preventDefault(); if (!S.open) openDetail(r.id).then(() => $('#tag-in')?.focus()); else $('#tag-in')?.focus(); }
+});
+$('#help-btn').onclick = () => { $('#help').hidden = false; };
+$('#help').onclick = () => { $('#help').hidden = true; };
+
+// ---------- scraper ----------
+function scState() {
+  const sc = S.sc;
+  if (!sc) return { label: 'Connecting', dot: '' };
+  const x = sc.ext || {};
+  if (!x.online) return { label: 'Extension offline', dot: 'hollow' };
+  if (sc.paused || x.state === 'paused') return { label: 'Paused', dot: '' };
+  if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) return { label: 'Cooldown ' + left(x.cooldown_until), dot: 'hollow' };
+  if (x.state === 'running') return { label: 'Running', dot: 'run' };
+  return { label: 'Idle', dot: 'on' };
 }
-$('#st-pause').onclick = async () => {
+function renderStatus() {
+  const sc = S.sc, x = sc?.ext || {}, st = scState();
+  $('#st-dot').className = 'dot ' + st.dot;
+  $('#st-label').textContent = st.label;
+  const run = sc?.lists?.find((l) => l.state === 'running');
+  $('#st-act').textContent = x.last_error && !x.online ? x.last_error : x.activity || (run ? `@${run.seed} ${run.direction}` : x.text || '');
+  const t = x.today?.list, b = x.budget?.list;
+  $('#st-today').textContent = t == null ? '–' : `${int(t)}/${b == null ? '–' : int(b)}`;
+  $('#st-meter').style.width = t != null && b ? Math.min(100, (t / b) * 100) + '%' : '0';
+  $('#st-pph').textContent = x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–';
+  $('#st-peh').textContent = x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–';
+  $('#st-hit').textContent = x.rate?.last_hit_at ? ago(x.rate.last_hit_at) + ' ago' : 'none';
+  $('#pause-btn').textContent = sc?.paused ? 'Resume' : 'Pause';
+  $('#pause-btn').classList.toggle('solid', !!sc?.paused);
+  $('#qualify-btn').classList.toggle('on', !!sc?.qualify);
+  const q = sc ? (sc.queue?.list || 0) + (sc.queue?.profile || 0) : 0;
+  $('#n-queue').textContent = q ? fmt(q) : '';
+}
+async function loadScraper() {
+  try { S.sc = await api.get('/api/scraper'); } catch (e) { /* keep last */ }
+  renderStatus();
+  if (S.view === 'scraper') renderScraper();
+}
+$('#pause-btn').onclick = async () => {
   if (!S.sc) return;
-  try { await api.post('/api/scraper/pause', { paused: !S.sc.paused }); } catch (e) { toast('Could not reach server'); }
+  const paused = !S.sc.paused;
+  S.sc.paused = paused; renderStatus();
+  try { await api.post('/api/scraper/pause', { paused }); } catch (e) { S.sc.paused = !paused; renderStatus(); toast('Could not reach server'); }
   loadScraper();
 };
-
-let listFilter = store.get('fl-list-filter', 'open');
-function stateCell(l, isActive, st) {
-  if (isActive && (st.key === 'run' || st.key === 'wait')) return `<span class="stt"><i class="sq ${st.key}"></i>${st.key === 'run' ? 'Scraping' : 'Waiting'}</span>`;
-  const m = { done: 'Done', private: 'Private', paused: 'Paused', error: 'Error', running: 'Running', queued: (l.received || 0) > 0 ? 'Partial' : 'Queued' };
-  const cls = { done: 'stop', private: 'off', paused: 'stop', error: 'off', running: 'run', queued: (l.received || 0) > 0 ? 'wait' : 'stop' };
-  return `<span class="stt"><i class="sq ${cls[l.state] || 'stop'}"></i>${m[l.state] || esc(l.state)}</span>`;
-}
-function renderScraper() {
-  const sc = S.sc;
-  if (!sc) { $('#kpis').innerHTML = `<div class="kpi"><span>Server</span><b>Offline</b></div>`; return; }
-  const st = scraperState(sc), r = rates(), t = totals(sc), e = sc.ext || {};
-  const act = activeList(sc);
-  const eta = r && r.pph > 0 ? t.rem / r.pph : null;
-  $('#kpis').innerHTML = [
-    ['State', st.label, st.sub || (act ? '@' + act.seed + ' ' + act.direction : '')],
-    ['Lists', `${int(t.done)} / ${int(t.all)}`, `${int(t.all - t.done)} open`],
-    ['People collected', int(t.people), `${int(sc.people_today)} new today`],
-    ['Pages left', int(t.rem), t.unknown ? `+ ${t.unknown} lists without total` : 'known totals'],
-    ['Queue ETA', dur(eta), eta != null ? 'done ~' + hhmm(new Date(Date.now() + eta * 3600e3)) + (eta > 24 ? ' +' + Math.floor(eta / 24) + 'd' : '') : 'needs speed data'],
-    ['Speed', r ? `${r.ppm >= 10 ? int(r.ppm) : r.ppm.toFixed(1)}/min` : '–', r ? `${int(r.pph)} pages/h · last ${Math.round(r.span)}m` : 'measuring'],
-  ].map(([k, v, s], i) => `<div class="kpi"><span>${k}</span><b class="num"${i ? '' : ' id="kpi-state"'}>${esc(v)}</b><small class="num">${esc(s)}</small></div>`).join('');
-
-  const budget = e.budget || {}, today = e.today || {};
-  $('#ext-panel').innerHTML = `<div class="panel-head"><h3>Extension</h3><span class="stt"><i class="sq ${e.online ? 'run' : 'off'}" style="animation:none"></i>${e.online ? 'Online' : 'Offline'}</span></div>
-    <dl class="kv num">
-      <dt>List pages today</dt><dd>${int(today.list || 0)} / ${int(budget.list)}</dd>
-      <dt>Profile reads today</dt><dd>${int(today.profile || 0)} / ${int(budget.profile)}</dd>
-      <dt>Queue</dt><dd>${int(sc.queue.list)} lists · ${int(sc.queue.profile)} profiles</dd>
-      <dt>Cooldown</dt><dd>${e.cooldown_until && new Date(e.cooldown_until) > Date.now() ? 'until ' + hhmm(new Date(e.cooldown_until)) : 'none'}</dd>
-      <dt>Last seen</dt><dd>${e.last_seen ? ago(e.last_seen) : '–'}${e.version ? ' · v' + esc(e.version) : ''}</dd>
-      ${e.last_error ? `<dd class="err">${esc(e.last_error)}</dd>` : ''}
-    </dl>
-    <div class="seed-row"><div class="grow"></div><button class="btn" id="ext-pause">${sc.paused ? 'Resume' : 'Pause'}</button></div>`;
-
-  const actKey = act ? keyOf(act) : null;
-  const rank = (l) => (keyOf(l) === actKey ? 0 : l.state === 'running' ? 1 : isDone(l) ? 6 : l.state === 'error' ? 4 : l.state === 'paused' ? 5 : (l.received || 0) > 0 ? 2 : 3);
-  const groups = { open: (l) => !isDone(l), done: isDone, issues: (l) => ['error', 'private', 'paused'].includes(l.state), all: () => true };
-  const counts = Object.fromEntries(Object.entries(groups).map(([k, f]) => [k, sc.lists.filter(f).length]));
-  $('#list-filter').innerHTML = [['open', 'Open'], ['done', 'Done'], ['issues', 'Issues'], ['all', 'All']]
-    .map(([k, l]) => `<button data-lf="${k}" class="${listFilter === k ? 'on' : ''}">${l}<b class="num">${counts[k]}</b></button>`).join('');
-  const rows = sc.lists.filter(groups[listFilter] || groups.all).sort((a, b) => rank(a) - rank(b) || (b.received || 0) - (a.received || 0) || a.seed.localeCompare(b.seed));
-  $('#lists-body').innerHTML = rows.map((l) => {
-    const pct = l.total ? Math.min(100, ((l.received || 0) / l.total) * 100) : isDone(l) ? 100 : null;
-    const left = isDone(l) ? 0 : pagesLeft(l);
-    const isAct = keyOf(l) === actKey;
-    return `<tr class="${isAct ? 'active' : ''}${isDone(l) ? ' done' : ''}">
-      <td><a class="hd" href="${ig(l.seed)}" target="_blank" rel="noopener">@${esc(l.seed)}</a></td>
-      <td>${esc(l.direction)}</td>
-      <td><div class="prog"><div class="bar${pct == null ? ' unknown' : ''}"><i style="width:${pct == null ? ((l.received || 0) > 0 ? 4 : 0) : pct}%"></i></div><span>${int(l.received || 0)} / ${l.total == null ? '?' : int(l.total)}</span></div></td>
-      <td class="r">${pct == null ? '–' : Math.floor(pct) + '%'}</td>
-      <td class="r">${left == null ? '–' : int(left)}</td>
-      <td class="r">${isDone(l) ? '–' : left != null && r && r.pph > 0 ? dur(left / r.pph) : '–'}</td>
-      <td>${stateCell(l, isAct, st)}${l.error ? ` <span class="muted">${esc(l.error)}</span>` : ''}</td>
-      <td class="r muted">${l.updated_at ? ago(l.updated_at) : ''}</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="8" class="muted">No lists</td></tr>`;
-}
-$('#list-filter').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; listFilter = b.dataset.lf; store.set('fl-list-filter', listFilter); renderScraper(); };
-$('#ext-panel').addEventListener('click', (e) => { if (e.target.closest('#ext-pause')) $('#st-pause').click(); });
-
-/* bulk add */
-function parseHandles(txt) {
-  const out = [];
-  for (let s of txt.split(/[\s,;]+/)) {
-    s = s.trim(); if (!s) continue;
-    const m = s.match(/instagram\.com\/([A-Za-z0-9._]+)/i);
-    const h = (m ? m[1] : s.replace(/^@/, '')).replace(/[/?#].*$/, '').toLowerCase();
-    if (/^[a-z0-9._]{1,30}$/.test(h) && !['p', 'reel', 'reels', 'stories', 'explore'].includes(h) && !out.includes(h)) out.push(h);
-  }
-  return out;
-}
-const dirs = () => [...document.querySelectorAll('#dir-seg button.on')].map((b) => b.dataset.dir);
-function syncSeedBtn() {
-  const n = parseHandles($('#seed-input').value).length;
-  $('#seed-count').textContent = n ? `${n} account${n === 1 ? '' : 's'}${n > 50 ? ' · max 50' : ''}` : '';
-  $('#seed-add').disabled = !n || n > 50 || !dirs().length;
-}
-$('#seed-input').addEventListener('input', () => { syncSeedBtn(); $('#seed-msg').textContent = ''; });
-$('#dir-seg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; b.classList.toggle('on'); syncSeedBtn(); };
-$('#seed-add').onclick = async () => {
-  const handles = parseHandles($('#seed-input').value);
-  if (!handles.length || handles.length > 50) return;
-  $('#seed-add').disabled = true;
-  try {
-    const r = await api.post('/api/scraper/seeds', { handles, directions: dirs() });
-    $('#seed-input').value = '';
-    $('#seed-msg').textContent = `Queued ${r.queued ?? handles.length * dirs().length} lists`;
-    listFilter = 'open'; loadScraper();
-  } catch (e) { toast('Could not queue accounts'); }
-  syncSeedBtn();
+$('#qualify-btn').onclick = async () => {
+  if (!S.sc) return;
+  const on = !S.sc.qualify;
+  S.sc.qualify = on; renderStatus();
+  try { await api.post('/api/settings/qualify', { on }); toast(on ? 'Qualify on' : 'Qualify off'); }
+  catch (e) { S.sc.qualify = !on; renderStatus(); toast('Could not save'); }
 };
 
-/* ---------- Map ---------- */
-const MapView = (() => {
-  const stage = $('#map-stage'), canvas = $('#map-canvas'), ctx = canvas.getContext('2d'), hc = $('#hovercard');
-  const filters = { via: '', tag: '', lists: 0, ...store.get('fl-map-filters', {}) };
-  let scope = store.get('fl-map-scope', 'leads');
-  let W = 0, H = 0, DPR = 1, T = { x: 0, y: 0, k: 1 };
-  let nodes = [], links = [], byId = new Map();
-  let sim = null, rev = null, visible = false, dirty = true, colors = null, hover = null, focus = null;
-  let lastLoad = 0, lastAdded = 0;
-  const imgs = new Map(), imgQueue = []; let loadingImgs = 0;
+let listFilter = 'all';
+function renderScraper() {
+  const sc = S.sc;
+  if (!sc) { $('#kpis').innerHTML = '<div class="kpi"><span>Loading</span><b>–</b></div>'; return; }
+  const x = sc.ext || {}, st = scState(), ls = sc.lists || [];
+  const done = ls.filter((l) => l.state === 'done').length;
+  const recv = ls.reduce((a, l) => a + (l.received || 0), 0);
+  const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
+  const kpi = (label, val, sub, pct) => `<div class="kpi"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}${pct != null ? `<div class="meter"><i style="width:${Math.min(100, pct)}%"></i></div>` : ''}</div>`;
+  $('#kpis').innerHTML = [
+    kpi('State', esc(st.label.split(' ')[0]), x.cooldown_until && Date.parse(x.cooldown_until) > Date.now() ? left(x.cooldown_until) : x.online ? 'seen ' + ago(x.last_seen) + ' ago' : 'last ' + ago(x.last_seen)),
+    kpi('Pages today', int(tl), bl != null ? 'of ' + int(bl) : '', bl ? (tl / bl) * 100 : null),
+    kpi('Profiles today', int(tp), bp != null ? 'of ' + int(bp) : '', bp ? (tp / bp) * 100 : null),
+    kpi('Pages / hour', x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–', x.rate?.last_hit_at ? 'limit hit ' + ago(x.rate.last_hit_at) + ' ago' : 'no limit hits'),
+    kpi('People / hour', x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–', sc.people_today != null ? int(sc.people_today) + ' new today' : ''),
+    kpi('Lists', `${done}/${ls.length}`, int(recv) + ' received', ls.length ? (done / ls.length) * 100 : null),
+  ].join('');
+  $('#ext-ver').textContent = x.version ? 'v' + x.version : '';
+  $('#ext-kv').innerHTML = [
+    ['Connection', x.online ? 'Online' : 'Offline'],
+    ['Activity', x.activity || x.text || '–'],
+    ['Queue', `${int(sc.queue?.list || 0)} lists, ${int(sc.queue?.profile || 0)} profiles`],
+    ['Qualify', sc.qualify ? 'On' : 'Off'],
+    ['Last error', x.last_error || 'None'],
+  ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
+  const bL = $('#b-list'), bP = $('#b-profile');
+  if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bl ?? ''; bP.value = bp ?? ''; }
 
-  const radius = (n) => (n.kind === 'seed' ? (n.degree ? Math.min(32, 12 + Math.sqrt(n.degree) * 0.7) : 7) : Math.min(15, 3.5 + (n.degree || 1) * 2.2));
+  const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused'].includes(l.state)) };
+  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${k[0].toUpperCase() + k.slice(1)} ${v.length}</button>`).join('');
+  $('#lists-n').textContent = '';
+  const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
+  const rows = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
+  $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
+    const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
+    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${esc(l.direction)}</td>
+      <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
+      <td class="r num">${int(l.received)}${l.total ? ' / ' + int(l.total) : ''}</td>
+      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(l.state)}</span></td>
+      <td class="r num muted hide-sm">${ago(l.updated_at)}</td></tr>`;
+  }).join('') : `<tr><td colspan="6" class="muted">No lists</td></tr>`;
+}
+$('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
+$('#b-save').onclick = async () => {
+  const list = +$('#b-list').value, profile = +$('#b-profile').value;
+  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); loadScraper(); } catch (e) { toast('Could not save'); }
+};
+function parseHandles(s) {
+  const out = new Set();
+  for (let t of s.split(/[\s,;]+/)) {
+    t = t.trim().replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/^@/, '').split(/[/?#]/)[0].toLowerCase();
+    if (/^[a-z0-9._]{1,30}$/.test(t)) out.add(t);
+  }
+  return [...out];
+}
+const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v);
+function syncSeed() {
+  const n = parseHandles($('#seed-in').value).length;
+  $('#seed-n').textContent = n ? n + (n === 1 ? ' account' : ' accounts') : '';
+  $('#seed-add').disabled = !n || !seedDirs().length;
+}
+$('#seed-in').addEventListener('input', syncSeed);
+$('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); syncSeed(); } });
+$('#seed-add').onclick = async () => {
+  const handles = parseHandles($('#seed-in').value);
+  if (!handles.length) return;
+  try {
+    const r = await api.post('/api/scraper/seeds', { handles, directions: seedDirs() });
+    toast(r.queued != null ? `${r.queued} lists queued` : 'Queued');
+    $('#seed-in').value = ''; syncSeed(); loadScraper();
+  } catch (e) { toast('Could not queue'); }
+};
 
-  function readColors() {
-    const cs = getComputedStyle(document.documentElement), g = (v) => cs.getPropertyValue(v).trim();
-    colors = { bg: g('--bg'), text: g('--text'), text2: g('--text-2'), text3: g('--text-3'), surface: g('--surface'), surface3: g('--surface-3'), border: g('--border-2'), link: g('--link') };
-  }
-  function resize() {
-    const r = stage.getBoundingClientRect();
-    DPR = window.devicePixelRatio || 1;
-    const nw = Math.max(1, r.width), nh = Math.max(1, r.height);
-    if (W && H) { T.x += (nw - W) / 2; T.y += (nh - H) / 2; }
-    W = nw; H = nh; canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR); dirty = true;
-  }
-  new ResizeObserver(() => { if (visible) resize(); }).observe(stage);
-
-  function matches(n) {
-    if (n.kind === 'seed') return true;
-    if (filters.lists && (n.degree || 0) < filters.lists) return false;
-    if (filters.via && !(n.tags || []).includes(filters.via)) return false;
-    if (filters.tag && !(n.tags || []).includes(filters.tag)) return false;
-    return true;
-  }
-  function refilter() {
-    nodes.forEach((n) => (n._on = matches(n)));
-    const q = $('#map-q').value.trim().toLowerCase().replace(/^@/, '');
-    nodes.forEach((n) => (n._hit = q.length > 1 && ((n.label || '').toLowerCase().includes(q) || (n.name || '').toLowerCase().includes(q))));
-    paintFoot(); dirty = true;
-  }
-  function paintFoot() {
-    const people = nodes.filter((n) => n.kind === 'lead'), on = people.filter((n) => n._on).length;
-    const s = lastLoad ? Math.round((Date.now() - lastLoad) / 1000) : null;
-    $('#map-foot').textContent = `${int(on)}${on !== people.length ? ' / ' + int(people.length) : ''} people · ${nodes.length - people.length} seeds`
-      + (lastAdded ? ` · +${lastAdded} new` : '') + (s != null ? ` · updated ${s < 5 ? 'now' : s + 's ago'}` : '');
-    $('#nav-map').textContent = people.length ? fmt(people.length) : '';
-  }
-
-  function requestImg(url) {
-    let e = imgs.get(url);
-    if (!e) imgs.set(url, (e = { state: 'idle', c: null }));
-    if (e.state !== 'idle') return e;
-    e.state = 'queued'; imgQueue.push(url); pumpImgs(); return e;
-  }
-  function pumpImgs() {
-    while (loadingImgs < 8 && imgQueue.length) {
-      const url = imgQueue.pop(), e = imgs.get(url);
-      loadingImgs++;
-      const im = new Image(); im.decoding = 'async';
-      im.onload = () => {
-        const s = 64, c = document.createElement('canvas'); c.width = c.height = s;
-        const m = Math.min(im.naturalWidth, im.naturalHeight);
-        c.getContext('2d').drawImage(im, (im.naturalWidth - m) / 2, (im.naturalHeight - m) / 2, m, m, 0, 0, s, s);
-        e.c = c; e.state = 'ok'; loadingImgs--; dirty = true; pumpImgs();
-      };
-      im.onerror = () => { e.state = 'err'; loadingImgs--; pumpImgs(); };
-      im.src = url;
+// ---------- map ----------
+const M = {
+  sim: null, nodes: [], links: [], byId: new Map(), rev: null, scope: 'leads', k: 1, x: 0, y: 0,
+  w: 0, h: 0, hover: null, match: new Set(), timer: null, loaded: false, fitted: false,
+  show() {
+    this.resize();
+    if (!this.loaded) this.load();
+    clearInterval(this.timer); this.timer = setInterval(() => this.load(), 30000);
+    if (this.sim && this.sim.alpha() > this.sim.alphaMin()) this.sim.restart();
+  },
+  hide() { clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
+  resize() {
+    const c = $('#canvas'), st = $('#stage');
+    if (!st.clientWidth) return;
+    const dpr = window.devicePixelRatio || 1;
+    this.w = st.clientWidth; this.h = st.clientHeight;
+    c.width = this.w * dpr; c.height = this.h * dpr;
+    this.ctx = c.getContext('2d'); this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.draw();
+  },
+  async load() {
+    let d;
+    try { d = await api.get(`/api/map?scope=${this.scope}&limit=${this.scope === 'all' ? 2000 : 600}`); } catch (e) { this.status('Could not load map'); return; }
+    this.loaded = true;
+    if (d.rev === this.rev && this.nodes.length) return;
+    this.rev = d.rev;
+    const old = this.byId;
+    this.nodes = d.nodes.map((n) => {
+      const o = old.get(n.id);
+      const seed = n.kind === 'seed';
+      return Object.assign(n, { r: seed ? 7 + Math.min(10, Math.sqrt(n.degree || 0) / 3) : n.degree >= 2 ? 4 : 2.5 }, o ? { x: o.x, y: o.y, vx: o.vx, vy: o.vy } : {});
+    });
+    this.byId = new Map(this.nodes.map((n) => [n.id, n]));
+    this.links = d.links.filter((l) => this.byId.has(l.source) && this.byId.has(l.target)).map((l) => ({ ...l }));
+    const leads = this.nodes.filter((n) => n.kind === 'lead').length;
+    $('#map-count').textContent = `${int(leads)} people, ${this.nodes.length - leads} seeds`;
+    if (!leads) this.status('No connections yet');
+    this.simulate(old.size ? 0.3 : 1);
+    this.search();
+  },
+  status(t) {
+    const c = this.ctx; if (!c) return;
+    c.clearRect(0, 0, this.w, this.h);
+    c.fillStyle = css('--fg3'); c.font = '13px ' + css('--sans'); c.textAlign = 'center';
+    c.fillText(t, this.w / 2, this.h / 2);
+  },
+  simulate(alpha) {
+    if (this.sim) this.sim.stop();
+    const F = window.d3;
+    if (!F?.forceSimulation) { this.status('Map library missing'); return; }
+    this.sim = F.forceSimulation(this.nodes)
+      .force('link', F.forceLink(this.links).id((n) => n.id).distance((l) => l.source.kind === 'seed' && l.target.kind === 'seed' ? 120 : 40).strength((l) => 0.6 / Math.max(1, l.target.degree || 1)))
+      .force('charge', F.forceManyBody().strength((n) => n.kind === 'seed' ? -260 : -14).distanceMax(400).theta(0.95))
+      .force('collide', F.forceCollide((n) => n.r + 1.5).iterations(1))
+      .force('x', F.forceX(0).strength(0.03)).force('y', F.forceY(0).strength(0.03))
+      .alpha(alpha).alphaDecay(0.035).velocityDecay(0.45)
+      .on('tick', () => this.draw())
+      .on('end', () => { if (!this.fitted) { this.fit(); this.fitted = true; } });
+    if (alpha >= 1) {
+      for (let i = 0; i < 120; i++) this.sim.tick();
+      this.fit(); this.fitted = true;
     }
-  }
-  const toWorld = (px, py) => [(px - T.x) / T.k, (py - T.y) / T.k];
-
-  function draw() {
-    if (!colors) readColors();
-    const k = T.k;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = colors.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(DPR * k, 0, 0, DPR * k, DPR * T.x, DPR * T.y);
-    const [x0, y0] = toWorld(0, 0), [x1, y1] = toWorld(W, H);
-    const inView = (n, r) => n.x + r > x0 - 40 && n.x - r < x1 + 40 && n.y + r > y0 - 40 && n.y - r < y1 + 40;
-    const hl = hover || focus, hlSet = new Set();
-    if (hl) { hlSet.add(hl.id); links.forEach((l) => { if (l.source === hl || l.target === hl) { hlSet.add(l.source.id); hlSet.add(l.target.id); } }); }
-
-    ctx.lineWidth = 1 / k; ctx.strokeStyle = colors.link; ctx.beginPath();
-    for (const l of links) {
-      if (!l.target._on || (hl && (l.source === hl || l.target === hl))) continue;
-      ctx.moveTo(l.source.x, l.source.y); ctx.lineTo(l.target.x, l.target.y);
+    if (S.view !== 'map') this.sim.stop();
+  },
+  fit() {
+    if (!this.nodes.length || !this.w) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of this.nodes) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+    const pad = 40;
+    this.k = Math.min(4, Math.max(0.1, Math.min((this.w - pad * 2) / (x1 - x0 || 1), (this.h - pad * 2) / (y1 - y0 || 1))));
+    this.x = this.w / 2 - ((x0 + x1) / 2) * this.k; this.y = this.h / 2 - ((y0 + y1) / 2) * this.k;
+    this.draw();
+  },
+  draw() {
+    const c = this.ctx;
+    if (!c || S.view !== 'map') return;
+    const fg = css('--fg'), fg2 = css('--fg2'), fg3 = css('--fg3'), bg = css('--bg'), line = css('--line2');
+    c.clearRect(0, 0, this.w, this.h);
+    c.save(); c.translate(this.x, this.y); c.scale(this.k, this.k);
+    const hov = this.hover, hl = hov ? new Set([hov.id]) : null;
+    c.lineWidth = 0.6 / this.k;
+    c.strokeStyle = line; c.globalAlpha = hov || this.match.size ? 0.25 : 0.6;
+    c.beginPath();
+    for (const l of this.links) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+    c.stroke();
+    if (hov) {
+      c.globalAlpha = 1; c.strokeStyle = fg2; c.lineWidth = 1 / this.k; c.beginPath();
+      for (const l of this.links) if (l.source === hov || l.target === hov) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); hl.add(l.source.id); hl.add(l.target.id); }
+      c.stroke();
     }
-    ctx.stroke();
-    if (hl) {
-      ctx.strokeStyle = colors.text2; ctx.lineWidth = 1 / k; ctx.beginPath();
-      for (const l of links) if (l.source === hl || l.target === hl) { ctx.moveTo(l.source.x, l.source.y); ctx.lineTo(l.target.x, l.target.y); }
-      ctx.stroke();
+    c.globalAlpha = 1;
+    const dim = hov || this.match.size;
+    for (const n of this.nodes) {
+      if (n.kind === 'seed') continue;
+      const on = hl ? hl.has(n.id) : this.match.size ? this.match.has(n.id) : true;
+      const openN = S.open && n.id === 'p:' + S.open;
+      c.globalAlpha = on || openN ? 1 : dim ? 0.2 : 1;
+      const r = n.r, s = r * 2;
+      if (n.degree >= 2) { c.fillStyle = bg; c.fillRect(n.x - r, n.y - r, s, s); c.strokeStyle = fg; c.lineWidth = 1.2 / this.k; c.strokeRect(n.x - r, n.y - r, s, s); }
+      else { c.fillStyle = on && dim ? fg : fg3; c.fillRect(n.x - r, n.y - r, s, s); }
+      if (openN) { c.strokeStyle = fg; c.lineWidth = 2 / this.k; c.strokeRect(n.x - r - 3, n.y - r - 3, s + 6, s + 6); }
     }
-
-    const showNames = k > 2.2;
-    ctx.textAlign = 'center';
-    for (const n of nodes) {
-      if (n.kind !== 'lead') continue;
-      const r = n._r;
-      if (!inView(n, r)) continue;
-      const dim = !n._on || (hl && !hlSet.has(n.id));
-      ctx.globalAlpha = dim ? (n._on ? 0.22 : 0.07) : 1;
-      let drawn = false;
-      if (n.pic && r * k >= 5 && n._on) {
-        const e = requestImg(n.pic);
-        if (e.state === 'ok') { ctx.drawImage(e.c, n.x - r, n.y - r, r * 2, r * 2); drawn = true; }
-      }
-      if (!drawn) {
-        ctx.fillStyle = (n.degree || 1) > 1 ? colors.text3 : colors.surface3;
-        ctx.fillRect(n.x - r, n.y - r, r * 2, r * 2);
-        if (r * k > 12) {
-          ctx.fillStyle = colors.text; ctx.textBaseline = 'middle'; ctx.font = `600 ${r * 0.7}px Inter, system-ui, sans-serif`;
-          ctx.fillText(initials(n.name, n.handle), n.x, n.y + r * 0.04);
-        }
-      }
-      if (n._hit || n === hl) { ctx.lineWidth = 1.5 / k; ctx.strokeStyle = colors.text; ctx.strokeRect(n.x - r - 2 / k, n.y - r - 2 / k, r * 2 + 4 / k, r * 2 + 4 / k); }
-      if ((showNames && !dim) || n._hit || n === hl) {
-        ctx.fillStyle = colors.text2; ctx.textBaseline = 'top'; ctx.font = `500 ${11 / k}px Inter, system-ui, sans-serif`;
-        ctx.fillText('@' + (n.handle || n.label), n.x, n.y + r + 3 / k);
-      }
-    }
-    ctx.globalAlpha = 1;
-
-    for (const n of nodes) {
+    c.globalAlpha = 1;
+    const fs = 11 / this.k;
+    c.font = `500 ${fs}px ${css('--sans')}`; c.textBaseline = 'middle';
+    for (const n of this.nodes) {
       if (n.kind !== 'seed') continue;
-      const r = n._r;
-      if (!inView(n, r + 120 / k)) continue;
-      const empty = !n.degree;
-      ctx.globalAlpha = hl && !hlSet.has(n.id) ? 0.3 : empty ? 0.45 : 1;
-      let drawn = false;
-      if (n.pic) { const e = requestImg(n.pic); if (e.state === 'ok') { ctx.drawImage(e.c, n.x - r, n.y - r, 2 * r, 2 * r); drawn = true; } }
-      if (!drawn) {
-        ctx.fillStyle = colors.text; ctx.fillRect(n.x - r, n.y - r, 2 * r, 2 * r);
-        ctx.fillStyle = colors.bg; ctx.textBaseline = 'middle'; ctx.font = `600 ${r * 0.6}px Inter, system-ui, sans-serif`;
-        ctx.fillText(initials(null, n.label), n.x, n.y + r * 0.04);
-      }
-      ctx.lineWidth = 2 / k; ctx.strokeStyle = colors.bg; ctx.strokeRect(n.x - r - 1 / k, n.y - r - 1 / k, 2 * r + 2 / k, 2 * r + 2 / k);
-      if (n === focus) { ctx.lineWidth = 1.5 / k; ctx.strokeStyle = colors.text; ctx.strokeRect(n.x - r - 4 / k, n.y - r - 4 / k, 2 * r + 8 / k, 2 * r + 8 / k); }
-      if (empty && n !== hover && n !== focus && k < 1.6) continue;
-      const fs = 12 / k, txt = '@' + n.label;
-      ctx.font = `600 ${fs}px Inter, system-ui, sans-serif`;
-      const bw = ctx.measureText(txt).width + 12 / k, bh = fs + 8 / k, ly = n.y + r + 6 / k;
-      ctx.fillStyle = colors.surface; ctx.fillRect(n.x - bw / 2, ly, bw, bh);
-      ctx.lineWidth = 1 / k; ctx.strokeStyle = colors.border; ctx.strokeRect(n.x - bw / 2, ly, bw, bh);
-      ctx.fillStyle = colors.text; ctx.textBaseline = 'top'; ctx.fillText(txt, n.x, ly + 4 / k);
+      const r = n.r;
+      c.globalAlpha = hl && !hl.has(n.id) ? 0.35 : 1;
+      c.fillStyle = fg; c.fillRect(n.x - r, n.y - r, r * 2, r * 2);
+      const t = '@' + n.label, w = c.measureText(t).width;
+      c.fillStyle = bg; c.fillRect(n.x + r + 3 / this.k, n.y - fs * 0.7, w + 6 / this.k, fs * 1.4);
+      c.fillStyle = fg; c.fillText(t, n.x + r + 6 / this.k, n.y);
     }
-    ctx.globalAlpha = 1;
-  }
-  function loop() { if (!visible) return; if (dirty) { dirty = false; draw(); } requestAnimationFrame(loop); }
-
-  function makeSim() {
-    sim = d3.forceSimulation()
-      .force('link', d3.forceLink().id((d) => d.id).distance((l) => 70 + l.source._r * 2).strength((l) => 1 / Math.min(4, l.target.degree || 1) * 0.6))
-      .force('charge', d3.forceManyBody().strength((d) => (d.kind === 'seed' ? -1100 : -12)).distanceMax(800).theta(0.95))
-      .force('collide', d3.forceCollide().radius((d) => d._r * 1.3 + (d.kind === 'seed' ? 14 : 1.5)).iterations(1))
-      .force('x', d3.forceX(0).strength(0.012)).force('y', d3.forceY(0).strength(0.012))
-      .alphaDecay(0.03).on('tick', () => (dirty = true));
-    sim.stop();
-  }
-  function merge(data) {
-    if (!sim) makeSim();
-    const fresh = byId.size === 0;
-    const adj = new Map();
-    data.links.forEach((l) => { (adj.get(l.target) || adj.set(l.target, []).get(l.target)).push(l.source); });
-    const next = new Map();
-    const seeds = data.nodes.filter((n) => n.kind === 'seed');
-    seeds.forEach((n, i) => {
-      let o = byId.get(n.id);
-      if (o) Object.assign(o, n);
-      else { const a = (i / seeds.length) * Math.PI * 2, R = 240 + seeds.length * 26; o = { ...n, x: Math.cos(a) * R, y: Math.sin(a) * R }; }
-      o._r = radius(o); next.set(o.id, o);
-    });
-    let added = 0;
-    data.nodes.forEach((n) => {
-      if (n.kind === 'seed') return;
-      let o = byId.get(n.id);
-      if (o) Object.assign(o, n);
-      else {
-        const nb = (adj.get(n.id) || []).map((id) => next.get(id)).filter(Boolean);
-        let x = 0, y = 0;
-        nb.forEach((s) => { x += s.x; y += s.y; });
-        if (nb.length) { x /= nb.length; y /= nb.length; }
-        const j = nb.length > 1 ? 24 : 80;
-        o = { ...n, x: x + (Math.random() - 0.5) * j, y: y + (Math.random() - 0.5) * j };
-        added++;
-      }
-      o._r = radius(o); next.set(o.id, o);
-    });
-    byId = next; nodes = [...next.values()];
-    links = data.links.filter((l) => next.has(l.source) && next.has(l.target)).map((l) => ({ source: l.source, target: l.target }));
-    sim.nodes(nodes); sim.force('link').links(links);
-    if (hover && !byId.has(hover.id)) hover = null;
-    if (focus && !byId.has(focus.id)) focus = null;
-    if (!fresh) lastAdded = added;
-    refilter();
-    if (fresh) { sim.alpha(1); for (let i = 0; i < 180; i++) sim.tick(); fit(false); sim.alpha(0.06).restart(); }
-    else if (added) sim.alpha(Math.max(sim.alpha(), 0.08)).restart();
-  }
-  async function load(force) {
-    if (!visible && !force) return;
-    let data;
-    try { data = await api.get(`/api/map?scope=${scope}&limit=${scope === 'all' ? 2000 : 900}`); } catch (e) { return; }
-    lastLoad = Date.now();
-    if (!force && data.rev === rev) { paintFoot(); return; }
-    rev = data.rev; merge(data);
-  }
-  function fit(animate) {
-    const ns = nodes.filter((n) => n._on !== false);
-    if (!ns.length || !W) return;
-    let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
-    ns.forEach((n) => { a = Math.min(a, n.x - n._r); b = Math.min(b, n.y - n._r); c = Math.max(c, n.x + n._r); d = Math.max(d, n.y + n._r + 24); });
-    const k = Math.min(3, 0.92 * Math.min(W / (c - a), H / (d - b)));
-    const to = { k, x: W / 2 - ((a + c) / 2) * k, y: H / 2 - ((b + d) / 2) * k };
-    animate ? animateTo(to) : (T = to); dirty = true;
-  }
-  function animateTo(to) {
-    const from = { ...T }, t0 = performance.now();
-    const step = (t) => {
-      const p = Math.min(1, (t - t0) / 420), e = 1 - Math.pow(1 - p, 3);
-      T = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, k: from.k + (to.k - from.k) * e };
-      dirty = true; if (p < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
-  function hit(px, py) {
-    const [x, y] = toWorld(px, py);
-    let best = null;
-    for (const n of nodes) {
-      if (n.kind === 'lead' && !n._on) continue;
-      const pad = 3 / T.k;
-      if (Math.abs(n.x - x) <= n._r + pad && Math.abs(n.y - y) <= n._r + pad && (!best || n.kind === 'seed' || best.kind !== 'seed')) best = n;
+    // Labels for multi-list leads when zoomed in, and for search matches.
+    c.font = `${10 / this.k}px ${css('--sans')}`; c.fillStyle = fg2; c.globalAlpha = 1;
+    for (const n of this.nodes) {
+      if (n.kind === 'seed') continue;
+      if (this.match.has(n.id) || (this.k > 1.8 && n.degree >= 2 && !dim)) c.fillText(n.handle || n.label, n.x + n.r + 3 / this.k, n.y);
+    }
+    c.restore();
+  },
+  at(px, py) {
+    const x = (px - this.x) / this.k, y = (py - this.y) / this.k;
+    let best = null, bd = (8 / this.k) ** 2;
+    for (const n of this.nodes) {
+      const d = (n.x - x) ** 2 + (n.y - y) ** 2 - n.r * n.r;
+      if (d < bd) { bd = d; best = n; }
     }
     return best;
-  }
-  function showCard(n, px, py) {
-    if (!n) { hc.hidden = true; return; }
-    if (n.kind === 'seed') {
-      hc.innerHTML = `<div class="hc-top">${pfp({ handle: n.label, pic: n.pic })}<div><div class="nm">@${esc(n.label)}</div><div class="muted num">${int(n.degree)} people linked</div></div></div>`;
-    } else {
-      const tags = (n.tags || []).filter((t) => /^via @|^in \d+ lists$|^knows you|^you follow|^follows you/.test(t) || S.manual.has(t));
-      hc.innerHTML = `<div class="hc-top">${pfp({ name: n.name, handle: n.handle, pic: n.pic })}<div style="min-width:0"><div class="nm">${esc(n.name || n.handle)}</div><div class="muted">@${esc(n.handle)}</div></div></div>
-        <div class="tags">${tags.slice(0, 10).map((t) => tagChip({ tag: t })).join('')}</div>`;
-    }
-    placeCard(px, py); hc.hidden = false;
-  }
-  function placeCard(px, py) {
-    const w = 280, h = hc.offsetHeight || 100;
-    let x = px + 16, y = py + 16;
-    if (x + w > W - 8) x = px - w - 16;
-    if (y + h > H - 8) y = Math.max(8, H - h - 8);
-    hc.style.left = x + 'px'; hc.style.top = y + 'px';
-  }
-
-  let drag = null;
-  const P = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-  canvas.addEventListener('pointerdown', (e) => {
-    canvas.setPointerCapture(e.pointerId);
-    const [x, y] = P(e), n = hit(x, y);
-    drag = { n, sx: x, sy: y, lx: x, ly: y, moved: false };
-    if (!n) canvas.classList.add('dragging');
+  },
+  search() {
+    const q = $('#map-q').value.trim().toLowerCase();
+    this.match = new Set(q ? this.nodes.filter((n) => (n.label + ' ' + (n.handle || '') + ' ' + (n.name || '')).toLowerCase().includes(q)).map((n) => n.id) : []);
+    this.draw();
+  },
+};
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+(function mapInput() {
+  const c = $('#canvas');
+  let drag = null, moved = false;
+  c.addEventListener('pointerdown', (e) => {
+    const n = M.at(e.offsetX, e.offsetY);
+    drag = { x: e.clientX, y: e.clientY, ox: M.x, oy: M.y, n };
+    moved = false; c.setPointerCapture(e.pointerId); c.classList.add('drag');
+    if (n) { n.fx = n.x; n.fy = n.y; M.sim?.alphaTarget(0.1).restart(); }
   });
-  canvas.addEventListener('pointermove', (e) => {
-    const [x, y] = P(e);
+  c.addEventListener('pointermove', (e) => {
     if (drag) {
-      const dx = x - drag.lx, dy = y - drag.ly; drag.lx = x; drag.ly = y;
-      if (Math.abs(x - drag.sx) + Math.abs(y - drag.sy) > 3) drag.moved = true;
-      if (!drag.moved) return;
-      hc.hidden = true;
-      if (drag.n) { const [wx, wy] = toWorld(x, y); drag.n.fx = wx; drag.n.fy = wy; sim.alphaTarget(0.2).restart(); }
-      else { T.x += dx; T.y += dy; }
-      dirty = true; return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      if (drag.n) { drag.n.fx = drag.n.x + dx / M.k; drag.n.fy = drag.n.y + dy / M.k; drag.x = e.clientX; drag.y = e.clientY; }
+      else { M.x = drag.ox + dx; M.y = drag.oy + dy; M.draw(); }
+      return;
     }
-    const n = hit(x, y);
-    canvas.classList.toggle('pointer', !!n);
-    if (n !== hover) { hover = n; dirty = true; showCard(n, x, y); } else if (n) placeCard(x, y);
+    const n = M.at(e.offsetX, e.offsetY);
+    if (n !== M.hover) { M.hover = n; M.draw(); }
+    const h = $('#hover');
+    if (!n) { h.hidden = true; c.style.cursor = ''; return; }
+    c.style.cursor = 'pointer';
+    h.innerHTML = n.kind === 'seed' ? `<b>@${esc(n.label)}</b><span>Seed, ${int(n.degree)} people</span>`
+      : `<b>${esc(n.name || n.handle || n.label)}</b><span>@${esc(n.handle || n.label)}</span><span>In ${n.degree} list${n.degree === 1 ? '' : 's'}</span>`;
+    h.hidden = false;
+    const x = Math.min(e.offsetX + 14, M.w - h.offsetWidth - 8), y = Math.min(e.offsetY + 14, M.h - h.offsetHeight - 8);
+    h.style.left = x + 'px'; h.style.top = y + 'px';
   });
-  canvas.addEventListener('pointerup', () => {
-    canvas.classList.remove('dragging');
-    if (!drag) return;
-    const d = drag; drag = null;
-    if (d.n && d.moved) { d.n.fx = null; d.n.fy = null; sim.alphaTarget(0); }
-    if (!d.moved) {
-      if (d.n && d.n.kind === 'lead') openDrawer(+d.n.id.slice(2));
-      else if (d.n && d.n.kind === 'seed') focus = focus === d.n ? null : d.n;
-      else focus = null;
-      dirty = true;
-    }
+  c.addEventListener('pointerup', () => {
+    if (drag?.n) { drag.n.fx = null; drag.n.fy = null; M.sim?.alphaTarget(0); }
+    if (drag && !moved && drag.n && drag.n.kind === 'lead') { openDetail(+drag.n.id.slice(2)).then(() => M.draw()); }
+    drag = null; c.classList.remove('drag');
   });
-  canvas.addEventListener('pointerleave', () => { if (!drag) { hover = null; hc.hidden = true; dirty = true; } });
-  canvas.addEventListener('wheel', (e) => {
+  c.addEventListener('pointerleave', () => { if (M.hover) { M.hover = null; M.draw(); } $('#hover').hidden = true; });
+  c.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const [px, py] = P(e), f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018));
-    const k = Math.max(0.06, Math.min(8, T.k * f)), [wx, wy] = toWorld(px, py);
-    T = { k, x: px - wx * k, y: py - wy * k }; hc.hidden = true; hover = null; dirty = true;
+    const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
+    const k = Math.min(8, Math.max(0.05, M.k * f));
+    M.x = e.offsetX - ((e.offsetX - M.x) * k) / M.k; M.y = e.offsetY - ((e.offsetY - M.y) * k) / M.k; M.k = k;
+    M.draw();
   }, { passive: false });
-
-  function paintTools() {
-    document.querySelectorAll('#map-scope button').forEach((b) => b.classList.toggle('on', b.dataset.scope === scope));
-    $('#m-lists').value = String(filters.lists);
-    [['#m-via', filters.via], ['#m-tag', filters.tag], ['#m-lists', filters.lists]].forEach(([s, v]) => $(s).classList.toggle('set', !!v));
-  }
-  const saveF = () => store.set('fl-map-filters', filters);
-  $('#map-scope').onclick = (e) => {
-    const b = e.target.closest('button'); if (!b || b.dataset.scope === scope) return;
-    scope = b.dataset.scope; store.set('fl-map-scope', scope); paintTools(); byId = new Map(); rev = null; load(true);
-  };
-  $('#m-via').onchange = (e) => { filters.via = e.target.value; saveF(); paintTools(); refilter(); };
-  $('#m-tag').onchange = (e) => { filters.tag = e.target.value; saveF(); paintTools(); refilter(); };
-  $('#m-lists').onchange = (e) => { filters.lists = +e.target.value; saveF(); paintTools(); refilter(); };
-  $('#map-fit').onclick = () => fit(true);
-  $('#map-q').addEventListener('input', refilter);
-  $('#map-q').addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    const n = nodes.find((n) => n._hit); if (!n) return;
-    focus = n; const k = Math.max(T.k, 2.6);
-    animateTo({ k, x: W / 2 - n.x * k, y: H / 2 - n.y * k });
-  });
-  paintTools();
-
-  let pollT = null, footT = null;
-  return {
-    filters,
-    show() {
-      visible = true; resize(); readColors();
-      if (!byId.size) load(true); else { load(); dirty = true; }
-      requestAnimationFrame(loop);
-      clearInterval(pollT); pollT = setInterval(() => { if (!document.hidden) load(); }, 8000);
-      clearInterval(footT); footT = setInterval(paintFoot, 1000);
-    },
-    hide() { visible = false; clearInterval(pollT); clearInterval(footT); hc.hidden = true; if (sim) sim.stop(); },
-    themeChanged() { readColors(); dirty = true; },
-  };
 })();
+$('#map-fit').onclick = () => M.fit();
+$('#map-q').addEventListener('input', debounce(() => M.search(), 120));
+$('#map-q').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const n = M.nodes.find((x) => M.match.has(x.id));
+  if (!n) return;
+  M.k = Math.max(M.k, 2); M.x = M.w / 2 - n.x * M.k; M.y = M.h / 2 - n.y * M.k; M.draw();
+  if (n.kind === 'lead') openDetail(+n.id.slice(2));
+});
+$('#map-scope').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-v]');
+  if (!b || b.dataset.v === M.scope) return;
+  $$('#map-scope button').forEach((x) => x.classList.toggle('on', x === b));
+  M.scope = b.dataset.v; M.rev = null; M.byId = new Map(); M.fitted = false; M.load();
+});
 
-/* ---------- Boot ---------- */
-syncFilterUI();
+// ---------- boot ----------
+applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
 route();
-syncSeedBtn();
-loadCounts();
-loadTags().then(() => resetLeads());
-loadScraper();
-setInterval(() => { if (!document.hidden) loadScraper(); }, 4000);
-setInterval(() => {
-  if (!S.sc || !/^Next request/i.test((S.sc.ext || {}).text || '')) return;
-  paintStatus(S.sc);
-  if ($('#kpi-state')) $('#kpi-state').textContent = scraperState(S.sc).label;
-}, 1000);
-setInterval(() => {
-  if (document.hidden) return;
-  loadCounts();
-  // Refresh the table only when the user is at the top and not reading a drawer, so rows never jump.
-  if (S.view === 'leads' && $('#list-scroll').scrollTop < ROW && $('#drawer').hidden && !L.loading) resetLeads(true);
-}, 20000);
-setInterval(() => { if (!document.hidden) loadTags(); }, 60000);
+renderFilters();
+resetLeads();
+loadTags(); loadCounts(); loadScraper();
+setInterval(loadScraper, 3000);
+setInterval(() => { loadCounts(); loadTags(); }, 30000);
+setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open) resetLeads(true); }, 45000);
+setInterval(() => { if (offlineSince) setOnline(false); if (S.view === 'scraper') renderScraper(); else renderStatus(); }, 1000);

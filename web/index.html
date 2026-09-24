@@ -5,146 +5,139 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fortunate Leads</title>
 <script>
-  try { const t = localStorage.getItem('fl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  try { var t = localStorage.getItem('fl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
   if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
 </script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<aside class="side">
-  <div class="brand">Fortunate Leads</div>
-  <nav class="nav">
-    <a href="#/leads" data-view="leads"><span>Leads</span><b class="num" id="nav-leads"></b></a>
-    <a href="#/map" data-view="map"><span>Map</span><b class="num" id="nav-map"></b></a>
-    <a href="#/scraper" data-view="scraper"><span>Scraper</span><b class="num" id="nav-scraper"></b></a>
-  </nav>
-  <div class="grow"></div>
-  <div class="theme seg" id="theme-seg">
-    <button data-theme="dark">Dark</button><button data-theme="light">Light</button>
-  </div>
-</aside>
-
-<div class="app">
-  <header class="status" id="status">
-    <a class="st-state" href="#/scraper"><i class="sq" id="st-sq"></i><span id="st-label">Loading</span></a>
-    <div class="st-activity" id="st-activity"></div>
-    <div class="st-metrics">
-      <div class="metric"><b class="num" id="st-ppm">–</b><span>people/min</span></div>
-      <div class="metric"><b class="num" id="st-pph">–</b><span>pages/hour</span></div>
-      <div class="metric"><b class="num" id="st-today">–</b><span>people today</span></div>
-      <div class="metric hide-sm"><b class="num" id="st-eta">–</b><span>queue ETA</span></div>
-    </div>
-    <button class="btn" id="st-pause">Pause</button>
+<div class="shell">
+  <header class="top">
+    <div class="brand"><i></i><span>Fortunate Leads</span></div>
+    <nav class="tabs">
+      <a href="#/leads" data-view="leads">Leads <span class="num" id="n-leads"></span></a>
+      <a href="#/map" data-view="map">Map</a>
+      <a href="#/scraper" data-view="scraper">Scraper <span class="num" id="n-queue"></span></a>
+    </nav>
+    <div class="grow"></div>
+    <button class="btn ghost hide-sm" id="help-btn" title="Keyboard shortcuts"><kbd>?</kbd></button>
+    <button class="btn ghost" id="theme-btn">Light</button>
   </header>
 
+  <div>
+    <div class="offline" id="offline" hidden>Server offline <span class="num" id="offline-t"></span></div>
+    <div class="status" id="status">
+      <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">Connecting</span></a>
+      <span class="st-act" id="st-act"></span>
+      <span class="st"><span>Today</span><b class="num" id="st-today">–</b><span class="meter"><i id="st-meter"></i></span></span>
+      <span class="st"><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
+      <span class="st"><span>People/h</span><b class="num" id="st-peh">–</b></span>
+      <span class="st hide-sm"><span>Last hit</span><b class="num" id="st-hit">–</b></span>
+      <span class="grow"></span>
+      <button class="toggle" id="qualify-btn" title="Qualification"><i></i>Qualify</button>
+      <button class="btn" id="pause-btn">Pause</button>
+    </div>
+  </div>
+
   <main>
-    <!-- Leads -->
     <section class="view" id="view-leads">
-      <div class="toolbar">
-        <label class="search"><input id="q" type="search" placeholder="Search name, handle, bio" autocomplete="off"></label>
-        <select id="f-via" class="select" title="Source account"></select>
-        <select id="f-lists" class="select" title="Lists">
-          <option value="0">Any lists</option>
-          <option value="2">In 2+ lists</option>
-          <option value="3">In 3+ lists</option>
-          <option value="4">In 4+ lists</option>
-          <option value="5">In 5+ lists</option>
-        </select>
-        <select id="f-status" class="select" title="Status">
-          <option value="">Any status</option>
-          <option value="good">Good</option>
-          <option value="maybe">Maybe</option>
-          <option value="no">No</option>
-          <option value="contacted">Contacted</option>
-          <option value="client">Client</option>
-          <option value="known">Known</option>
-        </select>
-        <select id="f-tag" class="select" title="Tag"></select>
-        <button class="btn quiet" id="f-clear" hidden>Clear</button>
-        <div class="grow"></div>
-        <select id="sort" class="select" title="Sort">
-          <option value="connected">Most connected</option>
-          <option value="newest">Newest</option>
-          <option value="followers">Followers</option>
-        </select>
+      <aside class="filters" id="filters"></aside>
+      <div class="pane">
+        <div class="bar">
+          <button class="btn fbtn" id="filters-btn">Filters</button>
+          <label class="search"><input class="input" id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false"><kbd>/</kbd></label>
+          <select class="select" id="sort">
+            <option value="connected">Most connected</option>
+            <option value="score">Default</option>
+            <option value="recent">Recent</option>
+            <option value="followers">Followers</option>
+          </select>
+          <div class="chips" id="chips"></div>
+          <div class="grow"></div>
+          <span class="count num" id="count"></span>
+        </div>
+        <div class="thead">
+          <span></span><span>Person</span><span>Bio</span><span class="r">Followers</span><span class="r">Lists</span><span class="c-tags">Tags</span><span class="c-st">Status</span>
+        </div>
+        <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
+        <div class="foot"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>enter</kbd> open</span><span><kbd>m</kbd> mark</span><span><kbd>1</kbd>–<kbd>6</kbd> status</span><span><kbd>o</kbd> instagram</span><span><kbd>/</kbd> search</span><span><kbd>esc</kbd> close</span></div>
       </div>
-      <div class="thead">
-        <span></span><span>Person <span class="num" id="list-total"></span></span><span>Bio</span><span class="r">Followers</span><span class="r">Lists</span><span class="c-tags">Tags</span><span>Status</span>
-      </div>
-      <div class="vscroll" id="list-scroll"><div class="vspace" id="list"></div></div>
+      <aside class="detail" id="detail" hidden></aside>
     </section>
 
-    <!-- Map -->
     <section class="view" id="view-map">
-      <div class="toolbar">
-        <div class="seg" id="map-scope"><button data-scope="leads">Connected</button><button data-scope="all">All</button></div>
-        <select id="m-via" class="select" title="Source account"></select>
-        <select id="m-lists" class="select" title="Lists">
-          <option value="0">Any lists</option>
-          <option value="2">In 2+ lists</option>
-          <option value="3">In 3+ lists</option>
-          <option value="4">In 4+ lists</option>
-        </select>
-        <select id="m-tag" class="select" title="Tag"></select>
+      <div class="bar">
+        <div class="seg" id="map-scope"><button data-v="leads" class="on">Connected</button><button data-v="all">All</button></div>
+        <label class="search"><input class="input" id="map-q" type="search" placeholder="Find" autocomplete="off" spellcheck="false"></label>
         <div class="grow"></div>
-        <label class="search sm"><input id="map-q" type="search" placeholder="Find person" autocomplete="off"></label>
+        <span class="count num" id="map-count"></span>
         <button class="btn" id="map-fit">Fit</button>
       </div>
-      <div class="map-stage" id="map-stage">
-        <canvas id="map-canvas"></canvas>
-        <div class="hovercard" id="hovercard" hidden></div>
-        <div class="map-foot num" id="map-foot"></div>
+      <div class="map-wrap">
+        <div class="stage" id="stage">
+          <canvas id="canvas"></canvas>
+          <div class="hover" id="hover" hidden></div>
+          <div class="legend"><span><i style="background:var(--fg)"></i>Seed</span><span><i style="border:1px solid var(--fg)"></i>2+ lists</span><span><i style="background:var(--fg3)"></i>Lead</span></div>
+        </div>
       </div>
     </section>
 
-    <!-- Scraper -->
     <section class="view" id="view-scraper">
       <div class="scr">
         <div class="kpis" id="kpis"></div>
-        <div class="scr-grid">
+        <div class="grid2">
           <div class="panel">
-            <div class="panel-head"><h3>Add accounts</h3><span class="muted num" id="seed-count"></span></div>
-            <textarea id="seed-input" rows="6" spellcheck="false" placeholder="@handle or instagram.com/handle, one per line or comma separated"></textarea>
-            <div class="seed-row">
-              <div class="seg" id="dir-seg"><button data-dir="followers" class="on">Followers</button><button data-dir="following" class="on">Following</button></div>
-              <div class="grow"></div>
-              <span class="muted" id="seed-msg"></span>
-              <button class="btn primary" id="seed-add" disabled>Queue</button>
+            <div class="p-head"><h3>Extension</h3><div class="grow"></div><span class="num muted" id="ext-ver"></span></div>
+            <div class="p-body"><div class="kv" id="ext-kv"></div>
+              <div class="row-flex budget"><span class="muted">Budget/day</span>
+                <input class="input" id="b-list" type="number" min="0" title="List pages"><span class="muted">pages</span>
+                <input class="input" id="b-profile" type="number" min="0" title="Profiles"><span class="muted">profiles</span>
+                <button class="btn" id="b-save">Save</button>
+              </div>
             </div>
           </div>
-          <div class="panel" id="ext-panel"></div>
+          <div class="panel">
+            <div class="p-head"><h3>Add seeds</h3></div>
+            <div class="p-body">
+              <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
+              <div class="row-flex">
+                <div class="seg" id="seed-dir"><button data-v="followers" class="on">Followers</button><button data-v="following" class="on">Following</button></div>
+                <div class="grow"></div>
+                <span class="muted num" id="seed-n"></span>
+                <button class="btn solid" id="seed-add" disabled>Queue</button>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="panel flush">
-          <div class="panel-head pad">
-            <h3>Lists</h3>
-            <div class="seg" id="list-filter"></div>
-          </div>
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead><tr><th>Account</th><th>Direction</th><th class="w-prog">Progress</th><th class="r">%</th><th class="r">Pages left</th><th class="r">ETA</th><th>State</th><th class="r">Updated</th></tr></thead>
-              <tbody id="lists-body"></tbody>
-            </table>
-          </div>
+        <div class="panel">
+          <div class="p-head"><h3>Lists</h3><span class="num muted" id="lists-n"></span><div class="grow"></div><div class="seg" id="lists-f"></div></div>
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>Account</th><th class="hide-sm">Direction</th><th class="prog">Progress</th><th class="r">Received</th><th>State</th><th class="r hide-sm">Updated</th></tr></thead>
+            <tbody id="lists-body"></tbody>
+          </table></div>
         </div>
       </div>
     </section>
   </main>
 </div>
-
-<aside class="drawer" id="drawer" hidden><div class="drawer-inner" id="drawer-body"></div></aside>
-<datalist id="tag-options"></datalist>
 <div class="toast" id="toast" hidden></div>
-
-<script>
-  // Load in order, retrying a script that drops (a dropped local connection should not leave a blank page).
-  (function load(srcs, i, tries) {
-    if (i >= srcs.length) return;
-    const s = document.createElement('script');
-    s.src = srcs[i] + (tries ? '?retry=' + tries : '');
-    s.onload = () => load(srcs, i + 1, 0);
-    s.onerror = () => { s.remove(); if (tries < 4) setTimeout(() => load(srcs, i, tries + 1), 200 * (tries + 1)); };
-    document.body.appendChild(s);
-  })(['vendor/d3-dispatch.min.js', 'vendor/d3-timer.min.js', 'vendor/d3-quadtree.min.js', 'vendor/d3-force.min.js', 'app.js'], 0, 0);
-</script>
+<div class="help" id="help" hidden><div>
+  <h3>Keyboard</h3>
+  <span><kbd>j</kbd> <kbd>k</kbd></span><span>Next / previous</span>
+  <span><kbd>enter</kbd></span><span>Open detail</span>
+  <span><kbd>m</kbd></span><span>Cycle mark</span>
+  <span><kbd>1</kbd>–<kbd>6</kbd></span><span>Good, maybe, no, contacted, client, known</span>
+  <span><kbd>0</kbd></span><span>Clear mark</span>
+  <span><kbd>o</kbd></span><span>Open on Instagram</span>
+  <span><kbd>t</kbd></span><span>Add tag</span>
+  <span><kbd>/</kbd></span><span>Search</span>
+  <span><kbd>g</kbd> <kbd>l</kbd> / <kbd>g</kbd> <kbd>m</kbd> / <kbd>g</kbd> <kbd>s</kbd></span><span>Leads, map, scraper</span>
+  <span><kbd>esc</kbd></span><span>Close</span>
+</div></div>
+<script src="vendor/d3-dispatch.min.js"></script>
+<script src="vendor/d3-timer.min.js"></script>
+<script src="vendor/d3-quadtree.min.js"></script>
+<script src="vendor/d3-force.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
