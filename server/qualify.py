@@ -11,7 +11,7 @@ import time
 
 import llm
 
-TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source')
+TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q2'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
@@ -646,7 +646,9 @@ SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 {"id": <the id>, "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
  "evidence": ["up to 3 short exact quotes from the bio/name that support the verdict"],
- "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"]}"""
+ "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
+ "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
+Use true only when the profile clearly shows it (e.g. "as seen on", paid-ads talk, "US shipping", a US city); otherwise null."""
 
 
 def _system(examples, n):
@@ -673,6 +675,28 @@ def _evidence(v, person):
     return out[:3]
 
 
+AI_STAGE = {'pre-launch': 'AI: Pre-launch', 'early': 'AI: Early stage', 'growing': 'AI: Growing', 'established': 'AI: Established'}
+
+
+def ai_tags(v, fit):
+    """Smarter tags that only a model verdict can give (grp 'ai', names start with 'AI: '). Rule verdicts never add these."""
+    out = []
+    role = v.get('role')
+    if role == 'buyer' and isinstance(v.get('niche'), str) and TAXONOMY.get(v['niche']) == 'niche':
+        out.append('AI: ' + v['niche'])
+    if role == 'buyer' and AI_STAGE.get(v.get('stage')):
+        out.append(AI_STAGE[v['stage']])
+    if v.get('decision_maker') is True and role in ('buyer', 'connector'):
+        out.append('AI: Decision maker')
+    if v.get('runs_ads') is True:
+        out.append('AI: Runs ads')
+    if v.get('us_market') is True:
+        out.append('AI: US market')
+    if role == 'buyer' and fit >= 75:
+        out.append('AI: Top fit')
+    return out
+
+
 def _verdict(v, person, tags, used, version, net=None):
     if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
         return None
@@ -693,6 +717,7 @@ def _verdict(v, person, tags, used, version, net=None):
     fit_tag = 'Fit: strong' if fit >= 75 and v['role'] == 'buyer' else 'Fit: good' if fit >= 55 and v['role'] in ('buyer', 'connector') else None
     if fit_tag:
         new.append((fit_tag, 'signal'))
+    new += [(t, 'ai') for t in ai_tags(v, fit) if t not in have]
     brand = v.get('brand_handle')
     brand = brand.strip() if isinstance(brand, str) and re.fullmatch(r'@?[\w.]{2,30}', brand.strip()) else None
     return {'score': score, 'role': v['role'], 'reason': reason, 'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
@@ -713,7 +738,7 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=350 * len(chunk) + 100)
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=420 * len(chunk) + 100)
         except llm.Unavailable:
             continue
         data = parse_json(text)

@@ -1056,6 +1056,8 @@ ROUTES = [
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
     ('POST', r'/api/llm/models', api_llm_models),
 ]
+import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
+ROUTES += qual_api.routes(sys.modules[__name__])
 
 
 SECURITY_HEADERS = {'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff'}

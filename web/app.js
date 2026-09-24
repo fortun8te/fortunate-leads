@@ -76,7 +76,7 @@ document.addEventListener('error', (e) => {
 // ---------- constants ----------
 const STATUSES = ['good', 'maybe', 'no', 'contacted', 'client', 'known'];
 const CYCLE = [null, 'good', 'maybe', 'no'];
-const GROUPS = [['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
+const GROUPS = [['ai', 'AI verdict'], ['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
 const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
 const BIO_OPTS = [['1', 'Yes'], ['0', 'No']];
 const FOL_OPTS = [['lt1k', '<1k', null, 999], ['1k', '1k+', 1000, null], ['10k', '10k+', 10000, null], ['100k', '100k+', 100000, null]];
@@ -225,7 +225,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -260,6 +260,7 @@ function setView(v) {
   const work = v === 'leads' || v === 'map';
   $('#view-work').classList.toggle('on', work);
   $('#view-tags').classList.toggle('on', v === 'tags');
+  $('#view-qual').classList.toggle('on', v === 'qual');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
   $('#view-accounts').classList.toggle('on', v === 'accounts');
   $('#view-settings').classList.toggle('on', v === 'settings');
@@ -275,6 +276,7 @@ function setView(v) {
   if (v !== 'accounts' && A.wiz) closeWizard();
   if (v === 'settings') loadSettings();
   if (v === 'tags') T.show();
+  if (v === 'qual') Q.show();
   if (!work) hideSuggest();
 }
 
@@ -286,7 +288,7 @@ function filtersChanged(o = {}) {
   renderFilters(); renderTokens();
   resetLeads();
   loadFacets(); loadCounts();
-  M.stale = true;
+  M.stale = true; M.relayout = true;
   if (S.view === 'map') M.reloadSoon();
 }
 function clearFilters() {
@@ -670,7 +672,7 @@ function tagChip(t, rm) {
   return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
-const GORDER = { role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
+const GORDER = { ai: -1, role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
 // Tags that describe the person, not how they were found or what the fit badge already says.
 function rowTags(r) {
   return (r.tags || []).filter((t) => t.grp !== 'source' && t.grp !== 'size' && !isFitTag(t.tag))
@@ -1014,7 +1016,7 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
-    const to = { l: 'leads', m: 'map', t: 'tags', s: 'scraper', a: 'accounts', ',': 'settings' }[k];
+    const to = { l: 'leads', m: 'map', q: 'qual', t: 'tags', s: 'scraper', a: 'accounts', ',': 'settings' }[k];
     if (to) { location.hash = hashFor(to); e.preventDefault(); }
     return;
   }
@@ -1084,8 +1086,9 @@ const T = {
   editable: (t) => t.sources.includes('manual'),
   render() {
     const q = this.q.toLowerCase();
-    const rows = this.list.filter((t) => (!this.src || t.sources.includes(this.src)) && (!q || t.tag.toLowerCase().includes(q)))
-      .sort((a, b) => ORDER[a.kind] - ORDER[b.kind] || b.total - a.total || a.tag.localeCompare(b.tag));
+    this.renderGroups(q);
+    const rows = this.list.filter((t) => this.editable(t) && (!q || t.tag.toLowerCase().includes(q)))
+      .sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
     $('#tg-n').textContent = int(rows.length);
     const ed = this.editing;
     $('#tg-body').innerHTML = rows.length ? rows.map((t) => {
@@ -1095,14 +1098,48 @@ const T = {
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
         <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
-        <td>${name}</td><td class="hide-sm mono">${esc(ucf(t.grp || ''))}</td><td class="mono hide-sm">${esc(ucf(t.sources.join(' + ')))}</td>
+        <td>${name}</td>
         <td class="r num">${int(t.total)}</td>
         <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
-    }).join('') : `<tr><td colspan="6" class="muted">${this.failed ? 'Could not load tags' : 'No tags'}</td></tr>`;
+    }).join('') : `<tr><td colspan="4" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and type a tag under their profile.'}</td></tr>`;
     const allOn = rows.filter((t) => this.editable(t)).every((t) => this.checked.has(t.tag)) && this.checked.size;
     $('#tg-all').className = 'ck' + (allOn ? ' on' : this.checked.size ? ' part' : '');
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
     this.renderMerge();
+  },
+  // Overview: every automatic tag, grouped in plain words, with how many people have it. Click = filter Leads.
+  renderGroups(q) {
+    const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
+    const kinds = [
+      ['AI', this.list.filter((t) => t.grp === 'ai').length, 'Added only after the AI read the full profile. Most reliable.'],
+      ['Automatic', this.list.filter((t) => t.kind === 'auto' && t.grp !== 'ai').length, 'Added by fixed keyword checks on name, bio and link.'],
+      ['Keyword rules', this.list.filter((t) => t.kind === 'rule').length, 'Your own word rules, set up at the bottom.'],
+      ['Yours', this.list.filter((t) => t.kind === 'manual').length, 'Tags you typed on a person yourself.'],
+    ];
+    $('#tg-kinds').innerHTML = kinds.map(([k, n, d]) => `<div class="tg-kind"><b>${k}</b><span class="num">${plural(n, 'tag')}</span><p class="muted">${d}</p></div>`).join('');
+    const G = [
+      ['ai', 'AI verdict', 'What the AI concluded after reading the profile: product type, stage, ads, US market, decision maker.'],
+      ['role', 'What they are', 'Brand, store, agency, creator and so on.'],
+      ['niche', 'What they sell', 'Product category, from their bio and link.'],
+      ['signal', 'Signals in their profile', 'Founder, hiring, shop link, country and similar hints.'],
+      ['size', 'Audience size', 'Follower count bands.'],
+      ['via', 'Where we found them', 'The account whose follower or following list they came from.'],
+      ['source', 'Link to you', 'In several lists, follows you, you follow them.'],
+    ];
+    const pick = (g) => g === 'via' ? auto.filter((t) => isViaTag(t.tag)) : g === 'source' ? auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
+      : auto.filter((t) => (t.grp || 'custom') === g);
+    const known = new Set(['ai', 'role', 'niche', 'signal', 'size', 'source']);
+    const other = auto.filter((t) => !known.has(t.grp));
+    const card = (key, title, desc, list) => {
+      if (!list.length && key !== 'ai') return '';
+      list = [...list].sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : 14;
+      return `<div class="panel tg-card${key === 'ai' ? ' ai' : ''}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
+        <div class="tg-chips">${list.length ? list.slice(0, lim).map((t) => `<button class="tchip g-${esc(t.grp || 'custom')}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`).join('')
+          : '<span class="muted">None yet. These appear once AI scoring (Qualify) has checked people.</span>'}
+        ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></div>`;
+    };
+    $('#tg-groups').innerHTML = G.map(([k, t, d]) => card(k, t, d, pick(k))).join('') + card('other', 'Other', 'Automatic tags outside the groups above.', other);
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
@@ -1166,14 +1203,10 @@ const T = {
         : `<tr><td colspan="5" class="muted">No rules</td></tr>`;
   },
 };
-$('#tg-src').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-v]'); if (!b) return;
-  T.src = b.dataset.v; $$('#tg-src button').forEach((x) => x.classList.toggle('on', x === b)); T.render();
-});
 $('#tg-q').addEventListener('input', (e) => { T.q = e.target.value; T.render(); });
 $('#tg-all').onclick = () => {
   const q = T.q.toLowerCase();
-  const rows = T.list.filter((t) => T.editable(t) && (!T.src || t.sources.includes(T.src)) && (!q || t.tag.toLowerCase().includes(q)));
+  const rows = T.list.filter((t) => T.editable(t) && (!q || t.tag.toLowerCase().includes(q)));
   if (T.checked.size) T.checked.clear(); else rows.forEach((t) => T.checked.add(t.tag));
   T.render();
 };
@@ -1181,6 +1214,8 @@ function goTag(tag) { S.f = emptyFilter(); S.f.tags = [tag]; $('#q').value = '';
 $('#view-tags').addEventListener('click', (e) => {
   const go = e.target.closest('[data-go]');
   if (go) return goTag(go.dataset.go);
+  const tm = e.target.closest('[data-tmore]');
+  if (tm) { T.more = Object.assign(T.more || {}, { [tm.dataset.tmore]: true }); return T.render(); }
   const ck = e.target.closest('[data-ck]');
   if (ck) { const t = ck.dataset.ck; if (T.checked.has(t)) T.checked.delete(t); else T.checked.add(t); return T.render(); }
   const ed = e.target.closest('[data-edit]');
@@ -1268,8 +1303,8 @@ function scState() {
   if (!x.online) return { label: 'Extension offline', short: 'Offline', dot: 'hollow' };
   if (x.state === 'paused') return { label: 'Paused in extension', short: 'Paused', dot: '' };
   if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) return { label: 'Cooldown ' + left(x.cooldown_until), short: 'Cooldown', dot: 'hollow' };
-  if (x.state === 'running') return { label: 'Running', short: 'Running', dot: 'run' };
-  return { label: 'Idle', short: 'Idle', dot: 'on' };
+  if (x.state === 'running') return { label: 'Running', short: 'Running', dot: 'live run' };
+  return { label: 'Idle', short: 'Idle', dot: 'live' };
 }
 function renderStatus() {
   const sc = S.sc, x = sc?.ext || {}, st = scState();
@@ -1307,6 +1342,7 @@ async function loadScraper() {
   if (S.view === 'scraper') renderScraper();
   if (S.view === 'accounts') renderAccounts();
   if (S.view === 'settings') renderSettings();
+  if (S.view === 'qual') Q.renderProg();
 }
 $('#pause-btn').onclick = async () => {
   if (!S.sc) return;
@@ -1345,10 +1381,13 @@ function renderScraper() {
   else if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) now = `Taking a break so Instagram does not block you, back in ${left(x.cooldown_until)}.`;
   else if (run) now = `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}: ${int(run.received)}${run.total ? ' of ' + int(run.total) : ''}.`;
   else now = ucf(x.activity || x.text || 'Idle');
-  $('#now').innerHTML = `<i class="dot ${x.online && !sc.paused ? 'run' : 'off'}"></i><span>${esc(now)}</span>`;
+  const accs = sc.accounts || [];
+  const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${ST_DOT[a.status] || ''}"></i>${esc(a.name || a.handle || a.lane_id)}</span>`).join('')
+    : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
+  $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live run' : 'off'}"></i><span>${esc(now)}</span></div><div class="conns">${conn}</div>`;
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
   const recv = ls.reduce((a, l) => a + (l.received || 0), 0), tot = recv + (L.left || 0);
-  const stage = (title, line, pct, when) => `<div class="stage"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
+  const stage = (title, line, pct, when) => `<div class="stg"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
     <div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div><div class="muted">${line}</div></div>`;
   const offline = x.online ? '' : 'waiting for the extension';
   $('#stages').innerHTML = [
@@ -1391,7 +1430,7 @@ $('#budget').addEventListener('submit', async (e) => {
 $('#snowball').onclick = async () => {
   try {
     const r = await api.post('/api/scraper/snowball', { min_status: 'good' });
-    toast(r.queued ? `${ucf(plural(r.queued, 'following list'))} queued` : 'No new good or client leads to snowball');
+    toast(r.queued ? `Queued who ${plural(r.queued, 'good lead')} follow${r.queued === 1 ? 's' : ''}` : 'Nothing new: every Good or Client lead is already done or private');
     loadScraper();
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
 };
@@ -1423,7 +1462,7 @@ $('#seed-add').onclick = async () => {
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
 const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
-const ST_DOT = { running: 'run', online: 'on', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
+const ST_DOT = { running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
 const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
 const A = { wiz: null, setup: null, confirm: null, renaming: null, busy: new Set(), dismissed: false };
 
@@ -1742,6 +1781,101 @@ $('#view-settings').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- qualification ----------
+const ROLE_LABEL = { buyer: 'Brand owner', connector: 'Agency or freelancer', collaborator: 'Creative', peer: 'Similar service', supplier: 'Supplier', unrelated: 'Not a business', unclear: 'Unclear' };
+const Q = {
+  view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0,
+  async show() { await this.load(); },
+  async load(more) {
+    const g = ++this.gen;
+    const p = new URLSearchParams({ view: this.view, sort: this.sort, limit: 30, offset: more ? this.rows.length : 0 });
+    if (this.q) p.set('q', this.q);
+    let d;
+    try { d = await api.get('/api/qual?' + p); } catch (e) { if (!this.rows.length) $('#ql-list').innerHTML = `<div class="muted ql-empty">${e.status === 404 ? 'The server needs a restart to show this page.' : 'Could not load'}</div>`; return; }
+    if (g !== this.gen) return;
+    this.rows = more ? [...this.rows, ...d.rows] : d.rows; this.total = d.total; this.sum = d.summary;
+    // With no AI verdicts yet, show keyword verdicts instead of an empty page.
+    if (!more && this.view === 'ai' && !d.total && !this.q && !this.fellBack) { this.fellBack = true; this.view = 'all'; this.syncSeg(); return this.load(); }
+    this.renderProg(); this.render();
+  },
+  syncSeg() { $$('#ql-view button').forEach((b) => b.classList.toggle('on', b.dataset.v === this.view)); },
+  renderProg() {
+    const s = this.sum || {}, Qp = S.sc?.progress?.qualify || {};
+    const on = Qp.on ?? S.sc?.qualify;
+    const pct = s.verdicts ? Math.round((s.ai / s.verdicts) * 100) : 0;
+    const when = !on ? 'AI scoring is off' : !Qp.left ? 'Everyone waiting has been checked' : eta(Qp.eta_h) ? eta(Qp.eta_h) + ' left' : 'starting';
+    const kpi = (v, l) => `<div class="ql-k"><b class="num">${v}</b><span>${l}</span></div>`;
+    $('#ql-prog').innerHTML = `<div class="ql-kpis">${kpi(fmt(s.ai ?? 0), 'checked by AI')}${kpi(fmt(s.rules ?? 0), 'keyword check only')}${kpi(fmt(Qp.left ?? 0), 'waiting for AI')}${kpi(Qp.per_hour ? fmt(Qp.per_hour) : '–', 'AI checks per hour')}</div>
+      <div class="ql-pbar"><div class="bar-p ${on && Qp.left ? 'run' : 'done'}"><i style="width:${pct}%"></i></div>
+      <span class="muted"><i class="dot ${on ? 'live' : 'off'}"></i> ${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ' · turn on Qualify at the top to start'}</span></div>`;
+    $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
+  },
+  card(r) {
+    const v = r.verdict || {}, ai = v.model && v.model !== 'rules';
+    const ev = evidenceOf(v);
+    const aiTags = (r.tags || []).filter((t) => t.grp === 'ai');
+    const seeds = [...new Set(r.via || [])];
+    const bio = (r.bio || '').trim();
+    const based = [
+      bio ? `<li><b>Bio</b><span>${esc(bio.length > 160 ? bio.slice(0, 160) + '…' : bio)}</span>${r.bio_at ? `<em>read ${ago(r.bio_at)} ago</em>` : ''}</li>` : `<li><b>Bio</b><span class="muted">${r.is_private ? 'Private account, cannot be read' : 'Not read yet'}</span></li>`,
+      r.website ? `<li><b>Link in bio</b><span><a href="${esc(safeUrl(r.website) || '#')}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a></span></li>` : '',
+      r.category ? `<li><b>Instagram category</b><span>${esc(r.category)}</span></li>` : '',
+      `<li><b>Network</b><span>${seeds.length ? `In ${plural(seeds.length, 'list')}: ${seedList(seeds, 4)}` : 'Not in any list'}${youLink(r) ? ' · ' + esc(youLink(r)) : ''}</span></li>`,
+      r.followers != null ? `<li><b>Audience</b><span>${fmt(r.followers)} followers${r.posts != null ? ' · ' + fmt(r.posts) + ' posts' : ''}</span></li>` : '',
+    ].join('');
+    const site = r.site;
+    const sg = site?.signals || {};
+    const facts = [sg.shop && `Built on ${sg.shop}`, sg.cart && !sg.shop && 'Has a cart', sg.meta_pixel && 'Meta ads pixel', sg.tiktok_pixel && 'TikTok ads pixel', sg.google_ads && 'Google Ads tag',
+      sg.klaviyo && 'Klaviyo email', sg.usd && 'Prices in USD', sg.eur && 'Prices in EUR', sg.stage && sg.stage !== 'unknown' && ucf(sg.stage) + ' stage', sg.us_market === true && 'Sells to the US'].filter(Boolean);
+    const siteHTML = site ? `<div class="ql-site"><div class="ql-sh"><b>Website</b><a href="${esc(safeUrl(site.final_url) || '#')}" target="_blank" rel="noopener">${esc((site.final_url || '').replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</a><em>${ago(site.at)} ago</em></div>
+      ${site.summary ? `<p>${esc(site.summary)}</p>` : ''}${site.error ? `<p class="muted">${esc(ucf(site.error))}</p>` : ''}
+      ${facts.length ? `<div class="ql-facts">${facts.map((f) => `<span>${esc(f)}</span>`).join('')}</div>` : ''}</div>` : '';
+    const busy = this.busy.has(r.id);
+    return `<article class="ql-card" data-id="${r.id}">
+      <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
+        <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
+        <div class="ql-score"><b class="num">${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
+      <div class="ql-body">
+        <div class="ql-why"><h4>Verdict</h4><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
+          ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul>` : ''}
+          ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
+          <p class="ql-by">${ai ? `Checked by AI (${esc(modelLabel(v.model))})` : 'Keyword check only, no AI yet'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
+        <div class="ql-based"><h4>Based on</h4><ul>${based}</ul></div>
+      </div>
+      ${siteHTML}
+      <div class="ql-acts"><button class="btn${busy ? '' : ' solid'}" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reading…' : 'Dig deeper'}</button>
+        <span class="muted ql-hint">${r.website ? 'Reads the bio again and their website' : 'Reads the bio again (no website in bio)'}</span><span class="grow"></span>
+        <button class="btn ghost" data-open="${r.id}">Open</button>
+        <a class="btn ghost" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram</a></div>
+    </article>`;
+  },
+  render() {
+    $('#ql-n').textContent = `${int(this.total)} ${this.total === 1 ? 'person' : 'people'}`;
+    $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
+      : `<div class="muted ql-empty">${this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+    $('#ql-more').hidden = this.rows.length >= this.total;
+  },
+  async deeper(id) {
+    this.busy.add(id); this.render();
+    try {
+      const d = await api.post(`/api/qual/${id}/deeper`);
+      const r = this.rows.find((x) => x.id === id);
+      if (r && d.site) r.site = d.site;
+      toast(ucf(d.note || 'Done'));
+    } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not dig deeper'); }
+    this.busy.delete(id); this.render();
+  },
+};
+$('#ql-view').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b) return; Q.view = b.dataset.v; Q.fellBack = true; Q.syncSeg(); Q.load(); });
+$('#ql-q').addEventListener('input', debounce((e) => { Q.q = e.target.value.trim(); Q.load(); }, 250));
+$('#ql-sort').addEventListener('change', (e) => { Q.sort = e.target.value; Q.load(); });
+$('#ql-more').onclick = () => Q.load(true);
+$('#ql-list').addEventListener('click', (e) => {
+  const d = e.target.closest('[data-deep]'); if (d) return Q.deeper(+d.dataset.deep);
+  const o = e.target.closest('[data-open]');
+  if (o) { const r = Q.rows.find((x) => x.id === +o.dataset.open); S.f = emptyFilter(); S.f.q = r ? r.handle : ''; $('#q').value = S.f.q; S.view = 'leads'; filtersChanged(); setView('leads'); openDetail(+o.dataset.open); }
+});
+
 // ---------- map ----------
 const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
 // Profile photos for the map, pre-cropped to circles on small canvases.
@@ -1813,15 +1947,22 @@ const M = {
     this.build(d);
   },
   build(d) {
-    const old = this.byId;
+    // A new filter gets a fresh, fitted layout; a refresh of the same view keeps positions and pins.
+    const old = this.relayout ? new Map() : this.byId;
+    this.relayout = false;
     if (!old.size) this.autoFit = true;
+    // When filtered, seeds with nobody in the result only add noise: leave them out.
+    if (filterCount() && d.nodes.some((n) => n.kind !== 'seed')) {
+      const used = new Set((d.links || []).map((l) => l.source));
+      d = Object.assign({}, d, { nodes: d.nodes.filter((n) => n.kind !== 'seed' || used.has(n.id)) });
+    }
     const sid = (s) => String(s).startsWith('s:') || String(s).startsWith('p:') ? String(s) : 's:' + s;
     this.nodes = d.nodes.map((n) => {
       const o = old.get(n.id);
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
       const r = seed ? Math.max(9, Math.min(26, 7 + Math.sqrt(n.degree || 0) * 0.62)) : LEAD_R[Math.min(5, L)];
-      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0 } : {});
+      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
@@ -1853,7 +1994,7 @@ const M = {
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
     }
     const nl = this.leads.length;
-    $('#map-count').textContent = `${int(nl)} people · ${this.seeds.length} seeds`;
+    $('#map-count').textContent = `${int(nl)} people · ${plural(this.seeds.length, 'source account')}`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     this.simulate(old.size ? 0.5 : 1);
     this.search();
@@ -1931,6 +2072,32 @@ const M = {
     this.x = this.w / 2 - n.x * this.k; this.y = this.h / 2 - n.y * this.k;
     this.draw();
   },
+  // Drag a node: it moves alone (a seed takes the people only in its list along), is pinned where dropped,
+  // and only its close neighbours step aside. The rest of the map does not move.
+  dragTo(n, x, y) {
+    const dx = x - n.x, dy = y - n.y;
+    n.x = n.fx = x; n.y = n.fy = y; n.vx = n.vy = 0;
+    if (n.kind === 'seed') for (const id of this.nbr.get(n.id) || []) { const m = this.byId.get(id); if (m && m.L === 1 && m.fx == null) { m.x += dx; m.y += dy; m.vx = m.vy = 0; } }
+    this.qt = null; this.draw();
+  },
+  relax(n) {
+    const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
+    let list = near(), frames = 14;
+    const step = () => {
+      let moved = false;
+      for (const a of [n, ...list]) for (const b of list) {
+        if (a === b) continue;
+        const dx = b.x - a.x || 0.01, dy = b.y - a.y || 0.01, d = Math.hypot(dx, dy), min = a.r + b.r + (a.kind === 'seed' || b.kind === 'seed' ? 8 : 2);
+        if (d >= min) continue;
+        const push = (min - d) / d * 0.5;
+        if (b.fx == null) { b.x += dx * push; b.y += dy * push; moved = true; }
+        if (a !== n && a.fx == null) { a.x -= dx * push; a.y -= dy * push; }
+      }
+      this.qt = null; this.draw();
+      if (moved && --frames > 0) requestAnimationFrame(step);
+    };
+    if (list.length) requestAnimationFrame(step);
+  },
   toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); this.draw(); },
   // Neighbourhood of the hovered or focused node.
   hood() {
@@ -1972,26 +2139,30 @@ const M = {
     // Seed overlap edges, weighted by shared people.
     for (const l of this.seedLinks) {
       const a = l.source, b = l.target;
-      const w = 1 + 9 * (l.shared / this.maxShared);
+      const w = 1 + 5 * (l.shared / this.maxShared);
       const hot = hd && (hd.n === a || hd.n === b);
-      c.globalAlpha = hd ? (hot ? 0.9 : 0.12) : 0.5;
+      c.globalAlpha = hd ? (hot ? 0.8 : 0.06) : 0.28;
       c.strokeStyle = hot ? fg2 : fg4; c.lineWidth = Math.max(w, 1 / k);
       c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
     }
-    // Lead edges.
-    c.globalAlpha = dim ? 0.07 : this.leads.length > 1500 ? 0.16 : 0.26;
-    c.strokeStyle = line; c.lineWidth = 0.8 / k;
-    c.beginPath();
-    for (const l of this.links) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
-    c.stroke();
+    // Lead edges: people in one list sit next to their seed, so their line is barely drawn; bridges (2+ lists) read clearly.
+    const edgePass = (multi, alpha) => {
+      c.globalAlpha = alpha; c.beginPath();
+      for (const l of this.links) if ((l.target.L > 1) === multi) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+      c.stroke();
+    };
+    c.strokeStyle = line; c.lineWidth = 1 / k;
+    edgePass(false, dim ? 0.03 : 0.1);
+    c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : this.leads.length > 1500 ? 0.22 : 0.34);
     if (hd) {
       c.globalAlpha = 0.85; c.strokeStyle = fg2; c.lineWidth = 1.2 / k; c.beginPath();
       for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
       c.stroke();
     }
     // Leads: dots coloured by fit, sized by lists; one batched path per fit, dimmed pass first.
-    const minPx = 1.3 / k;
+    const minPx = 2.4 / k;
     const fitColor = Object.fromEntries(FITS.map((f) => [f, css('--fit-' + f)]));
+    fitColor.unread = fg4;   // on the dark canvas the list colour for unread is too faint to find
     const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
     const pass = (filter, fill, alpha) => {
       c.globalAlpha = alpha; c.fillStyle = fill; c.beginPath();
@@ -2006,7 +2177,7 @@ const M = {
     for (const n of this.leads) {
       if (!n.pic || !inView(n)) continue;
       const r = Math.max(n.r, minPx);
-      if (r * k < 5) continue;
+      if (r * k < 6) continue;
       const img = mapPic(n.pic);
       if (!img) continue;
       c.globalAlpha = dim && !on(n) ? 0.18 : 1;
@@ -2060,7 +2231,7 @@ const M = {
       if (!mine && hit(x, y, x + w, y + 20)) continue;
       placed.push([x, y, x + w, y + 20]);
       c.globalAlpha = faded ? 0.45 : 1;
-      c.fillStyle = bg; c.fillRect(x, y, w, 20);
+      c.fillStyle = bg; c.beginPath(); c.roundRect ? c.roundRect(x, y, w, 20, 10) : c.rect(x, y, w, 20); c.fill();
       c.fillStyle = fg; c.fillText(t, x + 5, y + 10.5);
     }
     c.globalAlpha = 1;
@@ -2072,24 +2243,25 @@ const M = {
     else if (match && match.size) cand = this.matches;
     else cand = this.leads;
     const view = (n) => { const x = sx(n), y = sy(n); return x > -50 && x < this.w + 50 && y > -20 && y < this.h + 20; };
-    const imp = (n) => n.L * 10 + (MARKED.has(n.status) ? 25 : 0) + Math.log10((n.followers || 1) + 1);
+    const imp = (n) => n.L * 10 + (MARKED.has(n.status) ? 25 : 0) + ({ strong: 12, good: 6 }[n.fit] || 0) + Math.log10((n.followers || 1) + 1);
     cand = cand.filter((n) => n && n.kind !== 'seed' && view(n));
-    if (!hd && !(match && match.size)) cand = cand.filter((n) => n.L >= 3 || (n.L >= 2 && k > 1.1) || k > 2.2 || MARKED.has(n.status));
+    const few = this.leads.length <= 120;
+    if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong');
     cand.sort((a, b) => imp(b) - imp(a));
-    const max = hd || (match && match.size) ? 160 : Math.round(Math.min(160, (this.w * this.h / 42000) * Math.max(1, k * k * 2)));
+    const max = hd || (match && match.size) || few ? 160 : Math.round(Math.min(120, (this.w * this.h / 26000) * Math.max(1, k * k)));
     let shown = 0;
     for (const n of cand) {
       if (shown >= max) break;
       const big = MARKED.has(n.status) || (hd && hd.n === n) || (match && match.has(n.id));
       c.font = `${big ? 600 : 500} 12px ${sans}`;
       const t = n.handle || n.label;
-      const w = c.measureText(t).width + 6, r = Math.max(n.r * k, 1.5);
+      const w = c.measureText(t).width + 8, r = Math.max(n.r * k, 2.4);
       const x = sx(n), y = sy(n);
       let box = [x + r + 3, y - 8, x + r + 3 + w, y + 8];
       if (hit(...box)) { box = [x - r - 3 - w, y - 8, x - r - 3, y + 8]; if (hit(...box)) continue; }
       placed.push(box); shown++;
-      c.fillStyle = bg; c.globalAlpha = 0.82; c.fillRect(box[0], box[1], w, 16);
-      c.globalAlpha = 1; c.fillStyle = big ? fg : fg2; c.fillText(t, box[0] + 3, y + 0.5);
+      c.fillStyle = bg; c.globalAlpha = 0.86; c.beginPath(); c.roundRect ? c.roundRect(box[0], box[1], w, 16, 4) : c.rect(box[0], box[1], w, 16); c.fill();
+      c.globalAlpha = 1; c.fillStyle = big ? fg : fg2; c.fillText(t, box[0] + 4, y + 0.5);
     }
   },
   at(px, py) {
@@ -2179,7 +2351,7 @@ function seedCardClick(e) {
       drag = null; return;
     }
     const n = M.at(e.offsetX, e.offsetY);
-    drag = { x: e.clientX, y: e.clientY, ox: M.x, oy: M.y, n };
+    drag = { x: e.clientX, y: e.clientY, ox: M.x, oy: M.y, n, gx: n ? (e.offsetX - M.x) / M.k - n.x : 0, gy: n ? (e.offsetY - M.y) / M.k - n.y : 0 };
     moved = false; c.classList.add('drag');
   });
   c.addEventListener('pointermove', (e) => {
@@ -2194,11 +2366,13 @@ function seedCardClick(e) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (!moved && Math.abs(dx) + Math.abs(dy) > 4) {
         moved = true;
+        M.autoFit = false; $('#hover').hidden = true;
+        // Freeze the layout while a node is carried, so nothing else drifts.
+        if (drag.n && M.sim) M.sim.stop();
       }
       if (!moved) return;
-      // Dragging always pans; people stay where the layout put them.
-      M.x = drag.ox + dx; M.y = drag.oy + dy; M.autoFit = false; M.draw();
-      $('#hover').hidden = true;
+      if (drag.n) M.dragTo(drag.n, (e.offsetX - M.x) / M.k - drag.gx, (e.offsetY - M.y) / M.k - drag.gy);
+      else { M.x = drag.ox + dx; M.y = drag.oy + dy; M.draw(); }
       return;
     }
     if (e.pointerType === 'touch') return;
@@ -2218,7 +2392,7 @@ function seedCardClick(e) {
     if (drag && !moved) {
       if (drag.n) M.select(drag.n);
       else if (M.focus) { M.focus = null; M.draw(); }
-    }
+    } else if (drag?.n) M.relax(drag.n);
     drag = null; c.classList.remove('drag');
   };
   c.addEventListener('pointerup', end);
