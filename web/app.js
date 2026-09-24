@@ -5,7 +5,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (v) => { if (v == null || v === '' || !Number.isFinite(+v)) return '–'; const n = +v; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(Math.round(n)); };
+const fmt = (v) => { if (v == null || v === '' || !Number.isFinite(+v)) return '–'; const n = +v; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(n)); };
 const int = (n) => n == null || n === '' || !Number.isFinite(+n) ? '–' : Number(n).toLocaleString('en-US');
 // Only http(s) URLs become links; anything else (javascript:, data:) is never rendered as an href.
 const safeUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u.trim()) ? u.trim() : null;
@@ -25,12 +25,13 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('fl-' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('fl-' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
 };
+const ucf = (s) => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
 const plural = (n, a, b) => int(n) + ' ' + (n === 1 ? a : b || a + 's');
 function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 
 let offlineSince = null;
 function setOnline(ok) {
-  if (ok) { offlineSince = null; $('#offline').hidden = true; return; }
+  if (ok) { const was = offlineSince; offlineSince = null; $('#offline').hidden = true; if (was) reconnected(); return; }
   offlineSince = offlineSince || Date.now();
   $('#offline').hidden = false;
   $('#offline-t').textContent = ago(new Date(offlineSince).toISOString());
@@ -54,7 +55,7 @@ const api = {
 let toastT;
 function toast(msg, undo) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button id="undo">undo</button>' : ''}`;
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button id="undo">Undo</button>' : ''}`;
   el.hidden = false;
   if (undo) $('#undo').onclick = () => { el.hidden = true; undo(); };
   clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, undo ? 6000 : 2400);
@@ -77,7 +78,7 @@ const STATUSES = ['good', 'maybe', 'no', 'contacted', 'client', 'known'];
 const CYCLE = [null, 'good', 'maybe', 'no'];
 const GROUPS = [['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
 const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
-const BIO_OPTS = [['1', 'yes'], ['0', 'no']];
+const BIO_OPTS = [['1', 'Yes'], ['0', 'No']];
 const FOL_OPTS = [['lt1k', '<1k', null, 999], ['1k', '1k+', 1000, null], ['10k', '10k+', 10000, null], ['100k', '100k+', 100000, null]];
 const PAGE = 100;
 const isViaTag = (t) => t.startsWith('via @');
@@ -266,21 +267,21 @@ function clearFilters() {
 // ---------- theme / density / sidebar ----------
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  $('#theme-btn').textContent = t === 'dark' ? 'light' : 'dark';
+  $('#theme-btn').textContent = t === 'dark' ? 'Light' : 'Dark';
   store.set('theme', t);
   M.draw();
 }
 $('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 function applyDensity(d) {
   document.documentElement.dataset.density = d;
-  $('#density-btn').textContent = d === 'compact' ? 'comfortable' : 'compact';
+  $('#density-btn').textContent = d === 'compact' ? 'Comfortable' : 'Compact';
   store.set('density', d);
   renderRows();
 }
 $('#density-btn').onclick = () => applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
 const narrow = () => window.innerWidth <= 900;
 function toggleSide() {
-  if (narrow()) { $('#filters').classList.toggle('show'); return; }
+  if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
   S.side = !S.side; store.set('side', S.side);
   $('#view-work').classList.toggle('work-noside', !S.side);
   renderRows(); M.resize();
@@ -341,7 +342,7 @@ function tagSection(key, title, list, labelFn) {
   const shown = list.slice(0, Math.max(lim, list.filter((t) => modeOf(t.tag)).length));
   return `<div class="fsec"><h4>${esc(title)}<span class="grow"></span><span class="num">${list.length}</span></h4>
     ${shown.map((t) => tagItem(t, labelFn && labelFn(t))).join('')}
-    ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">less</button>` : ''}</div>`;
+    ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">Less</button>` : ''}</div>`;
 }
 function renderFilters() {
   const c = S.counts || {};
@@ -349,26 +350,26 @@ function renderFilters() {
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
   let h = `<div class="fsec"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
-    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="view name" autocomplete="off"><button class="btn solid">save</button></form>` : ''}
-    <button class="fi${!active ? ' on' : ''}" data-view=""><span>everyone</span><b>${fmt(c.total)}</b></button>
+    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="View name" autocomplete="off"><button class="btn solid">Save</button></form>` : ''}
+    <button class="fi${!active ? ' on' : ''}" data-view=""><span>Everyone</span><b>${fmt(c.total)}</b></button>
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
     <div class="fsec"><h4>Status</h4>
-    <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>open</span><b>${fmt(c.total)}</b></button>
-    ${STATUSES.map((s, i) => `<button class="fi${S.f.status === s ? ' on' : ''}" data-status="${s}"><span>${s}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
-    <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>unmarked</span><b></b></button>
-    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>all, incl. no</span><b></b></button></div>
+    <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.total)}</b></button>
+    ${STATUSES.map((s, i) => `<button class="fi${S.f.status === s ? ' on' : ''}" data-status="${s}"><span>${ucf(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
+    <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b></b></button>
+    <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including no"><span>All, incl. no</span><b></b></button></div>
     <div class="fsec fsegs"><h4>Shape</h4>
-      <div class="fseg"><span>lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <div class="fseg"><span>bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <div class="fseg"><span>followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="fseg"><span>Lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="fseg"><span>Followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     </div>
-    <div class="fsec"><input class="input ffind" id="f-find" type="search" placeholder="find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"></div>`;
+    <div class="fsec"><input class="input ffind" id="f-find" type="search" placeholder="Find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"></div>`;
   const tags = S.tagList;
   const own = tags.filter((t) => t.kind === 'manual');
   const rule = tags.filter((t) => t.kind === 'rule');
   const auto = tags.filter((t) => t.kind === 'auto');
   h += tagSection('own', 'Your tags', own);
-  if (!own.length && !S.tagFind) h += `<div class="fsec"><h4>Your tags</h4><span class="fnone">none yet, press t on a lead</span></div>`;
+  if (!own.length && !S.tagFind) h += `<div class="fsec"><h4>Your tags</h4><span class="fnone">None yet</span></div>`;
   h += tagSection('rule', 'Rule tags', rule);
   h += tagSection('via', 'Seeds', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
   for (const [g, title] of GROUPS) h += tagSection(g, title, auto.filter((t) => t.grp === g));
@@ -394,7 +395,7 @@ $('#filters').addEventListener('click', async (e) => {
   if (!b) return;
   const d = b.dataset;
   if (d.tag != null) { e.preventDefault(); return clickTag(d.tag, e); }
-  if (d.view != null) { applyQuery(d.view); if (narrow()) $('#filters').classList.remove('show'); return; }
+  if (d.view != null) { applyQuery(d.view); if (narrow()) setDrawer(false); return; }
   // Segments toggle: clicking the active option turns it off.
   if (d.status != null) S.f.status = d.status;
   else if (d.min != null) S.f.min = S.f.min === +d.min ? 0 : +d.min;
@@ -427,36 +428,34 @@ async function saveView(name) {
   if (S.viewsLocal) {
     S.views = [...S.views, { id: Date.now(), name, query }]; store.set('views', S.views);
   } else {
-    try { await api.post('/api/views', { name, query }); } catch (e) { toast('could not save view'); }
+    try { await api.post('/api/views', { name, query }); } catch (e) { toast('Could not save view'); }
     await loadViews();
   }
-  renderFilters(); toast('view saved');
+  renderFilters(); toast('View saved');
 }
 async function deleteView(id) {
   const v = S.views.find((x) => String(x.id) === String(id));
   if (!v) return;
   if (S.viewsLocal) { S.views = S.views.filter((x) => x !== v); store.set('views', S.views); renderFilters(); }
   else {
-    try { await api.post(`/api/views/${encodeURIComponent(id)}/delete`); } catch (e) { toast('could not delete'); return; }
+    try { await api.post(`/api/views/${encodeURIComponent(id)}/delete`); } catch (e) { toast('Could not delete view'); return; }
     await loadViews();
   }
-  toast(`deleted ${v.name}`, () => { S.saving = false; (S.viewsLocal ? Promise.resolve(S.views.push(v)) : api.post('/api/views', { name: v.name, query: v.query })).then(loadViews); });
+  toast(`Deleted ${v.name}`, () => { S.saving = false; (S.viewsLocal ? Promise.resolve(S.views.push(v)) : api.post('/api/views', { name: v.name, query: v.query })).then(loadViews); });
 }
 function startSaveView() {
-  if (narrow()) $('#filters').classList.add('show');
+  if (narrow()) setDrawer(true);
   else if (!S.side) toggleSide();
   S.saving = true; renderFilters();
 }
 $('#save-view').onclick = startSaveView;
-$('#filters-btn').onclick = (e) => { e.stopPropagation(); $('#filters').classList.toggle('show'); };
-document.addEventListener('click', (e) => {
-  const f = $('#filters');
-  if (f.classList.contains('show') && !f.contains(e.target) && !e.target.closest('#filters-btn') && e.target.isConnected) f.classList.remove('show');
-});
+function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; }
+$('#filters-btn').onclick = (e) => { e.stopPropagation(); setDrawer(!$('#filters').classList.contains('show')); };
+$('#scrim').onclick = () => setDrawer(false);
 
 // ---------- query bar ----------
 function renderTokens() {
-  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'click: all / any / none' : 'click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove">&times;</button></span>`).join('');
+  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove">&times;</button></span>`).join('');
   if (document.activeElement !== $('#q') && $('#q').value.trim() !== S.f.q) $('#q').value = S.f.q;
 }
 function removeToken(t) {
@@ -565,7 +564,12 @@ function acceptSuggest(i = sugg.i) {
 $('#suggest').addEventListener('mousedown', (e) => { e.preventDefault(); const b = e.target.closest('[data-s]'); if (b) acceptSuggest(+b.dataset.s); });
 $('#q').addEventListener('input', () => { suggest(); qInput(); });
 $('#q').addEventListener('focus', () => { $('#qbox').classList.add('focus'); suggest(); });
-$('#q').addEventListener('blur', () => { $('#qbox').classList.remove('focus'); setTimeout(hideSuggest, 100); });
+$('#q').addEventListener('blur', (e) => {
+  $('#qbox').classList.remove('focus'); setTimeout(hideSuggest, 100);
+  // A bare "#" left from the # shortcut is not a search.
+  const v = e.target.value.replace(/(^|\s)[~+|-]?#\s*$/, '').trimEnd();
+  if (v !== e.target.value.trimEnd()) e.target.value = v;
+});
 $('#q').addEventListener('keydown', (e) => {
   const inp = e.target;
   const open = !$('#suggest').hidden && sugg.items.length;
@@ -628,7 +632,7 @@ function rowTags(r) {
   return (r.tags || []).filter((t) => t.grp !== 'source' || t.tag === 'knows you')
     .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4)).slice(0, 6);
 }
-const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}"><i></i>${s}</span>` : '';
+const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}"><i></i>${ucf(s)}</span>` : '';
 function rowHTML(r, i, h) {
   const n = lists(r);
   const picked = S.pick.has(r.id);
@@ -636,8 +640,8 @@ function rowHTML(r, i, h) {
   const ln = `lists-n${n >= 3 ? ' hi3' : n >= 2 ? ' hi' : ''}`;
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span><span class="bio2${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'no bio'}</span></div>
-    <div class="bio c-bio${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'no bio'}</div>
+    <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}</span><span class="bio2${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'No bio'}</span></div>
+    <div class="bio c-bio${r.bio ? '' : ' none'}">${r.bio ? esc(r.bio) : 'No bio'}</div>
     <span class="num r fol">${fmt(r.followers)}</span>
     <span class="num r ${ln}">${n}</span>
     <div class="tags c-tags">${rowTags(r).map((t) => tagChip(t)).join('')}</div>
@@ -657,10 +661,10 @@ function renderRows() {
     if (S.loading || (S.total == null && !S.error)) {
       box.innerHTML = Array.from({ length: 14 }, (_, i) => `<div class="skel" style="top:${i * h}px"><i></i><i style="width:${120 + (i * 37) % 80}px"></i><i style="width:${200 + (i * 53) % 160}px"></i></div>`).join('');
     } else if (S.error) {
-      box.innerHTML = `<div class="empty"><b>could not load leads</b><button class="btn" id="retry">retry</button></div>`;
+      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'no matches' : 'no leads yet'}</b>${filtered ? '<button class="btn" id="clear-all">clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">add seeds</a>'}</div>`;
+      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
     }
     return;
   }
@@ -725,7 +729,7 @@ async function pickAllInFilter() {
   try {
     const total = S.total ?? 0;
     const p = toQuery(S.f, S.sort, false); p.set('sort', S.sort);
-    if (total > 5000) toast('selecting the first 5,000');
+    if (total > 5000) toast('Selecting the first 5,000');
     while (ids.length < Math.min(total, 5000)) {
       p.set('offset', ids.length); p.set('limit', 500);
       const d = await api.get('/api/leads?' + p);
@@ -733,7 +737,7 @@ async function pickAllInFilter() {
       ids.push(...d.rows.map((r) => r.id));
     }
     if (gen === S.gen) ids.forEach((id) => S.pick.add(id));
-  } catch (e) { toast('could not select all'); }
+  } catch (e) { toast('Could not select all'); }
   S.picking = false;
   renderRows();
 }
@@ -754,11 +758,11 @@ function renderBulk() {
   S.rows.forEach((r) => { if (S.pick.has(r.id)) (r.tags || []).forEach((t) => { if (t.source !== 'auto') counts.set(t.tag, (counts.get(t.tag) || 0) + 1); }); });
   const rm = [...counts].sort((a, b) => b[1] - a[1]);
   el.innerHTML = `<b>${int(n)} selected</b>
-    ${S.total > n ? `<button class="link" id="bk-all">${S.picking ? 'selecting…' : `all ${int(S.total)}`}</button>` : ''}
-    <form id="bk-form" style="display:contents"><input class="input" id="bk-add" list="tag-dl" placeholder="add tag" autocomplete="off" value="${esc(addVal)}"><button class="btn">tag</button></form>
-    ${rm.length ? `<select class="select" id="bk-rm" title="Remove tag"><option value="">remove tag</option>${rm.map(([t, c]) => `<option value="${esc(t)}">${esc(t)} (${c})</option>`).join('')}</select>` : ''}
+    ${S.total > n ? `<button class="link" id="bk-all">${S.picking ? 'Selecting…' : `Select all ${int(S.total)}`}</button>` : ''}
+    <form id="bk-form" style="display:contents"><input class="input" id="bk-add" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(addVal)}"><button class="btn">Tag</button></form>
+    ${rm.length ? `<select class="select" id="bk-rm" title="Remove tag"><option value="">Remove tag</option>${rm.map(([t, c]) => `<option value="${esc(t)}">${esc(t)} (${c})</option>`).join('')}</select>` : ''}
     <span class="sep"></span>
-    <span class="st-b">${STATUSES.map((s, i) => `<button data-bs="${s}" title="${s} (${i + 1})">${s}</button>`).join('')}<button data-bs="" title="clear status (0)">clear</button></span>
+    <span class="st-b">${STATUSES.map((s, i) => `<button data-bs="${s}" title="${ucf(s)} (${i + 1})">${ucf(s)}</button>`).join('')}<button data-bs="" title="Clear status (0)">Clear</button></span>
     <span class="grow"></span>
     <button class="btn" id="bk-x" title="Clear selection (esc)">&times;</button>`;
   el.hidden = false;
@@ -787,7 +791,7 @@ async function bulk(op, ids = [...S.pick], quiet) {
   // Remember previous status per id for undo.
   const prevStatus = new Map();
   if ('status' in op) S.rows.forEach((r) => { if (ids.includes(r.id)) prevStatus.set(r.id, r.status || null); });
-  try { await api.post('/api/people/bulk', body); } catch (e) { toast('could not save'); return; }
+  try { await api.post('/api/people/bulk', body); } catch (e) { toast('Could not save'); return; }
   const set = new Set(ids);
   S.rows.forEach((r) => {
     if (!set.has(r.id)) return;
@@ -799,8 +803,8 @@ async function bulk(op, ids = [...S.pick], quiet) {
   bulkKey = ''; renderRows(); loadFacetsSoon(); loadCounts();
   M.patch(ids, op);
   if (quiet) return;
-  const what = 'status' in op ? (op.status ? `marked ${op.status}` : 'status cleared') : op.add ? `tagged ${op.add[0]}` : `removed ${op.remove[0]}`;
-  toast(`${plural(ids.length, 'person', 'people')} ${what}`, () => {
+  const what = 'status' in op ? (op.status ? `marked ${op.status}` : 'status cleared') : op.add ? `tagged ${op.add[0]}` : `untagged ${op.remove[0]}`;
+  toast(`${ucf(plural(ids.length, 'person', 'people'))} ${what}`, () => {
     if (op.add) bulk({ remove: op.add }, ids, true);
     else if (op.remove) bulk({ add: op.remove }, ids, true);
     else {
@@ -817,7 +821,7 @@ async function mark(id, status) {
   const prev = r ? r.status : null;
   patchRow(id, { status });
   try { await api.post(`/api/person/${id}/mark`, { status }); loadCounts(); }
-  catch (e) { patchRow(id, { status: prev }); toast('could not save'); }
+  catch (e) { patchRow(id, { status: prev }); toast('Could not save'); }
 }
 function patchRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
@@ -857,6 +861,12 @@ function closeDetail() {
   M.focus = null;
   renderRows(); M.resize();
 }
+// One row per seed; both directions read as mutual.
+function seedEdges(edges) {
+  const m = new Map();
+  for (const e of edges) { if (!m.has(e.seed)) m.set(e.seed, new Set()); if (e.direction) m.get(e.seed).add(e.direction); }
+  return [...m];
+}
 function renderDetail() {
   if (S.seedCard) return renderSeedCard();
   const p = S.person;
@@ -874,18 +884,18 @@ function renderDetail() {
       <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
     <div class="d-stats">
-      <div><b>${fmt(p.followers)}</b><span>followers</span></div><div><b>${fmt(p.following)}</b><span>following</span></div>
-      <div><b>${fmt(p.posts)}</b><span>posts</span></div><div><b>${n || '–'}</b><span>lists</span></div></div>
-    <div class="d-sec"><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : 'no bio read yet'}</div>
+      <div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div>
+      <div><b>${fmt(p.posts)}</b><span>Posts</span></div><div><b>${n || '–'}</b><span>Lists</span></div></div>
+    <div class="d-sec"><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : p.failed ? 'Could not load' : 'No bio read yet'}</div>
       <div class="d-links">
-        <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">instagram <kbd style="color:inherit;border-color:currentColor">o</kbd></a>
+        <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd style="color:inherit;border-color:currentColor">o</kbd></a>
         ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}
-        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">read profile</button>' : ''}</div></div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${s}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">none</span>'}</div>
-      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">add <kbd>t</kbd></button></form></div>
-    <div class="d-sec"><h4>Found in</h4><div class="edges">${edges.length ? edges.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by this seed"><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'followed by' : e.direction === 'followers' ? 'follows' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
-    <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
+        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read profile</button>' : ''}</div></div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${p.status === s ? 'on' : ''}">${ucf(s)}<kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
+      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form></div>
+    <div class="d-sec"><h4>Found in</h4><div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual' : d.has('following') ? 'Followed by' : d.has('followers') ? 'Follows' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
+    <div class="d-sec"><h4>Note</h4><textarea class="input" id="note" placeholder="Add a note">${esc(p.note || '')}</textarea><div class="d-note" id="note-st"></div></div>`;
   if (focused === 'tag-in') $('#tag-in').focus();
 }
 $('#detail').addEventListener('click', async (e) => {
@@ -902,7 +912,7 @@ $('#detail').addEventListener('click', async (e) => {
   const sd = e.target.closest('[data-seed]');
   if (sd) { const t = canonTag('via @' + sd.dataset.seed); if (t) clickTag(t, e); else { S.f.seed = sd.dataset.seed; filtersChanged(); } return; }
   if (e.target.id === 'd-read') {
-    try { await api.post(`/api/person/${p.id}/read`); toast('profile read queued'); } catch (err) { toast('could not queue'); }
+    try { await api.post(`/api/person/${p.id}/read`); toast('Profile read queued'); } catch (err) { toast('Could not queue'); }
   }
 });
 $('#detail').addEventListener('submit', (e) => {
@@ -914,17 +924,17 @@ $('#detail').addEventListener('keydown', (e) => { if (e.key === 'Escape' && /INP
 const saveNote = debounce(async (id, note) => {
   try {
     await api.post(`/api/person/${id}/mark`, { status: S.person?.id === id ? S.person.status || null : null, note });
-    if (S.person?.id === id) { S.person.note = note; $('#note-st').textContent = 'saved'; }
-  } catch (e) { if ($('#note-st')) $('#note-st').textContent = 'not saved'; }
+    if (S.person?.id === id) { S.person.note = note; $('#note-st').textContent = 'Saved'; }
+  } catch (e) { if ($('#note-st')) $('#note-st').textContent = 'Not saved'; }
 }, 600);
 $('#detail').addEventListener('input', (e) => {
   if (e.target.id === 'note' && S.person) { $('#note-st').textContent = ''; saveNote(S.person.id, e.target.value); }
 });
 async function editTags(id, add, remove) {
-  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('could not save tag'); return; }
+  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('Could not save tag'); return; }
   await refreshPerson(id);
   loadFacetsSoon();
-  if (add.length) toast(`tagged ${add[0]}`, () => editTags(id, [], add));
+  if (add.length) toast(`Tagged ${add[0]}`, () => editTags(id, [], add));
 }
 
 // ---------- keyboard ----------
@@ -934,7 +944,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#help').hidden) { $('#help').hidden = true; return; }
     if (typing) { e.target.blur(); return; }
-    if ($('#filters').classList.contains('show')) { $('#filters').classList.remove('show'); return; }
+    if ($('#filters').classList.contains('show')) { setDrawer(false); return; }
     if (S.open || S.seedCard) { closeDetail(); return; }
     if (S.view === 'map' && M.focus) { M.focus = null; M.draw(); return; }
     if (S.pick.size) { clearPick(); return; }
@@ -1004,11 +1014,11 @@ const T = {
   list: [], rules: [], src: '', q: '', checked: new Set(), editing: null, confirm: null,
   async show() { await Promise.all([this.load(), this.loadRules()]); },
   async load() {
-    try { this.list = mergeTags(await api.get('/api/tags')); } catch (e) { this.list = []; }
+    try { this.list = mergeTags(await api.get('/api/tags')); this.failed = false; } catch (e) { this.failed = !this.list.length; }
     this.render();
   },
   async loadRules() {
-    try { this.rules = await api.get('/api/tag-rules'); } catch (e) { this.rules = null; }
+    try { this.rules = await api.get('/api/tag-rules'); this.rulesErr = null; } catch (e) { this.rulesErr = e.status === 404 ? 'missing' : 'failed'; if (this.rulesErr === 'missing') this.rules = null; }
     this.renderRules();
   },
   // Rename, merge and delete act on manual tags only. Rule tags follow their rule; auto tags follow the qualifier.
@@ -1023,13 +1033,13 @@ const T = {
       const can = this.editable(t);
       const on = this.checked.has(t.tag);
       const label = `<button class="tag ${KIND[t.kind]}${t.grp === 'source' ? ' src' : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
-      const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">rename</button><button type="button" class="btn" data-cancel>cancel</button></form>` : label;
+      const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
         <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
-        <td>${name}</td><td class="hide-sm mono">${esc(t.grp || '')}</td><td class="mono hide-sm">${esc(t.sources.join(' + '))}</td>
+        <td>${name}</td><td class="hide-sm mono">${esc(ucf(t.grp || ''))}</td><td class="mono hide-sm">${esc(ucf(t.sources.join(' + ')))}</td>
         <td class="r num">${int(t.total)}</td>
-        <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'confirm' : 'delete'}</button></span>` : ''}</td></tr>`;
-    }).join('') : `<tr><td colspan="6" class="muted">no tags</td></tr>`;
+        <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
+    }).join('') : `<tr><td colspan="6" class="muted">${this.failed ? 'Could not load tags' : 'No tags'}</td></tr>`;
     const allOn = rows.filter((t) => this.editable(t)).every((t) => this.checked.has(t.tag)) && this.checked.size;
     $('#tg-all').className = 'ck' + (allOn ? ' on' : this.checked.size ? ' part' : '');
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
@@ -1039,7 +1049,7 @@ const T = {
     const i = $('#ren-in'); if (!i) return;
     const v = i.value.trim();
     const exists = v && v !== this.editing && this.list.some((t) => t.tag.toLowerCase() === v.toLowerCase());
-    $('#ren-go').textContent = exists ? 'merge' : 'rename';
+    $('#ren-go').textContent = exists ? 'Merge' : 'Rename';
   },
   renderMerge() {
     const el = $('#tg-merge');
@@ -1048,8 +1058,8 @@ const T = {
     const tags = [...this.checked];
     const best = tags.map((t) => this.list.find((x) => x.tag === t)).filter(Boolean).sort((a, b) => b.total - a.total)[0];
     const prev = $('#mg-to')?.value;
-    el.innerHTML = `<b>${plural(n, 'tag')}</b>${n > 1 ? `<span>merge into</span><input class="input" id="mg-to" list="tag-dl" value="${esc(prev || best?.tag || '')}" autocomplete="off"><button class="btn" id="mg-go">merge</button>` : ''}
-      <button class="btn" id="mg-del">delete ${n > 1 ? 'all' : ''}</button><span class="grow"></span><button class="btn" id="mg-x">done</button>`;
+    el.innerHTML = `<b>${plural(n, 'tag')}</b>${n > 1 ? `<span>Merge into</span><input class="input" id="mg-to" list="tag-dl" value="${esc(prev || best?.tag || '')}" autocomplete="off"><button class="btn" id="mg-go">Merge</button>` : ''}
+      <button class="btn" id="mg-del">${n > 1 ? 'Delete all' : 'Delete'}</button><span class="grow"></span><button class="btn" id="mg-x">Done</button>`;
     el.hidden = false;
   },
   async rename(from, to) {
@@ -1057,31 +1067,31 @@ const T = {
     if (!to || to === from) { this.editing = null; this.render(); return; }
     const canon = this.list.find((t) => t.tag.toLowerCase() === to.toLowerCase());
     if (canon) to = canon.tag;
-    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast('could not rename'); return; }
+    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast('Could not rename'); return; }
     this.fixFilter(from, to);
     this.editing = null;
-    toast(canon ? `merged ${from} into ${to}` : `renamed to ${to}`);
+    toast(canon ? `Merged ${from} into ${to}` : `Renamed to ${to}`);
     this.after();
   },
   async remove(tags) {
     for (const tag of tags) {
-      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast('could not delete ' + tag); return; }
+      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast('Could not delete ' + tag); return; }
       this.fixFilter(tag, null);
       this.checked.delete(tag);
     }
     this.confirm = null;
-    toast(tags.length === 1 ? `deleted ${tags[0]}` : `deleted ${tags.length} tags`);
+    toast(tags.length === 1 ? `Deleted ${tags[0]}` : `Deleted ${tags.length} tags`);
     this.after();
   },
   async merge(tags, to) {
     to = to.trim();
     if (!to) return;
     for (const t of tags) if (t !== to) {
-      try { await api.post('/api/tags/rename', { from: t, to }); } catch (e) { toast('could not merge ' + t); return; }
+      try { await api.post('/api/tags/rename', { from: t, to }); } catch (e) { toast('Could not merge ' + t); return; }
       this.fixFilter(t, to);
     }
     this.checked.clear();
-    toast(`merged into ${to}`);
+    toast(`Merged into ${to}`);
     this.after();
   },
   fixFilter(from, to) {
@@ -1091,10 +1101,10 @@ const T = {
   renderRules() {
     const rs = this.rules;
     $('#rl-n').textContent = rs ? int(rs.length) : '';
-    $('#rl-body').innerHTML = rs == null ? `<tr><td colspan="5" class="muted">rules not available on this server</td></tr>`
-      : rs.length ? rs.map((r) => `<tr><td><button class="tag rule" data-go="${esc(r.tag)}"><span>${esc(r.tag)}</span></button></td><td class="mono">${esc(r.field)}</td>
-        <td class="mono">"${esc(r.match)}"</td><td class="r num">${int(r.hits)}</td><td class="r"><button class="rl-del" data-rdel="${esc(r.id)}">delete</button></td></tr>`).join('')
-        : `<tr><td colspan="5" class="muted">no rules</td></tr>`;
+    $('#rl-body').innerHTML = this.rulesErr === 'failed' && !rs?.length ? `<tr><td colspan="5" class="muted">Could not load rules</td></tr>` : rs == null ? `<tr><td colspan="5" class="muted">Rules not available on this server</td></tr>`
+      : rs.length ? rs.map((r) => `<tr><td><button class="tag rule" data-go="${esc(r.tag)}"><span>${esc(r.tag)}</span></button></td><td class="mono hide-sm">${esc(ucf(r.field))}</td>
+        <td class="mono">"${esc(r.match)}"</td><td class="r num">${int(r.hits)}</td><td class="r"><button class="rl-del" data-rdel="${esc(r.id)}">Delete</button></td></tr>`).join('')
+        : `<tr><td colspan="5" class="muted">No rules</td></tr>`;
   },
 };
 $('#tg-src').addEventListener('click', (e) => {
@@ -1129,7 +1139,7 @@ $('#view-tags').addEventListener('click', (e) => {
   if (e.target.id === 'mg-del') {
     const b = e.target;
     if (b.dataset.sure) return T.remove([...T.checked]);
-    b.dataset.sure = '1'; b.textContent = 'confirm delete'; b.classList.add('solid');
+    b.dataset.sure = '1'; b.textContent = 'Confirm delete'; b.classList.add('solid');
     return;
   }
   if (e.target.id === 'mg-x') { T.checked.clear(); return T.render(); }
@@ -1152,6 +1162,7 @@ const previewRule = debounce(async () => {
   const field = $('#rl-field').value, match = $('#rl-match').value.trim(), tag = $('#rl-tag').value.trim();
   $('#rl-add').disabled = !(tag && match);
   const g = ++prevGen;
+  $('#rl-prev').classList.remove('bad');
   if (!match) { $('#rl-prev').textContent = ''; return; }
   let txt = '';
   $('#rl-prev').title = '';
@@ -1160,7 +1171,7 @@ const previewRule = debounce(async () => {
     const d = await api.get(`/api/tag-rules/preview?field=${encodeURIComponent(field)}&match=${encodeURIComponent(match)}`);
     txt = plural(d.hits, 'hit');
   } catch (e) {
-    if (e.status === 400) { if (g === prevGen) { $('#rl-prev').textContent = 'invalid'; $('#rl-prev').title = e.message; } return; }
+    if (e.status === 400) { if (g === prevGen) { $('#rl-prev').textContent = 'Invalid'; $('#rl-prev').title = e.message; $('#rl-prev').classList.add('bad'); $('#rl-add').disabled = true; } return; }
     if (e.status === 404) T.noPreview = true;
     // Fallback: plain search covers handle, name and bio.
     if (['bio', 'name', 'handle', 'any'].includes(field)) {
@@ -1177,33 +1188,34 @@ $('#rule-form').addEventListener('submit', async (e) => {
   if (!tag || !match) return;
   try {
     const r = await api.post('/api/tag-rules', { tag, field, match });
-    toast(`rule added${r.hits != null ? ', ' + plural(r.hits, 'hit') : ''}`);
+    toast(`Rule added${r.hits != null ? ', ' + plural(r.hits, 'hit') : ''}`);
     $('#rl-match').value = ''; $('#rl-prev').textContent = ''; $('#rl-add').disabled = true;
-  } catch (err) { toast(err.status === 400 ? err.message : 'could not add rule'); return; }
+  } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add rule'); return; }
   T.after();
 });
 async function deleteRule(id) {
   const r = (T.rules || []).find((x) => String(x.id) === String(id));
-  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast('could not delete rule'); return; }
-  toast(`rule ${r ? r.tag : ''} deleted`, r ? () => api.post('/api/tag-rules', { tag: r.tag, field: r.field, match: r.match }).then(() => T.after()) : null);
+  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast('Could not delete rule'); return; }
+  toast(r ? `Deleted rule ${r.tag}` : 'Rule deleted', r ? () => api.post('/api/tag-rules', { tag: r.tag, field: r.field, match: r.match }).then(() => T.after()) : null);
   T.after();
 }
 
 // ---------- scraper ----------
 function scState() {
   const sc = S.sc;
-  if (!sc) return { label: 'connecting', dot: '' };
+  if (!sc) return { label: 'Connecting', short: 'Connecting', dot: '' };
   const x = sc.ext || {};
-  if (!x.online) return { label: 'extension offline', dot: 'hollow' };
-  if (sc.paused || x.state === 'paused') return { label: 'paused', dot: '' };
-  if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) return { label: 'cooldown ' + left(x.cooldown_until), dot: 'hollow' };
-  if (x.state === 'running') return { label: 'running', dot: 'run' };
-  return { label: 'idle', dot: 'on' };
+  if (sc.paused) return { label: 'Paused', short: 'Paused', dot: '' };
+  if (!x.online) return { label: 'Extension offline', short: 'Offline', dot: 'hollow' };
+  if (x.state === 'paused') return { label: 'Paused in extension', short: 'Paused', dot: '' };
+  if (x.cooldown_until && Date.parse(x.cooldown_until) > Date.now()) return { label: 'Cooldown ' + left(x.cooldown_until), short: 'Cooldown', dot: 'hollow' };
+  if (x.state === 'running') return { label: 'Running', short: 'Running', dot: 'run' };
+  return { label: 'Idle', short: 'Idle', dot: 'on' };
 }
 function renderStatus() {
   const sc = S.sc, x = sc?.ext || {}, st = scState();
   $('#st-dot').className = 'dot ' + st.dot;
-  $('#st-label').textContent = st.label;
+  $('#st-label').textContent = window.innerWidth <= 640 ? st.short : st.label;
   const run = sc?.lists?.find((l) => l.state === 'running');
   $('#st-act').textContent = x.last_error && !x.online ? x.last_error : x.activity || (run ? `@${run.seed} ${run.direction}` : x.text || '');
   const t = x.today?.list, b = x.budget?.list;
@@ -1211,8 +1223,8 @@ function renderStatus() {
   $('#st-meter').style.width = t != null && b ? Math.min(100, (t / b) * 100) + '%' : '0';
   $('#st-pph').textContent = x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–';
   $('#st-peh').textContent = x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–';
-  $('#st-hit').textContent = x.rate?.last_hit_at ? ago(x.rate.last_hit_at) + ' ago' : 'none';
-  $('#pause-btn').textContent = sc?.paused ? 'resume' : 'pause';
+  $('#st-hit').textContent = x.rate?.last_hit_at ? ago(x.rate.last_hit_at) + ' ago' : 'None';
+  $('#pause-btn').textContent = sc?.paused ? 'Resume' : 'Pause';
   $('#pause-btn').classList.toggle('solid', !!sc?.paused);
   $('#qualify-btn').classList.toggle('on', !!sc?.qualify);
   const q = sc ? (sc.queue?.list || 0) + (sc.queue?.profile || 0) : 0;
@@ -1227,64 +1239,67 @@ $('#pause-btn').onclick = async () => {
   if (!S.sc) return;
   const paused = !S.sc.paused;
   S.sc.paused = paused; renderStatus();
-  try { await api.post('/api/scraper/pause', { paused }); } catch (e) { S.sc.paused = !paused; renderStatus(); toast('could not reach server'); }
+  try { await api.post('/api/scraper/pause', { paused }); } catch (e) { S.sc.paused = !paused; renderStatus(); toast('Could not reach server'); }
   loadScraper();
 };
 $('#qualify-btn').onclick = async () => {
   if (!S.sc) return;
   const on = !S.sc.qualify;
   S.sc.qualify = on; renderStatus();
-  try { await api.post('/api/settings/qualify', { on }); toast(on ? 'qualify on' : 'qualify off'); }
-  catch (e) { S.sc.qualify = !on; renderStatus(); toast('could not save'); }
+  try { await api.post('/api/settings/qualify', { on }); toast(on ? 'Qualify on' : 'Qualify off'); }
+  catch (e) { S.sc.qualify = !on; renderStatus(); toast('Could not save'); }
 };
 
 let listFilter = 'all';
 function renderScraper() {
   const sc = S.sc;
-  if (!sc) { $('#kpis').innerHTML = '<div class="kpi"><span>loading</span><b>–</b></div>'; return; }
+  if (!sc) { $('#kpis').innerHTML = '<div class="kpi"><span>Loading</span><b>–</b></div>'; return; }
   const x = sc.ext || {}, st = scState(), ls = sc.lists || [];
   const done = ls.filter((l) => l.state === 'done').length;
   const recv = ls.reduce((a, l) => a + (l.received || 0), 0);
   const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
   const kpi = (label, val, sub, pct) => `<div class="kpi"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}${pct != null ? `<div class="meter"><i style="width:${Math.min(100, pct)}%"></i></div>` : ''}</div>`;
   $('#kpis').innerHTML = [
-    kpi('state', esc(st.label.split(' ')[0]), x.cooldown_until && Date.parse(x.cooldown_until) > Date.now() ? left(x.cooldown_until) : x.online ? 'seen ' + ago(x.last_seen) + ' ago' : 'last ' + ago(x.last_seen)),
-    kpi('pages today', int(tl), bl != null ? 'of ' + int(bl) : '', bl ? (tl / bl) * 100 : null),
-    kpi('profiles today', int(tp), bp != null ? 'of ' + int(bp) : '', bp ? (tp / bp) * 100 : null),
-    kpi('pages/hour', x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–', x.rate?.last_hit_at ? 'limit ' + ago(x.rate.last_hit_at) + ' ago' : 'no limit hits'),
-    kpi('people/hour', x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–', sc.people_today != null ? int(sc.people_today) + ' new today' : ''),
-    kpi('lists', `${done}/${ls.length}`, int(recv) + ' received', ls.length ? (done / ls.length) * 100 : null),
+    kpi('State', esc(st.short), x.cooldown_until && Date.parse(x.cooldown_until) > Date.now() ? left(x.cooldown_until) + ' left' : x.last_seen ? (x.online ? 'Seen ' : 'Last seen ') + ago(x.last_seen) + ' ago' : 'Never seen'),
+    kpi('Pages today', int(tl), bl != null ? 'of ' + int(bl) : '', bl ? (tl / bl) * 100 : null),
+    kpi('Profiles today', int(tp), bp != null ? 'of ' + int(bp) : '', bp ? (tp / bp) * 100 : null),
+    kpi('Pages/hour', x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–', x.rate?.last_hit_at ? 'Limit ' + ago(x.rate.last_hit_at) + ' ago' : 'No limit hits'),
+    kpi('People/hour', x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–', sc.people_today != null ? int(sc.people_today) + ' new today' : ''),
+    kpi('Lists', `${done}/${ls.length}`, int(recv) + ' received', ls.length ? (done / ls.length) * 100 : null),
   ].join('');
   $('#ext-ver').textContent = x.version ? 'v' + x.version : '';
   const soak = sc.soak?.['1h'];
   $('#ext-kv').innerHTML = [
-    ['connection', x.online ? 'online' : 'offline'],
-    ['activity', x.activity || x.text || '–'],
-    ['queue', `${int(sc.queue?.list || 0)} lists, ${int(sc.queue?.profile || 0)} profiles`],
-    ['last hour', soak ? `${int(soak.pages)} pages, ${int(soak.people)} people, ${int(soak.new_people)} new` : '–'],
-    ['qualify', sc.qualify ? 'on' : 'off'],
-    ['last error', x.last_error || 'none'],
+    ['Connection', x.online ? 'Online' : 'Offline'],
+    ['Activity', ucf(x.activity || x.text || '–')],
+    ['Queue', `${plural(sc.queue?.list || 0, 'list')}, ${plural(sc.queue?.profile || 0, 'profile')}`],
+    ['Last hour', soak ? `${int(soak.pages)} pages, ${int(soak.people)} people, ${int(soak.new_people)} new` : '–'],
+    ['Qualify', sc.qualify ? 'On' : 'Off'],
+    ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const bL = $('#b-list'), bP = $('#b-profile');
   if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bl ?? ''; bP.value = bp ?? ''; }
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused'].includes(l.state)) };
-  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${k} ${v.length}</button>`).join('');
+  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
   const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
   const rows = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
-    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${esc(l.direction)}</td>
+    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${esc(ucf(l.direction))}</td>
       <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
       <td class="r num">${int(l.received)}${l.total ? ' / ' + int(l.total) : ''}</td>
-      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(l.state)}</span></td>
+      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(ucf(l.state))}</span></td>
       <td class="r num muted hide-sm">${ago(l.updated_at)}</td></tr>`;
-  }).join('') : `<tr><td colspan="6" class="muted">no lists</td></tr>`;
+  }).join('') : `<tr><td colspan="6" class="muted">No lists</td></tr>`;
 }
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
-$('#b-save').onclick = async () => {
-  const list = +$('#b-list').value, profile = +$('#b-profile').value;
-  try { await api.post('/api/scraper/budget', { list, profile }); toast('budget saved'); loadScraper(); } catch (e) { toast('could not save'); }
-};
+$('#budget').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const val = (el) => { const v = el.value.trim(); return /^\d+$/.test(v) ? +v : null; };
+  const list = val($('#b-list')), profile = val($('#b-profile'));
+  if (list == null || profile == null) { toast('Budgets must be whole numbers, 0 or more'); return; }
+  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast('Could not save'); }
+});
 function parseHandles(s) {
   const out = new Set();
   for (let t of s.split(/[\s,;]+/)) {
@@ -1306,9 +1321,9 @@ $('#seed-add').onclick = async () => {
   if (!handles.length) return;
   try {
     const r = await api.post('/api/scraper/seeds', { handles, directions: seedDirs() });
-    toast(r.queued != null ? `${r.queued} lists queued` : 'queued');
+    toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued` : 'Already queued') : 'Queued');
     $('#seed-in').value = ''; syncSeed(); loadScraper();
-  } catch (e) { toast('could not queue'); }
+  } catch (e) { toast('Could not queue'); }
 };
 
 // ---------- map ----------
@@ -1349,7 +1364,7 @@ const M = {
     this.loading = true;
     const url = this.url();
     let d;
-    try { d = await api.get(url); } catch (e) { this.loading = false; this.status('could not load map'); return; }
+    try { d = await api.get(url); } catch (e) { this.loading = false; if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map'); return; }
     this.loading = false;
     if (url !== this.url()) return;
     this.loaded = true; this.stale = false;
@@ -1408,7 +1423,7 @@ const M = {
   simulate(alpha) {
     if (this.sim) this.sim.stop();
     const F = window.d3;
-    if (!F?.forceSimulation) { this.status('map library missing'); return; }
+    if (!F?.forceSimulation) { this.status('Map library missing'); return; }
     const big = this.nodes.length > 2500;
     this.seedLinks.forEach((l) => { l.ss = true; });
     const all = [...this.links, ...this.seedLinks];
@@ -1455,7 +1470,8 @@ const M = {
     return [x0, y0, x1, y1];
   },
   fit(list) {
-    list = list || this.nodes;
+    // Seeds whose lists are still empty float far out; leave them out of the frame when there is anything else.
+    if (!list) { const busy = this.nodes.filter((n) => n.kind !== 'seed' || n.vis > 0 || n.degree > 0); list = busy.length ? busy : this.nodes; }
     if (!list.length || !this.w) return;
     const [x0, y0, x1, y1] = this.bounds(list);
     // Room for seed labels at the sides and the legend at the bottom.
@@ -1504,7 +1520,7 @@ const M = {
     const fg = css('--fg'), fg2 = css('--fg2'), fg3 = css('--fg3'), fg4 = css('--fg4'), bg = css('--bg'), line = css('--line2'), sans = css('--sans');
     const k = this.k;
     c.clearRect(0, 0, this.w, this.h);
-    if (!this.nodes.length) { this.status(this.loaded ? 'no people match these filters' : 'loading'); return; }
+    if (!this.nodes.length) { this.status(this.loaded ? 'No people match these filters' : 'Loading'); return; }
     c.save(); c.translate(this.x, this.y); c.scale(k, k);
     const hd = this.hood();
     const match = this.matchSet;
@@ -1572,6 +1588,7 @@ const M = {
     c.restore();
     c.globalAlpha = 1;
     this.drawLabels(hd, match, fg, fg2, fg3, bg, sans);
+    if (this.loaded && !this.leads.length) { c.fillStyle = fg3; c.font = '14px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('No people match these filters', 16, 28); }
   },
   // Screen-space labels with greedy collision avoidance.
   drawLabels(hd, match, fg, fg2, fg3, bg, sans) {
@@ -1660,7 +1677,7 @@ const M = {
 function hoverCard(n) {
   if (n.kind === 'seed') {
     const ov = (M.overlap.get(n.id) || []).slice(0, 3);
-    return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>seed · ${int(n.degree)} people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} shared with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
+    return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>Seed · ${int(n.degree)} people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} shared with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
   }
   const tags = (n.tags || []).filter((t) => !isViaTag(t) && !isListTag(t) && !['follows you', 'you follow'].includes(t)).slice(0, 5);
   const seeds = (n.seeds || (M.nbr.get(n.id) || []).map((id) => M.byId.get(id)?.label)).filter(Boolean);
@@ -1681,15 +1698,15 @@ function renderSeedCard() {
   const via = canonTag('via @' + n.label);
   $('#detail').innerHTML = `
     <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
-      <div class="who"><b>@${esc(n.label)}</b><span>${n.is_me ? 'you' : 'seed'}</span></div>
+      <div class="who"><b>@${esc(n.label)}</b><span>${n.is_me ? 'You' : 'Seed'}</span></div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    <div class="d-stats"><div><b>${fmt(n.degree)}</b><span>people</span></div><div><b>${fmt(n.vis)}</b><span>on map</span></div><div><b>${ov.length}</b><span>overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>lists</span></div></div>
+    <div class="d-stats"><div><b>${fmt(n.degree)}</b><span>People</span></div><div><b>${fmt(n.vis)}</b><span>On map</span></div><div><b>${ov.length}</b><span>Overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>Lists</span></div></div>
     <div class="d-sec"><div class="d-links" style="margin-top:0">
-      ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'knows you')}">filter to ${n.is_me ? 'people who know you' : '@' + esc(n.label)}</button>` : ''}
+      ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'knows you')}">Filter to ${n.is_me ? 'people who know you' : '@' + esc(n.label)}</button>` : ''}
       <button class="btn" data-only="${esc(n.label)}">seed:@${esc(n.label)}</button>
-      <a class="btn" href="https://www.instagram.com/${encodeURIComponent(n.label)}/" target="_blank" rel="noopener">instagram</a></div></div>
-    ${ls.length ? `<div class="d-sec"><h4>Lists</h4><div class="ov">${ls.map((l) => `<span>${esc(l.direction)}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(l.state)}</span>`).join('')}</div></div>` : ''}
-    <div class="d-sec"><h4>Shared people</h4>${ov.length ? `<div class="ov">${ov.map(([id, s]) => `<button data-focus="${esc(id)}">@${esc(M.byId.get(id)?.label)}</button><span class="num">${int(s)}</span><span><span class="bar-p done"><i style="width:${(s / mx) * 100}%"></i></span></span>`).join('')}</div>` : '<span class="muted">none</span>'}</div>`;
+      <a class="btn" href="https://www.instagram.com/${encodeURIComponent(n.label)}/" target="_blank" rel="noopener">Instagram</a></div></div>
+    ${ls.length ? `<div class="d-sec"><h4>Lists</h4><div class="ov">${ls.map((l) => `<span>${esc(ucf(l.direction))}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(ucf(l.state))}</span>`).join('')}</div></div>` : ''}
+    <div class="d-sec"><h4>Shared people</h4>${ov.length ? `<div class="ov">${ov.map(([id, s]) => `<button data-focus="${esc(id)}">@${esc(M.byId.get(id)?.label)}</button><span class="num">${int(s)}</span><span><span class="bar-p done"><i style="width:${(s / mx) * 100}%"></i></span></span>`).join('')}</div>` : '<span class="muted">None</span>'}</div>`;
 }
 function seedCardClick(e) {
   const sf = e.target.closest('[data-sf]');
@@ -1779,6 +1796,14 @@ $('#map-scope').addEventListener('click', (e) => {
   $$('#map-scope button').forEach((x) => x.classList.toggle('on', x === b));
   M.scope = b.dataset.v; M.autoFit = true; M.load();
 });
+
+// Server came back: refresh whatever the offline spell left stale or empty.
+function reconnected() {
+  resetLeads(true); loadFacets(); loadCounts(); loadViews();
+  M.stale = true; if (S.view === 'map') M.load();
+  if (S.view === 'tags') T.show();
+  if (S.open) refreshPerson(S.open);
+}
 
 // ---------- boot ----------
 applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
