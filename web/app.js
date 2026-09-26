@@ -2435,12 +2435,12 @@ function grokHTML(g, tok) {
   const engines = [['free', 'Free models'], ['grok', 'SuperGrok'], ['auto', 'Free, then Grok']];
   const u = g.usage || {};
   return `
-    <div class="sub-h"><b>Bulk AI scoring</b><span class="muted">${g.available ? `SuperGrok runs ${esc(g.model)} (${esc(g.effort)} reasoning), ${int(g.batch)} people per call. Free models do 8.` : 'Grok CLI not found on this Mac, so free models only.'}</span></div>
+    <div class="sub-h"><b>Bulk</b><span class="muted">${g.available ? `Grok ${esc(g.model.replace('grok-', ''))} on your SuperGrok plan, ${esc(g.effort)} reasoning, ${int(g.batch)} people per call. Free models do 8.` : 'Grok CLI not found on this Mac, so free models only.'}</span></div>
     <div class="set-row"><div><b>Engine</b><span class="muted">"Free, then Grok" uses your plan only when the free models are rate-limited.</span></div>
       <div class="seg" id="grok-engine">${engines.map(([id, label]) => `<button data-e="${id}" class="${g.engine === id ? 'on' : ''}" aria-pressed="${g.engine === id}"${id !== 'free' && !g.available ? ' disabled' : ''}>${label}</button>`).join('')}</div></div>
-    <div class="set-row"><div><b>Grok calls at once</b><span class="muted">About 2 min per call of ${int(g.batch)}.</span></div>
+    <div class="set-row"><div><b>Grok calls at once</b><span class="muted">More at once = faster, and uses your plan faster.</span></div>
       <div class="seg" id="grok-workers">${[1, 2, 3, 4, 6].map((n) => `<button data-gw="${n}" class="${g.workers === n ? 'on' : ''}" aria-pressed="${g.workers === n}">${n}</button>`).join('')}</div></div>
-    <div class="kv-list"><div class="kv-row"><span>SuperGrok, last 7 days</span><span class="num">${int(u.calls || 0)} calls · ~${int((u.calls || 0) * g.batch)} people · ${tok((u.tokens_in || 0) + (u.tokens_out || 0))} tokens</span></div>
+    <div class="kv-list"><div class="kv-row"><span>SuperGrok, last 7 days</span><span class="num">${int(u.calls || 0)} calls · ~${int((u.calls || 0) * g.batch)} people · ${tok((u.tokens_in || 0) + (u.tokens_out || 0))} tokens (${tok(u.tokens_cached || 0)} cached)</span></div>
       <div class="kv-row"><span>Today</span><span class="num">${int(u.today || 0)} calls</span></div></div>`;
 }
 $('#set-scout')?.addEventListener('click', async (e) => {

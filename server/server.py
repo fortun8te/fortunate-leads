@@ -2057,18 +2057,19 @@ def llm_candidates(conn, limit, exclude):
                         (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
 
 
-def research(conn, items):
+def research(conn, items, lookup=True):
     """Attach web research (SearXNG + their website) to each item's person before the model call.
-    Cached per person; missing lookups run in parallel with no DB transaction open. Search down -> no research."""
+    Cached per person; missing lookups run in parallel with no DB transaction open. Search down -> no research.
+    lookup=False (the Bulk stage at volume): cached research only; fresh lookups belong to the Special stage."""
     if not items or not websearch.available():
         return
     websearch.ensure(conn)
     found, todo = {}, []
     for it in items:
         hit = websearch.cached(conn, it['person'])
-        if hit is None:
+        if hit is None and lookup:
             todo.append(it['person'])
-        else:
+        elif hit is not None:
             found[it['person']['id']] = hit
     conn.commit()
     if todo:
@@ -2108,10 +2109,10 @@ def run_llm(conn, rows, skip):
                       'tags': retained + fresh_auto, 'fresh_auto': fresh_auto})
     examples = fewshot(conn)
     conn.commit()
-    research(conn, items)
+    engine = ai_engine(conn)
+    research(conn, items, lookup=engine != 'grok')
     try:
         many = getattr(qualify, 'llm_verdicts', None)
-        engine = ai_engine(conn)
         vs = (many(items, examples, engine=engine) if engine != 'free' else many(items, examples)) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
     except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
         traceback.print_exc()

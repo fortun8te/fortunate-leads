@@ -1,18 +1,33 @@
-"""Bulk AI on Michael's SuperGrok plan through Hermes (profile `leadqual`, provider xai-oauth).
-Hermes calls the xAI API directly: ~4k tokens of overhead per call against ~17.5k for the Grok Build CLI, and half the latency.
-One call scores up to BATCH people; Hermes records every call's tokens in the profile's state.db (the 7-day usage view)."""
+"""Bulk stage on Michael's SuperGrok plan: Grok 4.7 over xAI's Responses API, signed in through Hermes.
+
+Hermes owns the SuperGrok login (xai-oauth) and refreshes it; this module asks Hermes for a current token and
+calls the API itself, so there is no agent loop, no per-call process and no agent system prompt:
+- the rubric is a fixed prefix sent with x-grok-conv-id, so xAI serves it from its prompt cache after the first call
+- people go in as a compact table and come back as short coded rows under a strict JSON schema
+- reasoning effort 'low' (the lowest Grok 4.7 accepts)
+Every call's tokens are appended to data/grok_usage.jsonl for the 7-day usage view."""
+import json
 import os
 import subprocess
+import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-BIN = Path.home() / '.local' / 'bin' / 'hermesme'
-PROFILE = 'leadqual'
-STATE_DB = Path.home() / '.hermes-me' / 'profiles' / PROFILE / 'state.db'
+HERMES = Path.home() / '.hermes-me'
+PYTHON = HERMES / 'hermes-agent' / 'venv' / 'bin' / 'python'
 MODEL = 'grok-4.7'
-EFFORT = 'low'      # lowest Grok 4.7 accepts; needs the Hermes allowlist fix (upstream #121796) or it silently runs at high
-BATCH = 25          # 25/25 parsed on real leads; 50 per call came back empty
-TIMEOUT = 420
+EFFORT = 'low'
+BATCH = 80          # people per call; the fixed prefix is cached, so larger batches mostly add output
+TIMEOUT = 300
+LOG = Path(__file__).resolve().parent.parent / 'data' / 'grok_usage.jsonl'
+CREDS_TTL = 20 * 60
+_CREDS_JS = ("import json,sys;sys.path.insert(0,sys.argv[1]);"
+             "from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials as r;"
+             "c=r();print(json.dumps({'base_url':c['base_url'],'api_key':c['api_key']}))")
+_lock = threading.Lock()
+_creds = {'at': 0, 'value': None}
 
 
 class Failed(Exception):
@@ -20,33 +35,85 @@ class Failed(Exception):
 
 
 def available():
-    return not os.environ.get('FL_NO_ORSLOT') and BIN.exists()
+    return not os.environ.get('FL_NO_ORSLOT') and PYTHON.exists()
 
 
-def chat(messages, timeout=TIMEOUT):
-    """messages = [system, user] -> (text, model). Raises Failed on any CLI, quota or parse problem."""
-    prompt = '\n\n'.join(m['content'] for m in messages) + '\n\nReply with ONLY the JSON object.'
+def creds(force=False):
+    """{'base_url', 'api_key'} from Hermes' auth store (Hermes refreshes it when it is close to expiry)."""
+    with _lock:
+        if not force and _creds['value'] and time.time() - _creds['at'] < CREDS_TTL:
+            return _creds['value']
+        try:
+            out = subprocess.run([str(PYTHON), '-c', _CREDS_JS, str(HERMES / 'hermes-agent')], capture_output=True, text=True,
+                                 timeout=40, stdin=subprocess.DEVNULL, env=dict(os.environ, HERMES_HOME=str(HERMES)))
+            value = json.loads(out.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+            raise Failed('no SuperGrok login in Hermes (run: hermesme auth, xAI)') from None
+        if not value.get('api_key'):
+            raise Failed('no SuperGrok login in Hermes (run: hermesme auth, xAI)')
+        _creds.update(at=time.time(), value=value)
+        return value
+
+
+def call(system, user, schema, cache_key, timeout=TIMEOUT):
+    """One Responses API call -> (parsed JSON, usage dict). Raises Failed."""
+    body = {'model': MODEL, 'reasoning': {'effort': EFFORT}, 'store': False,
+            'input': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+            'text': {'format': {'type': 'json_schema', 'name': 'rows', 'schema': schema, 'strict': True}}}
+    for attempt in (0, 1):
+        c = creds(force=attempt == 1)
+        req = urllib.request.Request(c['base_url'].rstrip('/') + '/responses', data=json.dumps(body).encode(), method='POST',
+                                     headers={'Authorization': 'Bearer ' + c['api_key'], 'Content-Type': 'application/json',
+                                              'x-grok-conv-id': cache_key})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 0:
+                continue
+            raise Failed(f'HTTP {e.code}: {e.read()[:200]!r}') from None
+        except (OSError, ValueError) as e:
+            raise Failed(str(e)[:200]) from None
+    text = ''.join(part.get('text', '') for item in data.get('output') or [] if item.get('type') == 'message'
+                   for part in item.get('content') or [] if part.get('type') == 'output_text')
+    u = data.get('usage') or {}
+    usage = {'at': time.time(), 'in': u.get('input_tokens') or 0, 'out': u.get('output_tokens') or 0,
+             'cached': (u.get('input_tokens_details') or {}).get('cached_tokens') or 0,
+             'reasoning': (u.get('output_tokens_details') or {}).get('reasoning_tokens') or 0}
+    _log(usage)
     try:
-        out = subprocess.run([str(BIN), '-p', PROFILE, '--provider', 'xai-oauth', '-m', MODEL, '--reasoning', EFFORT,
-                              '-t', 'clarify', '--ignore-rules', '-z', prompt.replace('\0', '')],
-                             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, cwd='/tmp')
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise Failed(str(e)[:200]) from None
-    text = out.stdout.strip()
-    if out.returncode or not text:
-        raise Failed((out.stderr or text or 'empty reply')[-200:])
-    return text, MODEL
+        return json.loads(text), usage
+    except ValueError:
+        raise Failed('reply was not JSON') from None
+
+
+def _log(rec):
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _lock, LOG.open('a') as f:
+            f.write(json.dumps(rec) + '\n')
+    except OSError:
+        pass
 
 
 def usage(days=7):
-    """{'calls', 'tokens_in', 'tokens_out', 'today'} over the last `days`, from Hermes' own session records."""
-    import sqlite3
+    """{'calls', 'tokens_in', 'tokens_cached', 'tokens_out', 'today'} over the last `days`."""
     since, midnight = time.time() - days * 86400, time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+    out = {'calls': 0, 'tokens_in': 0, 'tokens_cached': 0, 'tokens_out': 0, 'today': 0}
     try:
-        con = sqlite3.connect(f'file:{STATE_DB}?mode=ro', uri=True, timeout=2)
-        row = con.execute('SELECT count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0), '
-                          'coalesce(sum(started_at>=?),0) FROM sessions WHERE started_at>=?', (midnight, since)).fetchone()
-        con.close()
-    except sqlite3.Error:
-        return {'calls': 0, 'tokens_in': 0, 'tokens_out': 0, 'today': 0}
-    return dict(zip(('calls', 'tokens_in', 'tokens_out', 'today'), row))
+        lines = LOG.read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get('at', 0) >= since:
+            out['calls'] += 1
+            out['tokens_in'] += r.get('in', 0)
+            out['tokens_cached'] += r.get('cached', 0)
+            out['tokens_out'] += r.get('out', 0)
+            out['today'] += r.get('at', 0) >= midnight
+    return out

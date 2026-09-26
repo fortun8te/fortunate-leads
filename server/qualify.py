@@ -833,8 +833,8 @@ def _verdict(v, person, tags, used, version, net=None):
         if v.get(key) is not None and not isinstance(v[key], str):
             return None
     evidence = _evidence(v, person)
-    if not evidence:
-        return None
+    if not evidence and not (v['role'] in ('unrelated', 'unclear', 'peer') and v['fit'] <= 40):
+        return None   # a positive verdict needs a quote; a low one may rest on the absence of any fit (no retry loop)
     source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
     if not str(person.get('bio') or '').strip() and not _buyer_support({'name': person.get('name')}):
         return None
@@ -861,7 +861,7 @@ def _verdict(v, person, tags, used, version, net=None):
     have_tags = {t for t, _ in tags or []}
     score = blend(content_fit, net if net is not None else net_from_tags(tags), v['role'], bool(have_tags & {'Too big', 'Other market'}))
     # Showing the verified quote avoids laundering unsupported generated prose into facts.
-    reason = 'Profile says: "' + evidence[0] + '".'
+    reason = ('Profile says: "' + evidence[0] + '".') if evidence else 'Nothing in the profile shows a product brand.'
     extra = [t for t in (v.get('extra_tags') or []) if t in allowed]
     if v.get('niche') in allowed:
         extra.insert(0, v['niche'])
@@ -897,6 +897,15 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
     version = prompt_version(examples)
     step = batch_size(engine)
     deadline = time.monotonic() + (max(budget, grok.TIMEOUT) if engine == 'grok' else budget)
+    if engine == 'grok':
+        for i in range(0, len(items), step):
+            if deadline - time.monotonic() <= 1:
+                break
+            try:
+                out[i:i + step] = bulk_verdicts(items[i:i + step], examples, version)
+            except grok.Failed:
+                continue
+        return out
     for i in range(0, len(items), step):
         chunk = items[i:i + step]
         left = deadline - time.monotonic()
@@ -905,16 +914,13 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            if engine == 'grok':
-                text, used = grok.chat(msgs, timeout=min(grok.TIMEOUT, left))
-            else:
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
+        except llm.Unavailable:
+            if engine == 'auto' and grok.available():
                 try:
-                    text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
-                except llm.Unavailable:
-                    if engine != 'auto' or not grok.available():
-                        raise
-                    text, used = grok.chat(msgs)
-        except (llm.Unavailable, grok.Failed):
+                    out[i:i + len(chunk)] = bulk_verdicts(chunk, examples, version)
+                except grok.Failed:
+                    pass
             continue
         data = parse_json(text)
         if not data:
@@ -947,6 +953,68 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
                 # One malformed model result must not discard other people's valid replies.
                 continue
     return out
+
+
+# ---- Bulk stage (Grok 4.7): a compact table in, short coded rows out, fixed cacheable prefix ----
+BULK_ROLES = {'b': 'buyer', 'c': 'connector', 'o': 'collaborator', 'p': 'peer', 's': 'supplier', 'u': 'unrelated', 'x': 'unclear'}
+BULK_FORMAT = """Input: one profile per line, tab-separated: id, handle, name, followers, bio (newlines shown as " / "), link, extra
+(owner notes and cached web research, may be empty). The fit judges the profile itself; the network is scored separately.
+Reply with {"r": [one object per input line, same order]}, each object:
+{"i": id, "r": role, "f": fit 0-100, "n": niche number or -1, "g": flags, "q": quote}
+- role: b=buyer c=connector o=collaborator p=peer s=supplier u=unrelated x=unclear
+- niche number: %s
+- flags: letters, only when the text states it explicitly: d=decision-maker of the business, a=runs paid ads, u=sells in the US; "" if none
+- quote: 2-8 words copied exactly from the bio or name that best support the verdict; "" if nothing supports it"""
+BULK_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['r'], 'properties': {'r': {'type': 'array', 'items': {
+    'type': 'object', 'additionalProperties': False, 'required': ['i', 'r', 'f', 'n', 'g', 'q'],
+    'properties': {'i': {'type': 'integer'}, 'r': {'type': 'string', 'enum': list(BULK_ROLES)}, 'f': {'type': 'integer'},
+                   'n': {'type': 'integer'}, 'g': {'type': 'string'}, 'q': {'type': 'string'}}}}}}
+
+
+def _cell(v, n):
+    return re.sub(r'\s+', ' ', str(v or '').replace('\n', ' / ')).strip()[:n]
+
+
+def bulk_system(examples):
+    niches = [t for t, g in TAXONOMY.items() if g == 'niche']
+    fmt = BULK_FORMAT % ', '.join(f'{k}={t}' for k, t in enumerate(niches))
+    return '\n\n'.join(p for p in (BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt, STRICT) if p)
+
+
+def bulk_table(chunk):
+    rows = []
+    for k, it in enumerate(chunk):
+        p = it['person']
+        extra = ' '.join(owner_lines(p) + [str(x) for x in (p.get('web_lines') or [])])
+        rows.append('\t'.join((str(k), '@' + str(p.get('handle') or ''), _cell(p.get('name'), 60),
+                               str(p['followers']) if isinstance(p.get('followers'), int) else '', _cell(p.get('bio'), 300),
+                               _cell(p.get('website'), 80), _cell(extra, 240))))
+    return 'id\thandle\tname\tfollowers\tbio\tlink\textra\n' + '\n'.join(rows)
+
+
+def bulk_verdicts(chunk, examples, version):
+    """One Grok call for up to grok.BATCH people -> verdict or None per person. Raises grok.Failed."""
+    data, _ = grok.call(bulk_system(examples), bulk_table(chunk), BULK_SCHEMA, 'fortunate-bulk-' + version)
+    niches = [t for t, g in TAXONOMY.items() if g == 'niche']
+    out = [None] * len(chunk)
+    for r in data.get('r') or []:
+        k = r.get('i')
+        if not isinstance(k, int) or isinstance(k, bool) or not 0 <= k < len(chunk) or out[k] is not None or r.get('r') not in BULK_ROLES:
+            continue
+        flags = str(r.get('g') or '')
+        n = r.get('n')
+        v = {'role': BULK_ROLES[r['r']], 'fit': r.get('f'), 'niche': niches[n] if isinstance(n, int) and 0 <= n < len(niches) else None,
+             'decision_maker': 'd' in flags, 'runs_ads': True if 'a' in flags else None, 'us_market': True if 'u' in flags else None,
+             'evidence': [r['q']] if isinstance(r.get('q'), str) and r['q'].strip() else [], 'extra_tags': [], 'stage': None, 'brand_handle': None}
+        it = chunk[k]
+        try:
+            out[k] = _verdict(v, it['person'], it.get('tags'), MODEL_TAG, version, it.get('net'))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return out
+
+
+MODEL_TAG = 'grok-4.7'
 
 
 def llm_verdict(person: dict, tags, edges, timeout: float = 45, models=None, budget: float = LLM_BUDGET, net=None, examples=None) -> dict | None:
