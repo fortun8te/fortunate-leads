@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -79,7 +80,7 @@ LABELLED = [
        followers=86000, is_business=1), E('adswithcami', 'floris.ads'), {'buyer'}, {'Brand', 'Jewelry', 'Shop Link'}, {'Agency'}),
     # --- connectors
     (P('floris.ads', 'Meta ads for ecom brands 📈 Media buyer | €20M+ managed | DM "SCALE"', 'Floris | Ecom Ads', followers=8800),
-     E('fortun8te:following', 'rutdeletter'), {'connector'}, {'Freelancer', 'Instagram link', 'you follow'}, {'Brand', 'Personal'}),
+     E('fortun8te:following', 'rutdeletter'), {'connector'}, {'Freelancer', 'Instagram link', 'you follow'}, {'Brand', 'Personal', 'knows you'}),
     (P('peakgrowth.agency', 'We help DTC brands scale with paid social 🚀 Clients: 7-8 figure Shopify brands | Book a call ↓', 'Peak Growth Agency',
        'https://calendly.com/peakgrowth', 'Advertising/Marketing', 4100, is_business=1), E('markbuildsbrands', 'shepscales'),
      {'connector'}, {'Agency', 'Scaling', 'Shopify'}, {'Brand', 'Shop Link'}),
@@ -206,12 +207,14 @@ class Pieces(unittest.TestCase):
         p = P('someone', name='Some One', is_private=1)
         v = q.rule_verdict(p, q.rule_tags(p, E('shepscales'), ME))
         self.assertEqual(v['tier'], 'unread')
+        self.assertIsNone(v['content_fit'])
         self.assertIn('via @shepscales', v['reason'])
 
     def test_source_tags(self):
         tags = dict(q.rule_tags(P('x', 'hi'), E('fortun8te:followers', 'fortun8te:following', 'shepscales', 'noah_nahar:following'), ME))
         for t in ('via @shepscales', 'via @noah_nahar', 'in 3 lists', 'Instagram link', 'follows you', 'you follow'):
             self.assertEqual(tags.get(t), 'source', t)
+        self.assertNotIn('knows you', tags)
         self.assertNotIn('via @fortun8te', tags)
 
     def test_bio_mention_is_not_a_relationship_or_follow(self):
@@ -220,6 +223,19 @@ class Pieces(unittest.TestCase):
         self.assertNotIn('Instagram link', tags)
         self.assertNotIn('knows you', tags)
         self.assertNotIn('mentions you', dict(q.rule_tags(P('x', 'hello @fortun8te.other'), [], ME)))
+
+    def test_mention_does_not_assert_personal_relationship(self):
+        tags = dict(q.rule_tags(P('x', 'Thanks @fortun8te for the mention'), [], ME))
+        self.assertEqual(tags.get('mentions you'), 'source')
+        self.assertNotIn('knows you', tags)
+
+    def test_high_network_does_not_change_business_fit(self):
+        p = P('ordinary.person', 'Personal account | music and friends', 'Ordinary Person')
+        tags = q.rule_tags(p, E('a', 'b', 'c', 'd'), ME)
+        net = {'lists': 4, 'seeds': [('a', 'following'), ('b', 'following')], 'me': 'mutual', 'client_seeds': 1}
+        v = q.rule_verdict(p, tags, net)
+        self.assertLessEqual(v['content_fit'], 35)
+        self.assertGreaterEqual(q.blend(35, net), 70)
 
     def test_size_bands(self):
         for f, band in ((10, '<1k'), (1000, '1k-10k'), (99999, '10k-100k'), (100000, '100k-1M'), (2000000, '1M+')):
@@ -244,7 +260,13 @@ class Pieces(unittest.TestCase):
         a = q.input_hash(P('x', 'bio'), E('a', 'b'))
         self.assertEqual(a, q.input_hash(P('x', 'bio'), list(reversed(E('a', 'b')))))
         self.assertNotEqual(a, q.input_hash(P('x', 'bio2'), E('a', 'b')))
-        self.assertNotEqual(a, q.input_hash(P('x', 'bio'), E('a')))
+        self.assertEqual(a, q.input_hash(P('x', 'bio'), E('a')))
+        net = {'lists': 2, 'seeds': [('a', 'following'), ('b', 'followers')], 'seed_yield': .5,
+               'seed_marked': 10, 'client_seeds': 1, 'me': 'follows'}
+        self.assertEqual(q.input_hash(P('x', 'bio'), E('a'), net),
+                         q.input_hash(P('x', 'bio'), E('a'), dict(net, seeds=list(reversed(net['seeds'])))))
+        self.assertEqual(q.input_hash(P('x', 'bio'), E('a'), net),
+                            q.input_hash(P('x', 'bio'), E('a'), dict(net, client_seeds=2)))
 
     def test_parse_json(self):
         self.assertEqual(q.parse_json('```json\n{"role":"buyer","fit":80}\n```')['fit'], 80)
@@ -296,12 +318,8 @@ class Pieces(unittest.TestCase):
         self.assertEqual(q.prefilter(P('username', name='x'), ['a']), q.prefilter(P('someone', name='x'), ['a']))
 
     def test_llm_unavailable_returns_none(self):
-        old = q.PROXY
-        q.PROXY = 'http://127.0.0.1:9/none'
-        try:
+        with patch.object(q.llm, 'get', return_value=q.llm.Providers(keys=[], proxy='http://127.0.0.1:9/none')):
             self.assertIsNone(q.llm_verdict(P('x', 'bio'), [], [], timeout=1))
-        finally:
-            q.PROXY = old
 
 
 class FakeProxy(BaseHTTPRequestHandler):
@@ -315,7 +333,7 @@ class FakeProxy(BaseHTTPRequestHandler):
         if self.mode == 'slow':
             time.sleep(3)
         payload = {'ok': {'model': body['model'], 'choices': [{'message': {'content':
-                   '```json\n{"role": "buyer", "fit": 81, "reason": "Runs a skincare brand.", "extra_tags": ["Skincare", "Nope"]}\n```'}}]},
+                   '```json\n{"id": 0, "handle": "glow", "evidence": ["Clean skincare brand"], "role": "buyer", "fit": 81, "reason": "Runs a skincare brand.", "extra_tags": ["Skincare", "Nope"]}\n```'}}]},
                    'list': [1, 2], 'nochoice': {'model': body['model'], 'choices': [None]},
                    'swap': {'model': 'openai/gpt-x', 'choices': []}}.get(self.mode)
         data = json.dumps(payload).encode() if payload is not None else b'<html>502</html>'
@@ -332,11 +350,12 @@ class LLMPath(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), FakeProxy)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.old = q.PROXY
-        q.PROXY = f'http://127.0.0.1:{self.httpd.server_address[1]}/api/v1/chat/completions'
+        self.pool = q.llm.Providers(keys=[], proxy=f'http://127.0.0.1:{self.httpd.server_address[1]}/api/v1/chat/completions')
+        self.provider_patch = patch.object(q.llm, 'get', return_value=self.pool)
+        self.provider_patch.start()
 
     def tearDown(self):
-        q.PROXY = self.old
+        self.provider_patch.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -349,6 +368,7 @@ class LLMPath(unittest.TestCase):
         v = self.verdict('ok', models=('m/one:free',))
         self.assertEqual((v['role'], v['fit'], v['model'], v['tier']), ('buyer', 81, 'm/one:free', 'warm'))
         self.assertEqual(v['score'], q.blend(81, {'lists': 2}))   # the network (2 lists) carries the larger share
+        self.assertEqual(v['content_fit'], 81)
         self.assertNotIn(('Nope', 'niche'), v['tags'])
 
     def test_bad_replies_fall_back_to_none(self):
@@ -358,7 +378,7 @@ class LLMPath(unittest.TestCase):
 
     def test_slow_model_times_out_and_budget_bounds_total(self):
         t = time.monotonic()
-        self.assertIsNone(self.verdict('slow', timeout=0.5, models=('a/1', 'a/2', 'a/3', 'a/4', 'a/5'), budget=1.8))
+        self.assertIsNone(self.verdict('slow', timeout=0.5, models=('a/1:free', 'a/2:free', 'a/3:free', 'a/4:free', 'a/5:free'), budget=1.8))
         self.assertLess(time.monotonic() - t, 2.5)
 
 

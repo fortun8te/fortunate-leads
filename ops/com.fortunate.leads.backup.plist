@@ -13,6 +13,8 @@
   </array>
   <key>WorkingDirectory</key>
   <string>__REPO__</string>
+  <key>Umask</key>
+  <integer>63</integer>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHON</key>

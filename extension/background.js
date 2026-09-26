@@ -23,6 +23,7 @@ const editSt = (fn) => locked(async () => { const st = await loadSt(); await fn(
 const iso = (t) => (t ? new Date(t).toISOString() : null);
 const hhmmss = (t) => new Date(t).toTimeString().slice(0, 8);
 class Superseded extends Error {}
+class ControlPaused extends Error {}
 
 // Short ring of recent events (requests, failures, restarts) for the popup's "Copy debug".
 const trail = (what, extra) => edit('trail', (t) => (t || []).concat({ at: hhmmss(Date.now()), what, ...(extra || {}) }).slice(-40)).catch(() => {});
@@ -101,11 +102,20 @@ async function api(path, body, ms = 15e3) {
   try {
     const r = await fetch(SERVER + path, body === undefined ? { headers: { 'X-FL': '1' }, signal: ctl.signal } :
       { method: 'POST', headers: { 'content-type': 'application/json', 'X-FL': '1' }, body: JSON.stringify(body), signal: ctl.signal });
-    return { status: r.status, json: await r.json().catch(() => ({})) };
+    return { status: r.status, json: await r.json().catch(() => null) };
   } finally { clearTimeout(timer); }
 }
 async function sendItem(item) {
-  try { const r = await api(item.path, item.body); return r.status >= 500 ? 'fail' : 'ok'; } catch { return 'retry'; }
+  try {
+    const r = await api(item.path, item.body);
+    if (r.status >= 500 || r.status === 408 || r.status === 429) return 'retry';
+    if (r.status !== 200 || r.json?.stale || r.json?.ok === false) return 'reject';
+    // A successful HTTP status alone does not acknowledge a durable result.
+    if (!r.json || typeof r.json !== 'object' || Array.isArray(r.json)) return 'retry';
+    if (item.path === '/api/ext/list-page' && !Number.isSafeInteger(r.json.received)) return 'retry';
+    if (item.path === '/api/ext/profile' && !Number.isSafeInteger(r.json.id)) return 'retry';
+    return 'ok';
+  } catch { return 'retry'; }
 }
 // Outbox: items stay in storage until the server took them; single-flight, never holds the storage lock over the network.
 let flushing = null;
@@ -116,25 +126,30 @@ function flushBox() {
       for (;;) {
         const box = (await get('box')) || [];
         if (!box.length) { mem.offline = false; return true; }
-        const r = await sendItem(box[0]);
+        const sending = box[0], r = await sendItem(sending);
         if (r === 'retry') { mem.offline = true; return false; }
         mem.offline = false;
-        // Server error (5xx): retry a few rounds, then park the item so one bad result can't block the queue forever.
-        const tries = (box[0].tries || 0) + 1;
-        if (r === 'fail' && tries < 10) {
-          await locked(async () => { const b = (await get('box')) || []; if (b[0]) { b[0].tries = tries; await set({ box: b }); } });
-          return false;
-        }
-        await locked(async () => {
-          const b = (await get('box')) || [], item = b.shift();
-          await set(r === 'fail' && item ? { box: b, dead: ((await get('dead')) || []).concat(item).slice(-50) } : { box: b });
+        const path = box[0].path;
+        const removed = await locked(async () => {
+          const b = (await get('box')) || [];
+          if (!sameItem(b[0], sending)) return false;
+          const item = b.shift();
+          await set(r !== 'ok' ? { box: b, dead: FL.park((await get('dead')) || [], { ...item, reason: r }) } : { box: b });
+          return true;
         });
+        if (!removed) continue; // another enqueue shed a passive head while it was in flight
+        if (r !== 'ok') {
+          await editSt((s) => { s.lastError = 'Server rejected a saved result; see debug log'; });
+          await trail('outbox parked', { path, reason: r });
+        }
         mem.beat = Date.now();
       }
     } finally { flushing = null; }
   })();
   return flushing;
 }
+const sameItem = (a, b) => !!a && !!b && (a.qid && b.qid ? a.qid === b.qid :
+  a.path === b.path && JSON.stringify(a.body) === JSON.stringify(b.body));
 async function queue(path, body) {
   body = await tagged(body);
   await locked(async () => set({ box: FL.enqueue(await get('box'), path, body) }));
@@ -142,14 +157,15 @@ async function queue(path, body) {
 }
 // Enqueue a job's result and clear `cur` in one storage write, so a worker restarted after this point never
 // re-runs a request whose result is already stored (step() flushes the outbox before leasing again).
-async function queueDone(path, body) {
+async function queueDone(path, body, success = true) {
   body = await tagged(body);
   await locked(async () => set({ box: FL.enqueue(await get('box'), path, body), cur: null }));
-  await editSt((st) => FL.succeeded(st));
+  if (success) await editSt((st) => FL.succeeded(st));
   await flushBox();
 }
 async function applyServer(j) {
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
+  if (j && j.stages) mem.stages = j.stages;
   if (!j || typeof j.paused !== 'boolean') return;
   mem.serverPaused = j.paused;
   const st = await loadSt();
@@ -179,6 +195,7 @@ async function heartbeat(force) {
       today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
       rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) } }, 10e3);
+    if (r.status !== 200 || typeof r.json?.paused !== 'boolean') throw new Error('Control state unavailable');
     mem.offline = false;
     await applyServer(r.json);
   } catch { mem.offline = true; }
@@ -277,7 +294,12 @@ async function inTab(tabId, url) {
   }
 }
 // One Instagram request. kind = bucket ('list' | 'profile'). ctx = list context for classify.
+async function assertControl(kind) {
+  await heartbeat(true);
+  if (!FL.controlAllows(mem, kind) || await get('localPaused')) throw new ControlPaused();
+}
 async function igRequest(gen, tab, url, kind, ctx) {
+  await assertControl(kind);
   if (gen !== mem.gen) throw new Superseded();
   if (FL.laneBusy(await get('lane'), Date.now())) return { res: { status: 0, text: 'lane busy' }, bad: { code: 'busy' } };
   await set({ lane: { until: Date.now() + 90e3, url } });
@@ -317,10 +339,9 @@ async function fail(job, bad, what, res, bucket) {
     await locked(async () => set({ debug: d, debugLog: ((await get('debugLog')) || []).concat(d).slice(-5) }));
   }
   if (local) return;
-  await set({ cur: null });
   const cd = st.cool[bucket] && st.cool[bucket].until > now ? st.cool[bucket].until : 0;
-  await queue('/api/ext/error', { job_id: job.id, code: bad.code, retry_at: cd ? iso(cd) : null,
-    message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) });
+  await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
+    message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
 }
 // Waits for the pace gap while keeping heartbeats going; false if paused, blocked or superseded meanwhile.
 async function waitUntil(gen, ts) {
@@ -358,42 +379,49 @@ async function done(job) { await set({ cur: null }); await editSt((st) => FL.suc
 const editProg = (key, fn) => edit('prog', (all) => { all = all || {}; all[key] = fn(all[key] || {}); return all; });
 async function runList(gen, job, tab) {
   const key = job.seed.toLowerCase() + '/' + job.direction, cursor = job.cursor || null;
-  let prog = ((await get('prog')) || {})[key] || {};
-  if (!cursor && prog.next) prog = {}; // the server restarted this list from the top
+  let prog = FL.listProgress(job, ((await get('prog')) || {})[key]);
   mem.label = '@' + job.seed + ' ' + job.direction + ' · page ' + ((cursor ? prog.pages || 0 : 0) + 1);
   const cached = await knownId(job.seed);
-  let igId = job.ig_id || (cached && cached.ig_id), total = prog.total ?? (cached ? cached[job.direction] : null) ?? null;
-  if (!igId) {
+  let igId = job.ig_id || (cached && cached.ig_id), total = FL.count(prog.total) ?? FL.count(cached && cached[job.direction]);
+  // Counts from the handle cache guide progress but cannot prove this run saw everyone.
+  let totalSource = total == null ? 'unknown' : FL.count(prog.total) != null && prog.jobId === job.id && prog.totalSource === 'current_run' ? 'current_run' : 'cached';
+  // Refresh the seed once at the start of each run: an ID cache cannot prove a current count.
+  if (!igId || (!cursor && !prog.countAttempted && totalSource !== 'current_run')) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
     if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
     igId = r.p.ig_id;
-    total = job.direction === 'followers' ? r.p.followers : r.p.following;
-    await editProg(key, (p) => ({ ...p, total }));
+    total = FL.count(job.direction === 'followers' ? r.p.followers : r.p.following);
+    totalSource = total == null ? 'unknown' : 'current_run';
+    prog = { ...prog, jobId: job.id, total, totalSource, countAttempted: true };
+    await editProg(key, () => prog);
     if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return; // job stays in `cur` and resumes
   }
   // Followers: the web app sends search_surface=follow_list_page; Instagram caps follower pages at ~25 whatever count says.
   const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + (job.direction === 'following' ? 50 : 25) +
     (cursor ? '&max_id=' + encodeURIComponent(cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   // Another lane may have moved this list on since we last saw it: the server's count is then the one to trust.
-  const moved = cursor && prog.next !== cursor && Number.isFinite(job.received);
-  if (moved) prog = { ...prog, received: job.received, emptyAt: null };
-  const ctx = { cursor, total, received: cursor ? prog.received || 0 : 0, emptyAt: prog.emptyAt ?? null };
+  const ctx = FL.listContext(job, prog, total);
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
-    if (/^empty_/.test(bad.reason || '')) await editProg(key, (p) => ({ ...p, emptyAt: cursor || '' }));
+    if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }));
     return fail(job, bad, mem.label, res, 'list');
   }
+  const freshTotal = FL.pageTotal(res.json);
+  if (freshTotal != null) { total = freshTotal; totalSource = 'current_run'; }
   const page = FL.parsePage(res.json), now = Date.now();
-  await editProg(key, (p) => ({ ...(cursor ? p : {}), cursor, next: page.next_cursor, received: (cursor ? (moved ? job.received : p.received || 0) : 0) + page.users.length,
-    pages: (cursor ? p.pages || 0 : 0) + 1, total, emptyAt: null, limited: page.limited, at: now }));
+  const stalled = !!(cursor && page.next_cursor === cursor && !page.done);
+  await editProg(key, (p) => ({ ...(cursor && p.jobId === job.id ? p : {}), jobId: job.id, cursor, next: page.next_cursor, received: ctx.received + page.users.length,
+    pages: (cursor ? p.pages || 0 : 0) + 1, total, totalSource, countAttempted: !!prog.countAttempted, emptyAt: null, limited: page.limited, at: now }));
   await editSt((st) => {
     FL.logPage(FL.tally(st, now, page.users.length, 0), now, page.users.length);
     if (page.limited) st.note = '@' + job.seed + ' ' + job.direction + ' capped by Instagram; kept what it returned and moved on';
+    if (stalled) st.note = '@' + job.seed + ' ' + job.direction + ' repeated its page cursor; saved the returned people, but the list is partial';
   });
   if (page.limited) await trail('list capped', { seed: job.seed, direction: job.direction });
-  await queueDone('/api/ext/list-page', { job_id: job.id, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
-    next_cursor: page.next_cursor, done: page.done, total, limited: page.limited || undefined });
+  if (stalled) await trail('list cursor repeated', { seed: job.seed, direction: job.direction, cursor });
+  await queueDone('/api/ext/list-page', { job_id: job.id, lease_token: job.lease_token, requested_cursor: job.cursor || null, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
+    next_cursor: page.next_cursor, done: page.done, total, total_source: totalSource, limited: page.limited || undefined });
 }
 
 // ---- profile reads (bios) ----------------------------------------------------
@@ -416,11 +444,15 @@ async function runProfile(gen, job, tab) {
   await remember(p);
   await markSeen(p.handle);
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
-  await queueDone('/api/ext/profile', { job_id: job.id, profile: p });
+  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p });
 }
 
 // ---- the loop ----------------------------------------------------------------
 async function nextJob(kinds) {
+  await heartbeat(true);
+  if (mem.offline || mem.serverPaused) return { job: null, wait: 15e3 };
+  kinds = kinds.filter((kind) => FL.controlAllows(mem, kind));
+  if (!kinds.length) return { job: null, wait: 15e3 };
   const cur = await get('cur'), now = Date.now();
   if (cur && cur.job && now - cur.at < CUR_TTL) {
     if (kinds.includes(cur.job.kind)) return { job: cur.job };
@@ -429,10 +461,13 @@ async function nextJob(kinds) {
   if (cur) await set({ cur: null });
   let next;
   try {
-    next = (await api('/api/ext/next?kinds=' + kinds.join(','))).json || {};
+    const r = await api('/api/ext/next?kinds=' + kinds.join(','));
+    if (r.status !== 200 || !r.json || typeof r.json.paused !== 'boolean' || !r.json.stages || !Object.hasOwn(r.json, 'job'))
+      throw new Error('Lease response unavailable');
+    next = r.json;
     mem.offline = false; mem.backoff = 5e3;
   } catch { mem.offline = true; return { job: null, wait: (mem.backoff = Math.min(mem.backoff * 2, 60e3)) }; }
-  await applyServer({ paused: !!next.paused, budget: next.budget });
+  await applyServer(next);
   if (next.paused) return { job: null, wait: 15e3 };
   if (!next.job) return { job: null, wait: 30e3 };
   await set({ cur: { job: next.job, at: now } });
@@ -443,8 +478,8 @@ async function step(gen) {
   const now = Date.now();
   const st = await loadSt();
   mem.budgetDone = false; mem.laneWait = false;
-  if (st.hold || (await get('localPaused'))) return 15e3;
   if (!(await flushBox())) return (mem.backoff = Math.min(mem.backoff * 2, 60e3));
+  if (st.hold || (await get('localPaused'))) return 15e3;
   const lane = await get('lane');
   mem.laneWait = FL.laneBusy(lane, now);
   if (mem.laneWait) return lane.until - now;
@@ -473,6 +508,7 @@ async function loop() {
       let wait = 30e3;
       try { wait = await step(gen); } catch (e) {
         if (e instanceof Superseded) break;
+        if (e instanceof ControlPaused) { await sleep(15e3); continue; }
         const m = String((e && e.message) || e).slice(0, 200);
         await editSt((s) => { s.lastError = 'extension error: ' + m; });
         await trail('step threw', { err: m });
@@ -497,6 +533,7 @@ async function tabDom(tabId) {
   } catch { try { const tab = await chrome.tabs.get(tabId); return { url: tab.url, title: tab.title }; } catch { return null; } }
 }
 async function lookupViaPage(gen, handle, kind, near) {
+  await assertControl(kind);
   if (gen !== mem.gen) throw new Superseded();
   if (FL.laneBusy(await get('lane'), Date.now())) return { p: null, bad: { code: 'busy' } };
   const key = handle.toLowerCase(), url = IG + '/' + encodeURIComponent(handle) + '/', t0 = Date.now();
@@ -534,7 +571,12 @@ async function passive(user) {
   if (me && me.ig_id === p.ig_id && me.handle !== p.handle.toLowerCase()) { await set({ account: { ...me, handle: p.handle.toLowerCase() } }); mem.lastBeat = 0; }
   const w = waiters[p.handle.toLowerCase()];
   if (w) return w(p); // a lookup asked for this one; its job posts it
-  if (p.bio === null || !(await markSeen(p.handle))) return;
+  if (p.bio === null) return;
+  // Passive data from browsing is a new bio import. Respect the current stage
+  // control even though this path makes no extra Instagram request.
+  await heartbeat(true);
+  if (!FL.controlAllows(mem, 'profile') || await get('localPaused') || (await loadSt()).hold) return;
+  if (!(await markSeen(p.handle))) return;
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
   await queue('/api/ext/profile', { job_id: null, profile: p });
 }
@@ -555,7 +597,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     const body = msg.stage && (msg.action === 'pause' || msg.action === 'resume') ? { stage: msg.stage, action: msg.action } : undefined;
     api('/api/ext/control', body).then((r) => {
       const ctl = r.status === 200 && r.json && r.json.stages ? { ...r.json, got: Date.now() } : null;
-      if (ctl) set({ control: ctl });
+      if (ctl) {
+        set({ control: ctl });
+        const stages = Object.fromEntries(ctl.stages.map((s) => [s.id === 'lists' ? 'list' : s.id === 'bios' ? 'profile' : s.id, !s.paused]));
+        mem.stages = { ...(mem.stages || {}), ...stages };
+      }
       if (body) { trail('control ' + body.stage + ' ' + body.action); mem.lastBeat = 0; loop(); }
       reply({ control: ctl });
     }, () => get('control').then((c) => reply({ control: c || null, offline: true }), () => reply(null)));

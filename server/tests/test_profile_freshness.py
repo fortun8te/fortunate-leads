@@ -51,9 +51,14 @@ class ProfileFreshness(unittest.TestCase):
     def lease(self):
         return server.ext_next(self.conn, {'kinds': ['profile']}, {})['job']
 
+    def token(self, jid):
+        # The extension echoes the lease token it was handed with the job.
+        row = self.conn.execute('SELECT lease_token FROM jobs WHERE id=?', (jid,)).fetchone()
+        return row[0] if row else None
+
     def ingest(self, profile, job_id=None):
         with patch.object(db, 'now', return_value=NEW_AT):
-            return server.ext_profile(self.conn, {}, {'job_id': job_id, 'profile': profile})
+            return server.ext_profile(self.conn, {}, {'job_id': job_id, 'lease_token': self.token(job_id), 'profile': profile})
 
     def assert_old_profile(self, detail=None):
         p = self.detail() if detail is None else detail
@@ -103,14 +108,14 @@ class ProfileFreshness(unittest.TestCase):
 
     def test_terminal_failure_matches_job_and_keeps_last_successful_profile(self):
         jid = self.insert_job('leased', attempts=server.PROFILE_MAX_ATTEMPTS)
-        server.ext_error(self.conn, {}, {'job_id': jid, 'code': 'other', 'message': 'Profile timed out'})
+        server.ext_error(self.conn, {}, {'job_id': jid, 'lease_token': self.token(jid), 'code': 'other', 'message': 'Profile timed out'})
         self.assertEqual((self.job(jid)['state'], self.job(jid)['leased_until']), ('error', None))
         self.assert_old_profile(self.assert_read_state('failed', False))
 
     def test_retryable_error_returns_to_queue_without_claiming_freshness(self):
         self.request()
         jid = self.lease()['id']
-        server.ext_error(self.conn, {}, {'job_id': jid, 'code': 'other', 'message': 'Try later'})
+        server.ext_error(self.conn, {}, {'job_id': jid, 'lease_token': self.token(jid), 'code': 'other', 'message': 'Try later'})
         self.assertEqual(self.job(jid)['state'], 'queued')
         self.assert_old_profile(self.assert_read_state('queued', True))
 
@@ -158,7 +163,7 @@ class ProfileFreshness(unittest.TestCase):
         pid = db.upsert_person(self.conn, {'handle': 'alice_new', 'ig_id': '101'})
         self.conn.commit()
         self.assertEqual(pid, self.pid)
-        self.assert_read_state(None, False)
+        self.assert_read_state('queued', True)   # the open request followed the account and was re-queued
         self.request()
         self.assert_read_state('queued', True)
         self.assertEqual(self.conn.execute(
@@ -172,7 +177,8 @@ class ProfileFreshness(unittest.TestCase):
         self.assertNotEqual(new_pid, self.pid)
         self.assertEqual(self.detail()['handle'], f'alice~{self.pid}')
         self.assert_old_profile(self.assert_read_state(None, False))
-        self.assertEqual(self.detail(new_pid)['profile_read'], {'state': 'queued'})
+        # The request belonged to the old account; parking it cancelled the request for both.
+        self.assertIsNone(self.detail(new_pid)['profile_read'])
         with self.assertRaises(server.Bad):
             self.request(self.pid)
         self.assertEqual(self.conn.execute('SELECT count(*) FROM jobs').fetchone()[0], 1)
@@ -202,7 +208,7 @@ class ProfileFreshness(unittest.TestCase):
                 self.conn.commit()
                 self.request(unread)
                 jid = self.lease()['id']
-                server.ext_error(self.conn, {}, {'job_id': jid, 'code': code, 'message': code})
+                server.ext_error(self.conn, {}, {'job_id': jid, 'lease_token': self.token(jid), 'code': code, 'message': code})
                 p = self.detail(unread)
                 self.assertEqual(self.job(jid)['state'], 'done')
                 self.assertEqual(p['profile_read'], {'state': 'done'})

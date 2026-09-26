@@ -11,6 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import laya
 
 
+def healthy():
+    # The sidecar must name the exact checkpoint it serves.
+    return {'ok': True, 'model': laya.MODEL, 'deployment_version': laya.DEPLOYMENT_VERSION}
+
+
 def response(body):
     return io.BytesIO(json.dumps(body).encode())
 
@@ -19,10 +24,13 @@ class LayaFailureTest(unittest.TestCase):
     def setUp(self):
         laya.reset()
         self.addCleanup(laya.reset)
+        clock = patch.object(laya.time, 'monotonic', return_value=0.5)   # last_known() reads the clock
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def test_initial_probe_and_cache_work_at_clock_zero(self):
         self.assertIsNone(laya.last_known())
-        with patch.object(laya, '_open', side_effect=lambda *a: response({'ok': True})) as call:
+        with patch.object(laya, '_open', side_effect=lambda *a: response(healthy())) as call:
             self.assertTrue(laya.available(now=0))
             self.assertIs(laya.last_known(), True)
             self.assertTrue(laya.available(now=laya.HEALTH_TTL - 1))
@@ -35,7 +43,8 @@ class LayaFailureTest(unittest.TestCase):
             self.assertEqual(call.call_count, 3)
 
     def test_health_requires_explicit_boolean_true(self):
-        invalid = [None, [], True, {}, {'ok': False}, {'ok': None}, {'ok': 0}, {'ok': 1}, {'ok': 'true'}]
+        invalid = [None, [], True, {}, {'ok': False}, {'ok': None}, {'ok': 0}, {'ok': 1}, {'ok': 'true'},
+                   {'ok': True}, dict(healthy(), deployment_version='other')]
         for body in invalid:
             with self.subTest(body=body):
                 laya.reset()
@@ -59,7 +68,7 @@ class LayaFailureTest(unittest.TestCase):
                     self.assertEqual(call.call_count, 1)
 
     def test_failed_probe_retries_after_ttl(self):
-        with patch.object(laya, '_open', side_effect=[response({}), response({'ok': True})]) as call:
+        with patch.object(laya, '_open', side_effect=[response({}), response(healthy())]) as call:
             self.assertFalse(laya.available(now=0))
             self.assertFalse(laya.available(now=laya.HEALTH_TTL - 1))
             self.assertEqual(call.call_count, 1)
@@ -85,20 +94,20 @@ class LayaFailureTest(unittest.TestCase):
                     self.assertEqual(laya.decide([{'id': 1}]), {})
                     self.assertIs(laya.last_known(), False)
 
-    def test_later_failed_batch_preserves_earlier_answers_and_stops(self):
-        good = {'results': [{'id': '1', 'answers': {'creator': {'p': .2}}}]}
+    def test_any_failed_batch_discards_the_whole_decision(self):
+        good = {'model': laya.MODEL, 'deployment_version': laya.DEPLOYMENT_VERSION,
+                'results': [{'id': '1', 'answers': {'creator': {'p': .2}}}]}
         with patch.object(laya, 'BATCH', 1), \
                 patch.object(laya, '_open', side_effect=[response(good), response({'results': 1})]) as call:
-            self.assertEqual(laya.decide([{'id': 1}, {'id': 2}, {'id': 3}]), {1: {'creator': .2}})
-            self.assertEqual(call.call_count, 2)
+            self.assertEqual(laya.decide([{'id': 1}, {'id': 2}, {'id': 3}]), {})
+            self.assertLessEqual(call.call_count, 2)   # stops at the first bad batch
             self.assertIs(laya.last_known(), False)
 
-    def test_non_finite_id_does_not_discard_valid_rows(self):
-        body = {'results': [{'id': float('inf'), 'answers': {}},
-                            {'id': '2', 'answers': {'creator': {'p': .2}}}]}
+    def test_unexpected_ids_reject_the_batch(self):
+        body = {'model': laya.MODEL, 'deployment_version': laya.DEPLOYMENT_VERSION,
+                'results': [{'id': float('inf'), 'answers': {}}]}
         with patch.object(laya, '_open', return_value=response(body)):
-            self.assertEqual(laya.decide([{'id': 2}]), {2: {'creator': .2}})
-
+            self.assertEqual(laya.decide([{'id': 2}]), {})
 
 if __name__ == '__main__':
     unittest.main()

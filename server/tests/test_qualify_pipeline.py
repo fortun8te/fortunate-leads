@@ -5,6 +5,7 @@ import re
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -28,7 +29,8 @@ class Proxy(BaseHTTPRequestHandler):
         Proxy.bodies.append(body)
         user = body['messages'][1]['content']
         ids = [int(x) for x in re.findall(r'### id=(\d+)', user)]
-        res = [{'id': i, 'role': 'buyer', 'fit': 82, 'niche': 'Skincare', 'brand_handle': '@glowco', 'decision_maker': True,
+        handles = re.findall(r'### id=\d+\n@([^\s·]+)', user)
+        res = [{'id': i, 'handle': handles[i], 'role': 'buyer', 'fit': 82, 'niche': 'Skincare', 'brand_handle': '@glowco', 'decision_maker': True,
                 'evidence': ['founder of glow', 'invented quote'], 'reason': 'Runs a skincare brand.'} for i in ids if i not in Proxy.drop]
         content = json.dumps({'results': res} if len(ids) > 1 else res[0] if res else {})
         data = json.dumps({'model': body['model'], 'choices': [{'message': {'content': content}}]}).encode()
@@ -42,12 +44,13 @@ class Pipeline(unittest.TestCase):
     def setUp(self):
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.old = q.PROXY
-        q.PROXY = f'http://127.0.0.1:{self.httpd.server_address[1]}/api/v1/chat/completions'
+        self.pool = q.llm.Providers(keys=[], proxy=f'http://127.0.0.1:{self.httpd.server_address[1]}/api/v1/chat/completions')
+        self.provider_patch = patch.object(q.llm, 'get', return_value=self.pool)
+        self.provider_patch.start()
         Proxy.bodies, Proxy.drop = [], set()
 
     def tearDown(self):
-        q.PROXY = self.old
+        self.provider_patch.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -63,7 +66,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(q.prefilter(person, ['a'], None, 100), round(0.75 * plain + 25))   # Laya: one soft weighted signal
 
     def test_batched_verdicts_with_rubric_fewshot_and_evidence(self):
-        items = [{'person': P(f'glow{i}', 'Founder of Glow skincare, ships to the USA'), 'tags': [('Founder', 'signal')], 'edges': [],
+        items = [{'person': P(f'glow{i}', 'Founder of Glow skincare brand @glowco, ships to the USA'), 'tags': [('Founder', 'signal')], 'edges': [],
                   'net': {'seeds': [('seedx', 'following')], 'lists': 1, 'me': 'follows', 'seed_yield': 0.5, 'seed_marked': 6,
                           'client_seeds': 1}} for i in range(6)]
         ex = [{'handle': 'goodbrand', 'bio': 'Founder @goodbrand candles', 'label': 'good'},
@@ -75,6 +78,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn('Marked Interested', sysmsg)
         self.assertIn('@goodbrand', sysmsg)
         self.assertIn('Scoring rubric', sysmsg)
+        self.assertIn('Bios may be in Dutch', sysmsg)
         self.assertIn('Followed BY these operators', user)
         self.assertIn('follows Michael', user)
         self.assertIn('marked good/client', user)
@@ -87,11 +91,14 @@ class Pipeline(unittest.TestCase):
         self.assertIn(('Skincare', 'niche'), v['tags'])
         self.assertEqual(v['prompt'], q.prompt_version(ex))
         self.assertNotEqual(q.prompt_version(ex), q.prompt_version(ex[:1]))
+        self.assertNotEqual(q.prompt_version(ex), q.prompt_version([dict(ex[0], bio='Changed bio'), ex[1]]))
+        self.assertEqual(q._evidence({'evidence': ['External Cat', 'founder of glow']},
+                                     dict(items[0]['person'], category='External Cat')), ['founder of glow'])
 
     def test_single_verdict_still_works_and_down_is_none(self):
-        v = q.llm_verdict(P('glow', 'Founder of Glow skincare'), [], [], models=('m/a:free',))
+        v = q.llm_verdict(P('glow', 'Founder of Glow skincare brand @glowco'), [], [], models=('m/a:free',))
         self.assertEqual(v['role'], 'buyer')
-        q.PROXY = 'http://127.0.0.1:9/none'
+        self.pool.proxy = 'http://127.0.0.1:9/none'
         self.assertIsNone(q.llm_verdict(P('x', 'bio'), [], [], timeout=1, models=('m/a:free',)))
 
 

@@ -529,7 +529,7 @@ function snapshot() {
   timer(OPS, HOUR, snapshot);
   const st = store.st || {};
   hourly.push({ t: V.now, list: igLog.filter((e) => e.kind === 'list').length, profile: igLog.filter((e) => e.kind === 'profile').length,
-    pages: serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && !(e.resp && e.resp.duplicate)).length,
+    pages: serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && !(e.resp && (e.resp.duplicate || e.resp.stale))).length,
     view: store.view ? store.view.text : '', cool: coolOf(st) });
 }
 
@@ -634,21 +634,21 @@ async function report(seeds) {
     const same = srv.size === got.size && [...srv].every((x) => got.has(x));
     const expect = s.private ? 0 : s.capped ? 49 : s.size;
     const parked = ['queued', 'running'].includes(L.state) && (cool.list.until > END || endSt.hold);
-    const terminal = L.state === 'done' || L.state === 'private';
+    const terminal = L.state === 'done' || L.state === 'private' || (s.capped && L.state === 'partial');
     rows.push({ list: '@' + s.handle + ' ' + s.direction, size: s.private ? 'private' : s.capped ? `${s.size} (cap 49)` : s.size,
-      pages: (served[key] || {}).pages_good || 0, served: srv.size, edges: got.size, state: L.state + (L.state === 'done' && s.capped ? ' (limited)' : ''),
-      total: L.total, ok: same && (terminal ? (L.state !== 'done' || got.size === expect) : parked) });
+      pages: (served[key] || {}).pages_good || 0, served: srv.size, edges: got.size, state: L.state + (s.capped && L.state === 'partial' ? ' (limited)' : ''),
+      total: L.total, ok: same && (terminal ? (L.state === 'private' || got.size === expect) : parked) });
     check(terminal || parked, 'list terminal or parked in cooldown', `${key} state=${L.state}`);
-    if (terminal && L.state === 'done') check(got.size === expect, 'done list complete', `${key} ${got.size}/${expect}`);
+    if (terminal && L.state !== 'private') check(got.size === expect, 'terminal list has expected coverage', `${key} ${got.size}/${expect}`);
     check(same, 'edges == unique users served', `${key} edges ${got.size} vs served ${srv.size}`);
   }
   check(db.edge_rows === db.edge_distinct, 'no duplicate edge rows', `${db.edge_rows} rows / ${db.edge_distinct} distinct`);
-  // 2. resent pages: duplicates acknowledged, never double counted
-  const dups = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.resp && e.resp.duplicate);
-  check(dups.length >= FAULT.dropResponse.size + 1, 'resent list pages answered as duplicates', `${dups.length} duplicate answers`);
+  // 2. saved-cursor or lease-token replays are stale; legacy exact duplicates are also safe.
+  const dups = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.resp && (e.resp.duplicate || e.resp.stale));
+  check(dups.length >= FAULT.dropResponse.size + 1, 'resent list pages acknowledged as stale or duplicate', `${dups.length} safe replay answers`);
   for (const d of dups) {
     const first = serverLog.find((e) => e.path === d.path && e !== d && e.t <= d.t && JSON.stringify(e.body) === JSON.stringify(d.body) && e.status === 200);
-    check(first && first.resp && first.resp.received === d.resp.received, 'duplicate did not change the count',
+    check(first && first.resp && first.resp.received === d.resp.received, 'replayed page did not change the count',
       `${d.body.seed}/${d.body.direction} ${first && first.resp && first.resp.received} -> ${d.resp.received}`);
   }
   // 3. cursors resume after restarts; no list ever restarted from the top
@@ -656,7 +656,7 @@ async function report(seeds) {
     const next = igLog.find((e) => e.kind === 'list' && e.list === x.list && e.t > x.after);
     if (x.done) check(!next, 'finished list not requested again after restart', x.list);
     else check(next && next.maxId === x.want, x.type, `${x.list} wanted max_id=${x.want} got ${next ? next.maxId : 'no request'}${next ? ' at ' + dhm(next.t) : ''}`);
-    if (x.dupKey) check(serverLog.some((e) => e.t > x.after && e.path + ' ' + JSON.stringify(e.body) === x.dupKey && e.resp && e.resp.duplicate),
+    if (x.dupKey) check(serverLog.some((e) => e.t > x.after && e.path + ' ' + JSON.stringify(e.body) === x.dupKey && e.resp && (e.resp.duplicate || e.resp.stale)),
       'page in flight at restart re-sent from the outbox', x.list);
   }
   for (const s of seeds) {
@@ -726,9 +726,9 @@ async function report(seeds) {
   console.log(pad('list', 34) + lpad('size', 11) + lpad('pages', 7) + lpad('served', 8) + lpad('edges', 7) + '  ' + pad('state', 16) + 'ok');
   for (const r of rows) console.log(pad(r.list, 34) + lpad(r.size, 11) + lpad(r.pages, 7) + lpad(r.served, 8) + lpad(r.edges, 7) + '  ' + pad(r.state, 16) + (r.ok ? 'yes' : 'NO'));
   const kinds = (k) => igLog.filter((e) => e.kind === k).length;
-  const freshPages = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && !(e.resp && e.resp.duplicate)).length;
+  const freshPages = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && !(e.resp && (e.resp.duplicate || e.resp.stale))).length;
   console.log('\nIG requests    ' + `${kinds('list')} list, ${kinds('profile')} bio (/info/), ${kinds('page')} profile page loads, ${kinds('nav')} tab loads/reloads`);
-  console.log('pages          ' + `${freshPages} list pages ingested (${counters.listPagePosts} posts incl. ${dups.length} duplicates)`);
+  console.log('pages          ' + `${freshPages} list pages ingested (${counters.listPagePosts} posts incl. ${dups.length} safe replays)`);
   console.log('people         ' + `${db.people} people, ${db.edge_rows} edges, ${db.bios} bios read`);
   console.log('hits           ' + hits.map((h) => `${dhm(h.at)} ${h.bucket}/${h.inject}`).join(', '));
   console.log('cooldown       ' + `lists ${cdMin('list')} min, bios ${cdMin('profile')} min, hit pauses ${cdMin('*')} min (within the run)`);
@@ -859,7 +859,7 @@ async function lanesMain(N) {
   // connections so far (edges added by fresh pages) and the stop condition: every list done
   let t10k = null, tDone = null;
   const countConns = () => {
-    const conns = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && e.resp && !e.resp.duplicate).reduce((a, e) => a + (e.body.users || []).length, 0);
+    const conns = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && e.resp && !e.resp.duplicate && !e.resp.stale).reduce((a, e) => a + (e.body.users || []).length, 0);
     if (t10k == null && conns >= TARGET) { t10k = V.now - START; ev('10k connections', { h: (t10k / HOUR).toFixed(2) }); }
   };
   const watch = () => {

@@ -39,12 +39,13 @@ class BugTest(Base):
         self.assertIsNotNone(self.call('/api/scraper')[1]['ext']['cooldown_until'])
 
     def test_search_underscore_and_percent_are_literal(self):
-        for h in ('a_b', 'axb', 'c%d', 'cxd'):
+        for h in ('a_b', 'axb', 'cxd'):
             db.upsert_person(self.conn, {'handle': h})
+        db.upsert_person(self.conn, {'handle': 'literal_percent', 'name': 'c%d'})
         self.conn.commit()
         rows = lambda q: sorted(r['handle'] for r in self.call('/api/leads?q=' + q)[1]['rows'])  # noqa: E731
         self.assertEqual(rows('a_b'), ['a_b'])
-        self.assertEqual(rows('c%25d'), ['c%d'])
+        self.assertEqual(rows('c%25d'), ['literal_percent'])
 
     def test_planner_skips_parked_handles(self):
         db.upsert_person(self.conn, {'handle': 'shop', 'ig_id': '1'})
@@ -62,8 +63,8 @@ class BugTest(Base):
         job = self.call('/api/ext/next')[1]['job']
         self.page(job, [{'ig_id': '1', 'handle': 'x'}], done=True)
         self.page(job, [{'ig_id': '2', 'handle': 'y'}], cursor='late')
-        self.assertEqual(self.conn.execute("SELECT state, cursor FROM lists WHERE seed='brand'").fetchone()[:], ('done', None))
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM edges WHERE seed='brand'").fetchone()[0], 1)  # terminal-job retries cannot introduce new edges
+        self.assertEqual(self.conn.execute("SELECT state, cursor FROM lists WHERE seed='brand'").fetchone()[:], ('partial', None))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM edges WHERE seed='brand'").fetchone()[0], 1)  # stale unleased rows do not alter observed membership
 
     def test_unknown_person_is_404(self):
         self.assertEqual(self.call('/api/person/999')[0], 404)

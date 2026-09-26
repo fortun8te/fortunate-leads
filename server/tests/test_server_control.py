@@ -65,7 +65,9 @@ class ControlTest(LaneTest):
         self.assertFalse(db.get_setting(self.conn, 'qualify'))
         self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))   # would otherwise switch itself back on
         out = self.ctl(stage='all', action='resume')
-        self.assertFalse(any(s['paused'] for s in out['stages']))
+        # Resume all restarts collection; AI model calls keep their own explicit switch.
+        self.assertFalse(any(s['paused'] for s in out['stages'] if s['id'] != 'ai'))
+        self.assertFalse(db.get_setting(self.conn, 'qualify'))
 
     def test_account_pause_and_waits(self):
         self.post('a', '/api/ext/heartbeat', {'version': '3.7.0', 'state': 'running'})
