@@ -318,7 +318,7 @@ main { flex: 1; min-height: 0; position: relative; }
 /* One grid shared by the header and every row. */
 .thead, .row {
   display: grid; align-items: center; column-gap: var(--s4); padding: 0 var(--s5);
-  grid-template-columns: var(--av) minmax(240px, 2fr) 88px minmax(140px, 1fr) minmax(120px, .9fr) 56px 92px;
+  grid-template-columns: var(--av) minmax(220px, 1.5fr) 88px minmax(120px, .8fr) minmax(220px, 1.7fr) 56px 92px;
 }
 .thead { height: 36px; flex: none; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line2); background: var(--bg1); font-size: var(--fs-sm); font-weight: 500; color: var(--fg3); }
 .thead .c-sel { display: flex; align-items: center; justify-content: center; height: auto; }
@@ -1095,3 +1095,13 @@ button:disabled { cursor:default; opacity:.5; }
 .acc-more > summary { margin-top: 8px; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
+
+/* Tags carry the judgement: good signs green, product niche blue, red flags red. Two lines of tags per row. */
+:root { --tag-good: #1f6f3a; --tag-good-fg: #d9f7e3; --tag-bad: #6e2323; --tag-bad-fg: #ffdcdc; --tag-niche: #1f4a78; --tag-niche-fg: #dcecff; }
+:root[data-theme="light"] { --tag-good: #d4f2dd; --tag-good-fg: #11502a; --tag-bad: #fbdcdc; --tag-bad-fg: #7a1c1c; --tag-niche: #d9e8fb; --tag-niche-fg: #173d66; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --tag-good: #d4f2dd; --tag-good-fg: #11502a; --tag-bad: #fbdcdc; --tag-bad-fg: #7a1c1c; --tag-niche: #d9e8fb; --tag-niche-fg: #173d66; } }
+.tag.t-good, .tchip.t-good { background: var(--tag-good); color: var(--tag-good-fg); font-weight: 600; box-shadow: none; }
+.tag.t-bad, .tchip.t-bad { background: var(--tag-bad); color: var(--tag-bad-fg); font-weight: 600; box-shadow: none; }
+.tag.t-niche, .tchip.t-niche { background: var(--tag-niche); color: var(--tag-niche-fg); font-weight: 500; box-shadow: none; }
+.row .tags { display: flex; flex-wrap: wrap; align-content: center; gap: 4px; max-height: calc(var(--row) - 8px); overflow: hidden; }
+.d-tag-edit { margin-top: var(--s2); display: grid; gap: var(--s2); }

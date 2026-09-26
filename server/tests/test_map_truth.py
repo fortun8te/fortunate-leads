@@ -113,7 +113,7 @@ class MapTruthTest(unittest.TestCase):
         graph = server.api_map(self.conn, {'scope': ['all'], 'limit': ['50000']}, None)
         elapsed = time.monotonic() - started
         leads = [n for n in graph['nodes'] if n['kind'] == 'lead']
-        self.assertEqual((graph['total'], graph['limit'], len(leads)), (count, 3000, 3000))
+        self.assertEqual((graph['total'], graph['limit'], len(leads)), (count, 10000, 10000))
         self.assertEqual(len({n['id'] for n in graph['nodes']}), len(graph['nodes']))
         self.assertEqual({l['state'] for l in graph['links']}, {'observed', 'absent', 'unverified'})
         by_id = {n['id']: n for n in graph['nodes']}

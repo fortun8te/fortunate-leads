@@ -1,5 +1,6 @@
 import argparse
 import biofetch
+import deepscout
 import websearch
 import collections
 from concurrent.futures import ThreadPoolExecutor
@@ -552,6 +553,13 @@ NOT_ME = 'p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)'
 TAG_ORDER = ("CASE t.source WHEN 'manual' THEN 0 WHEN 'rule' THEN 1 ELSE 2 END, "
              "CASE t.grp WHEN 'role' THEN 0 WHEN 'niche' THEN 1 WHEN 'signal' THEN 2 WHEN 'size' THEN 3 ELSE 4 END, t.tag")
 MAP_TAGS = 4
+# The map colours each person by the judgement in their full tag set (kept in step with GOOD_TAGS / BAD_TAGS in web/app.js).
+JUDGE_BAD = {'Too big', 'Other market', 'Scout: No', 'Not reachable', 'Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer'}
+JUDGE_GOOD = {'Scout: Strong', 'Scout: Possible', 'AI: Top fit', 'AI: Decision maker', 'Founder', 'Brand', 'Store', 'Shopify', 'Shop Link'}
+
+
+def judge(tagset):
+    return 'bad' if tagset & JUDGE_BAD else 'good' if tagset & JUDGE_GOOD else None
 
 
 def chunks(ids, n=900):
@@ -763,7 +771,8 @@ def api_person(conn, q, b, pid):
     profile_read = {'state': {'leased': 'reading', 'error': 'failed'}.get(job['state'], job['state'])} if job else None
     return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), edge_history=edge_history_of(conn, pid),
                 verdict=verdict, note=row['note'], site=qual_api.site_row(conn, pid),
-                activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read)
+                activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read,
+                scout=deepscout.result(conn, pid))
 
 
 KEEP = object()   # "leave this field as it is"
@@ -1114,7 +1123,7 @@ def api_connections(conn, q, b):
 
 
 def map_graph(conn, q):
-    limit = min(3000, max(10, qint(q, 'limit') or 400))
+    limit = min(10000, max(10, qint(q, 'limit') or 400))
     # The general lead seed filter intentionally includes discovery history. On the map,
     # a seed filter must mean an observed connection to that seed.
     where, args = lead_filter({k: v for k, v in q.items() if k != 'seed'})
@@ -1144,7 +1153,7 @@ def map_graph(conn, q):
                          'LEFT JOIN marks m ON m.person_id=p.id').fetchall()
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
-    links, seeds_of, tags = [], {}, {}
+    links, seeds_of, tags, alltags = [], {}, {}, {}
     for chunk in chunks(node_of):
         marks = ','.join('?' * len(chunk))
         for e in conn.execute(f'SELECT e.*,v.active,v.observed_at,v.checked_at FROM edges e '
@@ -1156,6 +1165,7 @@ def map_graph(conn, q):
             if e['active'] == 1 and e['seed'] not in seeds_of.setdefault(e['person_id'], []):
                 seeds_of[e['person_id']].append(e['seed'])
         for t in conn.execute(f'SELECT t.person_id, t.tag FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
+            alltags.setdefault(t['person_id'], set()).add(t['tag'])
             if len(tags.setdefault(t['person_id'], [])) < MAP_TAGS:
                 tags[t['person_id']].append(t['tag'])
     nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
@@ -1168,7 +1178,7 @@ def map_graph(conn, q):
                'score': r['score'], 'business_fit': round(r['content_fit']) if r['content_fit'] is not None else None,
                'connection_strength': qualify.network_strength(nets[r['id']]), 'reason': r['reason'],
                'relationship': nets[r['id']]['me'],
-               'tags': tags.get(r['id'], []),
+               'tags': tags.get(r['id'], []), 'judge': judge(alltags.get(r['id'], set())),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
     return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
@@ -1723,8 +1733,11 @@ def network_context(conn, pids, me=None):
         "FROM current_edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
     good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
                                                "WHERE m.status IN " + POSITIVE_SQL)}
-    out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0} for p in pids}
+    out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0, 'followers': None}
+           for p in pids}
     for chunk in chunks(pids):
+        for r in conn.execute(f"SELECT id, followers FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+            out[r['id']]['followers'] = r['followers']
         for e in conn.execute(f"SELECT person_id, seed, direction FROM current_edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
                               'ORDER BY seed, direction', chunk):
             out[e['person_id']]['seeds'].append((e['seed'], e['direction']))
@@ -1875,6 +1888,7 @@ def requalify(conn, p, me, net=None):
     # Laya probabilities are uncalibrated and have no separate tag provenance.
     # Use the fit as a ranking hint only; rule and LLM tags keep their own evidence.
     conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in auto])
+    deepscout.retag(conn, p['id'])   # the agent's findings outlive rule passes
     if keep_llm:
         refresh_network(conn, [p['id']], me=me, nets={p['id']: net} if net is not None else None)
         # The verdict is current for this profile revision even when the reblend changed nothing;
@@ -2072,6 +2086,7 @@ def run_llm(conn, rows, skip):
             conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
             conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')",
                              [(p['id'], t, g) for t, g in it['fresh_auto'] + (v.get('tags') or [])])
+            deepscout.retag(conn, p['id'])
             wrote += 1
     if wrote:
         db.set_setting(conn, 'llm_rev', (db.get_setting(conn, 'llm_rev') or 0) + 1)
@@ -2385,7 +2400,8 @@ def background_qualify(conn):
 
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
-    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10)]
+    scouts = deepscout.ScoutPool(CFG['db'])
+    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 

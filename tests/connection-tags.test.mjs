@@ -52,8 +52,8 @@ test('a mention remains visible alongside a separately observed follow', () => {
 test('detail shows the automatic mention tag and preserves manual source tags', () => {
   const ui = mount([mention, { tag: 'Already know them', grp: 'source', source: 'manual' }]);
   vm.runInContext('renderDetail()', ui.context);
-  // Manual tags render again, removable, inside the Edit tags disclosure.
-  assert.deepEqual(ui.renderedTags, ['Already know them', 'mentions you', 'Already know them']);
+  // Each tag renders once; the manual one carries its remove button.
+  assert.deepEqual(ui.renderedTags, ['Already know them', 'mentions you']);
   assert.match(ui.detail.innerHTML, /class="you-line">Mentions you/);
   assert.equal(ui.person.edges.length, 0);
 });

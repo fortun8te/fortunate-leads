@@ -847,14 +847,21 @@ const rowH = () => parseFloat(css('--row')) || 64;
 // min = how they were found and audience size. Everything else sits in between.
 const TOP_TAGS = new Set(['AI: Top fit', 'Fit: strong']);
 const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
+// Colour carries the judgement: green = reasons to reach out, red = reasons not to, blue = what they sell.
+const GOOD_TAGS = new Set(['Scout: Strong', 'Scout: Possible', 'AI: Top fit', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market',
+  'Founder', 'Brand', 'Store', 'Shopify', 'Shop Link', 'US', 'US market', 'NL', 'UK', 'DTC', 'Ecom', 'Already know them', 'follows you', 'mutual']);
+const BAD_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Creator', 'Coach', 'Agency', 'Personal', 'SaaS',
+  'Freelancer', 'Celebrity', 'Not DTC']);
 function tagTier(t) {
   const name = tagName(t);
-  if (TOP_TAGS.has(name)) return 'top';
+  if (BAD_TAGS.has(name)) return 'bad';
+  if (GOOD_TAGS.has(name) || TOP_TAGS.has(name)) return 'good';
+  if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'ai' || t.grp === 'niche' || KEY_TAGS.has(name)) return 'key';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return '';
 }
-const TIER_ORDER = { top: 0, key: 1, '': 2, min: 3 };
+const TIER_ORDER = { good: 0, bad: 1, niche: 2, top: 3, key: 4, '': 5, min: 6 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
@@ -888,7 +895,7 @@ function rowHTML(r, i, h) {
     <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}<small class="priority">Priority ${r.score == null ? '–' : esc(r.score)}</small></div>
     <div class="conn c-conn">${connHTML(r)}</div>
-    <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
+    <div class="tags c-tags">${tags.slice(0, 6).map((t) => tagChip(t)).join('')}${tags.length > 6 ? `<span class="more">+${tags.length - 6}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <span class="c-st">${statHTML(r.status)}</span>
     <div class="mnum">${fitBadge(r)}<span>Priority ${r.score == null ? '–' : esc(r.score)} · Connection ${r.connection_strength == null ? '–' : esc(r.connection_strength)}</span>${statHTML(r.status)}</div>
@@ -1170,6 +1177,15 @@ function seedEdges(edges) {
   return [...m];
 }
 const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
+// The Hermes leadscout's final read: verdict, two sentences and the pages it used.
+function scoutHTML(sc) {
+  if (!sc) return '';
+  const label = { strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict;
+  const cls = sc.verdict === 'no' || !sc.reachable ? 't-bad' : 't-good';
+  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+    <p class="d-reason">${esc(sc.summary || '')}</p>
+    ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
+}
 function websiteEvidence(site) {
   if (!site) return '';
   const url = safeUrl(site.final_url) || safeUrl(site.url);
@@ -1254,6 +1270,7 @@ function renderDetail() {
       <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
       ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}</div>
     ${workflowSummaryHTML(p)}
+    ${scoutHTML(p.scout)}
     <div class="d-sec"><h4>Connections<span class="grow"></span><span class="num">${n ? 'Observed in ' + plural(n, 'list') : ''}</span></h4>
       ${you ? `<div class="you-line">${you}</div>` : ''}
       <div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => { const at = edges.filter((e) => e.seed === seed).map((e) => e.observed_at).filter(Boolean).sort().slice(-1)[0]; return `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual follow observed' : d.has('following') ? 'Seed followed them when checked' : d.has('followers') ? 'They followed seed when checked' : ''}${at ? ` · Seen ${esc(at.slice(0, 10))}` : ''}</span></button>`; }).join('') : '<span class="muted">No recently verified follows</span>'}</div>
@@ -1269,11 +1286,10 @@ function renderDetail() {
         <p class="muted profile-freshness">${esc(profile.source)}</p>
         ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}</details></div>
     ${websiteEvidence(p.site)}
-    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, false)).join('') : '<span class="muted">None</span>'}</div>
-      <details class="adv d-disclosure" data-detail-section="tags" data-owner="${p.id}" ${view.sections.tags ? 'open' : ''}><summary id="d-tags-summary">Edit tags</summary>
-        ${tags.some((t) => t.source === 'manual') ? `<div class="d-tags">${tags.filter((t) => t.source === 'manual').map((t) => tagChip(t, true)).join('')}</div>` : ''}
+    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
+      <div class="d-tag-edit">
         <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add tag" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
-        ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</details></div>
+        ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div></div>
     <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
     <div class="d-sec"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>${workflowHTML(p)}`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
@@ -2623,6 +2639,7 @@ $('#ql-list').addEventListener('click', (e) => {
 
 // ---------- map ----------
 const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
+const JUDGE_COLOR = { good: '#3fb950', bad: '#f0524f' };
 // Profile photos for the map, pre-cropped to circles on small canvases.
 const MAP_PIC_LIMIT = 3200;
 const PICS = new Map(); let picsLoading = 0; const picQueue = [];
@@ -2695,7 +2712,7 @@ const M = {
   reloadSoon: debounce(() => M.load(), 250),
   url() {
     const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
-    p.set('scope', this.scope); p.set('limit', this.scope === 'all' ? 3000 : 800);
+    p.set('scope', this.scope); p.set('limit', this.scope === 'all' ? 10000 : 3000);
     return '/api/map?' + p;
   },
   async load(poll) {
@@ -2792,14 +2809,14 @@ const M = {
     if (this.sim) this.sim.stop();
     const F = window.d3;
     if (!F?.forceSimulation) { this.status('Map library missing'); return; }
-    const big = this.nodes.length > 2500;
+    const big = this.nodes.length > 2500, huge = this.nodes.length > 6000;   // 10k people: shorter reach, faster settle
     this.seedLinks.forEach((l) => { l.ss = true; });
     const all = [...this.links, ...this.seedLinks];
     this.sim = F.forceSimulation(this.nodes)
       .force('link', F.forceLink(all).id((n) => n.id)
         .distance((l) => l.ss ? 520 - 360 * Math.sqrt(l.shared / this.maxShared) : l.source.r + 26 + (l.target.L > 1 ? 30 : 10) + Math.sqrt(l.source.vis || 1) * 1.6)
         .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : 0.9 / Math.max(1, l.target.L)))
-      .force('charge', F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -14).distanceMax(big ? 200 : 300).theta(big ? 1.1 : 0.9))
+      .force('charge', F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -14).distanceMax(huge ? 120 : big ? 200 : 300).theta(huge ? 1.3 : big ? 1.1 : 0.9))
       .force('seeds', (alpha) => {
         // Seeds repel only each other, so leads can sit close to their seeds.
         const ss = this.seeds;
@@ -2812,7 +2829,7 @@ const M = {
       })
       .force('collide', F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 1.8).iterations(1).strength(0.8))
       .force('x', F.forceX(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004)).force('y', F.forceY(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004))
-      .alpha(alpha).alphaDecay(big ? 0.055 : 0.035).alphaMin(big ? 0.012 : 0.001).velocityDecay(0.42)
+      .alpha(alpha).alphaDecay(huge ? 0.08 : big ? 0.055 : 0.035).alphaMin(huge ? 0.02 : big ? 0.012 : 0.001).velocityDecay(0.42)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
     if (alpha >= 1) {
@@ -2955,8 +2972,10 @@ const M = {
       }
       c.setLineDash([]);
     };
-    edgePass(false, dim ? 0.03 : 0.1);
-    c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : this.leads.length > 1500 ? 0.22 : 0.34);
+    // Crowded maps fade the single-list lines so clusters and coloured dots stay readable.
+    const crowd = this.leads.length > 5000 ? 0.4 : this.leads.length > 1500 ? 0.7 : 1;
+    edgePass(false, dim ? 0.03 : 0.1 * crowd);
+    c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
     if (hd) {
       c.globalAlpha = 0.85; c.strokeStyle = fg2; c.lineWidth = 1.2 / k; c.beginPath();
       for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
@@ -2972,9 +2991,14 @@ const M = {
       for (const n of this.leads) if (inView(n) && filter(n)) circle(n, Math.max(n.r, minPx));
       c.fill();
     };
+    // Tags decide the colour: green = good signs, red = red flags; everyone else stays grey by fit. Judged dots draw on top.
     for (const f of [...FITS].reverse()) {
-      if (dim) pass((n) => !on(n) && n.fit === f, fitColor[f], 0.18);
-      pass((n) => on(n) && n.fit === f, fitColor[f], 1);
+      if (dim) pass((n) => !on(n) && !n.judge && n.fit === f, fitColor[f], 0.18);
+      pass((n) => on(n) && !n.judge && n.fit === f, fitColor[f], 1);
+    }
+    for (const [j, color] of [['bad', JUDGE_COLOR.bad], ['good', JUDGE_COLOR.good]]) {
+      if (dim) pass((n) => !on(n) && n.judge === j, color, 0.2);
+      pass((n) => on(n) && n.judge === j, color, 1);
     }
     // Photos on top of the dots once they are big enough to read.
     for (const n of this.leads) {
@@ -3046,10 +3070,10 @@ const M = {
     else if (match && match.size) cand = this.matches;
     else cand = this.leads;
     const view = (n) => { const x = sx(n), y = sy(n); return x > -50 && x < this.w + 50 && y > -20 && y < this.h + 20; };
-    const imp = (n) => n.L * 10 + (MARKED.has(n.status) ? 25 : 0) + ({ strong: 12, good: 6 }[n.fit] || 0) + Math.log10((n.followers || 1) + 1);
+    const imp = (n) => n.L * 10 + (MARKED.has(n.status) ? 25 : 0) + (n.judge === 'good' ? 20 : n.judge === 'bad' ? -10 : 0) + ({ strong: 12, good: 6 }[n.fit] || 0) + Math.log10((n.followers || 1) + 1);
     cand = cand.filter((n) => n && n.kind !== 'seed' && view(n));
     const few = this.leads.length <= 120;
-    if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong');
+    if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong' || n.judge === 'good');
     cand.sort((a, b) => imp(b) - imp(a));
     const max = hd || (match && match.size) || few ? 160 : Math.round(Math.min(120, (this.w * this.h / 26000) * Math.max(1, k * k)));
     let shown = 0;
