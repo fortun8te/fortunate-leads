@@ -12,15 +12,20 @@ runs only while AI scoring is on) and scout_workers (agents at once, default 3).
 from __future__ import annotations
 
 import json
+import http.client
+import ipaddress
 import os
 import re
 import shlex
+import socket
+import ssl
 import subprocess
 import threading
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import db
 import qualify
@@ -63,12 +68,18 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research(person_id INTEGER PRIMARY K
   followers_at_check INTEGER, is_private_at_check INTEGER, verified INTEGER NOT NULL DEFAULT 0,
   verification_reason TEXT, retry_after TEXT)"""
 RUNS_SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research_runs(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL,
-  at TEXT NOT NULL, model TEXT, outcome TEXT NOT NULL, raw TEXT, verification_reason TEXT)"""
+  at TEXT NOT NULL, model TEXT, outcome TEXT NOT NULL, raw TEXT, verification_reason TEXT, retry_after TEXT)"""
 RETRY_HOURS = 1
 MAX_EVIDENCE = 4
-POSITIVE_TERMS = re.compile(r'\b(founder|founded|owner|ceo|brand|products?|shop|store|selling|sells|'
-                            r'skincare|cosmetics|clothing|apparel|supplements?|candles|jewelry|retailer|'
-                            r'e-?commerce|direct.to.consumer)\b', re.I)
+PAGE_TIMEOUT = 5
+PAGE_TOTAL_TIMEOUT = 10
+PAGE_CAP = 400 * 1024
+PAGE_REDIRECTS = 2
+NEGATED_CLAIM = re.compile(r"\b(?:no|not|never|without|neither|former|isn't|aren't|don't|doesn't|isnt|arent|dont|doesnt)\b", re.I)
+OWNER_CLAIM = re.compile(r'\b(?:founder|co-founder|owner|ceo|chief executive|founded)\b', re.I)
+BRAND_CLAIM = re.compile(r'\b(?:brand|company|business)\b', re.I)
+PRODUCT_CLAIM = re.compile(r'\b(?:products?|skincare|cosmetics|clothing|apparel|supplements?|candles|jewelry|goods)\b', re.I)
+SELL_CLAIM = re.compile(r'\b(?:we|i|our company|our brand)\s+(?:make|produce|sell|sells|create|design|ship)\b', re.I)
 SHARED_HOSTS = {'instagram.com', 'linktr.ee', 'beacons.ai', 'stan.store', 'taplink.cc',
                 'etsy.com', 'amazon.com', 'tiktok.com', 'facebook.com'}
 
@@ -78,6 +89,9 @@ VERDICT_TAG = {'strong': 'Scout: Strong', 'possible': 'Scout: Possible', 'no': '
 def ensure(conn):
     conn.execute(SCHEMA)
     conn.execute(RUNS_SCHEMA)
+    if 'retry_after' not in {r[1] for r in conn.execute('PRAGMA table_info(deep_research_runs)')}:
+        conn.execute('ALTER TABLE deep_research_runs ADD COLUMN retry_after TEXT')
+    conn.execute('CREATE INDEX IF NOT EXISTS deep_research_runs_person ON deep_research_runs(person_id,id DESC)')
     columns = {r[1] for r in conn.execute('PRAGMA table_info(deep_research)')}
     missing = [column for column in SNAPSHOT.values() if column not in columns]
     for column in missing:
@@ -167,6 +181,85 @@ def _related(url, p):
     return host == 'instagram.com' and parsed.path.lower().rstrip('/') == '/' + handle
 
 
+def _public_address(host, port):
+    """Resolve once and return the actual public address used by the connection."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not infos:
+        raise ValueError('no public address')
+    addresses = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split('%')[0])
+        if not ip.is_global:
+            raise ValueError('nonpublic address')
+        addresses.append(str(ip))
+    return addresses[0]
+
+
+def _fetch_cited_page(url, p):
+    """Bounded direct HTTP read, pinned to a vetted IP with the URL host kept for TLS."""
+    for _ in range(PAGE_REDIRECTS + 1):
+        if not _related(url, p):
+            raise ValueError('page is not tied to the profile')
+        parsed = urlsplit(url)
+        if parsed.scheme not in ('http', 'https') or parsed.username or parsed.password:
+            raise ValueError('invalid cited URL')
+        port = 443 if parsed.scheme == 'https' else 80
+        if parsed.port not in (None, port):
+            raise ValueError('nonstandard cited URL port')
+        host = parsed.hostname
+        address = _public_address(host, port)
+        connection = http.client.HTTPSConnection(host, port, timeout=PAGE_TIMEOUT) if port == 443 else \
+            http.client.HTTPConnection(host, port, timeout=PAGE_TIMEOUT)
+        try:
+            raw = socket.create_connection((address, port), timeout=PAGE_TIMEOUT)
+            if port == 443:
+                try:
+                    connection.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+                except Exception:
+                    raw.close()
+                    raise
+            else:
+                connection.sock = raw
+            target = (parsed.path or '/') + (('?' + parsed.query) if parsed.query else '')
+            connection.request('GET', target, headers={'Host': host, 'User-Agent': 'Fortunate-Leads/1',
+                                                       'Accept': 'text/html,text/plain', 'Accept-Encoding': 'identity'})
+            response = connection.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader('Location')
+                if not location:
+                    raise ValueError('redirect without destination')
+                url = urljoin(url, location)
+                continue
+            if response.status != 200:
+                raise ValueError('cited page unavailable')
+            content_type = response.getheader('Content-Type', '')
+            if content_type and not any(t in content_type.lower() for t in ('text/html', 'text/plain')):
+                raise ValueError('cited page is not text')
+            deadline = time.monotonic() + PAGE_TOTAL_TIMEOUT
+            chunks, size = [], 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('cited page timed out')
+                connection.sock.settimeout(min(PAGE_TIMEOUT, remaining))
+                chunk = response.read1(min(8192, PAGE_CAP + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > PAGE_CAP:
+                    raise ValueError('cited page exceeds size cap')
+            body = b''.join(chunks)
+            charset = response.headers.get_content_charset() or 'utf-8'
+            try:
+                return url, body.decode(charset, 'replace')
+            except LookupError:
+                return url, body.decode('utf-8', 'replace')
+        finally:
+            connection.close()
+    raise ValueError('too many redirects')
+
+
 def _schema_error(data):
     if not isinstance(data, dict) or not isinstance(data.get('verdict'), str) or data['verdict'] not in VERDICT_TAG:
         return 'invalid verdict'
@@ -191,6 +284,14 @@ def _schema_error(data):
     return None
 
 
+def _supports_positive(quote):
+    """Conservative text proof: reject explicit negation and bare topic words."""
+    if NEGATED_CLAIM.search(quote):
+        return False
+    product = bool(PRODUCT_CLAIM.search(quote))
+    return product and bool(OWNER_CLAIM.search(quote) or BRAND_CLAIM.search(quote) or SELL_CLAIM.search(quote))
+
+
 def verify(p, data):
     """Check typed evidence without treating the agent's URL or prose as proof."""
     error = _schema_error(data)
@@ -210,19 +311,19 @@ def verify(p, data):
                     return False, 'too many cited pages'
                 try:
                     import qual_api
-                    final_url, doc = qual_api.fetch(source)
+                    final_url, doc = _fetch_cited_page(source, p)
                     if not _related(final_url, p):
                         return False, 'cited page redirected away from profile website'
-                    title, description, body = qual_api.page_text(doc)
+                    title, description, body = qual_api.page_text(doc, limit=PAGE_CAP, prefer_main=False)
                     pages[source] = ' '.join((title, description, body))
-                except (ValueError, OSError):
+                except (ValueError, OSError, http.client.HTTPException):
                     return False, 'cited page could not be verified'
             corpus = re.sub(r'\s+', ' ', pages[source]).strip()
         else:
             return False, 'citation is not tied to the profile'
         if quote not in corpus:
             return False, 'quote not found in cited source'
-        relevant = relevant or bool(POSITIVE_TERMS.search(quote))
+        relevant = relevant or _supports_positive(quote)
     if not relevant:
         return False, 'quote does not support a positive lead claim'
     return True, None
@@ -331,13 +432,15 @@ def reapply(conn, p, net=None):
 
 def candidates(conn, limit, exclude):
     held = list(exclude)[:900]
+    now = db.now()
     return [dict(r) for r in conn.execute(
         "SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id "
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH} "
         "AND (d.verified=1 OR d.retry_after>?)) "
+        "AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>?) "
         f"AND p.id NOT IN ({','.join('?' * len(held))}) ORDER BY v.score DESC, p.id LIMIT ?",
-        (SCOUT_MIN, db.now(), *held, limit))]
+        (SCOUT_MIN, now, now, *held, limit))]
 
 
 def usage(days=7):
@@ -359,12 +462,14 @@ def usage(days=7):
 
 def status(conn):
     ensure(conn)
+    now = db.now()
     waiting = conn.execute(
         "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id "
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH} "
-        "AND (d.verified=1 OR d.retry_after>?))",
-        (SCOUT_MIN, db.now())).fetchone()[0]
+        "AND (d.verified=1 OR d.retry_after>?)) "
+        "AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>?)",
+        (SCOUT_MIN, now, now)).fetchone()[0]
     return {'on': db.get_setting(conn, 'scout') is not False, 'available': available(),
             'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
             'models': [{'id': k, 'label': v['label']} for k, v in MODELS.items()],
@@ -408,8 +513,12 @@ class ScoutPool:
                 model = db.get_setting(conn0, 'scout_model') or 'space-bunny'
             finally:
                 conn0.close()
-            data = run(p, model)
-            verification = verify(p, data) if data is not None else (False, 'no usable answer')
+            try:
+                data = run(p, model)
+                verification = verify(p, data) if data is not None else (False, 'no usable answer')
+            except Exception:
+                traceback.print_exc()
+                data, verification = None, (False, 'Scout run or verification failed')
             conn = db.connect(self.db_path)
             try:
                 ensure(conn)
@@ -419,11 +528,13 @@ class ScoutPool:
                 current = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
                 stale = not current or any(_value(current, field) != _value(p, field) for field in PROFILE_FIELDS)
                 outcome = 'stale' if stale else 'failed' if data is None else 'verified' if verification[0] else 'unverified'
-                conn.execute('INSERT INTO deep_research_runs(person_id,at,model,outcome,raw,verification_reason) '
-                             'VALUES(?,?,?,?,?,?)',
+                retry_after = (datetime.now(timezone.utc) + timedelta(hours=RETRY_HOURS)).isoformat() \
+                    if not stale and not verification[0] else None
+                conn.execute('INSERT INTO deep_research_runs(person_id,at,model,outcome,raw,verification_reason,retry_after) '
+                             'VALUES(?,?,?,?,?,?,?)',
                              (p['id'], db.now(), model, outcome,
                               json.dumps(data, ensure_ascii=False)[:8000] if data is not None else None,
-                              verification[1]))
+                              verification[1], retry_after))
                 if stale:
                     conn.commit()
                     return
