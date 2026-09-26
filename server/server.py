@@ -209,6 +209,7 @@ def ext_profile(conn, q, b):
     ts = db.now()
     p['bio'] = p.get('bio') or ''
     p['bio_at'] = ts
+    p['bio_src'] = 'extension'
     pid = db.upsert_person(conn, p, ts)
     rules.sync(conn, [pid])
     handle = db.norm_handle(p['handle'])
@@ -488,7 +489,13 @@ def api_person(conn, q, b, pid):
         except ValueError:
             ev = []
         verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
-    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'], activity=workflows.history(conn, pid), profile_read_pending=bool(conn.execute("SELECT 1 FROM jobs WHERE kind='profile' AND handle=? AND state IN ('queued','leased') LIMIT 1", (row['handle'],)).fetchone()))
+    # Active work takes precedence over history; otherwise show the latest request for this profile.
+    job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? "
+                       "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
+    pending = bool(job and job['state'] in ('queued', 'leased'))
+    profile_read = {'state': {'leased': 'reading', 'error': 'failed'}.get(job['state'], job['state'])} if job else None
+    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'],
+                activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read)
 
 
 KEEP = object()   # "leave this field as it is"

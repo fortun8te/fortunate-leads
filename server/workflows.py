@@ -62,7 +62,6 @@ def api_history(conn, q, b, pid):
 
 
 def api_interaction(conn, q, b, pid):
-    S.person_row(conn, pid)
     kind, body = b.get('kind'), b.get('body')
     if kind not in ('dm', 'reply', 'call', 'meeting', 'note'):
         raise ValueError('invalid interaction kind')
@@ -74,38 +73,82 @@ def api_interaction(conn, q, b, pid):
     parsed = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
     if parsed.tzinfo is None:
         raise ValueError('happened_at must include timezone')
-    stamp = parsed.astimezone(timezone.utc).isoformat(timespec='microseconds')
-    event(conn, pid, kind, body.strip(), happened_at=stamp)
-    conn.commit()
-    return history(conn, pid)
+    try:
+        stamp = parsed.astimezone(timezone.utc).isoformat(timespec='microseconds')
+    except OverflowError:
+        raise ValueError('happened_at is outside the supported date range') from None
+    status = b.get('status', S.KEEP)
+    status = S.status_in(status) if isinstance(status, str) else status
+    if status is not S.KEEP and status is not None and status not in S.STATUSES:
+        raise ValueError('bad status')
+    reminder = validate_follow_up(b['follow_up']) if 'follow_up' in b else None
+
+    # Validate first, then hold the write lock through every change and its history.
+    # The response is built before commit so a failed read also rolls back the save.
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        person = S.person_row(conn, pid)
+        event(conn, pid, kind, body.strip(), happened_at=stamp)
+        if status is not S.KEEP:
+            S.set_status(conn, [pid], status=status)
+        if reminder is not None:
+            apply_follow_up(conn, pid, reminder)
+        result = dict(history(conn, pid), status=person['status'] if status is S.KEEP else status,
+                      follow_up=follow_up(conn, pid))
+    return result
+
+
+def validate_follow_up(b):
+    """Normalize a reminder instruction without reading or changing stored state."""
+    if not isinstance(b, dict):
+        raise ValueError('follow_up must be an object')
+    action = b.get('action')
+    if action in ('complete', 'clear'):
+        if 'due_on' in b or 'note' in b:
+            raise ValueError('use complete or clear without date/note')
+        return {'action': action}
+    if action not in (None, 'schedule', 'complete_and_schedule'):
+        raise ValueError('invalid follow_up action')
+    due = calendar_date(b.get('due_on'))
+    note = b.get('note', '')
+    if not isinstance(note, str) or len(note) > 500:
+        raise ValueError('note must be text up to 500 characters')
+    return {'action': action or 'schedule', 'due_on': due, 'note': note.strip()}
+
+
+def apply_follow_up(conn, pid, instruction):
+    """Apply a validated instruction inside the caller's transaction; log actual changes."""
+    old = follow_up(conn, pid)
+    action = instruction['action']
+    if action == 'clear':
+        if old:
+            conn.execute('DELETE FROM followups WHERE person_id=?', (pid,))
+            event(conn, pid, 'follow_up_cleared', before=old)
+        return
+    if action in ('complete', 'complete_and_schedule'):
+        if old and not old['completed_at']:
+            ts = db.now()
+            conn.execute('UPDATE followups SET completed_at=?,updated_at=? WHERE person_id=?', (ts, ts, pid))
+            completed = follow_up(conn, pid)
+            event(conn, pid, 'follow_up_completed', before=old, after=completed)
+            old = completed
+        if action == 'complete':
+            return
+    due, note = instruction['due_on'], instruction['note']
+    if not old or (old['due_on'], old['note'], old['completed_at']) != (due, note, None):
+        conn.execute('INSERT INTO followups(person_id,due_on,note,completed_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET due_on=excluded.due_on,note=excluded.note,completed_at=NULL,updated_at=excluded.updated_at', (pid, due, note, None, db.now()))
+        event(conn, pid, 'follow_up_scheduled', before=old, after=follow_up(conn, pid))
 
 
 def api_follow_up(conn, q, b, pid):
-    S.person_row(conn, pid)
-    # Reserve the write lock before reading: concurrent clicks must not append duplicate events.
-    conn.execute('BEGIN IMMEDIATE')
-    old = follow_up(conn, pid)
-    action = b.get('action')
-    if action is not None:
-        if action not in ('complete', 'clear') or 'due_on' in b or 'note' in b:
-            raise ValueError('use complete or clear without date/note')
-        if old and (action == 'clear' or not old['completed_at']):
-            if action == 'clear':
-                conn.execute('DELETE FROM followups WHERE person_id=?', (pid,))
-            else:
-                conn.execute('UPDATE followups SET completed_at=?,updated_at=? WHERE person_id=?', (db.now(), db.now(), pid))
-            event(conn, pid, 'follow_up_' + ('completed' if action == 'complete' else 'cleared'), before=old, after=follow_up(conn, pid))
-    else:
-        due = calendar_date(b.get('due_on'))
-        note = b.get('note', '')
-        if not isinstance(note, str) or len(note) > 500:
-            raise ValueError('note must be text up to 500 characters')
-        note = note.strip()
-        if not old or (old['due_on'], old['note'], old['completed_at']) != (due, note, None):
-            conn.execute('INSERT INTO followups VALUES(?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET due_on=excluded.due_on,note=excluded.note,completed_at=NULL,updated_at=excluded.updated_at', (pid, due, note, None, db.now()))
-            event(conn, pid, 'follow_up_scheduled', before=old, after=follow_up(conn, pid))
-    conn.commit()
-    return {'follow_up': follow_up(conn, pid)}
+    reminder = validate_follow_up(b)
+    with conn:
+        # Reserve the write lock before reading: repeated completion stays a no-op.
+        conn.execute('BEGIN IMMEDIATE')
+        S.person_row(conn, pid)
+        apply_follow_up(conn, pid, reminder)
+        result = {'follow_up': follow_up(conn, pid)}
+    return result
 
 
 def filters(q, where, args):
@@ -170,8 +213,10 @@ def api_export(conn, q, b):
         if sort not in S.SORTS:
             raise ValueError('invalid sort')
         order = S.SORTS[sort] + ',p.id'
-    output = io.StringIO(newline='')
-    writer = csv.writer(output)
+    # Encode each batch as it is written instead of copying the complete Unicode CSV.
+    output = io.BytesIO()
+    text_output = io.TextIOWrapper(output, encoding='utf-8-sig', newline='')
+    writer = csv.writer(text_output)
     fields = ['id','handle','name','instagram_url','bio','website','followers','following','posts','tier','score','role','status','note','tags','sources','bio_at','bio_src','follow_up_due','follow_up_note','follow_up_completed_at']
     writer.writerow(fields)
     cursor = conn.execute(S.LEAD_SQL + ' WHERE ' + ' AND '.join(where) + ' ORDER BY ' + order, args)
@@ -186,7 +231,8 @@ def api_export(conn, q, b):
             follow = row['follow_up'] or {}
             row.update(follow_up_due=follow.get('due_on'), follow_up_note=follow.get('note'), follow_up_completed_at=follow.get('completed_at'))
             writer.writerow([safe_cell(row.get(k)) for k in fields])
-    return CsvResponse(('\ufeff' + output.getvalue()).encode('utf-8'))
+    text_output.flush()
+    return CsvResponse(output.getvalue())
 
 
 def routes(server):

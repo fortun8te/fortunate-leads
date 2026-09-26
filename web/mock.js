@@ -6,7 +6,7 @@
   const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const chance = (p) => rnd() < p;
-  const now = () => new Date().toISOString();
+  const now = () => new Date().toISOString().replace('Z', '000+00:00');
 
   const ME = 'fortun8te';
   // Seeds with a rough niche bias and neighbours (people overlap mostly with neighbours).
@@ -58,7 +58,7 @@
   const notes = new Map();
   const followups = new Map();
   const activity = new Map();
-  const reads = new Set();
+  const reads = new Map(); // id -> latest profile-read state; no real collector runs in demo mode
   let activityId = 1;
   const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   function event(id, kind, body, before = null, after = null, happened = now()) {
@@ -67,16 +67,101 @@
     return entry;
   }
   function history(id, cursor, limit = 50) {
-    const ordered = [...(activity.get(id) || [])].sort((a, b) => b.happened_at.localeCompare(a.happened_at) || b.id - a.id);
-    const start = cursor ? ordered.findIndex((e) => String(e.id) === cursor) + 1 : 0;
-    const rows = ordered.slice(start, start + limit);
-    return { rows, next_cursor: start + limit < ordered.length ? String(rows[rows.length - 1].id) : null };
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) invalid('limit must be 1-100');
+    let before = null;
+    if (cursor) {
+      try { before = JSON.parse(cursor); } catch (_) { invalid('invalid activity cursor'); }
+      if (!Array.isArray(before) || before.length !== 2 || typeof before[0] !== 'string' || !Number.isInteger(before[1])) invalid('invalid activity cursor');
+    }
+    const ordered = [...(activity.get(id) || [])]
+      .filter((e) => !before || e.happened_at < before[0] || (e.happened_at === before[0] && e.id < before[1]))
+      .sort((a, b) => b.happened_at.localeCompare(a.happened_at) || b.id - a.id);
+    const rows = ordered.slice(0, limit), last = rows[rows.length - 1];
+    return { rows, next_cursor: ordered.length > limit ? JSON.stringify([last.happened_at, last.id]) : null };
+  }
+  function invalid(message) { const error = new Error(message); error.mockStatus = 400; throw error; }
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const STATUSES = ['interested', 'contacted', 'talking', 'client', 'no'];
+  function validStatus(value) {
+    if (value === 'good') value = 'interested';
+    if (value !== null && !STATUSES.includes(value)) invalid('bad status');
+    return value;
+  }
+  function calendarDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) invalid('date must be YYYY-MM-DD');
+    const day = new Date(value + 'T00:00:00Z');
+    if (value.startsWith('0000-') || !Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== value) invalid('invalid calendar date');
+    return value;
+  }
+  function occurrenceTime(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) invalid('happened_at must be an ISO timestamp with timezone');
+    calendarDate(value.slice(0, 10));
+    if (+value.slice(11, 13) > 23 || +value.slice(14, 16) > 59 || (value[16] === ':' && +value.slice(17, 19) > 59)) invalid('invalid happened_at');
+    const stamp = new Date(value);
+    if (!Number.isFinite(stamp.getTime())) invalid('invalid happened_at');
+    const fraction = ((value.match(/\.(\d+)/) || [])[1] || '').padEnd(6, '0').slice(0, 6);
+    return stamp.toISOString().slice(0, 19) + '.' + fraction + '+00:00';
+  }
+  function markInput(body) {
+    const value = { ...body };
+    if ('status' in value) value.status = validStatus(value.status);
+    if ('note' in value && value.note !== null && (typeof value.note !== 'string' || value.note.length > 5000)) invalid('note must be text');
+    return value;
+  }
+  function followUpInput(body) {
+    if (!isObject(body)) invalid('follow_up must be an object');
+    const action = body.action;
+    if (action === 'complete' || action === 'clear') {
+      if ('due_on' in body || 'note' in body) invalid('use complete or clear without date/note');
+      return { action };
+    }
+    if (action != null && !['schedule', 'complete_and_schedule'].includes(action)) invalid('invalid follow_up action');
+    const due_on = calendarDate(body.due_on), note = 'note' in body ? body.note : '';
+    if (typeof note !== 'string' || note.length > 500) invalid('note must be text up to 500 characters');
+    return { action: action || 'schedule', due_on, note: note.trim() };
+  }
+  function setFollowUp(id, input) {
+    let before = followups.get(id) || null;
+    if (input.action === 'clear') {
+      if (before) { followups.delete(id); event(id, 'follow_up_cleared', '', before); }
+      return;
+    }
+    if (input.action === 'complete' || input.action === 'complete_and_schedule') {
+      if (before && !before.completed_at) {
+        const next = { ...before, completed_at: now(), updated_at: now() };
+        followups.set(id, next); event(id, 'follow_up_completed', '', before, next); before = next;
+      }
+      if (input.action === 'complete') return;
+    }
+    if (!before || before.completed_at || before.due_on !== input.due_on || before.note !== input.note) {
+      const next = { due_on: input.due_on, note: input.note, completed_at: null, updated_at: now() };
+      followups.set(id, next); event(id, 'follow_up_scheduled', '', before, next);
+    }
+  }
+  function saveInteraction(id, body) {
+    if (!['dm', 'reply', 'call', 'meeting', 'note'].includes(body.kind)) invalid('invalid interaction kind');
+    if (typeof body.body !== 'string' || !body.body.trim() || body.body.length > 5000) invalid('body must be 1-5000 characters');
+    const stamp = occurrenceTime('happened_at' in body ? body.happened_at : now());
+    const status = 'status' in body ? validStatus(body.status) : undefined;
+    const follow = 'follow_up' in body ? followUpInput(body.follow_up) : null;
+    // Match the server transaction, including rollback if building the response fails.
+    const snapshot = [marks, notes, followups, activity].map((map) => [map, map.has(id), map.get(id)]), nextId = activityId;
+    try {
+      event(id, body.kind, body.body.trim(), null, null, stamp);
+      if ('status' in body) setMark(id, { status });
+      if (follow) setFollowUp(id, follow);
+      return { ok: true, ...history(id), status: marks.get(id) || null, follow_up: followups.get(id) || null };
+    } catch (error) {
+      snapshot.forEach(([map, existed, value]) => { if (existed) map.set(id, value); else map.delete(id); });
+      activityId = nextId;
+      throw error;
+    }
   }
   function setMark(id, body) {
     for (const [key, map] of [['status', marks], ['note', notes]]) {
       if (!(key in body)) continue;
       const before = map.get(id) || null, after = body[key] || null;
-      if (before !== after) event(id, key, key === 'status' ? 'Status changed' : 'Note updated', before, after);
+      if (before !== after) event(id, key, '', before, after);
       if (after) map.set(id, after); else map.delete(id);
     }
   }
@@ -166,6 +251,11 @@
     event(p.id, 'follow_up_scheduled', '', null, f);
     event(p.id, 'dm', 'Introduced Fortunate and asked about their next launch.');
   });
+  // Extra examples for the daily view and read-state UI. Nothing is sent or fetched.
+  marks.set(13, 'no');
+  const rejectedDue = new Date(); rejectedDue.setDate(rejectedDue.getDate() - 2);
+  setFollowUp(13, { action: 'schedule', due_on: localDay(rejectedDue), note: 'Review the reminder kept on this not-a-fit lead' });
+  ['queued', 'reading', 'failed', 'done'].forEach((state, i) => reads.set(14 + i, state));
 
   // Tag rules.
   let ruleId = 3;
@@ -241,7 +331,8 @@
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
     tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
     note: notes.get(p.id) || null, follow_up: followups.get(p.id) || null, bio_at: p.bio_at, bio_src: p.bio_src,
-    profile_read_pending: reads.has(p.id),
+    profile_read_pending: ['queued', 'reading'].includes(reads.get(p.id)),
+    profile_read: reads.has(p.id) ? { state: reads.get(p.id) } : null,
   });
   const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -249,13 +340,17 @@
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
   function filtered(q) {
     const all = csv(q, 'tags'), any = csv(q, 'any'), not = csv(q, 'not');
-    const sts = csv(q, 'status'), text = (q.get('q') || '').toLowerCase().trim();
+    const sts = csv(q, 'status').map((s) => s === 'good' ? 'interested' : s), text = (q.get('q') || '').toLowerCase().trim();
     const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
     const fmin = q.get('followers_min'), fmax = q.get('followers_max'), tiers = csv(q, 'tier');
+    if (!sts.includes('all') && sts.some((s) => s !== 'none' && !STATUSES.includes(s))) invalid('bad status');
+    const follow = q.get('follow_up');
+    if (follow && !['due', 'overdue', 'scheduled', 'completed', 'none'].includes(follow)) invalid('invalid follow_up filter');
+    const today = follow ? calendarDate(q.get('today') || localDay()) : localDay();
     return people.filter((p) => {
       if (tiers.length && !tiers.includes(verdicts.get(p.id).tier)) return false;
       const m = marks.get(p.id) || null;
-      const follow = q.get('follow_up'), f = followups.get(p.id), today = q.get('today') || localDay();
+      const f = followups.get(p.id);
       if (follow === 'due' && (!f || f.completed_at || f.due_on > today)) return false;
       if (follow === 'overdue' && (!f || f.completed_at || f.due_on >= today)) return false;
       if (follow === 'scheduled' && (!f || f.completed_at)) return false;
@@ -281,6 +376,7 @@
   const TIER_RANK = { hot: 0, warm: 1, cold: 2, unread: 3 };
   const FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
   function sorted(list, sort) {
+    if (!['follow_up', 'connected', 'followers', 'recent', 'score', 'fit'].includes(sort)) invalid('invalid sort');
     const cmp = {
       follow_up: (a, b) => {
         const day = (p) => { const f = followups.get(p.id); return f && !f.completed_at ? f.due_on : '9999-12-31'; };
@@ -415,16 +511,26 @@
     const path = u.pathname;
     let m;
     if (path === '/api/leads/export' && method === 'POST') {
+      if (('ids' in body) === ('query' in body)) invalid('provide either ids or query');
+      if ('ids' in body) {
+        if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 5000 || body.ids.some((id) => !Number.isInteger(id) || id < 1)) invalid('ids must be 1-5000 positive ids');
+        if (body.ids.some((id) => !people[id - 1])) invalid('some selected people no longer exist; refresh your selection');
+      } else if (typeof body.query !== 'string' || body.query.length > 16000) invalid('query must be a URL query string');
       const p = new URLSearchParams(body.query || '');
       const chosen = Array.isArray(body.ids) ? people.filter((x) => body.ids.includes(x.id)) : sorted(filtered(p), p.get('sort') || 'score');
-      const columns = ['id', 'handle', 'name', 'bio', 'website', 'followers', 'status', 'note', 'follow_up_due_on', 'follow_up_note'];
+      const columns = ['id', 'handle', 'name', 'instagram_url', 'bio', 'website', 'followers', 'following', 'posts', 'tier', 'score', 'role', 'status', 'note', 'tags', 'sources', 'bio_at', 'bio_src', 'follow_up_due', 'follow_up_note', 'follow_up_completed_at'];
       const cell = (v) => {
         let text = String(v ?? '');
         if (typeof v !== 'number' && (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) text = "'" + text;
         return '"' + text.replace(/"/g, '""') + '"';
       };
-      const lines = [columns, ...chosen.map((p) => { const r = row(p); return columns.map((k) => k === 'follow_up_due_on' ? r.follow_up?.due_on : k === 'follow_up_note' ? r.follow_up?.note : r[k]); })];
-      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"' } });
+      const lines = [columns, ...chosen.map((p) => {
+        const r = row(p), f = r.follow_up || {};
+        Object.assign(r, { instagram_url: `https://www.instagram.com/${r.handle}/`, tags: r.tags.map((t) => t.tag).join('; '), sources: r.via.join('; '),
+          follow_up_due: f.due_on, follow_up_note: f.note, follow_up_completed_at: f.completed_at });
+        return columns.map((k) => r[k]);
+      })];
+      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"', 'Cache-Control': 'no-store' } });
     }
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');
@@ -461,6 +567,7 @@
       return { deleted };
     }
     if (path === '/api/people/bulk') {
+      if ('status' in body) body = { ...body, status: validStatus(body.status) };
       const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
       ids.forEach((id) => {
         if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
@@ -506,26 +613,21 @@
     if ((m = path.match(/^\/api\/person\/(\d+)(\/([\w-]+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, activity: history(id) };
-      if (m[3] === 'mark') { setMark(id, body); return { ok: true }; }
+      if (!m[3] && method === 'GET') return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, activity: history(id) };
+      if (m[3] === 'mark' && method === 'POST') { setMark(id, markInput(body)); return { ok: true }; }
       if (m[3] === 'activity') {
-        if (method === 'GET') return history(id, q.get('cursor'), Math.min(100, +(q.get('limit') || 50)));
-        const entry = event(id, body.kind, body.body, null, null, body.happened_at || now());
-        return { ok: true, activity: entry };
+        if (method === 'GET') return history(id, q.get('cursor'), q.has('limit') ? +q.get('limit') : 50);
+        if (method === 'POST') return saveInteraction(id, body);
       }
-      if (m[3] === 'follow-up') {
-        const before = followups.get(id) || null;
-        if (body.action === 'clear') { followups.delete(id); if (before) event(id, 'follow_up_cleared', '', before); }
-        else if (body.action === 'complete') {
-          if (before && !before.completed_at) { const next = { ...before, completed_at: now(), updated_at: now() }; followups.set(id, next); event(id, 'follow_up_completed', '', before, next); }
-        } else {
-          const next = { due_on: body.due_on, note: body.note || '', completed_at: null, updated_at: now() };
-          followups.set(id, next); event(id, 'follow_up_scheduled', '', before, next);
-        }
+      if (m[3] === 'follow-up' && method === 'POST') {
+        setFollowUp(id, followUpInput(body));
         return { ok: true, follow_up: followups.get(id) || null };
       }
-      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
-      if (m[3] === 'read') { reads.add(id); return { ok: true }; }
+      if (m[3] === 'tags' && method === 'POST') { editTags(id, body.add, body.remove); return { ok: true }; }
+      if (m[3] === 'read' && method === 'POST') {
+        if (!['queued', 'reading'].includes(reads.get(id))) reads.set(id, 'queued');
+        return { ok: true };
+      }
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
@@ -622,11 +724,21 @@
   window.fetch = function (url, opts = {}) {
     const s = String(url);
     if (!s.startsWith('/api/')) return realFetch(url, opts);
-    const body = opts.body ? JSON.parse(opts.body) : null;
-    let res;
-    try { res = route(opts.method || 'GET', s, body); } catch (e) { console.warn('mock', s, e); res = null; }
+    let res, failure = 0;
+    try {
+      let body = {};
+      if (opts.body) {
+        try { body = JSON.parse(opts.body); } catch (_) { invalid('body must be valid JSON'); }
+      }
+      if (!isObject(body)) invalid('body must be a JSON object');
+      res = route((opts.method || 'GET').toUpperCase(), s, body);
+    } catch (e) {
+      failure = e.mockStatus || 500;
+      if (failure === 500) console.warn('mock', s, e);
+      res = { ok: false, error: e.message };
+    }
     if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;
-    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: !res ? 404 : bad ? 400 : 200, headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
+    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: failure || (!res ? 404 : bad ? 400 : 200), headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };
 })();
