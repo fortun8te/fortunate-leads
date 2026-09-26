@@ -36,7 +36,8 @@ class LeadscoutPipelineTest(unittest.TestCase):
         person = dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone())
         scout.apply(self.conn, person, {'verdict': verdict, 'reachable': True,
                                         'summary': 'A skincare brand.', 'tags': ['Skincare'],
-                                        'sources': ['https://example.com/about']})
+                                        'sources': ['https://example.com/about'],
+                                        'evidence': [{'source': 'profile.bio', 'quote': 'Founder of a skincare brand'}]})
         self.conn.commit()
 
     def test_changed_profile_expires_scout_and_can_be_researched_again(self):
