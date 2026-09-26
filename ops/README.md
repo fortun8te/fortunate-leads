@@ -1,5 +1,10 @@
 # ops quickstart (macOS)
 
+After the one-time service install below, double-click `ops/start-all.command` to
+start the server, Laya, the Michael/BOT/BOT2 Chrome profiles, and all three work
+stages. This also resumes AI scoring, which may use paid provider calls. Instagram
+login holds and cooldowns still apply; the Accounts page shows them.
+
 ```sh
 ops/install-launchagent.sh --with-backup   # server at login on :8777 + daily 03:30 DB backup; safe to re-run
 ops/doctor.sh                              # PASS/WARN/FAIL health check; exit 1 on any FAIL
