@@ -99,9 +99,9 @@ const FIT_TIER = { strong: 'hot', good: 'warm', weak: 'cold', unread: 'unread' }
 const isFitTag = (t) => /^Fit: /.test(t);
 const tagName = (t) => (typeof t === 'string' ? t : t.tag);
 const fitOf = (r) => r.fit || TIER_FIT[r.tier] || 'unread';
-function fitBadge(r, cls = '') {
+function fitBadge(r, cls = '', showScore = true) {
   const f = fitOf(r);
-  const score = f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
+  const score = showScore && f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
   return `<span class="fit f-${f} ${cls}" title="Fit${r.score != null ? ' score ' + esc(r.score) : ''}"><i></i>${FIT_LABEL[f]}${score}</span>`;
 }
 // Seeds a person was found through, from the "via @seed" tags (these leave out Michael's own account).
@@ -263,7 +263,7 @@ function setURL(push) {
   syncTabs();
 }
 function syncTabs() {
-  $$('.tabs a').forEach((a) => { a.href = hashFor(a.dataset.view); a.classList.toggle('on', a.dataset.view === S.view); });
+  $$('.tabs a').forEach((a) => { a.href = hashFor(a.dataset.view); a.classList.toggle('on', a.dataset.view === S.view); if (a.dataset.view === S.view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
 }
 function route() {
   const { view, qs } = parseHash();
@@ -278,6 +278,10 @@ function route() {
 }
 window.addEventListener('popstate', route);
 window.addEventListener('hashchange', route);
+$('.skip-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  $('#main-content')?.focus({ preventScroll: true });
+});
 
 const WORK_SUB = { leads: 'Everyone the scraper found, best fit first.', map: 'Who is connected to whom. Click a dot to open that person.' };
 function setView(v) {
@@ -285,6 +289,7 @@ function setView(v) {
   const prev = S.view;
   S.view = v;
   const work = v === 'leads' || v === 'map';
+  if ($('#work-count')) $('#work-count').hidden = v !== 'leads';
   $('#view-work').classList.toggle('on', work);
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-qual').classList.toggle('on', v === 'qual');
@@ -347,16 +352,20 @@ function applyTheme(t) {
 }
 $('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 function applyDensity(d) {
+  const sc = $('#scroll'), position = sc.scrollTop / rowH();
   document.documentElement.dataset.density = d;
   $('#density-btn').textContent = d === 'compact' ? 'Comfortable' : 'Compact';
   store.set('density', d);
   syncLook();
+  // Resize the scrollable canvas before restoring the same lead and row fraction.
+  $('#rows').style.height = S.rows.length * rowH() + 'px';
+  sc.scrollTop = position * rowH();
   renderRows();
 }
 function syncLook() {
   const r = document.documentElement.dataset;
-  $$('#set-theme button').forEach((b) => b.classList.toggle('on', b.dataset.v === r.theme));
-  $$('#set-density button').forEach((b) => b.classList.toggle('on', b.dataset.v === (r.density || 'comfortable')));
+  $$('#set-theme button').forEach((b) => { const on = b.dataset.v === r.theme; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  $$('#set-density button').forEach((b) => { const on = b.dataset.v === (r.density || 'comfortable'); b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
 }
 $('#set-theme').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyTheme(b.dataset.v); };
 $('#set-density').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyDensity(b.dataset.v); };
@@ -366,7 +375,10 @@ function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
   S.side = !S.side; store.set('side', S.side);
   $('#view-work').classList.toggle('work-noside', !S.side);
-  renderRows(); M.resize();
+  syncFilterToggle(); renderRows(); M.resize();
+}
+function syncFilterToggle() {
+  $('#filters-btn').setAttribute('aria-expanded', String(narrow() ? $('#filters').classList.contains('show') : S.side));
 }
 
 // ---------- tags & counts ----------
@@ -616,13 +628,15 @@ function startSaveView() {
   S.saving = true; renderFilters(); $('#v-name')?.focus();
 }
 $('#save-view').onclick = startSaveView;
-function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; }
+function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; syncFilterToggle(); }
 $('#filters-btn').onclick = (e) => { e.stopPropagation(); toggleSide(); };
 $('#scrim').onclick = () => setDrawer(false);
 
 // ---------- query bar ----------
 function renderTokens() {
-  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove">&times;</button></span>`).join('');
+  const clear = $('#clear-filters');
+  if (clear) { clear.hidden = !filterCount(); clear.onclick = clearFilters; }
+  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove" aria-label="Remove ${esc(t.text)} filter">&times;</button></span>`).join('');
   if (document.activeElement !== $('#q') && $('#q').value.trim() !== S.f.q) $('#q').value = S.f.q;
 }
 function removeToken(t) {
@@ -768,7 +782,7 @@ $('#sort').onchange = (e) => { S.sort = e.target.value; store.set('sort', S.sort
 const lists = (r) => Math.max(0, Math.round(+(r.lists ?? (Array.isArray(r.via) ? new Set(r.via).size : 0)) || 0));
 async function resetLeads(keep) {
   const gen = ++S.gen;
-  if (!keep) { S.rows = []; S.total = null; S.cur = -1; $('#scroll').scrollTop = 0; }
+  if (!keep) { S.rows = []; S.total = null; S.cur = -1; S.anchor = -1; $('#scroll').scrollTop = 0; }
   S.done = false; S.error = false;
   // Rendering retained rows must not start an append before this replacement.
   S.loading = true;
@@ -783,13 +797,18 @@ function fetchLeads(offset, limit) {
   return api.get('/api/leads?' + p);
 }
 async function loadMore(gen = S.gen, n = PAGE, replace = false) {
-  if (S.loading || (S.done && !replace)) return;
+  if (S.loading || S.error || (S.done && !replace)) return;
   S.loading = true;
   try {
     const d = await fetchLeads(replace ? 0 : S.rows.length, Math.min(500, n));
     if (gen !== S.gen) return;
     S.total = d.total;
-    if (replace) S.rows = d.rows; else S.rows.push(...d.rows);
+    if (replace) {
+      const currentId = S.rows[S.cur]?.id, anchorId = S.rows[S.anchor]?.id;
+      S.rows = d.rows;
+      S.cur = currentId == null ? -1 : S.rows.findIndex((r) => r.id === currentId);
+      S.anchor = anchorId == null ? -1 : S.rows.findIndex((r) => r.id === anchorId);
+    } else S.rows.push(...d.rows);
     S.done = S.rows.length >= d.total || !d.rows.length;
   } catch (e) {
     if (gen === S.gen) S.error = true;
@@ -838,9 +857,9 @@ function rowHTML(r, i, h) {
   const picked = S.pick.has(r.id);
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', picked ? 'picked' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
   const tags = rowTags(r);
-  return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
-    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
+  return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
+    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
@@ -850,37 +869,52 @@ function rowHTML(r, i, h) {
   </div>`;
 }
 function renderRows() {
+  const active = document.activeElement;
+  const activeRow = active?.closest('#rows .row');
+  const focusId = activeRow?.dataset.personId;
+  const focusKey = active?.matches('[data-ck]') ? '[data-ck]' : active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
   const box = $('#rows'), sc = $('#scroll'), h = rowH();
+  if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
   $('#count').textContent = S.total == null ? '' : plural(S.total, 'person', 'people') + (S.pick.size ? ` · ${int(S.pick.size)} selected` : '');
   $('#pane-leads').classList.toggle('selecting', S.pick.size > 0);
   renderBulk();
   $('#export-selected').disabled = exporting || !S.pick.size;
   const loadedPicked = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
+  $('#sel-page').setAttribute('role', 'checkbox');
+  $('#sel-page').setAttribute('aria-label', 'Select all loaded leads');
+  $('#sel-page').setAttribute('aria-checked', loadedPicked ? 'true' : S.pick.size ? 'mixed' : 'false');
   $('#sel-page').className = 'ck' + (loadedPicked ? ' on' : S.pick.size ? ' part' : '');
   if (!S.rows.length) {
     box.style.height = '100%';
     if (S.loading || (S.total == null && !S.error)) {
       box.innerHTML = Array.from({ length: 14 }, (_, i) => `<div class="skel" style="top:${i * h}px"><i></i><i style="width:${120 + (i * 37) % 80}px"></i><i style="width:${200 + (i * 53) % 160}px"></i></div>`).join('');
     } else if (S.error) {
-      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><button class="btn" id="retry">Retry</button></div>`;
+      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
+      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
     }
     return;
   }
-  box.style.height = S.rows.length * h + 'px';
+  box.style.height = (S.rows.length * h + (S.error ? 64 : 0)) + 'px';
   const from = Math.max(0, Math.floor(sc.scrollTop / h) - 8);
   const to = Math.min(S.rows.length, Math.ceil((sc.scrollTop + sc.clientHeight) / h) + 8);
   let out = '';
   for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i, h);
+  if (S.error) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Could not load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`;
   box.innerHTML = out;
-  if (!S.done && to >= S.rows.length - 20) loadMore();
+  if (focusId && focusKey) {
+    const target = box.querySelector(`[data-person-id="${CSS.escape(focusId)}"] ${focusKey}`);
+    if (target) target.focus({ preventScroll: true });
+    else { sc.tabIndex = -1; sc.focus({ preventScroll: true }); }
+  }
+  if (!S.error && !S.done && to >= S.rows.length - 20) loadMore();
 }
 $('#scroll').addEventListener('scroll', () => requestAnimationFrame(renderRows), { passive: true });
-window.addEventListener('resize', debounce(() => { renderRows(); M.resize(); }, 60));
+window.addEventListener('resize', debounce(() => { syncFilterToggle(); renderRows(); M.resize(); }, 60));
 $('#rows').addEventListener('click', (e) => {
   if (e.target.id === 'retry') return resetLeads();
+  if (e.target.closest('#retry-more')) { S.error = false; return loadMore(); }
   if (e.target.closest('#clear-all')) return clearFilters();
   if (e.target.closest('[data-ig]')) { e.stopPropagation(); return; }
   const row = e.target.closest('.row');
@@ -891,7 +925,7 @@ $('#rows').addEventListener('click', (e) => {
   if (e.target.closest('[data-ck]') || e.target.closest('.c-sel') || e.metaKey || e.ctrlKey) { e.preventDefault(); return togglePick(i, e.shiftKey); }
   if (e.shiftKey) { e.preventDefault(); window.getSelection()?.removeAllRanges(); return rangePick(i); }
   select(i);
-  openDetail(S.rows[i].id);
+  openDetail(S.rows[i].id, { keyboard: e.detail === 0 });
 });
 $('#sel-page').onclick = () => {
   const all = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
@@ -901,6 +935,7 @@ $('#sel-page').onclick = () => {
 
 function select(i, scroll) {
   if (!S.rows.length) return;
+  const moveFocus = scroll && document.activeElement?.closest('#rows .row');
   S.cur = Math.max(0, Math.min(S.rows.length - 1, i));
   if (scroll) {
     const sc = $('#scroll'), h = rowH(), top = S.cur * h;
@@ -908,6 +943,7 @@ function select(i, scroll) {
     else if (top + h > sc.scrollTop + sc.clientHeight) sc.scrollTop = top + h - sc.clientHeight;
   }
   renderRows();
+  if (moveFocus) $(`#rows [data-person-id="${S.rows[S.cur].id}"] .lead-open`)?.focus({ preventScroll: true });
 }
 function togglePick(i, range) {
   const r = S.rows[i];
@@ -968,9 +1004,17 @@ function renderBulk() {
   el.hidden = false;
   if (focused) $('#' + focused)?.focus();
 }
+function clearBulkSelection() {
+  const i = S.rows[S.cur] && S.pick.has(S.rows[S.cur].id) ? S.cur : S.rows.findIndex((r) => S.pick.has(r.id));
+  clearPick();
+  if (S.view === 'leads' && i >= 0) {
+    select(i, true);
+    $(`#rows [data-person-id="${S.rows[i].id}"] .lead-open`)?.focus({ preventScroll: true });
+  } else if (S.view === 'leads') $('#q').focus({ preventScroll: true });
+}
 $('#bulk').addEventListener('click', (e) => {
   if (e.target.id === 'bk-all') return pickAllInFilter();
-  if (e.target.id === 'bk-x') return clearPick();
+  if (e.target.id === 'bk-x') return clearBulkSelection();
   const s = e.target.closest('[data-bs]');
   if (s) bulk({ status: s.dataset.bs || null });
 });
@@ -980,7 +1024,7 @@ $('#bulk').addEventListener('submit', (e) => {
   if (v) { $('#bk-add').value = ''; $('#bk-add').blur(); bulk({ add: [v] }); }
 });
 $('#bulk').addEventListener('change', (e) => { if (e.target.id === 'bk-rm' && e.target.value) bulk({ remove: [e.target.value] }); });
-$('#bulk').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.target.blur(); e.stopPropagation(); } });
+$('#bulk').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); clearBulkSelection(); } });
 
 async function bulk(op, ids = [...S.pick], quiet) {
   if (!ids.length) return;
@@ -1033,7 +1077,7 @@ function patchRow(id, patch) {
 function current() { return S.open ? S.person || S.rows.find((r) => r.id === S.open) : S.rows[S.cur]; }
 
 // ---------- detail ----------
-async function openDetail(id) {
+async function openDetail(id, { keyboard = false } = {}) {
   if (S.open && S.open !== id) noteQueue.flush(S.open).catch(() => {});
   detailAccess.open();
   S.open = id; S.seedCard = null;
@@ -1504,6 +1548,29 @@ const detailAccess = LeadAccessibility.createDetailFocus({
   fallbackFocus: () => S.view === 'leads' ? $('#rows .row.cur') || $('#q') : S.view === 'map' ? $('#canvas') : $('.tabs a.on'),
 });
 let gPending = 0;
+let helpReturnFocus = null;
+function setHelp(open) {
+  const help = $('#help');
+  gPending = 0;
+  if (open) {
+    helpReturnFocus = document.activeElement;
+    help.hidden = false;
+    help.tabIndex = -1;
+    help.focus({ preventScroll: true });
+  } else {
+    help.hidden = true;
+    if (helpReturnFocus?.isConnected) helpReturnFocus.focus({ preventScroll: true });
+    else $('#help-btn').focus({ preventScroll: true });
+    helpReturnFocus = null;
+  }
+}
+// Stop keys before native controls or delegated workspace handlers can act underneath help.
+document.addEventListener('keydown', (e) => {
+  if ($('#help').hidden) return;
+  if (!e.metaKey && !e.ctrlKey) e.preventDefault();
+  e.stopImmediatePropagation();
+  if (e.key === 'Escape' || e.key === '?') setHelp(false);
+}, true);
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
   if (detailAccess.handleKeydown(e)) return;
@@ -1522,6 +1589,8 @@ document.addEventListener('keydown', (e) => {
   }
   if (LeadAccessibility.isInteractiveTarget(e.target) || $('#detail').contains(e.target) || detailAccess.isModal() || !$('#help').hidden || e.metaKey || e.ctrlKey || e.altKey) { gPending = 0; return; }
   const k = e.key;
+  // Let native controls handle activation instead of also opening the current lead.
+  if ((k === 'Enter' || k === ' ') && e.target.closest('button, a')) return;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
     const to = { l: 'leads', m: 'map', q: 'qual', t: 'tags', s: 'scraper', a: 'accounts', ',': 'settings' }[k];
@@ -1529,7 +1598,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (k === 'g') { gPending = Date.now(); return; }
-  if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
+  if (k === '?') { e.preventDefault(); setHelp(true); return; }
   if (k === 'd') { applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact'); return; }
   const work = S.view === 'leads' || S.view === 'map';
   if (k === '/' && S.view === 'tags') { e.preventDefault(); $('#tg-q').focus(); return; }
@@ -1554,6 +1623,9 @@ document.addEventListener('keydown', (e) => {
     if (p && k === 't') { e.preventDefault(); LeadAccessibility.revealAndFocus($('#tag-in')); }
     return;
   }
+  // Tab can focus a different lead without using the j/k navigation cursor.
+  const focusedRow = e.target.closest('#rows .row');
+  if (focusedRow) S.cur = +focusedRow.dataset.i;
   if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp' || k === 'J' || k === 'K') {
     e.preventDefault();
     const down = k === 'j' || k === 'J' || k === 'ArrowDown';
@@ -1567,8 +1639,8 @@ document.addEventListener('keydown', (e) => {
   }
   if (k === 'x') { if (S.cur < 0) select(0); togglePick(S.cur); return; }
   if (k === 'A') { pickAllInFilter(); return; }
-  const r = current();
-  if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id); return; }
+  const r = focusedRow ? S.rows[S.cur] : current();
+  if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id, { keyboard: true }); return; }
   if (S.pick.size && /^[0-5]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
   if (S.pick.size && k === 't') { e.preventDefault(); $('#bk-add')?.focus(); return; }
   if (!r) return;
@@ -1581,8 +1653,8 @@ document.addEventListener('keydown', (e) => {
     if (S.open !== r.id) openDetail(r.id).then(focusTag); else focusTag();
   }
 });
-$('#help-btn').onclick = () => { $('#help').hidden = false; };
-$('#help').onclick = () => { $('#help').hidden = true; };
+$('#help-btn').onclick = () => setHelp(true);
+$('#help').onclick = () => setHelp(false);
 
 // ---------- tags manager ----------
 const T = {
@@ -1599,6 +1671,7 @@ const T = {
   // Rename, merge and delete act on manual tags only. Rule tags follow their rule; auto tags follow the qualifier.
   editable: (t) => t.sources.includes('manual'),
   render() {
+    const focusedTag = $('#tg-body').contains(document.activeElement) ? document.activeElement.dataset.ck : null;
     const q = this.q.toLowerCase();
     this.renderGroups(q);
     const rows = this.list.filter((t) => this.editable(t) && (!q || t.tag.toLowerCase().includes(q)))
@@ -1611,13 +1684,16 @@ const T = {
       const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tagTier(t) ? ' t-' + tagTier(t) : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
-        <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
+        <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}" role="checkbox" aria-checked="${on}" aria-label="Select ${esc(t.tag)}"></button>` : ''}</td>
         <td>${name}</td>
         <td class="r num">${int(t.total)}</td>
         <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
     }).join('') : `<tr><td colspan="4" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and type a tag under their profile.'}</td></tr>`;
-    const allOn = rows.filter((t) => this.editable(t)).every((t) => this.checked.has(t.tag)) && this.checked.size;
-    $('#tg-all').className = 'ck' + (allOn ? ' on' : this.checked.size ? ' part' : '');
+    const visibleChecked = rows.filter((t) => this.checked.has(t.tag)).length;
+    const allOn = rows.length > 0 && visibleChecked === rows.length;
+    $('#tg-all').className = 'ck' + (allOn ? ' on' : visibleChecked ? ' part' : '');
+    $('#tg-all').setAttribute('aria-checked', allOn ? 'true' : visibleChecked ? 'mixed' : 'false');
+    if (focusedTag) $$('#tg-body [data-ck]').find((b) => b.dataset.ck === focusedTag)?.focus({ preventScroll: true });
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
     this.renderMerge();
   },
@@ -1643,7 +1719,7 @@ const T = {
       const lim = this.more?.[key] || q ? 400 : key === 'top' ? 40 : 12;
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
         <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
-          : '<span class="muted">None yet. AI tags appear once the AI has checked people.</span>'}
+          : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
     $('#tg-groups').innerHTML = sec('top', 'Most useful', 'What makes a lead: the AI verdict, top fit, product category, decision maker, US market.', top, 'tg-top')
@@ -1902,7 +1978,7 @@ function renderScraper() {
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
-  if (sc.paused) { now = 'Paused'; sub = 'Press Resume at the top to carry on.'; }
+  if (sc.paused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
@@ -1938,7 +2014,9 @@ function renderScraper() {
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused'].includes(l.state)) };
-  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
+  const focusedListFilter = $('#lists-f').contains(document.activeElement) ? document.activeElement.dataset.v : null;
+  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
+  if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
   const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   const rows = listsAll ? all : all.slice(0, 8);
@@ -1959,7 +2037,7 @@ function backIn(t) {
   const m = Math.ceil(Math.max(0, Date.parse(t) - Date.now()) / 60000);
   return m <= 1 ? 'in about a minute' : m < 90 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`;
 }
-$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
+$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
 $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -2005,7 +2083,7 @@ $('#seed-add').onclick = async () => {
 const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
 const ST_DOT = { running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
 const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
-const A = { wiz: null, setup: null, confirm: null, renaming: null, busy: new Set(), dismissed: false };
+const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false };
 
 async function copyText(text, btn) {
   let ok = false;
@@ -2033,7 +2111,7 @@ function accountRow(a) {
   const conf = A.confirm === a.lane_id, warn = a.status === 'needs_login' || a.status === 'challenge';
   const stat = (label, val, sub) => `<div><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   const name = A.renaming === a.lane_id
-    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(a.label || '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
+    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}<button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
   return `<section class="acc${warn ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
     <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
@@ -2047,8 +2125,8 @@ function accountRow(a) {
       ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'None')}
     </div>
     <div class="acc-ctl">
-      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
+      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
         <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric"><span class="muted">pages/day</span></label>
@@ -2090,15 +2168,19 @@ async function editAccount(lane, body, msg) {
   if (A.busy.has(lane)) return;
   A.busy.add(lane);
   const a = S.sc?.accounts?.find((x) => x.lane_id === lane);
+  let saved = false;
   try {
     const r = await api.post(`/api/accounts/${encodeURIComponent(lane)}`, body);
     if (a && r.account) Object.assign(a, r.account);
+    saved = true;
     renderAccounts(); renderStatus();
     if (msg) toast(msg);
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not save'); }
   finally { A.busy.delete(lane); }
   loadScraper();
+  return saved;
 }
+$('#acc-list').addEventListener('input', (e) => { if (e.target.id === 'acc-label') A.renameValue = e.target.value; });
 $('#acc-list').addEventListener('click', async (e) => {
   const row = e.target.closest('[data-lane]');
   if (!row) return;
@@ -2109,7 +2191,7 @@ $('#acc-list').addEventListener('click', async (e) => {
   if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${ROLES.find((x) => x[0] === t.dataset.role)[1].toLowerCase()}`);
   if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer the main account` : `${a.name} is the main account`);
   if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);
-  if (t.hasAttribute('data-rename')) { A.renaming = lane; A.confirm = null; return renderAccounts(); }
+  if (t.hasAttribute('data-rename')) { A.renameValue = null; A.renaming = lane; A.confirm = null; return renderAccounts(); }
   if (t.hasAttribute('data-ren-x')) { A.renaming = null; return renderAccounts(); }
   if (t.hasAttribute('data-remove')) {
     if (A.confirm !== lane) {
@@ -2122,15 +2204,17 @@ $('#acc-list').addEventListener('click', async (e) => {
     loadScraper();
   }
 });
-$('#acc-list').addEventListener('submit', (e) => {
+$('#acc-list').addEventListener('submit', async (e) => {
   e.preventDefault();
   const row = e.target.closest('[data-lane]'), lane = row?.dataset.lane;
   if (!lane) return;
   if (e.target.hasAttribute('data-ren')) {
     const label = $('#acc-label').value.trim();
-    A.renaming = null;
-    document.activeElement?.blur();
-    return editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
+    A.renameValue = $('#acc-label').value;
+    const saved = await editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
+    if (saved) { A.renaming = null; A.renameValue = null; document.activeElement?.blur(); renderAccounts(); }
+    else $('#acc-label')?.focus();
+    return;
   }
   if (e.target.hasAttribute('data-bud')) {
     const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
@@ -2204,12 +2288,12 @@ async function loadSettings() {
 }
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
-  try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = null; }
+  try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = 'failed'; }
   renderServices();
 }
-const upText = (up) => (up == null ? 'Checking' : up ? 'Running' : 'Not running');
+const upText = (up) => (SET.health === 'failed' ? 'Could not check' : up == null ? 'Checking' : up ? 'Running' : 'Not running');
 function renderServices() {
-  const h = SET.health && SET.health !== 'checking' ? SET.health : null, l = SET.llm;
+  const h = SET.health && typeof SET.health === 'object' ? SET.health : null, l = SET.llm;
   const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
   $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
     + row('Laya sidecar', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Optional. Start it with python3 sidecar/laya_server.py (see docs/SETUP.md).');
@@ -2224,6 +2308,8 @@ function renderSettings() {
   const l = SET.llm, sc = S.sc;
   $('#set-q-on').classList.toggle('on', !!sc?.qualify);
   $('#set-q-auto').classList.toggle('on', !!sc?.qualify_auto);
+  $('#set-q-on').setAttribute('aria-pressed', String(!!sc?.qualify));
+  $('#set-q-auto').setAttribute('aria-pressed', String(!!sc?.qualify_auto));
   const f = $('#set-q');
   if (l && !f.contains(document.activeElement)) { $('#set-workers').value = l.workers; $('#set-llm-min').value = l.llm_min; $('#set-bio-min').value = l.bio_min; }
   const bL = $('#b-list'), bP = $('#b-profile'), bud = sc?.ext?.budget || {};
@@ -2381,7 +2467,7 @@ const Q = {
     return `<article class="ql-card" data-id="${r.id}">
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
-        <div class="ql-score"><b class="num">${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
+        <div class="ql-score"><b class="num">${r.score ?? '–'}</b>${fitBadge(r, '', false)}</div></div>
       <div class="ql-body">
         <div class="ql-why"><h4>Verdict</h4><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
           ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul>` : ''}
@@ -2398,11 +2484,16 @@ const Q = {
   },
   render() {
     $('#ql-n').textContent = `${int(this.total)} ${this.total === 1 ? 'person' : 'people'}`;
+    const focused = $('#ql-list').contains(document.activeElement) ? document.activeElement : null;
+    const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
+    const focusId = focusAttr ? focused.getAttribute(focusAttr) : null;
     $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
-      : `<div class="muted ql-empty">${this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+    if (focusAttr) $(`#ql-list [${focusAttr}="${focusId}"]`)?.focus({ preventScroll: true });
     $('#ql-more').hidden = this.rows.length >= this.total;
   },
   async deeper(id) {
+    const restoreFocus = document.activeElement?.dataset.deep === String(id);
     this.busy.add(id); this.render();
     try {
       const d = await api.post(`/api/qual/${id}/deeper`);
@@ -2411,6 +2502,9 @@ const Q = {
       toast(ucf(d.note || 'Done'));
     } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not dig deeper'); }
     this.busy.delete(id); this.render();
+    if (restoreFocus && document.activeElement === document.body && S.view === 'qual') {
+      $(`#ql-list [data-deep="${id}"]`)?.focus({ preventScroll: true });
+    }
   },
 };
 $('#ql-view').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b) return; Q.view = b.dataset.v; Q.fellBack = true; Q.syncSeg(); Q.load(); });
@@ -2460,7 +2554,7 @@ const M = {
     if (!this.loaded || this.stale) this.load();
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin()) this.sim.restart();
-    $('#map-labels').classList.toggle('on', this.labels);
+    $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels));
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
   resize() {
@@ -2638,6 +2732,7 @@ const M = {
   relax(n) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     let list = near(), frames = 14;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const step = () => {
       let moved = false;
       for (const a of [n, ...list]) for (const b of list) {
@@ -2648,12 +2743,12 @@ const M = {
         if (b.fx == null) { b.x += dx * push; b.y += dy * push; moved = true; }
         if (a !== n && a.fx == null) { a.x -= dx * push; a.y -= dy * push; }
       }
-      this.draw();
-      if (moved && --frames > 0) requestAnimationFrame(step);
+      if (!reduced) this.draw();
+      if (moved && --frames > 0) { if (reduced) step(); else requestAnimationFrame(step); }
     };
-    if (list.length) requestAnimationFrame(step);
+    if (list.length) { if (reduced) { step(); this.draw(); } else requestAnimationFrame(step); }
   },
-  toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); this.draw(); },
+  toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels)); this.draw(); },
   // Neighbourhood of the hovered or focused node.
   hood() {
     const n = this.hover || this.focus;
@@ -2977,7 +3072,9 @@ function seedCardClick(e) {
     drag = null; c.classList.remove('drag');
   };
   c.addEventListener('pointerup', end);
-  c.addEventListener('pointercancel', end);
+  c.addEventListener('pointercancel', (e) => {
+    pts.delete(e.pointerId); pinch = null; drag = null; c.classList.remove('drag');
+  });
   c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && M.hover) { M.hover = null; M.draw(); } $('#hover').hidden = true; });
   c.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -2994,7 +3091,7 @@ $('#map-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.prev
 $('#map-scope').addEventListener('click', (e) => {
   const b = e.target.closest('[data-v]');
   if (!b || b.dataset.v === M.scope) return;
-  $$('#map-scope button').forEach((x) => x.classList.toggle('on', x === b));
+  $$('#map-scope button').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
   M.scope = b.dataset.v; M.autoFit = true; M.load();
 });
 
@@ -3010,6 +3107,7 @@ function reconnected() {
 applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
 applyDensity(store.get('density', 'comfortable'));
 $('#view-work').classList.toggle('work-noside', !S.side);
+syncFilterToggle();
 (function boot() {
   const { view, qs } = parseHash();
   const p = fromQuery(qs);

@@ -419,7 +419,7 @@
   };
   function tickScraper() {
     const t = Date.now();
-    if (scraper.paused || t < scraper.nextAt) return;
+    if (scraper.paused || stagePaused.lists || t < scraper.nextAt) return;
     const l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
     if (!l) return;
     l.state = 'running';
@@ -458,6 +458,20 @@
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
   const settings = { main_list_share: 0 };
+  const stagePaused = { lists: false, bios: false };
+  const sites = new Map();
+  function controlView() {
+    const stages = [['lists', 'Collect lists', 'people'], ['bios', 'Read bios', 'bios'], ['ai', 'AI scoring', 'scores']].map(([id, label, unit]) => {
+      const paused = id === 'ai' ? !scraper.qualify : scraper.paused || stagePaused[id];
+      const wait = !paused && id === 'bios' ? { why: 'Pacing between bio reads', seconds: 24 } : null;
+      return { id, label, unit, paused, help: 'Pausing keeps your progress. Resume continues where you left off.',
+        state: paused ? 'paused' : wait ? 'waiting' : 'running', wait,
+        now: paused ? 'Paused in workspace' : id === 'lists' ? '@cpgguild followers' : id === 'bios' ? 'Next bio read shortly' : 'Checking people with a bio',
+        hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
+        today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
+    });
+    return { stages, accounts, all_paused: stages.every((s) => s.paused), at: now() };
+  }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
       { id: '3f9a1c02be', key: 'sk-…8c1d', source: 'file', disabled: false, cooldowns: {}, requests_today: { 'z-ai/glm-5.2:free': 412, 'google/gemma-4-31b-it:free': 38 }, last_error: null },
@@ -489,6 +503,11 @@
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
+      progress: {
+        lists: { left: scraper.lists.filter((l) => l.state === 'queued' || l.state === 'running').reduce((n, l) => n + Math.max(0, (l.total || 1000) - l.received), 0), per_hour: 11280, eta_h: 3.4 },
+        bios: { left: people.filter((p) => !p.bio).length, per_day: scraper.budget.profile, eta_h: 8.2 },
+        qualify: { on: scraper.qualify, left: 1100, per_hour: scraper.qualify ? 120 : 0, eta_h: scraper.qualify ? 9.2 : null, workers: 4, keys: 2 },
+      },
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
     };
   }
@@ -531,6 +550,34 @@
         return columns.map((k) => r[k]);
       })];
       return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"', 'Cache-Control': 'no-store' } });
+    }
+    if (path === '/api/control') {
+      if (method === 'POST') {
+        if (!['pause', 'resume'].includes(body?.action) || !['all', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
+        const pause = body.action === 'pause';
+        if (scraper.paused) { stagePaused.lists = true; stagePaused.bios = true; scraper.paused = false; }
+        for (const id of body.stage === 'all' ? ['lists', 'bios', 'ai'] : [body.stage]) {
+          if (id === 'ai') { scraper.qualify = !pause; scraper.qualify_auto = false; }
+          else stagePaused[id] = pause;
+        }
+      }
+      return controlView();
+    }
+    if (path === '/api/qual') {
+      const view = q.get('view') || 'ai';
+      const ai = (p) => { const model = verdicts.get(p.id).model; return model && model !== 'rules'; };
+      let list = filtered(q).filter((p) => view === 'all' || (view === 'ai' ? ai(p) : !ai(p)));
+      list = q.get('sort') === 'recent' ? list.slice().sort((a, b) => b.id - a.id) : sorted(list, 'score');
+      const off = Math.max(0, +q.get('offset') || 0), lim = Math.min(100, Math.max(1, +q.get('limit') || 30));
+      return { total: list.length, rows: list.slice(off, off + lim).map((p) => ({ ...row(p), verdict: { ...verdicts.get(p.id), at: ago_(2 * H) }, bio_at: p.bio ? ago_(3 * H) : null, site: sites.get(p.id) || null })),
+        summary: { verdicts: people.filter((p) => p.bio).length, ai: people.filter(ai).length, rules: people.filter((p) => p.bio && !ai(p)).length, with_bio: people.filter((p) => p.bio).length, sites: sites.size } };
+    }
+    if ((m = path.match(/^\/api\/qual\/(\d+)\/deeper$/)) && method === 'POST') {
+      const p = people.find((p) => p.id === +m[1]);
+      if (!p) return { ok: false, error: 'Person not found' };
+      const site = p.website ? { url: p.website, final_url: p.website, title: p.name, summary: 'Sample website result for preview.', signals: { shop: 'Shopify' }, model: 'rules', at: now() } : null;
+      if (site) sites.set(p.id, site);
+      return { bio_queued: !p.bio, site, note: site ? null : 'No website in the bio yet.' };
     }
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');

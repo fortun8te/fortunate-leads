@@ -1,0 +1,692 @@
+[
+  {
+    "check": "Sample leads and all stage controls load",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 1440: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 1440: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 1440: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 1440: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings dark 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Leads light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Map light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Qualification light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Tags light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Scraper light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Accounts light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 390: visible",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 390: no horizontal page overflow",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 390: named active navigation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Settings light 390: no uncaught errors",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Search shows an actionable empty state",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Clear restores results",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Enter opens detail and focuses close after loading",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Detail identity stays visible while scrolling",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Escape returns to the same lead",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Space selects once and keeps checkbox focus",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Space deselects once",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Row shortcut acts on the keyboard-focused lead",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Compact rows retain 48px geometry",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "A virtualized row covers the scrolled viewport top edge",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Comfortable rows retain 64px geometry",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "List pause leaves bios running",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Async stage action retains keyboard focus",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "List resume works",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Detail 1280: contained",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Filters 1280: expanded state matches",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Detail 1024: contained",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Filters 1024: expanded state matches",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Detail 768: contained",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Filters 768: expanded state matches",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Detail 390: contained",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Filters 390: expanded state matches",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Skip link preserves the current page",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "Reduced motion removes pulse animation",
+    "passed": true,
+    "actual": true
+  },
+  {
+    "check": "No uncaught errors after interaction checks",
+    "passed": true,
+    "actual": true
+  }
+]
