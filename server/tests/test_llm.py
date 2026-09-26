@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import tempfile
 import os
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import laya  # noqa: E402
@@ -96,12 +97,12 @@ class ProviderTest(unittest.TestCase):
             p.chat([{'role': 'user', 'content': 'x'}])
         self.assertEqual(len(Stub.seen), n)
 
-    def test_daily_limit_per_key_and_model(self):
+    def test_daily_limit_shared_by_key_across_models(self):
         p = self.prov(keys=('sk-or-aaaa1111',))
         p.daily_limit = 2
-        for _ in range(4):
-            p.chat([{'role': 'user', 'content': 'x'}])
-        self.assertEqual([m for _, m, *_ in Stub.seen], ['m/a:free', 'm/a:free', 'm/b:free', 'm/b:free'])
+        p.chat([{'role': 'user', 'content': 'x'}], models=('m/a:free',))
+        p.chat([{'role': 'user', 'content': 'x'}], models=('m/b:free',))
+        self.assertEqual([m for key, m, *_ in Stub.seen if key == 'sk-or-aaaa1111'], ['m/a:free', 'm/b:free'])
         with self.assertRaises(llm.Unavailable):
             p.chat([{'role': 'user', 'content': 'x'}])
 
@@ -122,6 +123,17 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(p.models, ('x/y:free',))
         self.assertEqual([x['key'] for x in p.status()['providers']], [None, 'sk-…1234', 'sk-…5678', 'sk-…9999'])
 
+    def test_only_free_models_can_be_configured_or_called(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'openrouter.json'
+            with self.assertRaises(ValueError):
+                llm.set_models(['vendor/paid'], path=f)
+            f.write_text(json.dumps({'models': ['vendor/paid']}))
+            self.assertTrue(all(m.endswith(':free') for m in llm.settings(f)['models']))
+        self.assertEqual(llm.model_order(['vendor/paid', 'm/a:free'], {}), ('m/a:free',))
+        with self.assertRaises(ValueError):
+            llm._post(self.url, None, 'vendor/paid', [], 1, 10, True)
+
 
 class LayaStub(BaseHTTPRequestHandler):
     mode = 'ok'
@@ -132,7 +144,8 @@ class LayaStub(BaseHTTPRequestHandler):
 
     def do_GET(self):
         LayaStub.calls.append('health')
-        data = b'{"ok": true}'
+        data = json.dumps({'ok': True, 'model': laya.MODEL,
+                           'deployment_version': laya.DEPLOYMENT_VERSION}).encode()
         self.send_response(200 if self.mode != 'down' else 500)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -144,8 +157,9 @@ class LayaStub(BaseHTTPRequestHandler):
         if self.mode == 'slow':
             time.sleep(1.5)
         res = [{'id': it['id'], 'answers': {'dtc_founder': {'p': 0.95}, 'brand_account': {'p': 0.92}, 'creator': {'p': 0.05},
-                                             'netherlands': {'p': 'x'}}} for it in body['items']]
-        data = json.dumps({'results': res}).encode()
+                                             'service_provider': {'p': 0.1}, 'netherlands': {'p': 0.1}}} for it in body['items']]
+        data = json.dumps({'results': res, 'model': laya.MODEL,
+                           'deployment_version': laya.DEPLOYMENT_VERSION}).encode()
         self.send_response(200)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -171,15 +185,19 @@ class LayaTest(unittest.TestCase):
         self.httpd.server_close()
 
     def test_batches_and_five_questions(self):
-        self.assertTrue(laya.available())
-        self.assertTrue(laya.available())
+        # macOS monotonic clocks can begin near zero in a new process.
+        with patch.object(laya.time, 'monotonic', return_value=0.05):
+            self.assertTrue(laya.available())
+        with patch.object(laya.time, 'monotonic', return_value=0.1):
+            self.assertTrue(laya.available())
         self.assertEqual(LayaStub.calls.count('health'), 1)   # cached for 60 s
         people = [{'id': i, 'handle': f'h{i}', 'bio': 'x'} for i in range(130)]
         out = laya.decide(people)
         self.assertEqual(len(out), 130)
         self.assertEqual([c[1] for c in LayaStub.calls if c != 'health'], [64, 64, 2])
         self.assertEqual(LayaStub.calls[1][2], ['dtc_founder', 'brand_account', 'creator', 'service_provider', 'netherlands'])
-        self.assertEqual(out[0], {'dtc_founder': 0.95, 'brand_account': 0.92, 'creator': 0.05})   # bad p dropped
+        self.assertEqual(out[0], {'dtc_founder': 0.95, 'brand_account': 0.92, 'creator': 0.05,
+                                  'service_provider': 0.1, 'netherlands': 0.1})
         self.assertGreater(laya.fit(out[0]), 70)
 
     def test_down_or_slow_is_skipped(self):
@@ -193,7 +211,7 @@ class LayaTest(unittest.TestCase):
         self.assertFalse(laya.available())   # a timeout marks it down for the cache period
 
     def test_tags_only_when_very_sure(self):
-        self.assertEqual(laya.tags({'dtc_founder': 0.99, 'creator': 0.85, 'brand_account': 0.93}, set()), ['Brand'])
+        self.assertEqual(laya.tags({'dtc_founder': 0.99, 'creator': 0.85, 'brand_account': 0.93}, set()), [])
         self.assertEqual(laya.tags({'brand_account': 0.93}, {'Brand'}), [])
         self.assertIsNone(laya.fit({}))
 

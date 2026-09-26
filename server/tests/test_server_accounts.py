@@ -87,9 +87,9 @@ class LaneTest(Base):
         self.assertEqual((r['paused'], r['budget'], r['budget_custom'], r['label'], r['status']),
                          (True, {'list': 3000, 'profile': 20}, True, 'spare', 'paused'))
         self.assertEqual(self.nxt('c'), {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'job': None,
-                                         'cooldown_until': None})
+                                         'cooldown_until': None, 'stages': {'list': True, 'profile': True}})
         hb = self.post('c', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'paused'})[1]
-        self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}})
+        self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'stages': {'list': True, 'profile': True}})
         self.call('/api/accounts/lane-c', {'budget': None})
         self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})
 

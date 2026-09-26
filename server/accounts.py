@@ -167,6 +167,7 @@ def release(conn, now, only=None):
     fine = {k for k, r in rows.items() if healthy(r, now)}
     jobs = [j for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL")
             if j['lane'] not in (ok if j['kind'] == 'list' else fine) and (only is None or j['lane'] == only)
+            and not (j['kind'] == 'profile' and j['lane'].startswith('public-bios:') and (j['leased_until'] or '') > ts)
             and not (j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold'] and (j['leased_until'] or '') > ts)]
     held = {j['lane'] for j in conn.execute("SELECT lane FROM jobs WHERE state='leased' AND lane IS NOT NULL AND leased_until>?", (ts,))
             if j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold']}
@@ -174,7 +175,7 @@ def release(conn, now, only=None):
                                      "AND state NOT IN ('done','private','error')")
              if x['lane'] not in ok and x['lane'] not in held and (only is None or x['lane'] == only)]
     for j in jobs:
-        conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, attempts=max(attempts-1, 0) WHERE id=?", (j['id'],))
+        conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, lease_token=NULL, attempts=max(attempts-1, 0) WHERE id=?", (j['id'],))
     for x in lists:
         conn.execute("UPDATE lists SET lane=NULL, prev_lane=?, released_at=?, released_why=?, "
                      "state=CASE WHEN state='running' THEN 'queued' ELSE state END WHERE seed=? AND direction=?",
@@ -185,7 +186,7 @@ def release(conn, now, only=None):
 def release_all(conn, lane):
     """Everything this lane holds, now (login wall, challenge, removed)."""
     ts = db.now()
-    n = conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, attempts=max(attempts-1, 0) "
+    n = conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, lease_token=NULL, attempts=max(attempts-1, 0) "
                      "WHERE state='leased' AND lane=?", (lane,)).rowcount
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
     why = why_released(row, db.utc_now())
@@ -231,10 +232,11 @@ def pick_job(conn, lane, kinds, now):
         f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
+          AND NOT EXISTS (SELECT 1 FROM public_bio_retries r WHERE r.job_id=j.id AND r.next_at>?)
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, lane, *ok, lane)).fetchone()
+        (*kinds, ts, ts, lane, *ok, lane)).fetchone()
 
 
 def took(conn, lane, job):
@@ -266,7 +268,9 @@ def status_of(row, now, conn=None):
         return 'paused'
     if later(row['cooldown_until'], now):
         return 'cooldown'
-    if row['state'] == 'running':
+    if conn is not None and conn.execute(
+            "SELECT 1 FROM jobs WHERE state='leased' AND lane=? AND leased_until>? LIMIT 1",
+            (row['lane_id'], iso(now))).fetchone():
         return 'running'
     return 'online'
 
@@ -391,10 +395,10 @@ def edit(conn, lane, b):
                     x = v[k]
                     if x is None:
                         cur.pop(k, None)
-                    elif isinstance(x, (int, float)) and not isinstance(x, bool):
-                        cur[k] = max(0, min(cap, int(x)))
+                    elif isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= cap:
+                        cur[k] = x
                     else:
-                        raise ValueError(f'budget.{k} must be a number')
+                        raise ValueError(f'budget.{k} must be an integer from 0 to {cap}')
             sets['budget'] = json.dumps(cur) if cur else None
         else:
             raise ValueError('budget must be {list, profile} or null')

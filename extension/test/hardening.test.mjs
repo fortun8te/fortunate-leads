@@ -45,6 +45,23 @@ test('list: end detection (has_more false, empty tail, missing has_more)', () =>
   // a list that is really empty (total 0 / unknown) is fine
   assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { total: 0 }), null);
 });
+test('list: contradictory or unusable pages cannot silently finish a crawl', () => {
+  const noCursor = { users: [u(1)], has_more: true, status: 'ok' };
+  assert.deepEqual([FL.classify(res(noCursor), 'list').code, FL.classify(res(noCursor), 'list').reason], ['other', 'missing_cursor']);
+  const noUsableUsers = { users: [{ pk: 1 }, { username: '' }], has_more: false, status: 'ok' };
+  assert.deepEqual([FL.classify(res(noUsableUsers), 'list').code, FL.classify(res(noUsableUsers), 'list').reason], ['other', 'unusable_users']);
+});
+test('invalid Instagram totals stay unknown rather than claiming coverage', () => {
+  for (const value of [-1, Infinity, 'NaN', '0xFF', '1e12', 1e12, true]) assert.equal(FL.count(value), null);
+  assert.equal(FL.count('1,234'), 1234);
+  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { total: '0xFF' }).reason, 'invalid_total');
+});
+test('list: a new run resets local history and server count wins on resume', () => {
+  const old = { jobId: 11, next: 'same', received: 400, emptyAt: 'same', pages: 20 };
+  assert.deepEqual(FL.listProgress({ id: 12, cursor: null, received: 0 }, old), {});
+  assert.equal(FL.listContext({ id: 11, cursor: 'same', received: 350 }, old, 1000).received, 350);
+  assert.equal(FL.listContext({ id: 11, cursor: 'different', received: 350 }, old, 1000).emptyAt, null);
+});
 test('list: the same empty page again after the cooldown is other, not another hit', () => {
   const j = { users: [], has_more: true, next_max_id: 'n', status: 'ok' };
   assert.equal(code(FL.classify(res(j), 'list', T0, { cursor: 'c5', emptyAt: 'c5' })), 'other');
@@ -169,7 +186,9 @@ test('outbox cap drops passive bios first, keeps job results', () => {
   box = FL.enqueue(box, '/api/ext/error', { job_id: 8 }, 3);
   assert.deepEqual(box.map((x) => x.body.job_id), [1, 7, 8]);
   box = FL.enqueue(box, '/api/ext/list-page', { job_id: 9 }, 3);
-  assert.deepEqual(box.map((x) => x.body.job_id), [7, 8, 9]);
+  assert.deepEqual(box.map((x) => x.body.job_id), [1, 7, 8, 9]);
+  box = FL.enqueue(box, '/api/ext/profile', { job_id: null }, 3);
+  assert.deepEqual(box.map((x) => x.body.job_id), [1, 7, 8, 9]);
 });
 test('rememberId: pk cache keyed by handle, pruned oldest first', () => {
   let ids = FL.rememberId({}, { handle: 'Brand', ig_id: 5, followers: 10, following: 2 }, T0);
@@ -206,4 +225,15 @@ test('3.4 state migrates: its nextAt was the list clock', () => {
   const st = FL.normalize({ nextAt: T0 + 9e3, profileNextAt: T0 + 40e3 }, T0);
   assert.equal(FL.readyAt(st, 'list'), T0 + 9e3);
   assert.equal(FL.readyAt(st, 'profile'), T0 + 40e3);
+});
+
+test('workspace controls stop cached list and bio jobs, including offline control checks', () => {
+  assert.equal(FL.controlAllows({serverPaused: true}, 'list'), false);
+  assert.equal(FL.controlAllows({serverPaused: true}, 'profile'), false);
+  assert.equal(FL.controlAllows({offline: true}, 'profile'), false);
+  const state = {stages: {list: true, profile: false}};
+  assert.equal(FL.controlAllows(state, 'list'), true);
+  assert.equal(FL.controlAllows(state, 'profile'), false);
+  assert.equal(FL.controlAllows({stages: {list: false, profile: true}}, 'list'), false);
+  assert.equal(FL.controlAllows({stages: {list: false, profile: true}}, 'profile'), true);
 });

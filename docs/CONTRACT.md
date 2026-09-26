@@ -12,10 +12,11 @@ server/      Python 3 stdlib only (3.9+, SQLite 3.35+): server.py, db.py, accoun
              migrate.py, tests/
 web/         index.html, app.js, app.css, mock.js (?mock=1), vendor/ (vendored libs and fonts, no CDN at runtime)
 sidecar/     optional Laya decision sidecar (own venv)
+scraper/     optional logged-out public profile collector and standalone igscrape app (own venv)
 ops/         LaunchAgent install, doctor, backup (macOS)
 tests/       e2e/ (simulated Instagram + real extension + real server), bench.py (100k-people timings)
 data/        leads.sqlite, pfp/, backups/, openrouter.json (gitignored)
-docs/        SETUP.md, CONTRACT.md, HANDOFF.md, RESEARCH.md, ui/ (screenshots)
+docs/        SETUP.md, CONTRACT.md, HANDOFF.md, SCRAPER_OPERATIONS.md, RESEARCH.md, ui/ (screenshots)
 ```
 
 Server: `python3 server/server.py` → serves `http://127.0.0.1:8777` (UI at `/`, static from `web/`). DB path `data/leads.sqlite` (override `--db`). Bind 127.0.0.1 only.
@@ -29,7 +30,7 @@ Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy: frame-
 people(id INTEGER PRIMARY KEY, ig_id TEXT UNIQUE, handle TEXT UNIQUE NOT NULL COLLATE NOCASE,
   name TEXT, pic_url TEXT, pic_file TEXT, is_private INT, is_verified INT,
   bio TEXT, website TEXT, category TEXT, followers INT, following INT, posts INT, is_business INT,
-  bio_at TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)
+  bio_at TEXT, bio_src TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)
 seeds(handle TEXT PRIMARY KEY COLLATE NOCASE, ig_id TEXT, is_me INT DEFAULT 0, added_at TEXT)
 lists(seed TEXT, direction TEXT CHECK(direction IN('followers','following')), state TEXT,  -- queued|running|done|paused|error|private
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction))
@@ -48,7 +49,8 @@ verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TE
 laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT)   -- optional Laya sidecar answers (soft signal)
 marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- interested|contacted|talking|client|no (no = Not a fit). 2026-09 migration: good→interested; maybe/known→status cleared + manual tag 'Maybe' / 'Already know them' (notes kept)
 jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT, handle TEXT,
-  priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT)
+  priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT,
+  lane TEXT, lease_token TEXT, created_at TEXT)
   -- state queued|leased|done|error. attempts = leases that expired or ended in an 'other' error (rate_limit/soft_block/
   -- login/challenge give the lease back). 5 'other' errors park a job ('error'); a profile job whose lease expired 5 times
   -- is parked too. List jobs reset attempts on every page.
@@ -59,6 +61,8 @@ pages(job_id INT, cursor TEXT, at TEXT, lane TEXT, users INT, PRIMARY KEY(job_id
 accounts(lane_id TEXT PRIMARY KEY, ig_id, handle, label, role 'lists'|'bios'|'both', budget JSON|NULL, paused, is_main,
   first_seen, last_seen, version, state, hold 'login'|'challenge'|NULL, cooldown_until, list_cool_until, rate JSON, today JSON,
   last_error, activity, text)   -- one row per extension install (Chrome profile); jobs.lane / lists.lane(+prev_lane, released_*)
+public_bio_results(id INTEGER PRIMARY KEY, job_id, handle, at, outcome, cache_hit, source, observed_at, error)
+public_bio_retries(job_id INTEGER PRIMARY KEY, next_at, failures)
 ```
 Indexes worth knowing: `edges_person_seed(person_id, seed)` covering (lists count, seeds per person), `people_bio_at`,
 `tags_tag_src`, `tags_person_src`, `pages_lane_at`. Connections use WAL, `synchronous=NORMAL`, `mmap_size=256 MB`,
@@ -121,6 +125,29 @@ by the Settings page, mode 600, reloaded at once; state is keyed by a key id = s
 429/402/408/5xx → that key+model cools down (Retry-After, else 30 s doubling to 1 h); 401/403 → key disabled until restart or a passing test;
 transport error → provider cools 10 s doubling to 5 min. Free models first; per key+model daily counter (default 1000/day).
 Headers `HTTP-Referer`, `X-Title: Fortunate Leads`; `response_format: json_object`. Keys are never logged or returned (`sk-…abcd`).
+Only model IDs ending in `:free` are accepted for qualification. A free-model catalog entry is not a
+guarantee that a request will succeed. Rule verdicts remain when all models fail.
+
+## Optional public bio collector
+
+The collector in `scraper/workspace_worker.py` is started by the port 8777 server only when enabled. It uses
+`server/public_bios.py` and the same durable `jobs` table as extension profile reads. It never reads lists or
+inherits Instagram session cookies. `scope=queued` consumes existing profile jobs. `scope=missing` also plans
+missing bios into a bounded queue, including seeds and excluding people marked Not a fit unless they are seeds.
+The public collector does not use the extension's per-account bio budget or qualification prefilter.
+
+`GET /api/public-bios` and `GET /api/settings/public-bios` return its current state.
+`POST /api/settings/public-bios` accepts `on` (boolean), `concurrency` (integer 1–32), `scope` (`queued` or
+`missing`), and `egress_file` (path inside `data/`). Defaults are off, concurrency 16, queued scope,
+and `data/scraper-egresses.yaml`. UI POSTs require the same-origin `Origin` header described above.
+Status includes readiness, running state, fresh successes in the last minute, cached successes,
+deferred/error counts, outstanding work and an ETA only when the recent sample is large enough.
+
+Each public job is leased to one worker lane with a token and five-minute lease. The worker renews active
+leases, releases them on shutdown, and persists retry times and per-egress cooldowns in SQLite. Rate limits,
+login walls and network failures are deferred; a cached observation cannot overwrite newer profile data.
+`bio_at` records observation time and `bio_src` records provenance. See
+[SCRAPER_OPERATIONS.md](SCRAPER_OPERATIONS.md) for setup and recovery.
 
 ## Extension ↔ server
 
