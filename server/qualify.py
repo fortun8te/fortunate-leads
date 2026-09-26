@@ -11,6 +11,7 @@ import re
 import time
 import unicodedata
 
+import grok
 import llm
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
@@ -744,12 +745,20 @@ SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
 
 
+# Batch discipline: reasoning models otherwise spend ~700 tokens per profile deliberating (measured on Grok 4.7 at "high").
+STRICT = """Rules for speed:
+- Judge each profile once, in order, from the text given. Do not re-read, compare profiles or reconsider earlier answers.
+- If the evidence is thin, give the rubric score for a sparse profile and move on; never guess facts or research further.
+- Evidence: 1-2 short exact quotes. Reason: under 15 words. Leave optional fields null rather than deliberating.
+- Output the JSON only: no preamble, no markdown, no notes after it."""
+
+
 def _system(examples, n):
     allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
     fmt = SCHEMA_ONE % ', '.join(allowed)
     fmt += ('\nOne profile: reply with that one object.' if n == 1 else
             '\nSeveral profiles: reply {"results": [one object per profile, same ids and exact handles]}.')
-    parts = [BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt]
+    parts = [BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt, STRICT]
     return '\n\n'.join(p for p in parts if p)
 
 
@@ -864,22 +873,38 @@ def _verdict(v, person, tags, used, version, net=None):
             'model': used, 'fit': fit, 'tags': new, 'evidence': evidence, 'brand_handle': brand, 'prompt': version}
 
 
-def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget: float = LLM_BUDGET) -> list:
+def batch_size(engine='free'):
+    return grok.BATCH if engine == 'grok' and grok.available() else LLM_BATCH
+
+
+def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget: float = LLM_BUDGET, engine: str = 'free') -> list:
     """items = [{'person','tags','edges','net'?}] -> one verdict dict or None per item (None: rule verdict stays, retried later).
-    Profiles go LLM_BATCH per call; a batch reply missing someone leaves only that person at None."""
+    Profiles go batch_size(engine) per call; a batch reply missing someone leaves only that person at None.
+    engine: 'free' (OpenRouter free models), 'grok' (SuperGrok via the Grok CLI), 'auto' (free first, Grok when no free model answers)."""
+    if engine == 'grok' and not grok.available():
+        engine = 'free'
     out = [None] * len(items)
     version = prompt_version(examples)
-    deadline = time.monotonic() + budget
-    for i in range(0, len(items), LLM_BATCH):
-        chunk = items[i:i + LLM_BATCH]
+    step = batch_size(engine)
+    deadline = time.monotonic() + (max(budget, grok.TIMEOUT) if engine == 'grok' else budget)
+    for i in range(0, len(items), step):
+        chunk = items[i:i + step]
         left = deadline - time.monotonic()
         if left <= 1:
             break
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
-        except llm.Unavailable:
+            if engine == 'grok':
+                text, used = grok.chat(msgs, timeout=min(grok.TIMEOUT, left))
+            else:
+                try:
+                    text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
+                except llm.Unavailable:
+                    if engine != 'auto' or not grok.available():
+                        raise
+                    text, used = grok.chat(msgs)
+        except (llm.Unavailable, grok.Failed):
             continue
         data = parse_json(text)
         if not data:

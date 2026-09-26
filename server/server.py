@@ -1,6 +1,7 @@
 import argparse
 import biofetch
 import deepscout
+import grok
 import websearch
 import collections
 from concurrent.futures import ThreadPoolExecutor
@@ -1431,6 +1432,24 @@ def api_scout_set(conn, q, b):
     return deepscout.status(conn)
 
 
+def api_grok(conn, q, b=None):
+    return {'engine': ai_engine(conn), 'available': grok.available(), 'model': grok.MODEL, 'effort': grok.EFFORT,
+            'batch': grok.BATCH, 'workers': db.get_setting(conn, 'grok_workers') or 3, 'usage': grok.usage()}
+
+
+def api_grok_set(conn, q, b):
+    if 'engine' in b:
+        if b['engine'] not in AI_ENGINES:
+            raise Bad('engine must be free, grok or auto')
+        db.set_setting(conn, 'ai_engine', b['engine'])
+    if 'workers' in b:
+        if isinstance(b['workers'], bool) or not isinstance(b['workers'], int) or not 1 <= b['workers'] <= 8:
+            raise Bad('workers must be 1-8')
+        db.set_setting(conn, 'grok_workers', b['workers'])
+    conn.commit()
+    return api_grok(conn, q)
+
+
 def api_llm_models_refresh(conn, q, b):
     rec = llm.refresh_models(force=True)
     st = llm.get().status()
@@ -1601,6 +1620,7 @@ ROUTES = [
     ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
     ('GET', r'/api/scout', api_scout), ('POST', r'/api/settings/scout', api_scout_set),
+    ('GET', r'/api/grok', api_grok), ('POST', r'/api/settings/grok', api_grok_set),
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
 ]
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
@@ -2063,6 +2083,14 @@ def research(conn, items):
         it['person'] = dict(it['person'], web_lines=websearch.lines(got), web_text=websearch.text(got))
 
 
+AI_ENGINES = ('free', 'grok', 'auto')
+
+
+def ai_engine(conn):
+    e = db.get_setting(conn, 'ai_engine')
+    return e if e in AI_ENGINES else 'free'
+
+
 def run_llm(conn, rows, skip):
     """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
     if control.stage_paused(conn, 'ai'):
@@ -2082,7 +2110,8 @@ def run_llm(conn, rows, skip):
     research(conn, items)
     try:
         many = getattr(qualify, 'llm_verdicts', None)
-        vs = many(items, examples) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
+        engine = ai_engine(conn)
+        vs = (many(items, examples, engine=engine) if engine != 'free' else many(items, examples)) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
     except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
         traceback.print_exc()
         vs = [None] * len(items)
@@ -2148,8 +2177,12 @@ class LLMPool:
     def step(self, conn):
         if not db.get_setting(conn, 'qualify'):
             return False
-        workers = max(1, min(32, int(db.get_setting(conn, 'llm_workers') or 4)))
-        batch = self.batch or getattr(qualify, 'LLM_BATCH', 1)
+        engine = ai_engine(conn)
+        if engine == 'grok' and grok.available():
+            workers = max(1, min(8, int(db.get_setting(conn, 'grok_workers') or 3)))
+        else:
+            workers = max(1, min(32, int(db.get_setting(conn, 'llm_workers') or 4)))
+        batch = self.batch or (qualify.batch_size(engine) if hasattr(qualify, 'batch_size') else getattr(qualify, 'LLM_BATCH', 1))
         with self.lock:
             _expire(self.skip)
             free = workers - self.running

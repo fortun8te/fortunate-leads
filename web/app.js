@@ -2407,7 +2407,9 @@ async function loadSettings() {
 }
 // Leadscout: which model the Hermes agent runs on, how many at once, and what it used this week.
 async function loadScout() {
-  try { SET.scout = await api.get('/api/scout'); } catch (e) { SET.scout = null; }
+  const [sc, gk] = await Promise.allSettled([api.get('/api/scout'), api.get('/api/grok')]);
+  SET.scout = sc.status === 'fulfilled' ? sc.value : null;
+  SET.grok = gk.status === 'fulfilled' ? gk.value : null;
   renderScout();
 }
 function renderScout() {
@@ -2425,9 +2427,28 @@ function renderScout() {
     <div class="set-row"><div><b>Agents at once</b><span class="muted">About 10–25 s per lead each.</span></div>
       <div class="seg" id="scout-workers">${[2, 3, 4, 6, 8].map((n) => `<button data-w="${n}" class="${sc.workers === n ? 'on' : ''}" aria-pressed="${sc.workers === n}">${n}</button>`).join('')}</div></div>
     <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">From Hermes' own records. SuperGrok's weekly % is only shown in the Grok app.</span></div>
-    <div class="kv-list">${use}</div>`;
+    <div class="kv-list">${use}</div>${grokHTML(SET.grok, tok)}`;
+}
+// Bulk AI engine: free OpenRouter models (8 per call) or SuperGrok through the Grok CLI (25 per call).
+function grokHTML(g, tok) {
+  if (!g) return '';
+  const engines = [['free', 'Free models'], ['grok', 'SuperGrok'], ['auto', 'Free, then Grok']];
+  const u = g.usage || {};
+  return `
+    <div class="sub-h"><b>Bulk AI scoring</b><span class="muted">${g.available ? `SuperGrok runs ${esc(g.model)} (${esc(g.effort)} reasoning), ${int(g.batch)} people per call. Free models do 8.` : 'Grok CLI not found on this Mac, so free models only.'}</span></div>
+    <div class="set-row"><div><b>Engine</b><span class="muted">"Free, then Grok" uses your plan only when the free models are rate-limited.</span></div>
+      <div class="seg" id="grok-engine">${engines.map(([id, label]) => `<button data-e="${id}" class="${g.engine === id ? 'on' : ''}" aria-pressed="${g.engine === id}"${id !== 'free' && !g.available ? ' disabled' : ''}>${label}</button>`).join('')}</div></div>
+    <div class="set-row"><div><b>Grok calls at once</b><span class="muted">About 2 min per call of ${int(g.batch)}.</span></div>
+      <div class="seg" id="grok-workers">${[1, 2, 3, 4, 6].map((n) => `<button data-gw="${n}" class="${g.workers === n ? 'on' : ''}" aria-pressed="${g.workers === n}">${n}</button>`).join('')}</div></div>
+    <div class="kv-list"><div class="kv-row"><span>SuperGrok, last 7 days</span><span class="num">${int(u.calls || 0)} calls · ~${int((u.calls || 0) * g.batch)} people · ${tok((u.tokens_in || 0) + (u.tokens_out || 0))} tokens</span></div>
+      <div class="kv-row"><span>Today</span><span class="num">${int(u.today || 0)} calls</span></div></div>`;
 }
 $('#set-scout')?.addEventListener('click', async (e) => {
+  const ge = e.target.closest('[data-e]'), gw = e.target.closest('[data-gw]');
+  if (ge || gw) {
+    try { SET.grok = await api.post('/api/settings/grok', ge ? { engine: ge.dataset.e } : { workers: +gw.dataset.gw }); renderScout(); toast('Saved'); } catch (err) { toast('Could not save'); }
+    return;
+  }
   const body = e.target.closest('#scout-on') ? { on: !SET.scout?.on }
     : e.target.closest('[data-m]') ? { model: e.target.closest('[data-m]').dataset.m }
     : e.target.closest('[data-w]') ? { workers: +e.target.closest('[data-w]').dataset.w } : null;
