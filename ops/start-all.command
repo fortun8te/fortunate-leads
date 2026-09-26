@@ -10,7 +10,14 @@ agent_checkout_owned "$FL_LABEL" server/server.py || {
 }
 
 echo 'Starting Fortunate Leads (lists, bios, and AI)...'
-if ! wait_http /api/counts 3; then
+if wait_http /api/counts 3; then
+  agent_owns_port || {
+    echo 'Another server is answering on the Fortunate Leads port; no stages were started.' >&2; exit 1;
+  }
+else
+  [ -z "$(port_pids "$FL_PORT")" ] || {
+    echo 'An unverified server holds the Fortunate Leads port; no stages were started.' >&2; exit 1;
+  }
   [ -f "$FL_AGENTS/$FL_LABEL.plist" ] || {
     echo 'Install the server once with ops/install-launchagent.sh --with-backup.' >&2; exit 1;
   }
@@ -20,7 +27,9 @@ if ! wait_http /api/counts 3; then
     launchctl enable "$FL_DOMAIN/$FL_LABEL"
     launchctl bootstrap "$FL_DOMAIN" "$FL_AGENTS/$FL_LABEL.plist"
   fi
-  wait_http /api/counts 30 || { echo 'The local server did not become ready.' >&2; exit 1; }
+  wait_http /api/counts 30 && agent_owns_port || {
+    echo 'The installed server did not become ready on its own port.' >&2; exit 1;
+  }
 fi
 
 "$FL_PYTHON" "$FL_REPO/sidecar/laya_service.py" start --timeout 180 || {
@@ -49,6 +58,9 @@ while IFS= read -r profile_dir; do
   open -a 'Google Chrome' --args "--profile-directory=$profile_dir" 'https://www.instagram.com/'
 done <<< "$profiles"
 
+agent_owns_port || {
+  echo 'The server changed before startup; no stages were started.' >&2; exit 1;
+}
 curl -fsS -m 15 -o /dev/null -H "Origin: http://127.0.0.1:$FL_PORT" \
   -H 'Content-Type: application/json' -d '{"action":"start_all"}' \
   "http://127.0.0.1:$FL_PORT/api/control" || {
