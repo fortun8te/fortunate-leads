@@ -14,8 +14,11 @@ import threading
 import time
 import urllib.request
 
-URL = 'http://127.0.0.1:18742'
-MODEL = os.environ.get('LAYA_MODEL', 'convaiinnovations/laya-multilingual')
+PORT = int(os.environ.get('LAYA_PORT', '18742'))
+if not 1 <= PORT <= 65535:
+    raise ValueError('LAYA_PORT must be between 1 and 65535')
+URL = f'http://127.0.0.1:{PORT}'
+MODEL = os.environ.get('LAYA_MODEL', 'convaiinnovations/laya:multilingual')
 DEPLOYMENT_VERSION = os.environ.get('LAYA_DEPLOYMENT_VERSION', 'laya-0.3.20-checkpoint-1')
 PIPELINE_VERSION = 'laya-soft-signal-v2'
 HEALTH_TIMEOUT = 3
@@ -36,6 +39,7 @@ FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -
 
 _health = {'at': None, 'ok': False, 'model': None, 'deployment_version': None}
 _lock = threading.Lock()
+_probe_lock = threading.Lock()
 
 
 def _open(req, timeout):
@@ -43,23 +47,32 @@ def _open(req, timeout):
 
 
 def available(now=None):
-    now = time.monotonic() if now is None else now
+    explicit_now = now is not None
+    now = time.monotonic() if not explicit_now else now
     with _lock:
         if _health['at'] is not None and 0 <= now - _health['at'] < HEALTH_TTL:
             return _health['ok']
-    ok = False
-    data = {}
-    try:
-        with _open(urllib.request.Request(URL + '/health'), HEALTH_TIMEOUT) as r:
-            data = json.loads(r.read(100_000))
-            ok = (isinstance(data, dict) and data.get('ok') is True and data.get('model') == MODEL
-                  and data.get('deployment_version') == DEPLOYMENT_VERSION)
-    except (OSError, ValueError, HTTPException):
+    # Only one caller probes an expired sidecar. The short state lock stays free
+    # so status reads never wait for the network timeout.
+    with _probe_lock:
+        now = time.monotonic() if not explicit_now else now
+        with _lock:
+            if _health['at'] is not None and 0 <= now - _health['at'] < HEALTH_TTL:
+                return _health['ok']
         ok = False
-    with _lock:
-        _health.update(at=now, ok=ok, model=data.get('model') if ok else None,
-                       deployment_version=data.get('deployment_version') if ok else None)
-    return ok
+        data = {}
+        try:
+            with _open(urllib.request.Request(URL + '/health'), HEALTH_TIMEOUT) as r:
+                data = json.loads(r.read(100_000))
+                ok = (isinstance(data, dict) and data.get('ok') is True and data.get('model') == MODEL
+                      and data.get('deployment_version') == DEPLOYMENT_VERSION)
+        except (OSError, ValueError, HTTPException):
+            ok = False
+        with _lock:
+            _health.update(at=time.monotonic() if not explicit_now else now, ok=ok,
+                           model=data.get('model') if ok else None,
+                           deployment_version=data.get('deployment_version') if ok else None)
+        return ok
 
 
 def last_known():
@@ -69,7 +82,7 @@ def last_known():
 
 
 def reset():
-    with _lock:
+    with _probe_lock, _lock:
         _health.update(at=None, ok=False, model=None, deployment_version=None)
 
 

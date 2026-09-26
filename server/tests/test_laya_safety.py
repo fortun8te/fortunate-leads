@@ -11,6 +11,7 @@ os.environ.setdefault('FL_NO_ORSLOT', '1')
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import db  # noqa: E402
 import laya  # noqa: E402
+import qualify  # noqa: E402
 import server  # noqa: E402
 
 
@@ -133,6 +134,7 @@ class StoredAnswerTest(unittest.TestCase):
             finally:
                 conn.close()
 
+
     def test_malformed_cached_probability_is_not_used(self):
         with tempfile.TemporaryDirectory() as directory:
             conn = db.init(os.path.join(directory, 'leads.sqlite'))
@@ -175,6 +177,54 @@ class StoredAnswerTest(unittest.TestCase):
                         patch.object(laya, 'available', return_value=True), patch.object(laya, 'decide', return_value=answers):
                     self.assertFalse(server.laya_step(conn))
                 self.assertEqual(conn.execute('SELECT count(*) FROM laya').fetchone()[0], 0)
+            finally:
+                conn.close()
+
+
+class LayaScoreCapTest(unittest.TestCase):
+    def test_laya_respects_private_and_unreachable_caps(self):
+        base = {'handle': 'glowfounder', 'name': 'Glow Founder', 'followers': 1000}
+        private = dict(base, is_private=True)
+        unreachable = dict(base, followers=300_000)
+        other_market = dict(base, bio='Based in Mumbai')
+        self.assertLessEqual(qualify.prefilter(private, ['seed'], laya_fit=100), 35)
+        self.assertLessEqual(qualify.prefilter(unreachable, ['seed'], laya_fit=100), 15)
+        self.assertLessEqual(qualify.prefilter(other_market, ['seed'], laya_fit=100), 15)
+
+    def test_laya_still_blends_uncapped_profiles(self):
+        person = {'handle': 'glowfounder', 'name': 'Glow Founder', 'followers': 1000}
+        plain = qualify.prefilter(person, ['seed'])
+        self.assertEqual(qualify.prefilter(person, ['seed'], laya_fit=100),
+                         round(0.75 * plain + 25))
+
+
+class PrefilterRefreshTest(unittest.TestCase):
+    def test_policy_change_refreshes_only_laya_rows_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            try:
+                scored = db.upsert_person(conn, {'handle': 'largefounder', 'followers': 300_000})
+                plain = db.upsert_person(conn, {'handle': 'plainfounder'})
+                stamp = db.now()
+                conn.executemany('INSERT INTO verdicts(person_id,prefilter,updated_at) VALUES(?,?,?)',
+                                 [(scored, 90, stamp), (plain, 40, stamp)])
+                row = conn.execute('SELECT handle,name,bio,category,website,followers FROM people WHERE id=?',
+                                   (scored,)).fetchone()
+                answers = {q['key']: (0 if q['key'] in ('creator', 'service_provider') else 1)
+                           for q in laya.QUESTIONS}
+                conn.execute('INSERT INTO laya VALUES(?,?,?,?,?)',
+                             (scored, server.laya_hash(*row), json.dumps(answers), 100, stamp))
+                self.assertEqual(server.refresh_laya_prefilter_if_changed(conn), 1)
+                self.assertEqual(conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?',
+                                              (scored,)).fetchone()[0], '')
+                self.assertEqual(conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?',
+                                              (plain,)).fetchone()[0], stamp)
+                self.assertEqual(server.qualify_batch(conn), 1)
+                self.assertLessEqual(conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?',
+                                                  (scored,)).fetchone()[0], 15)
+                self.assertEqual(server.refresh_laya_prefilter_if_changed(conn), 0)
+                self.assertEqual(conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?',
+                                              (plain,)).fetchone()[0], stamp)
             finally:
                 conn.close()
 

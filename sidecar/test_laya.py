@@ -189,6 +189,14 @@ class StrictProtocolTest(HandlerHarness, unittest.TestCase):
         self.assertEqual([r['id'] for r in payload['results']], [3, '2'])
         self.assertEqual(self.backend.calls[-1][0], [i['text'] for i in items])
 
+    def test_large_batch_expands_questions_once(self):
+        items = [{"id": i, "text": "founder"} for i in range(500)]
+        with patch.object(ls, 'to_laya_questions', wraps=ls.to_laya_questions) as expand:
+            code, payload = self.req('/decide', {"items": items, "questions": [{"key": "q", "q": "Founder?"}]})
+        self.assertEqual(code, 200)
+        self.assertEqual(len(payload['results']), 500)
+        self.assertEqual(expand.call_count, 1)
+
     def test_choice_contract(self):
         questions = [{"key": "a", "q": "?", "labels": ["x", "y"]}]
         for probs in ({"x": .5}, {"x": .5, "y": .5, "z": 0}, {"x": .5, "y": -1}):
@@ -213,7 +221,7 @@ class StrictProtocolTest(HandlerHarness, unittest.TestCase):
         with patch.object(ls, 'version', return_value=ls.LAYA_VERSION), patch.dict(sys.modules, {'laya': fake}):
             backend = ls.LayaBackend(device='cpu')
         self.assertEqual(backend.model, ls.DEFAULT_MODEL)
-        self.assertEqual(calls, [((ls.DEFAULT_MODEL,), {'device': 'cpu', 'subfolder': None})])
+        self.assertEqual(calls, [(('convaiinnovations/laya',), {'device': 'cpu', 'subfolder': 'multilingual'})])
         with patch.object(ls, 'version', return_value='0.0.0'):
             with self.assertRaises(RuntimeError):
                 ls.LayaBackend(device='cpu')

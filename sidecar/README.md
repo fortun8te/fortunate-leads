@@ -1,7 +1,7 @@
 # Laya decision sidecar (optional)
 
 A local HTTP service that answers Fortunate's ideal-client questions about a profile, using
-[Laya](https://huggingface.co/convaiinnovations/laya-multilingual) from ConvAI Innovations. The default
+[Laya](https://huggingface.co/convaiinnovations/laya) from ConvAI Innovations. The default
 checkpoint uses mmBERT for multilingual text (Apache 2.0). The qualifier calls it when it is reachable and skips it otherwise.
 
 ## Setup (macOS)
@@ -13,14 +13,14 @@ checkpoint uses mmBERT for multilingual text (Apache 2.0). The qualifier calls i
 
 The setup script resolves its own directory, installs `laya==0.3.20`, and does not fetch weights or start a service. Dependency installation requires network access. The startup check rejects a different installed Laya version. Transitive dependencies are not fully locked.
 
-Runtime uses `HF_HOME` when set, otherwise `sidecar/.cache/huggingface`, independent of the working directory. The default sets `HF_HUB_OFFLINE=1` before importing the model library. Missing cached weights cause startup to fail and the main server skips this optional signal. To deliberately fetch the checkpoint, run the same command once with `--allow-download` and keep the same `HF_HOME` for later starts. If your shell already sets `HF_HUB_OFFLINE=1`, unset it for that explicit download. No model download or inference was performed for the offline tests below.
+Runtime uses `HF_HOME` when set, otherwise `sidecar/.cache/huggingface`, independent of the working directory. The default sets `HF_HUB_OFFLINE=1` before importing the model library. Missing cached weights cause startup to fail and the main server skips this optional signal. To deliberately fetch the checkpoint, run the same command once with `--allow-download` and keep the same `HF_HOME` for later starts. If your shell already sets `HF_HUB_OFFLINE=1`, unset it for that explicit download. The unit tests below do not download weights or run inference.
 
 Options:
-- The default `convaiinnovations/laya-multilingual` is intended for Dutch and other non-English bios. Its language coverage does not guarantee accurate classification of a given profile.
+- The default `convaiinnovations/laya:multilingual` uses the multilingual checkpoint inside the bundled `convaiinnovations/laya` repository. It is intended for Dutch and other non-English bios. Its language coverage does not guarantee accurate classification of a given profile. The `:multilingual` suffix is interpreted by this sidecar as `subfolder="multilingual"`; the standalone `convaiinnovations/laya-multilingual` repository is also supported when cached separately.
 - `--model convaiinnovations/laya` selects the English checkpoint. Set the same `LAYA_MODEL` in the main server so mismatched sidecars are rejected.
 - Set `LAYA_DEPLOYMENT_VERSION` to the same value for both processes, and change it when the checkpoint weights change. Stored answers are keyed by this value, model name, questions and local scoring version.
 - `--device cpu` or `LAYA_DEVICE` sets the device. By default it tries MPS, then CUDA, then CPU.
-- `--port` or `LAYA_PORT` sets the port. `LAYA_BATCH_SIZE` defaults to 16.
+- `--port` or `LAYA_PORT` sets the port. Set `LAYA_PORT` for the main server too. `LAYA_BATCH_SIZE` defaults to 16.
 
 The server binds to 127.0.0.1 only and rejects any non-loopback peer with a 403.
 
@@ -45,7 +45,7 @@ The response looks like this:
    "dtc_founder": {"p": 0.93, "confidence": 0.81},
    "size":  {"p": 0.61, "label": "large", "probs": {"small": 0.39, "large": 0.61}, "confidence": 0.4},
    "niche": {"p": 0.82, "label": "skincare", "probs": {"skincare": 0.82, "food": 0.05}}}}],
- "model": "convaiinnovations/laya-multilingual", "deployment_version": "laya-0.3.20-checkpoint-1", "device": "mps", "ms": 812.3}
+ "model": "convaiinnovations/laya:multilingual", "deployment_version": "laya-0.3.20-checkpoint-1", "device": "mps", "ms": 812.3}
 ```
 
 - A question without labels is a yes/no question (Laya `noul`), and `p` is P(yes).
@@ -58,34 +58,40 @@ The response looks like this:
 
 ## Tests
 
-    python3 -m unittest sidecar/test_laya.py   # fake backend, no sockets, torch, model download or inference
+    python3 -m unittest discover -s sidecar -p 'test_*.py'   # fake backend/service, no torch, download or inference
+
+For a separate real-checkpoint smoke test without starting a service, pass the path to a local
+`convaiinnovations/laya` snapshot containing `multilingual/`:
+
+    sidecar/.venv/bin/python sidecar/smoke_cached.py /path/to/cached/snapshot --device cpu
+
+The script uses synthetic profiles, a temporary copy of mutable metadata, and temporary scratch/cache paths.
+On September 27, 2026 local CPU runs, the checkpoint loaded in 4.7–8.0 s; 64 profiles took
+4.6–5.0 s and 256 took 18.1–19.5 s, about 13–14 profiles/s, with 2.4–2.7 GB peak process RSS.
+These are throughput checks, not accuracy
+checks. An MPS attempt in the test sandbox fell back to CPU, so MPS performance is unmeasured.
 
 ## Run at login (LaunchAgent)
 
-Save the following as `~/Library/LaunchAgents/com.fortunate.laya.plist`, and fix the paths:
+The service is opt-in. From the **deployed checkout**, after `sidecar/setup.sh` and a separate
+cached-weight download, run:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.fortunate.laya</string>
-  <key>ProgramArguments</key><array>
-    <string>/Users/YOU/fortunate-leads/sidecar/.venv/bin/python</string>
-    <string>/Users/YOU/fortunate-leads/sidecar/laya_server.py</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/laya-sidecar.log</string>
-  <key>StandardErrorPath</key><string>/tmp/laya-sidecar.log</string>
-</dict></plist>
-```
+    python3 sidecar/laya_service.py install          # checks the pinned package/cache; writes a plist only
+    python3 sidecar/laya_service.py start            # loads the cached model; waits up to 180 s for matching health
+    python3 sidecar/laya_service.py health           # checks model and deployment version
+    python3 sidecar/laya_service.py stop             # stops this LaunchAgent
 
-    launchctl load ~/Library/LaunchAgents/com.fortunate.laya.plist     # start
-    launchctl unload ~/Library/LaunchAgents/com.fortunate.laya.plist   # stop
+`install` writes `~/Library/LaunchAgents/com.fortunate.laya.plist` with absolute checkout paths,
+offline mode, a 30-second restart throttle, and logs at `~/Library/Logs/FortunateLeads/laya.log`.
+It does not launch the model. Once started, the LaunchAgent is configured to run at login.
+`start` stops a failing service after the health deadline so it cannot keep restarting with a
+bad cache. An existing plist is preserved unless you explicitly run `install --replace` while
+the service is stopped. If the model or deployment version changes, update both the main server
+and sidecar environment before starting; otherwise the client rejects the response.
 
 ## Caveats
 
 - Laya is zero-shot: you write the questions in plain English and there is no training step. The vendor says that
   both checkpoints ship uncalibrated. The main server uses `p` only as a ranking hint, not as a confidence guarantee or standalone tag.
 - The multilingual checkpoint has a 1024-token per-question budget; the English checkpoint has 512. Long profile text may be truncated.
-- Real checkpoint loading, package compatibility, device behavior and throughput still need a separately authorized live check. Offline fake-backend tests do not establish classification accuracy or performance.
+- The checkpoint loaded and answered the synthetic smoke test offline. LaunchAgent startup and long-running behavior still need a reviewed deployment check. The synthetic smoke test does not establish classification accuracy on real leads.

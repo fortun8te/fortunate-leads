@@ -18,6 +18,7 @@ PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+PREFILTER_VERSION = 'p2-laya-cap'  # bump when an existing Laya-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -259,12 +260,12 @@ def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
     if net is None:
         net = {'lists': len({s.lower().lstrip('@') for s in seeds or [] if s})}
     base = blend(_profile_signals(person), net)
+    if laya_fit is not None:
+        base = round(0.75 * base + 0.25 * laya_fit)
     if person.get('is_private'):
         base = min(base, 35)
     if too_big(person.get('followers'), net) or other_market(person):
         base = min(base, 15)   # no bio read or model call for people there is no way in with
-    if laya_fit is not None:
-        base = round(0.75 * base + 0.25 * laya_fit)
     return _clamp(base)
 
 

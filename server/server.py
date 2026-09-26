@@ -2244,6 +2244,22 @@ def retag_if_changed(conn):
     return True
 
 
+def refresh_laya_prefilter_if_changed(conn):
+    """Queue only Laya-scored verdicts after a prefilter policy change.
+
+    The version write and invalidation share one transaction, so an interrupted
+    startup can safely retry. The normal qualify worker reblends in batches.
+    """
+    version = qualify.PREFILTER_VERSION
+    if db.get_setting(conn, 'laya_prefilter_version') == version:
+        return 0
+    changed = conn.execute("UPDATE verdicts SET updated_at='' WHERE person_id IN "
+                           "(SELECT person_id FROM laya)").rowcount
+    db.set_setting(conn, 'laya_prefilter_version', version)
+    conn.commit()
+    return changed
+
+
 EARLY_LISTS = 2   # while lists are still collecting, only people already in this many lists get a bio read
 
 
@@ -2451,6 +2467,7 @@ def main():
     Path(CFG['db']).parent.mkdir(parents=True, exist_ok=True)
     conn = db.init(CFG['db'])
     retag_if_changed(conn)
+    refresh_laya_prefilter_if_changed(conn)
     conn.close()
     start_workers(threading.Event())
     print(f'Fortunate Leads on http://127.0.0.1:{a.port}  db={CFG["db"]}', flush=True)
