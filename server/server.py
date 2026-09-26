@@ -282,7 +282,10 @@ def _ext_list_page(conn, q, b):
                     'SELECT DISTINCT person_id FROM current_edges WHERE seed IN (?,?)', (found['handle'], handle)))
     old_active = {r[0] for r in conn.execute(
         'SELECT person_id FROM current_edges WHERE seed=? AND direction=?', (seed, direction))} if job and b.get('done') else set()
-    run_members = {r[0] for r in conn.execute('SELECT person_id FROM list_members WHERE job_id=?', (job['id'],))} if job else set()
+    # A normal page only adds positive observations. The full prefix is needed
+    # once, when a claimed completed run can establish negative evidence.
+    run_members = {r[0] for r in conn.execute('SELECT person_id FROM list_members WHERE job_id=?',
+                                              (job['id'],))} if old_active else set()
     maybe_removed = old_active - run_members - existing
     marked = set()
     for chunk in chunks(list(existing | maybe_removed)):
@@ -334,10 +337,13 @@ def _ext_list_page(conn, q, b):
             db.observe_edge(conn, seed, pid, direction, page_key, job['id'] if job else None, ts)
             pids.append(pid)
             if job:
-                conn.execute('INSERT OR REPLACE INTO list_members VALUES(?,?,?)', (job['id'], pid, ts))
+                conn.execute('INSERT INTO list_members VALUES(?,?,?) '
+                             'ON CONFLICT(job_id,person_id) DO UPDATE SET observed_at=excluded.observed_at',
+                             (job['id'], pid, ts))
     db.dirty_seed_members(conn, *flipped)   # once per seed, not once per new member
     rules.sync(conn, pids)
-    received = conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job['id'],)).fetchone()[0] if job else len(set(pids))
+    received = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?',
+                            (job['id'],)).fetchone()[0] if job else len(set(pids))
     limited = bool(b.get('limited'))
     missing_end = not next_cursor and not b.get('done') and not limited
     done = bool(b.get('done')) or limited or stalled or missing_end
@@ -1857,11 +1863,6 @@ def network_context(conn, pids, me=None):
     if not pids:
         return {}
     me = me if me is not None else me_handle(conn)
-    yields = {r[0]: (r[1], r[2]) for r in conn.execute(
-        f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), count(DISTINCT e.person_id) "
-        "FROM current_edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
-    good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
-                                               "WHERE m.status IN " + POSITIVE_SQL)}
     out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0, 'followers': None}
            for p in pids}
     for chunk in chunks(pids):
@@ -1870,6 +1871,23 @@ def network_context(conn, pids, me=None):
         for e in conn.execute(f"SELECT person_id, seed, direction FROM current_edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
                               'ORDER BY seed, direction', chunk):
             out[e['person_id']]['seeds'].append((e['seed'], e['direction']))
+    # The old aggregation read every observed edge for every list page, even
+    # though the page usually touches only a few seeds. Limit the aggregate to
+    # the seeds of these people; a marked person outside them cannot affect the
+    # result. Chunking also stays within SQLite's variable limit.
+    relevant = sorted({seed for n in out.values() for seed, _ in n['seeds']})
+    yields = {}
+    good_handles = set()
+    for chunk in chunks(relevant):
+        slots = ','.join('?' * len(chunk))
+        for r in conn.execute(
+                f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
+                f"count(DISTINCT e.person_id) FROM current_edges e JOIN marks m ON m.person_id=e.person_id "
+                f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
+            yields[r[0]] = (r[1], r[2])
+        good_handles.update(r[0] for r in conn.execute(
+            f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
+            f"WHERE m.status IN {POSITIVE_SQL} AND p.handle IN ({slots})", chunk))
     for pid, n in out.items():
         seeds = {s for s, _ in n['seeds']}
         mine = {d for s, d in n['seeds'] if me and s == me}

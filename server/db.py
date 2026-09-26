@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_i
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
 -- Per-run proof is separate from display totals and transient error messages.
 CREATE TABLE IF NOT EXISTS list_runs(job_id INTEGER PRIMARY KEY, first_page_seen INT NOT NULL DEFAULT 0,
-  total INT, total_source TEXT NOT NULL DEFAULT 'unknown');
+  total INT, total_source TEXT NOT NULL DEFAULT 'unknown', member_count INT NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS list_page_requests(job_id INT, requested_cursor TEXT NOT NULL, next_cursor TEXT,
   PRIMARY KEY(job_id,requested_cursor));
 CREATE TABLE IF NOT EXISTS list_members(job_id INT, person_id INT, observed_at TEXT, PRIMARY KEY(job_id,person_id));
@@ -238,10 +238,25 @@ def init(path):
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                              ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
+            if table == 'list_runs' and col == 'member_count':
+                # Existing tracked prefixes already have members. Backfill once
+                # before triggers start maintaining the exact count.
+                conn.execute('UPDATE list_runs SET member_count=(SELECT count(*) FROM list_members WHERE job_id=list_runs.job_id)')
+    for name in ('list_members_count_insert', 'list_members_count_delete', 'list_members_count_reassign'):
+        conn.execute(f'DROP TRIGGER IF EXISTS {name}')
+    conn.execute('CREATE TRIGGER list_members_count_insert AFTER INSERT ON list_members BEGIN '
+                 'UPDATE list_runs SET member_count=member_count+1 WHERE job_id=NEW.job_id; END')
+    conn.execute('CREATE TRIGGER list_members_count_delete AFTER DELETE ON list_members BEGIN '
+                 'UPDATE list_runs SET member_count=member_count-1 WHERE job_id=OLD.job_id; END')
+    conn.execute('CREATE TRIGGER list_members_count_reassign AFTER UPDATE OF job_id ON list_members '
+                 'WHEN OLD.job_id!=NEW.job_id BEGIN '
+                 'UPDATE list_runs SET member_count=member_count-1 WHERE job_id=OLD.job_id; '
+                 'UPDATE list_runs SET member_count=member_count+1 WHERE job_id=NEW.job_id; END')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
@@ -899,8 +914,7 @@ def list_run_complete(conn, job_id):
             return False
         seen.add(cursor)
         cursor = pages[cursor]
-    return (len(seen) == len(pages) and
-            conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0] >= run['total'])
+    return len(seen) == len(pages) and run['member_count'] >= run['total']
 
 
 def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
@@ -913,9 +927,10 @@ def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
     row = conn.execute('SELECT state,run_job_id,cursor,received,total FROM lists WHERE seed=? AND direction=?',
                        (seed, direction)).fetchone()
     job = conn.execute('SELECT kind,seed,direction,state FROM jobs WHERE id=?', (job_id,)).fetchone()
-    if (not row or row['state'] != 'done' or row['run_job_id'] != job_id or row['cursor'] is not None
+    run = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?', (job_id,)).fetchone()
+    if (not row or not run or row['state'] != 'done' or row['run_job_id'] != job_id or row['cursor'] is not None
             or not job or job['kind'] != 'list' or job['state'] != 'done' or job['seed'] != seed or job['direction'] != direction
-            or row['received'] != conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0]):
+            or row['received'] != run['member_count']):
         return set()
     ts = completed_at or now()
     before = {r[0] for r in conn.execute('SELECT person_id FROM current_edges WHERE seed=? AND direction=?',
@@ -986,13 +1001,15 @@ def start_list_run(conn, job_id, seed, direction):
                        (seed, direction)).fetchone()
     if old and old['cursor'] and old['run_job_id'] is not None and old['run_job_id'] != job_id:
         prior = old['run_job_id']
-        conn.execute('INSERT OR IGNORE INTO list_runs SELECT ?,first_page_seen,total,total_source FROM list_runs WHERE job_id=?',
+        conn.execute('INSERT OR IGNORE INTO list_runs(job_id,first_page_seen,total,total_source) '
+                     'SELECT ?,first_page_seen,total,total_source FROM list_runs WHERE job_id=?',
                      (job_id, prior))
         conn.execute('INSERT OR IGNORE INTO list_members SELECT ?,person_id,observed_at FROM list_members WHERE job_id=?',
                      (job_id, prior))
         conn.execute('INSERT OR IGNORE INTO list_page_requests SELECT ?,requested_cursor,next_cursor FROM list_page_requests WHERE job_id=?',
                      (job_id, prior))
-    conn.execute('INSERT OR IGNORE INTO list_runs(job_id) VALUES(?)', (job_id,))
+    conn.execute('INSERT OR IGNORE INTO list_runs(job_id,member_count) VALUES(?, '
+                 '(SELECT count(*) FROM list_members WHERE job_id=?))', (job_id, job_id))
     # Do not count historical edges as a tracked prefix. Legacy received remains visible
     # until a page arrives, but can never certify completion.
     if old and old['cursor']:
