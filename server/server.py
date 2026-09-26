@@ -1288,7 +1288,10 @@ def progress(conn, accts):
                   'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
         'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
                  'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
-                 'eta_h': eta_with_budget(bios_left, bios_h, 1, bio_lanes, 'profile', now)},
+                 # No reads measured yet: fall back to what the daily bio limits allow.
+                 'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
+                                          1, bio_lanes, 'profile', now),
+                 'estimate': not bios_h},
         'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
                     'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},

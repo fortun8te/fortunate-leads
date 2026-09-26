@@ -2047,12 +2047,15 @@ function renderScraper() {
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
+  const capped = ['list', 'profile'].some((k) => x.budget?.[k] && (x.today?.[k] || 0) >= x.budget[k]);
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
   else if (sc.paused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (cool && capped) { now = 'Daily limit reached'; sub = `Back ${backIn(x.cooldown_until)}. Add another Instagram account under Accounts to keep going today.`; }
+  else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Resting'; sub = `Instagram asked us to slow down. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} people so far.`; }
   else { now = 'Online, waiting for work'; sub = 'Add accounts to scrape below.'; }

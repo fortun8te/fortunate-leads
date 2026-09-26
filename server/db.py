@@ -532,11 +532,13 @@ def merge_people(conn, keep, drop):
                 stamp = datetime.min.replace(tzinfo=timezone.utc)
             return useful, stamp
 
-        keep_had_site = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_reads'").fetchone() and \
+        # Website reads are optional tables, created lazily by qual_api.
+        optional = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('site_reads','site_evidence')")}
+        keep_had_site = 'site_reads' in optional and \
             conn.execute('SELECT 1 FROM site_reads WHERE person_id=?', (keep,)).fetchone()
         conflicts, chosen_records = {}, {}
         singletons = ['verdicts', 'laya']
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_reads'").fetchone():
+        if 'site_reads' in optional:
             singletons.append('site_reads')
         for table in singletons:
             kept = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (keep,)).fetchone()
@@ -550,7 +552,7 @@ def merge_people(conn, keep, drop):
                         conn.execute('UPDATE site_reads SET ' + ','.join(key + '=?' for key in columns) + ' WHERE person_id=?',
                                      (*[dropped[key] for key in columns], keep))
                         # Keep site evidence paired with the chosen read.
-                        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_evidence'").fetchone():
+                        if 'site_evidence' in optional:
                             conn.execute('DELETE FROM site_evidence WHERE person_id=?', (keep,))
                             conn.execute('UPDATE site_evidence SET person_id=? WHERE person_id=?', (keep, drop))
                     conflicts[table] = {'kept': dict(kept), 'merged': dict(dropped)}
@@ -592,7 +594,7 @@ def merge_people(conn, keep, drop):
         conn.execute('INSERT INTO list_members SELECT job_id, ?, observed_at FROM list_members WHERE person_id=? '
                      'ON CONFLICT(job_id,person_id) DO UPDATE SET observed_at=max(list_members.observed_at,excluded.observed_at)', (keep, drop))
         conn.execute('DELETE FROM list_members WHERE person_id=?', (drop,))
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_evidence'").fetchone():
+        if 'site_evidence' in optional:
             if not keep_had_site:   # the survivor took the duplicate's only read: bring its evidence along
                 conn.execute('UPDATE site_evidence SET person_id=? WHERE person_id=?', (keep, drop))
             conn.execute('DELETE FROM site_evidence WHERE person_id=?', (drop,))
