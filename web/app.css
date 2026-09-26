@@ -474,6 +474,8 @@ main { flex: 1; min-height: 0; position: relative; }
 .mbar .search { position: relative; flex: 0 1 280px; min-width: 120px; }
 .mbar .search .input { width: 100%; padding-right: 54px; }
 .mbar .search .num { position: absolute; right: 10px; top: 7px; color: var(--fg3); font-size: var(--fs-sm); }
+.map-density { display: inline-flex; align-items: center; gap: 6px; color: var(--fg3); font-size: var(--fs-sm); white-space: nowrap; }
+.map-density .select { min-width: 104px; }
 .stage { flex: 1; position: relative; min-height: 0; overflow: hidden; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .stage canvas.drag { cursor: grabbing; }

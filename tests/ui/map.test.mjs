@@ -46,17 +46,45 @@ test('map resolves history endpoints but excludes history from neighbours and di
     assert.ok(Number.isFinite(edge.source.x) && Number.isFinite(edge.target.x));
   }
 });
-test('map reports displayed sample and search scope with same client/server cap', () => {
+test('map reports a bounded sample and search scope', () => {
   const {m,$} = harness();m.scope='all';
-  assert.match(m.url(),/limit=10000/);
+  assert.match(m.url(),/limit=400/);
   assert.match(m.url(),/today=\d{4}-\d{2}-\d{2}/);
-  m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:10000});
+  m.limit=3000; assert.match(m.url(),/limit=3000/);
+  m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:3000});
   assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
-  assert.match($('#map-count').textContent,/map limit 10000/);
   $('#map-q').value='person';m.search();
   assert.equal($('#map-hits').textContent,'1 displayed');
   $('#map-q').value='not loaded';m.search();
   assert.equal($('#map-hits').textContent,'0 displayed');
+});
+test('smaller map density keeps an open person from the same revision only', async () => {
+  const {m,api,$} = harness(), pending=[];
+  api.get = url => new Promise(resolve => pending.push({url,resolve}));
+  m.limit=1000;
+  const first=m.load();
+  pending[0].resolve({rev:5,total:2400,limit:1000,nodes:[seed('a'),lead(1),lead(2)],
+    links:[{source:'s:a',target:'p:1',direction:'followers',state:'observed'},
+      {source:'s:a',target:'p:2',direction:'following',state:'observed'}],seed_links:[]});
+  await first;
+  m.focus=m.byId.get('p:2'); m.focus.x=73; m.focus.fx=73;
+  m.limit=400;
+  const smaller=m.load();
+  pending[1].resolve({rev:5,total:2400,limit:400,nodes:[seed('a'),lead(1)],
+    links:[{source:'s:a',target:'p:1',direction:'followers',state:'observed'}],seed_links:[]});
+  await smaller;
+  assert.equal(m.focus,m.byId.get('p:2'));
+  assert.equal(m.focus.x,73);
+  assert.equal(m.focus.fx,73);
+  assert.equal(m.links.length,2);
+  assert.match($('#map-count').textContent,/2 of 2400 matching people shown/);
+  assert.match($('#map-count').textContent,/selected person kept on map/);
+  const changed=m.load();
+  pending[2].resolve({rev:6,total:2400,limit:400,nodes:[seed('a'),lead(1)],
+    links:[{source:'s:a',target:'p:1',direction:'followers',state:'observed'}],seed_links:[]});
+  await changed;
+  assert.equal(m.focus,null);
+  assert.equal(m.links.length,1);
 });
 test('map photo cache, work queue and concurrent loads stay bounded through churn and failure', () => {
   const {c,images} = harness();

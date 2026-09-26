@@ -13,7 +13,7 @@ This change keeps the map an evidence view: an arrow records a directed follow o
 
 Generated with `tests/bench_map_scale.py` on this Mac. Each fixture has 12 source accounts, one or two directed current edges per person, exact evidence, verdict scores, and no live records. These are local in-process handler measurements, excluding HTTP transport and browser parsing, not production guarantees.
 
-The **actual default UI request** is `today=2026-09-27&scope=leads&limit=3000`. The date is only used when a follow-up filter is active. Earlier tests omitted it, so they missed a full-sort path that the UI always took. This table uses ten runs for the optimized path, with nearest-rank p95. The forced-general-plan column is a single same-fixture diagnostic that reproduces the old query choice; it is not a ten-run baseline.
+The UI includes `today` in every request. It affects results only when a follow-up filter is active. Earlier tests omitted it, so they missed a full-sort path that the UI took. The map now opens with a 400-person sample and offers 1,000 and 3,000 explicitly. The table measures the expanded 3,000-person request, `today=2026-09-27&scope=leads&limit=3000`. It uses ten runs for the optimized path, with nearest-rank p95. The forced-general-plan column is a single same-fixture diagnostic that reproduces the old query choice; it is not a ten-run baseline.
 
 | Edges / people | Forced general plan, one cold run | UI cold p50 / p95 | Same-revision UI poll p50 / p95 | Compact JSON | Peak process RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |

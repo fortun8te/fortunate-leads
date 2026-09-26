@@ -2736,6 +2736,7 @@ const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
+  limit: 400, rawData: null, audienceKey: null, dataRev: null,
   show() {
     this.shown = true;
     this.resize();
@@ -2743,6 +2744,7 @@ const M = {
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin()) this.sim.restart();
     $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels));
+    $('#map-density').value = String(this.limit);
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
   resize() {
@@ -2759,7 +2761,7 @@ const M = {
   reloadSoon: debounce(() => M.load(), 250),
   url() {
     const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
-    p.set('scope', this.scope); p.set('limit', this.scope === 'all' ? 10000 : 3000);
+    p.set('scope', this.scope); p.set('limit', this.limit);
     return '/api/map?' + p;
   },
   async load(poll) {
@@ -2780,8 +2782,21 @@ const M = {
     this.loaded = true; this.stale = false;
     const key = d.rev + '|' + url;
     if (key === this.rev && this.nodes.length) return;
+    const audience = url.replace(/&limit=\d+$/, '');
+    let shown = d;
+    // A smaller ranked sample can omit the open person. Keep that one known
+    // node and its recorded links only while audience and data revision agree.
+    const selectedId = this.focus?.kind === 'seed' ? null : this.focus?.id || (S.open ? 'p:' + S.open : null);
+    if (selectedId && this.audienceKey === audience && this.dataRev === d.rev && this.rawData &&
+        !d.nodes.some((n) => n.id === selectedId)) {
+      const previous = this.rawData.nodes.find((n) => n.id === selectedId);
+      if (previous) shown = { ...d, nodes: [...d.nodes, previous],
+        links: [...d.links, ...this.rawData.links.filter((l) => l.source === selectedId || l.target === selectedId)],
+        keptSelected: true };
+    }
+    this.rawData = d; this.audienceKey = audience; this.dataRev = d.rev;
     this.rev = key;
-    this.build(d);
+    this.build(shown);
   },
   build(d) {
     // A new filter gets a fresh, fitted layout; a refresh of the same view keeps positions and pins.
@@ -2850,10 +2865,10 @@ const M = {
     }
     const nl = this.leads.length;
     const total = Math.max(nl, Number(d.total) || 0);
-    $('#map-count').textContent = `${int(nl)} of ${int(total)} matching people shown · ${plural(this.seeds.length, 'source account')}${total > nl ? ` · map limit ${int(d.limit || nl)}` : ''}`;
+    $('#map-count').textContent = `${int(nl)} of ${int(total)} matching people shown · ${plural(this.seeds.length, 'source account')}${d.keptSelected ? ' · selected person kept on map' : ''}`;
     const absent = this.historyLinks.filter((l) => l.state === 'absent').length;
     const unverified = this.historyLinks.length - absent;
-    $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees.`;
+    $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees. Other matching people may be outside this sample; choose a larger Show setting to see more.`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     this.simulate(old.size ? 0.5 : 1);
@@ -2992,17 +3007,18 @@ const M = {
     const hd = this.hood();
     const match = this.matchSet;
     const dim = !!hd || (match && match.size > 0);
+    const overview = this.leads.length > 250 && k < 0.85;
     const on = (n) => hd ? hd.set.has(n.id) : match && match.size ? match.has(n.id) : true;
     // Viewport culling bounds in world coords.
     const vx0 = -this.x / k - 20, vy0 = -this.y / k - 20, vx1 = (this.w - this.x) / k + 20, vy1 = (this.h - this.y) / k + 20;
     const inView = (n) => n.x + n.r > vx0 && n.x - n.r < vx1 && n.y + n.r > vy0 && n.y - n.r < vy1;
 
     // Seed overlap edges, weighted by shared people.
-    for (const l of this.seedLinks) {
+    for (const l of overview && !hd ? this.seedLinks.slice(0, 12) : this.seedLinks) {
       const a = l.source, b = l.target;
       const w = 1 + 5 * (l.shared / this.maxShared);
       const hot = hd && (hd.n === a || hd.n === b);
-      c.globalAlpha = hd ? (hot ? 0.8 : 0.06) : 0.28;
+      c.globalAlpha = hd ? (hot ? 0.8 : 0.04) : overview ? 0.18 : 0.28;
       c.strokeStyle = hot ? fg2 : fg4; c.lineWidth = Math.max(w, 1 / k);
       c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
     }
@@ -3010,37 +3026,41 @@ const M = {
     const historicalPass = (state, alpha, dash) => {
       c.globalAlpha = alpha;
       c.setLineDash(dash); c.beginPath();
-      for (const l of this.historyLinks) if (l.state === state) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+      for (const l of this.historyLinks) if (l.state === state &&
+          (!overview || (hd && (l.source === hd.n || l.target === hd.n)))) {
+        c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
+      }
       c.stroke();
       c.setLineDash([]);
     };
     c.strokeStyle = line; c.lineWidth = 1 / k;
-    historicalPass('absent', dim ? 0.04 : 0.18, [1 / k, 6 / k]);
-    historicalPass('unverified', dim ? 0.06 : 0.28, [6 / k, 5 / k]);
+    historicalPass('absent', overview && hd ? 0.45 : dim ? 0.04 : 0.18, [1 / k, 6 / k]);
+    historicalPass('unverified', overview && hd ? 0.55 : dim ? 0.06 : 0.28, [6 / k, 5 / k]);
     // Solid hairline = they follow the seed (or both ways); dashed = the seed follows them.
-    const edgePass = (multi, alpha) => {
+    const edgePass = (multi, alpha, selectedOnly = false) => {
       c.globalAlpha = alpha;
       for (const dashed of [false, true]) {
         c.setLineDash(dashed ? [3 / k, 3 / k] : []); c.beginPath();
-        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed &&
+            (!selectedOnly || l.source === hd.n || l.target === hd.n)) {
+          c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
+        }
         c.stroke();
       }
       c.setLineDash([]);
     };
     // Crowded maps fade the single-list lines so clusters and coloured dots stay readable.
     const crowd = this.leads.length > 5000 ? 0.4 : this.leads.length > 1500 ? 0.7 : 1;
-    const distant = k < 0.15 && this.leads.length > 1500;
-    if (!distant || hd) {
+    if (!overview) {
       edgePass(false, dim ? 0.03 : 0.1 * crowd);
       c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
     }
     if (hd) {
-      c.globalAlpha = 0.85; c.strokeStyle = fg2; c.lineWidth = 1.2 / k; c.beginPath();
-      for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
-      c.stroke();
+      c.strokeStyle = fg2; c.lineWidth = 1.2 / k;
+      edgePass(false, 0.85, true); edgePass(true, 0.85, true);
     }
     // Leads: dots coloured by fit, sized by lists; one batched path per fit, dimmed pass first.
-    const minPx = 2.4 / k;
+    const minPx = (this.leads.length > 1500 ? 1.7 : 2.2) / k;
     const fitColor = Object.fromEntries(FITS.map((f) => [f, css('--fit-' + f)]));
     fitColor.unread = fg4;   // on the dark canvas the list colour for unread is too faint to find
     const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
@@ -3093,9 +3113,9 @@ const M = {
     c.restore();
     c.globalAlpha = 1;
     this.drawLabels(hd, match, fg, fg2, fg3, bg, sans);
-    if (distant && !hd) {
+    if (overview && !hd) {
       c.fillStyle = fg3; c.font = '12px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
-      c.fillText('Zoom in to see individual recorded follow lines', 16, 28);
+      c.fillText('Showing strongest shared-list links · Zoom in for recorded follow lines', 16, 28);
     }
     if (this.loaded && !this.leads.length) { c.fillStyle = fg3; c.font = '14px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('No people match these filters', 16, 28); }
   },
@@ -3137,7 +3157,9 @@ const M = {
     const few = this.leads.length <= 120;
     if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong' || n.judge === 'good');
     cand.sort((a, b) => imp(b) - imp(a));
-    const max = hd || (match && match.size) || few ? 160 : Math.round(Math.min(120, (this.w * this.h / 26000) * Math.max(1, k * k)));
+    const overview = this.leads.length > 250 && k < 0.85;
+    const max = hd ? (hd.n.kind === 'seed' ? 24 : 12) : (match && match.size) ? 24 : few ? 160 :
+      Math.round(Math.min(overview ? 12 : 120, (this.w * this.h / 26000) * Math.max(1, k * k)));
     let shown = 0;
     for (const n of cand) {
       if (shown >= max) break;
@@ -3318,6 +3340,11 @@ function seedCardClick(e) {
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
 $('#map-labels').onclick = () => M.toggleLabels();
+$('#map-density').onchange = (e) => {
+  const limit = Number(e.target.value);
+  if (![400, 1000, 3000].includes(limit) || limit === M.limit) return;
+  M.limit = limit; M.load();
+};
 $('#zoom-in').onclick = () => M.zoomBy(1.4);
 $('#zoom-out').onclick = () => M.zoomBy(1 / 1.4);
 $('#map-q').addEventListener('input', debounce(() => M.search(), 120));
