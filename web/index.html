@@ -73,7 +73,7 @@
             <div class="suggest" id="suggest" hidden></div>
           </div>
           <select class="select" id="sort" title="Sort">
-            <option value="fit">Best fit</option>
+            <option value="follow_up">Follow-up date</option><option value="fit">Best fit</option>
             <option value="connected">Most connected</option>
             <option value="followers">Followers</option>
             <option value="recent">Newest</option>
@@ -82,6 +82,7 @@
         </div>
 
         <div class="lpane" id="pane-leads">
+          <div class="export-bar"><button class="btn" id="export-filtered">Export filtered</button><button class="btn" id="export-selected" disabled>Export selected</button><span id="export-state" role="status" aria-live="polite"></span></div>
           <div class="bulk" id="bulk" hidden></div>
           <div class="thead">
             <span class="c-sel"><button class="ck" id="sel-page" title="Select all loaded"></button></span>
@@ -347,6 +348,7 @@
 <script src="vendor/d3-timer.min.js"></script>
 <script src="vendor/d3-quadtree.min.js"></script>
 <script src="vendor/d3-force.min.js"></script>
+<script src="workflow.js"></script>
 <script src="app.js"></script>
 <script src="controls.js"></script>
 </body>

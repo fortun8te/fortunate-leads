@@ -1,5 +1,14 @@
 # Handoff — state on 2026-09-24 (evening)
 
+## Update, 2026-09-26
+
+- Completed the researched lead workflow gaps: dated follow-ups and shared filters, paginated activity history, filtered/selected CSV exports, profile freshness and refresh in the main detail panel. See [usage](LEAD_WORKFLOWS.md) and [research with sources and rejected alternatives](FEATURE_RESEARCH.md).
+- Fixed lost/stale note drafts, saved-view false success, retained rows after completing the last due reminder, and the initial Laya health-cache check on clocks starting near zero.
+- Database additions are automatic and additive. History starts with this version. CSV is a current lead snapshot; the existing database backup remains the complete backup.
+- Verified on macOS with an isolated sample database. Server: 144 tests, one existing live-model skip. Sidecar: 6 passed. Extension: 42 passed. Web: 12 passed. The 8-hour collection simulator passed all 83 checks, and the 1/2/4-account runs all passed. Live browser checks covered scheduling/completion, saved views, profile-refresh queueing, independent note saves, actual filtered/selected CSV downloads and the 390-pixel layout without horizontal overflow. No browser errors were recorded.
+
+The original collection and account-soak notes below remain relevant. This update did not perform a live Instagram collection soak.
+
 Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md](CONTRACT.md) (API, schema, pacing) and
 [RESEARCH.md](RESEARCH.md) (Instagram endpoints and limits).
 

@@ -1,5 +1,7 @@
 # IG follower/bio collection: research (2026-09-24)
 
+For the 26 September product audit, verified sources, selected features and rejected alternatives, see [Lead workflow research](FEATURE_RESEARCH.md). The endpoint findings below are the earlier collection research; they were not all reverified during that product audit.
+
 Confidence: H = read in source code or maintainer-measured, M = several user reports, L = vendor blog / single comment.
 
 ## 1. Follower / following lists

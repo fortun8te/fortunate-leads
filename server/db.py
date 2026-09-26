@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, sc
   model TEXT, input_hash TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS followups(person_id INTEGER PRIMARY KEY, due_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', completed_at TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', before_value TEXT, after_value TEXT, happened_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person_id);
+CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
@@ -179,7 +183,28 @@ def upsert_person(conn, u, ts=None):
 
 
 def merge_people(conn, keep, drop):
-    for t in ('edges', 'tags', 'marks', 'verdicts'):
+    import workflows
+    conn.execute('UPDATE activity SET person_id=? WHERE person_id=?', (keep, drop))
+    kept, dropped = workflows.follow_up(conn, keep), workflows.follow_up(conn, drop)
+    if dropped:
+        # Keep an open reminder over completed; then earliest due. Record both snapshots on conflict.
+        chosen = min([x for x in (kept, dropped) if x], key=lambda x: (x['completed_at'] is not None, x['due_on']))
+        conn.execute('INSERT OR REPLACE INTO followups VALUES(?,?,?,?,?)', (keep, chosen['due_on'], chosen['note'], chosen['completed_at'], chosen['updated_at']))
+        conn.execute('DELETE FROM followups WHERE person_id=?', (drop,))
+        if kept:
+            workflows.event(conn, keep, 'follow_up_merged', before={'kept': kept, 'merged': dropped}, after=chosen)
+    km = conn.execute('SELECT * FROM marks WHERE person_id=?', (keep,)).fetchone()
+    dm = conn.execute('SELECT * FROM marks WHERE person_id=?', (drop,)).fetchone()
+    if km and dm:
+        note = km['note'] or dm['note']
+        if km['note'] and dm['note'] and km['note'] != dm['note']:
+            combined = km['note'] + '\n\n' + dm['note']
+            # Keep the editable note within its existing limit; full merged text remains in history.
+            note = combined if len(combined) <= 5000 else km['note']
+        status = km['status'] or dm['status']
+        workflows.event(conn, keep, 'identity_merged', before=dict(dm), after={'status': status, 'note': note})
+        conn.execute('UPDATE marks SET status=?,note=?,updated_at=? WHERE person_id=?', (status, note, now(), keep))
+    for t in ('edges', 'tags', 'marks', 'verdicts', 'laya'):
         conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
         conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
     conn.execute('DELETE FROM people WHERE id=?', (drop,))

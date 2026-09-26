@@ -28,7 +28,7 @@ TAG_OF = {'dtc_founder': 'Founder', 'brand_account': 'Brand', 'creator': 'Creato
 SURE = {'creator': 0.9, 'brand_account': 0.9, 'netherlands': 0.9}
 FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -30, 'service_provider': -25}
 
-_health = {'at': 0.0, 'ok': False}
+_health = {'at': None, 'ok': False}
 _lock = threading.Lock()
 
 
@@ -39,7 +39,7 @@ def _open(req, timeout):
 def available(now=None):
     now = time.monotonic() if now is None else now
     with _lock:
-        if now - _health['at'] < HEALTH_TTL:
+        if _health['at'] is not None and 0 <= now - _health['at'] < HEALTH_TTL:
             return _health['ok']
     ok = False
     try:
@@ -56,12 +56,12 @@ def available(now=None):
 def last_known():
     """Last health result without probing (status endpoints must never wait on the sidecar)."""
     with _lock:
-        return _health['ok'] if _health['at'] else None
+        return _health['ok'] if _health['at'] is not None else None
 
 
 def reset():
     with _lock:
-        _health.update(at=0.0, ok=False)
+        _health.update(at=None, ok=False)
 
 
 def person_text(p):

@@ -56,6 +56,30 @@
   const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
   const notes = new Map();
+  const followups = new Map();
+  const activity = new Map();
+  const reads = new Set();
+  let activityId = 1;
+  const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function event(id, kind, body, before = null, after = null, happened = now()) {
+    const entry = { id: activityId++, kind, body, before_value: before, after_value: after, happened_at: happened, created_at: now() };
+    activity.set(id, [entry, ...(activity.get(id) || [])]);
+    return entry;
+  }
+  function history(id, cursor, limit = 50) {
+    const ordered = [...(activity.get(id) || [])].sort((a, b) => b.happened_at.localeCompare(a.happened_at) || b.id - a.id);
+    const start = cursor ? ordered.findIndex((e) => String(e.id) === cursor) + 1 : 0;
+    const rows = ordered.slice(start, start + limit);
+    return { rows, next_cursor: start + limit < ordered.length ? String(rows[rows.length - 1].id) : null };
+  }
+  function setMark(id, body) {
+    for (const [key, map] of [['status', marks], ['note', notes]]) {
+      if (!(key in body)) continue;
+      const before = map.get(id) || null, after = body[key] || null;
+      if (before !== after) event(id, key, key === 'status' ? 'Status changed' : 'Note updated', before, after);
+      if (after) map.set(id, after); else map.delete(id);
+    }
+  }
   const handles = new Set();
   const N = 3200;
 
@@ -90,6 +114,8 @@
       followers, following: Math.floor(150 + rnd() * 2200), posts: Math.floor(5 + rnd() * 1200),
       is_verified: followers > 200000 && chance(0.4) ? 1 : 0, is_business: isBrandAcct ? 1 : 0,
       first_seen: new Date(Date.now() - rnd() * 20 * 86400000).toISOString(),
+      bio_at: hasBio ? new Date(Date.now() - rnd() * 45 * 86400000).toISOString() : null,
+      bio_src: hasBio ? 'extension' : null,
       _role: role, _niche: niche, _us: us, _nl: nl,
     });
     // Seeds: primary plus neighbours (overlap) plus occasional random.
@@ -133,6 +159,13 @@
   const MANUAL = ['Warm intro', 'Pitch Q4', 'Met at event', 'Follow up', 'Dream client'];
   people.forEach((p) => { if (p.bio && chance(0.035)) tags.get(p.id).push({ tag: pick(MANUAL), grp: 'custom', source: 'manual' }); });
   people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['interested', 'interested', 'contacted', 'talking', 'client', 'no'])); });
+  people.slice(0, 12).forEach((p, i) => {
+    const day = new Date(); day.setDate(day.getDate() + i - 5);
+    const f = { due_on: localDay(day), note: 'Check whether they need new product visuals', completed_at: i === 11 ? now() : null, updated_at: now() };
+    followups.set(p.id, f);
+    event(p.id, 'follow_up_scheduled', '', null, f);
+    event(p.id, 'dm', 'Introduced Fortunate and asked about their next launch.');
+  });
 
   // Tag rules.
   let ruleId = 3;
@@ -207,6 +240,8 @@
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
     tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+    note: notes.get(p.id) || null, follow_up: followups.get(p.id) || null, bio_at: p.bio_at, bio_src: p.bio_src,
+    profile_read_pending: reads.has(p.id),
   });
   const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -220,6 +255,12 @@
     return people.filter((p) => {
       if (tiers.length && !tiers.includes(verdicts.get(p.id).tier)) return false;
       const m = marks.get(p.id) || null;
+      const follow = q.get('follow_up'), f = followups.get(p.id), today = q.get('today') || localDay();
+      if (follow === 'due' && (!f || f.completed_at || f.due_on > today)) return false;
+      if (follow === 'overdue' && (!f || f.completed_at || f.due_on >= today)) return false;
+      if (follow === 'scheduled' && (!f || f.completed_at)) return false;
+      if (follow === 'completed' && !f?.completed_at) return false;
+      if (follow === 'none' && f) return false;
       if (!sts.length ? m === 'no' : !sts.includes('all') && !sts.some((s) => (s === 'none' ? m === null : m === s))) return false;
       if (ml && lists(p.id) < ml) return false;
       if (hb === '1' && !p.bio) return false;
@@ -233,7 +274,7 @@
         if (any.length && !any.some((t) => ts.has(t))) return false;
         if (not.some((t) => ts.has(t))) return false;
       }
-      if (text && !(p.handle + ' ' + p.name + ' ' + (p.bio || '')).toLowerCase().includes(text)) return false;
+      if (text && !(p.handle + ' ' + p.name + ' ' + (p.bio || '') + ' ' + (notes.get(p.id) || '')).toLowerCase().includes(text)) return false;
       return true;
     });
   }
@@ -241,6 +282,10 @@
   const FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
   function sorted(list, sort) {
     const cmp = {
+      follow_up: (a, b) => {
+        const day = (p) => { const f = followups.get(p.id); return f && !f.completed_at ? f.due_on : '9999-12-31'; };
+        return day(a).localeCompare(day(b));
+      },
       connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
       followers: (a, b) => b.followers - a.followers,
       recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
@@ -369,6 +414,18 @@
     const q = u.searchParams;
     const path = u.pathname;
     let m;
+    if (path === '/api/leads/export' && method === 'POST') {
+      const p = new URLSearchParams(body.query || '');
+      const chosen = Array.isArray(body.ids) ? people.filter((x) => body.ids.includes(x.id)) : sorted(filtered(p), p.get('sort') || 'score');
+      const columns = ['id', 'handle', 'name', 'bio', 'website', 'followers', 'status', 'note', 'follow_up_due_on', 'follow_up_note'];
+      const cell = (v) => {
+        let text = String(v ?? '');
+        if (typeof v !== 'number' && (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) text = "'" + text;
+        return '"' + text.replace(/"/g, '""') + '"';
+      };
+      const lines = [columns, ...chosen.map((p) => { const r = row(p); return columns.map((k) => k === 'follow_up_due_on' ? r.follow_up?.due_on : k === 'follow_up_note' ? r.follow_up?.note : r[k]); })];
+      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"' } });
+    }
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');
       const off = +q.get('offset') || 0, lim = Math.min(500, +q.get('limit') || 50);
@@ -407,7 +464,7 @@
       const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
       ids.forEach((id) => {
         if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) { if (body.status) marks.set(id, body.status); else marks.delete(id); }
+        if ('status' in body) setMark(id, { status: body.status });
       });
       return { ok: true, changed: ids.length };
     }
@@ -438,7 +495,7 @@
       return { ok: true };
     }
     if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
-      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
+      const c = { hot: 0, warm: 0, cold: 0, unread: 0, interested: 0, talking: 0, no: 0, contacted: 0, client: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
       const without = (k) => { const x = new URLSearchParams(q); x.delete(k); return x; };
       filtered(without('tier')).forEach((p) => { c[verdicts.get(p.id).tier]++; });
       const st = without('status'); if (!st.get('status')) st.set('status', 'all');
@@ -446,13 +503,29 @@
       people.forEach((p) => { if (p.bio) c.with_bio++; });
       return c;
     }
-    if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
+    if ((m = path.match(/^\/api\/person\/(\d+)(\/([\w-]+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, note: notes.get(id) || '' };
-      if (m[3] === 'mark') { if (body.status) marks.set(id, body.status); else marks.delete(id); if (body.note !== undefined) notes.set(id, body.note); return { ok: true }; }
+      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, activity: history(id) };
+      if (m[3] === 'mark') { setMark(id, body); return { ok: true }; }
+      if (m[3] === 'activity') {
+        if (method === 'GET') return history(id, q.get('cursor'), Math.min(100, +(q.get('limit') || 50)));
+        const entry = event(id, body.kind, body.body, null, null, body.happened_at || now());
+        return { ok: true, activity: entry };
+      }
+      if (m[3] === 'follow-up') {
+        const before = followups.get(id) || null;
+        if (body.action === 'clear') { followups.delete(id); if (before) event(id, 'follow_up_cleared', '', before); }
+        else if (body.action === 'complete') {
+          if (before && !before.completed_at) { const next = { ...before, completed_at: now(), updated_at: now() }; followups.set(id, next); event(id, 'follow_up_completed', '', before, next); }
+        } else {
+          const next = { due_on: body.due_on, note: body.note || '', completed_at: null, updated_at: now() };
+          followups.set(id, next); event(id, 'follow_up_scheduled', '', before, next);
+        }
+        return { ok: true, follow_up: followups.get(id) || null };
+      }
       if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
-      if (m[3] === 'read') return { ok: true };
+      if (m[3] === 'read') { reads.add(id); return { ok: true }; }
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
@@ -552,6 +625,7 @@
     const body = opts.body ? JSON.parse(opts.body) : null;
     let res;
     try { res = route(opts.method || 'GET', s, body); } catch (e) { console.warn('mock', s, e); res = null; }
+    if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;
     return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: !res ? 404 : bad ? 400 : 200, headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };

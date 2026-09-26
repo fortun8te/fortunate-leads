@@ -8,6 +8,8 @@ them, links to you and your clients), then the profile read by rules or a free L
 - Setup, first run, backups and troubleshooting: [docs/SETUP.md](docs/SETUP.md)
 - API and database: [docs/CONTRACT.md](docs/CONTRACT.md)
 - Current state: [docs/HANDOFF.md](docs/HANDOFF.md)
+- Lead follow-ups, activity and exports: [docs/LEAD_WORKFLOWS.md](docs/LEAD_WORKFLOWS.md)
+- Feature research and scope decisions: [docs/FEATURE_RESEARCH.md](docs/FEATURE_RESEARCH.md)
 
 ```sh
 python3 server/server.py    # then open http://127.0.0.1:8777
