@@ -1797,9 +1797,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'ok': False, 'error': str(e)})
         except (Bad, ValueError, KeyError, TypeError, OverflowError) as e:
             return self.send(400, {'ok': False, 'error': str(e)})
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
-            return self.send(500, {'ok': False, 'error': str(e)})
+            return self.send(500, {'ok': False, 'error': 'Internal server error'})
         if isinstance(out, workflows.CsvResponse):
             return self.send(200, out.data, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="fortunate-leads.csv"', 'Cache-Control': 'no-store'})
         self.send(200, dict(out, ok=True) if with_ok else out)
@@ -2483,14 +2483,30 @@ def pfp_step(conn):
 
 
 def worker(stop, step, busy_wait, idle_wait):
-    conn = db.connect(CFG['db'])
-    while not stop.is_set():
-        try:
-            busy = step(conn)
-        except Exception:
-            traceback.print_exc()
-            busy = False
-        stop.wait(busy_wait if busy else idle_wait)
+    conn = None
+    try:
+        while not stop.is_set():
+            try:
+                if conn is None:
+                    conn = db.connect(CFG['db'])
+                busy = step(conn)
+            except Exception:
+                traceback.print_exc()
+                busy = False
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        traceback.print_exc()
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = None
+            stop.wait(busy_wait if busy else idle_wait)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 POOL = [None]
