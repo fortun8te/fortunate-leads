@@ -146,8 +146,9 @@ def graphql_user(f):
 
 def profile_html(f):
     blob = json.dumps({'require': [['ScheduledServerJS', 'handle', None, [{'__bbox': {'result': {'data': {'user': graphql_user(f)}}}}]]]})
+    wall = '<section>This Account is Private</section>' if f['is_private'] else ''
     return ('<!DOCTYPE html><html lang="en"><head><title>' + f['full_name'] + ' (@' + f['username'] + ') &bull; Instagram photos and videos'
-            '</title></head><body><div id="root"></div><script type="application/json" data-sjs>' + blob + '</script></body></html>')
+            '</title></head><body><div id="root">' + wall + '</div><script type="application/json" data-sjs>' + blob + '</script></body></html>')
 
 
 class H(BaseHTTPRequestHandler):

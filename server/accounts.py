@@ -143,6 +143,43 @@ def keeps_lists(row, now, share=0.0):
     return healthy(row, now) and (row['role'] or 'both') in ('lists', 'both') and (not row['is_main'] or share > 0)
 
 
+def eligible_for_list(conn, row, seed, direction, now):
+    """A viewer can take a private list only if this Instagram identity has not been denied."""
+    if not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+        return False
+    if not row['ig_id']:
+        return not conn.execute('SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? LIMIT 1',
+                                (seed, direction)).fetchone()
+    return not conn.execute(
+        'SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? AND viewer_ig_id=?',
+        (seed, direction, row['ig_id'])).fetchone()
+
+
+def main_fallback(conn, row, seed, direction, now):
+    if not row['is_main'] or not eligible_for_list(conn, row, seed, direction, now):
+        return False
+    return not any(eligible_for_list(conn, other, seed, direction, now) for other in
+                   conn.execute('SELECT * FROM accounts WHERE is_main=0'))
+
+
+def reopen_private_for_viewer(conn, row, now):
+    """A newly usable identity reopens only lists stopped after access denials; keep the saved prefix."""
+    if not row['ig_id'] or not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+        return
+    for lst in conn.execute("SELECT l.seed,l.direction FROM lists l WHERE l.state IN ('private','partial') "
+                            "AND EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction) "
+                            "AND NOT EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction AND d.viewer_ig_id=?)",
+                            (row['ig_id'],)).fetchall():
+        if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
+                        (lst['seed'], lst['direction'])).fetchone():
+            continue
+        job_id = conn.execute('INSERT INTO jobs(kind,seed,direction,priority,created_at) VALUES(?,?,?,?,?)',
+                              ('list', lst['seed'], lst['direction'], 0, db.now())).lastrowid
+        db.start_list_run(conn, job_id, lst['seed'], lst['direction'])
+        conn.execute("UPDATE lists SET state='queued',error=NULL,updated_at=? WHERE seed=? AND direction=?",
+                     (db.now(), lst['seed'], lst['direction']))
+
+
 def why_released(row, now):
     if row is None:
         return 'removed'
@@ -220,6 +257,10 @@ def kinds_for(conn, row, kinds, now):
     kinds = [k for k in kinds if k in allowed]
     if 'list' in kinds and row['is_main']:
         share = list_share(conn, conn.execute('SELECT * FROM accounts').fetchall(), now)
+        if any(main_fallback(conn, row, j['seed'], j['direction'], now) for j in
+               conn.execute("SELECT j.seed,j.direction FROM jobs j WHERE j.kind='list' AND j.state IN ('queued','leased') "
+                            "AND EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=j.seed AND d.direction=j.direction)")):
+            return kinds
         if share >= 1.0:
             return kinds
         since = iso(now - timedelta(hours=1))
@@ -239,14 +280,26 @@ def pick_job(conn, lane, kinds, now):
     ok = [r['lane_id'] for r in accts if keeps_lists(r, now, share)]
     marks = ','.join('?' * len(kinds))
     okm = ','.join('?' * len(ok)) or "''"
-    return conn.execute(
+    row = next((r for r in accts if r['lane_id'] == lane), None)
+    candidates = conn.execute(
         f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
-          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, lane, *ok, lane)).fetchone()
+          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id""",
+        (*kinds, ts, lane, *ok, lane)).fetchall()
+    for job in candidates:
+        if job['kind'] != 'list':
+            return job
+        if not row or not eligible_for_list(conn, row, job['seed'], job['direction'], now):
+            continue
+        if row['is_main'] and share < 1 and not main_fallback(conn, row, job['seed'], job['direction'], now):
+            # Non-fallback main work was already admitted by kinds_for's normal share budget.
+            if share <= 0:
+                continue
+        return job
+    return None
 
 
 def took(conn, lane, job):

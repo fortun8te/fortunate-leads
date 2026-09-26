@@ -135,6 +135,14 @@
     return { code: 'other', reason: 'no_profile_data' };
   }
 
+  function privateWall(info, handle, profile) {
+    if (!profile || !profile.is_private || !info || !info.privateWall) return false;
+    try {
+      const u = new URL(info.url);
+      return u.hostname === 'www.instagram.com' && u.pathname.toLowerCase() === '/' + String(handle).toLowerCase() + '/';
+    } catch { return false; }
+  }
+
   // ---- Mapping to contract fields ---------------------------------------
   function mapUser(u) {
     if (!u || typeof u !== 'object' || !u.username) return null;
@@ -439,7 +447,7 @@
 
   const api = { controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
-    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf };
+    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf, privateWall };
   // ---- Control strip (widget): the server's three stages as short rows. ctl = GET /api/control, now = ms ----
   const STAGE_SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
   function stageClock(sec) {

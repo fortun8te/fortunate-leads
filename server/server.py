@@ -123,6 +123,7 @@ def ext_next(conn, q, b):
     # asking for work means no login wall holds it any more
     row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
     accounts.release(conn, now)
+    accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
     version = b.get('version') or (q.get('version') or [None])[0] or (row and row['version'])
     if version:
@@ -149,8 +150,8 @@ def ext_next(conn, q, b):
         conn.commit()
         return dict(st, job=None)
     token = secrets.token_hex(16)
-    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=? WHERE id=?",
-                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, job['id']))
+    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=?, viewer_ig_id=? WHERE id=?",
+                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, row['ig_id'], job['id']))
     accounts.took(conn, lane, job)
     if job['kind'] == 'list':
         db.start_list_run(conn, job['id'], job['seed'], job['direction'])
@@ -452,6 +453,12 @@ def ext_error(conn, q, b):
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
     was_list = bool(job and job['kind'] == 'list')
+    if code == 'private' and was_list and not stale:
+        viewer_id = job['viewer_ig_id']
+        if not viewer_id or b.get('reason') != 'profile_private_wall':
+            # Only a matching profile-page wall can rule out this viewer. A JSON
+            # error alone may be a temporary Instagram restriction.
+            code = 'soft_block'
     if stale:
         job = None  # account-level waits still apply, but the old callback cannot change a released job
         if code not in ('rate_limit', 'soft_block'):
@@ -468,22 +475,32 @@ def ext_error(conn, q, b):
         fields['hold'] = code
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
-    if job and code not in ('other', 'private', 'not_found'):
+    if job and code not in ('other', 'not_found'):
         # rate limits, soft blocks, login walls say nothing about this job: give the lease back to its attempt count,
         # so attempts = leases that ended in 'other' or expired (the ones that may mean the job itself is broken)
         conn.execute('UPDATE jobs SET attempts=max(attempts-1, 0) WHERE id=?', (job['id'],))
         job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if job:  # a late error for a job that already finished must not requeue it
-        final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
+        if code == 'private' and was_list:
+            conn.execute('INSERT OR IGNORE INTO list_private_denials(seed,direction,viewer_ig_id,denied_at) VALUES(?,?,?,?)',
+                         (job['seed'], job['direction'], viewer_id, ts))
+            candidates = conn.execute('SELECT * FROM accounts').fetchall()
+            remaining = any(accounts.eligible_for_list(conn, a, job['seed'], job['direction'], datetime.now(timezone.utc))
+                            for a in candidates)
+            final = not remaining
+        else:
+            final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
-                     ('done' if code in ('private', 'not_found') else 'error' if final else 'queued', job['id']))
+                     ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
         if job['kind'] == 'list':
             collected = conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
                                      (job['seed'], job['direction'])).fetchone()
             state = ('partial' if final and collected and collected['received'] else
-                     'private' if code == 'private' else 'error' if final else 'queued')
-            conn.execute('UPDATE lists SET state=?, error=?, updated_at=? WHERE seed=? AND direction=?',
-                         (state, b.get('message') or code, ts, job['seed'], job['direction']))
+                     'private' if code == 'private' and final else 'error' if final else 'queued')
+            conn.execute('UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why=?, updated_at=? WHERE seed=? AND direction=?',
+                         (state, b.get('message') or code, lane if code == 'private' else None,
+                          ts if code == 'private' else None, 'private' if code == 'private' else None,
+                          ts, job['seed'], job['direction']))
         elif code == 'private':
             conn.execute('UPDATE people SET is_private=1, updated_at=? WHERE handle=?', (ts, job['handle']))
     if code in accounts.HOLDS:

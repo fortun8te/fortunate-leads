@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
   list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS list_private_denials(seed TEXT NOT NULL COLLATE NOCASE, direction TEXT NOT NULL,
+  viewer_ig_id TEXT NOT NULL, denied_at TEXT NOT NULL,
+  PRIMARY KEY(seed,direction,viewer_ig_id));
 CREATE INDEX IF NOT EXISTS list_members_person ON list_members(person_id);
 CREATE INDEX IF NOT EXISTS edges_person_seed ON edges(person_id, seed);   -- covering: lists count, seeds per person
 CREATE INDEX IF NOT EXISTS edge_evidence_person ON edge_evidence(person_id,seed);
@@ -165,7 +168,8 @@ def init(path):
     # columns added after the first release: ALTER only when missing, so any older DB opens as is
     for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
-                             ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
+                             ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                              ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
@@ -939,6 +943,8 @@ def queue_list(conn, seed, direction, priority=0, refresh=False):
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                     (seed, direction)).fetchone():
         return False  # duplicate requests never rewind or relabel work already in progress
+    if refresh:
+        conn.execute('DELETE FROM list_private_denials WHERE seed=? AND direction=?', (seed, direction))
     if row and row['state'] in ('done', 'private') and not refresh:
         return False
     if row and (refresh or row['state'] == 'partial'):

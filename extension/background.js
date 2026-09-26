@@ -341,6 +341,7 @@ async function fail(job, bad, what, res, bucket) {
   if (local) return;
   const cd = st.cool[bucket] && st.cool[bucket].until > now ? st.cool[bucket].until : 0;
   await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
+    reason: bad.reason || null,
     message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
 }
 // Waits for the pace gap while keeping heartbeats going; false if paused, blocked or superseded meanwhile.
@@ -386,10 +387,12 @@ async function runList(gen, job, tab) {
   // Counts from the handle cache guide progress but cannot prove this run saw everyone.
   let totalSource = total == null ? 'unknown' : FL.count(prog.total) != null && prog.jobId === job.id && prog.totalSource === 'current_run' ? 'current_run' : 'cached';
   // Refresh the seed once at the start of each run: an ID cache cannot prove a current count.
-  if (!igId || (!cursor && !prog.countAttempted && totalSource !== 'current_run')) {
+  if (!igId || !prog.countAttempted) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
     if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
+    if (FL.privateWall(r.info, job.seed, r.p))
+      return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list');
     igId = r.p.ig_id;
     total = FL.count(job.direction === 'followers' ? r.p.followers : r.p.following);
     totalSource = total == null ? 'unknown' : 'current_run';
@@ -404,6 +407,13 @@ async function runList(gen, job, tab) {
   const ctx = FL.listContext(job, prog, total);
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
+    if (bad.code === 'private' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
+        (bad.code === 'other' && /^empty_/.test(bad.reason || ''))) {
+      if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
+      const proof = await lookupViaPage(gen, job.seed, 'list', tab);
+      if (FL.privateWall(proof.info, job.seed, proof.p))
+        return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list');
+    }
     if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }));
     return fail(job, bad, mem.label, res, 'list');
   }
@@ -528,7 +538,9 @@ async function tabDom(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
     const [r] = await withTimeout(5e3, chrome.scripting.executeScript({ target: { tabId }, func: () =>
-      ({ url: location.href, title: document.title, text: (document.body && document.body.innerText || '').slice(0, 400) }) }));
+      { const body = document.body && document.body.innerText || '';
+        return { url: location.href, title: document.title, text: body.slice(0, 400),
+          privateWall: /this account is private/i.test(body) }; } }));
     return (r && r.result) || { url: tab.url, title: tab.title };
   } catch { try { const tab = await chrome.tabs.get(tabId); return { url: tab.url, title: tab.title }; } catch { return null; } }
 }
@@ -547,7 +559,15 @@ async function lookupViaPage(gen, handle, kind, near) {
     await set({ lookupTab: tab.id });
     await editSt((st) => FL.afterRequest(st, kind, Date.now()));
     const p = await got;
-    if (p) { await trail(kind + ' page /' + handle + '/', { ms: Date.now() - t0, code: 'ok' }); return { p }; }
+    if (p) {
+      let info = await tabDom(tab.id);
+      if (p.is_private && info && !info.privateWall) {
+        await sleep(300);
+        info = await tabDom(tab.id);
+      }
+      await trail(kind + ' page /' + handle + '/', { ms: Date.now() - t0, code: 'ok' });
+      return { p, info, res: { status: 0, url: info && info.url, text: info && info.text, ms: Date.now() - t0 } };
+    }
     const info = await tabDom(tab.id), bad = FL.pageVerdict(info);
     const res = { status: 0, url: info && info.url, text: info ? 'title: ' + info.title + ' | ' + (info.text || '') : 'lookup tab closed', ms: Date.now() - t0 };
     await trail(kind + ' page /' + handle + '/', { ms: res.ms, code: bad.code, reason: bad.reason });
