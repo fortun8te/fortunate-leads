@@ -847,21 +847,32 @@ const rowH = () => parseFloat(css('--row')) || 64;
 // min = how they were found and audience size. Everything else sits in between.
 const TOP_TAGS = new Set(['AI: Top fit', 'Fit: strong']);
 const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
-// Colour carries the judgement: green = reasons to reach out, red = reasons not to, blue = what they sell.
-const GOOD_TAGS = new Set(['Scout: Strong', 'Scout: Possible', 'AI: Top fit', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market',
-  'Founder', 'Brand', 'Store', 'Shopify', 'Shop Link', 'US', 'US market', 'NL', 'UK', 'DTC', 'Ecom', 'Already know them', 'follows you', 'mutual']);
-const BAD_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Creator', 'Coach', 'Agency', 'Personal', 'SaaS',
-  'Freelancer', 'Celebrity', 'Not DTC']);
+// Tag hierarchy, loudest first. Orange = reasons to reach out, red = reasons not to, black = your own words.
+//   hero  solid orange    the verdicts: leadscout says strong, top fit
+//   plus  orange outline  strong buying signals
+//   own   black           tags you set yourself
+//   niche bold white      what they sell
+//   ctx   grey            context
+//   soft  red outline     soft negatives: probably not a buyer
+//   flag  solid red       deal-breakers
+//   min   faint           how they were found, audience size
+const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
+const PLUS_TAGS = new Set(['Scout: Possible', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market', 'Founder', 'Brand', 'Store', 'Shopify',
+  'Shop Link', 'US', 'US market', 'DTC', 'Already know them', 'follows you', 'mutual', 'you follow']);
+const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
+const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
   const name = tagName(t);
-  if (BAD_TAGS.has(name)) return 'bad';
-  if (GOOD_TAGS.has(name) || TOP_TAGS.has(name)) return 'good';
+  if (FLAG_TAGS.has(name)) return 'flag';
+  if (HERO_TAGS.has(name)) return 'hero';
+  if (SOFT_TAGS.has(name)) return 'soft';
+  if (PLUS_TAGS.has(name)) return 'plus';
+  if (t.source === 'manual') return 'own';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
-  if (t.grp === 'ai' || t.grp === 'niche' || KEY_TAGS.has(name)) return 'key';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
-  return '';
+  return 'ctx';
 }
-const TIER_ORDER = { good: 0, bad: 1, niche: 2, top: 3, key: 4, '': 5, min: 6 };
+const TIER_ORDER = { hero: 0, flag: 1, plus: 2, own: 3, niche: 4, soft: 5, ctx: 6, '': 6, min: 7 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
@@ -1181,7 +1192,7 @@ const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).sp
 function scoutHTML(sc) {
   if (!sc) return '';
   const label = { strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict;
-  const cls = sc.verdict === 'no' || !sc.reachable ? 't-bad' : 't-good';
+  const cls = sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
   return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.reachable ? '' : ' · not reachable'}</span></span></h4>
     <p class="d-reason">${esc(sc.summary || '')}</p>
     ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
@@ -2392,7 +2403,37 @@ async function loadSettings() {
   if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;
   renderSettings();
   if (!SET.health) checkHealth();
+  loadScout();
 }
+// Leadscout: which model the Hermes agent runs on, how many at once, and what it used this week.
+async function loadScout() {
+  try { SET.scout = await api.get('/api/scout'); } catch (e) { SET.scout = null; }
+  renderScout();
+}
+function renderScout() {
+  const sc = SET.scout, el = $('#set-scout');
+  if (!el) return;
+  if (!sc) { el.innerHTML = '<div class="set-row muted">Could not load leadscout status.</div>'; return; }
+  const tok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
+  const use = sc.usage.length ? sc.usage.map((u) => `<div class="kv-row"><span>${esc(u.model)}<small class="muted"> · ${esc(u.provider || '')}</small></span>
+      <span class="num">${int(u.runs)} runs · ${tok(u.tokens_in + u.tokens_out)} tokens</span></div>`).join('') : '<div class="muted">No runs this week.</div>';
+  el.innerHTML = `
+    <div class="set-row"><div><b>Check the best leads with Hermes</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Hermes (hermesme) not found on this Mac'}</span></div>
+      <button class="toggle${sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${sc.on}" aria-label="Leadscout on"><i></i></button></div>
+    <div class="set-row"><div><b>Model</b><span class="muted">If it fails, the agent falls back to Gemma, then Grok, then Nemotron.</span></div>
+      <div class="seg" id="scout-model">${sc.models.map((m) => `<button data-m="${esc(m.id)}" class="${sc.model === m.id ? 'on' : ''}" aria-pressed="${sc.model === m.id}" title="${esc(m.label)}">${esc(m.label.split(' (')[0])}</button>`).join('')}</div></div>
+    <div class="set-row"><div><b>Agents at once</b><span class="muted">About 10–25 s per lead each.</span></div>
+      <div class="seg" id="scout-workers">${[2, 3, 4, 6, 8].map((n) => `<button data-w="${n}" class="${sc.workers === n ? 'on' : ''}" aria-pressed="${sc.workers === n}">${n}</button>`).join('')}</div></div>
+    <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">From Hermes' own records. SuperGrok's weekly % is only shown in the Grok app.</span></div>
+    <div class="kv-list">${use}</div>`;
+}
+$('#set-scout')?.addEventListener('click', async (e) => {
+  const body = e.target.closest('#scout-on') ? { on: !SET.scout?.on }
+    : e.target.closest('[data-m]') ? { model: e.target.closest('[data-m]').dataset.m }
+    : e.target.closest('[data-w]') ? { workers: +e.target.closest('[data-w]').dataset.w } : null;
+  if (!body) return;
+  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); toast('Saved'); } catch (err) { toast('Could not save'); }
+});
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
   try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = 'failed'; }
@@ -2441,7 +2482,7 @@ function renderSettings() {
 }
 function renderModels() {
   const ms = SET.models || [];
-  $('#set-models').innerHTML = ms.length ? ms.map((m, i) => `<li><span class="num muted">${i + 1}</span><code>${esc(m)}</code>${/:free$/.test(m) ? '<span class="pill">Free</span>' : ''}<span class="grow"></span>
+  $('#set-models').innerHTML = ms.length ? ms.map((m, i) => `<li><span class="num muted">${i + 1}</span><code>${esc(m)}</code>${/:free$|^stealth\//.test(m) ? '<span class="pill">Free</span>' : ''}<span class="grow"></span>
     <button class="btn ghost" data-mup="${i}" title="Try earlier"${i ? '' : ' disabled'}>Up</button><button class="btn ghost" data-mdown="${i}" title="Try later"${i < ms.length - 1 ? '' : ' disabled'}>Down</button><button class="btn ghost" data-mdel="${i}">Remove</button></li>`).join('')
     : '<li class="muted">No models</li>';
   $('#set-models-save').disabled = !SET.dirty;
@@ -2639,7 +2680,7 @@ $('#ql-list').addEventListener('click', (e) => {
 
 // ---------- map ----------
 const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
-const JUDGE_COLOR = { good: '#3fb950', bad: '#f0524f' };
+const JUDGE_COLOR = { good: '#ff8a1f', bad: '#e5484d' };
 // Profile photos for the map, pre-cropped to circles on small canvases.
 const MAP_PIC_LIMIT = 3200;
 const PICS = new Map(); let picsLoading = 0; const picQueue = [];

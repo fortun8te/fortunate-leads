@@ -555,7 +555,7 @@ TAG_ORDER = ("CASE t.source WHEN 'manual' THEN 0 WHEN 'rule' THEN 1 ELSE 2 END, 
 MAP_TAGS = 4
 # The map colours each person by the judgement in their full tag set (kept in step with GOOD_TAGS / BAD_TAGS in web/app.js).
 JUDGE_BAD = {'Too big', 'Other market', 'Scout: No', 'Not reachable', 'Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer'}
-JUDGE_GOOD = {'Scout: Strong', 'Scout: Possible', 'AI: Top fit', 'AI: Decision maker', 'Founder', 'Brand', 'Store', 'Shopify', 'Shop Link'}
+JUDGE_GOOD = {'Scout: Strong', 'Scout: Possible', 'AI: Top fit', 'AI: Decision maker', 'Founder', 'Brand', 'Store', 'Shopify', 'Shop Link', 'DTC'}
 
 
 def judge(tagset):
@@ -1410,6 +1410,27 @@ def api_llm_key_test(conn, q, b, pid):
         raise NotFound('no such key') from None
 
 
+def api_scout(conn, q, b=None):
+    return deepscout.status(conn)
+
+
+def api_scout_set(conn, q, b):
+    if 'on' in b:
+        if not isinstance(b['on'], bool):
+            raise Bad('on must be true or false')
+        db.set_setting(conn, 'scout', b['on'])
+    if 'model' in b:
+        if b['model'] not in deepscout.MODELS:
+            raise Bad('unknown model')
+        db.set_setting(conn, 'scout_model', b['model'])
+    if 'workers' in b:
+        if isinstance(b['workers'], bool) or not isinstance(b['workers'], int) or not 1 <= b['workers'] <= 8:
+            raise Bad('workers must be 1-8')
+        db.set_setting(conn, 'scout_workers', b['workers'])
+    conn.commit()
+    return deepscout.status(conn)
+
+
 def api_llm_models_refresh(conn, q, b):
     rec = llm.refresh_models(force=True)
     st = llm.get().status()
@@ -1579,6 +1600,7 @@ ROUTES = [
     ('GET', r'/api/settings/biofetch', api_biofetch_get), ('POST', r'/api/settings/biofetch', api_biofetch),
     ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
+    ('GET', r'/api/scout', api_scout), ('POST', r'/api/settings/scout', api_scout_set),
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
 ]
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
@@ -1902,7 +1924,7 @@ def requalify(conn, p, me, net=None):
                  "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
 
 
-def qualify_batch(conn, limit=200):
+def qualify_batch(conn, limit=1000):
     rows = conn.execute('SELECT p.* FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                         'WHERE v.person_id IS NULL OR v.updated_at < p.updated_at LIMIT ?', (limit,)).fetchall()
     me = me_handle(conn)

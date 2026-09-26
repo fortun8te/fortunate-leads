@@ -34,7 +34,7 @@ DOWN_BASE, DOWN_CAP = 10, 300              # s, whole provider after a transport
 FREE_DAILY = 1000                          # conservative local ceiling per key across all free models, per UTC day
 MODELS_URL = 'https://openrouter.ai/api/v1/models'
 KEY_URL = 'https://openrouter.ai/api/v1/key'
-MODELS_EVERY = 24 * 3600                   # s between refreshes of the free / stealth model list
+MODELS_EVERY = 6 * 3600                   # s between refreshes of the free / stealth model list
 
 
 def _ssl():
@@ -183,7 +183,7 @@ class Providers:
         with self.lock:
             self.keys = [k for k in dict.fromkeys(keys or []) if k]
             self.env_keys = set(env_keys)
-            self.models = tuple(m for m in (models or MODELS) if isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free')) or MODELS
+            self.models = tuple(m for m in (models or MODELS) if isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m)) or MODELS
             self.daily_limit = max(1, min(FREE_DAILY, daily_limit))
             live = {'proxy'} | {key_id(k) for k in self.keys}
             # Keep usage and backoff when a key is temporarily removed and later re-added.
@@ -241,7 +241,7 @@ class Providers:
         deadline = time.monotonic() + budget
         last = 'no provider available'
         selected = tuple(models or self.models)
-        if not all(isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free') for m in selected):
+        if not all(isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m) for m in selected):
             raise ValueError('only :free models may be requested')
         for model in selected:
             for pid, url, key in self._order():
@@ -424,7 +424,7 @@ def settings(path=None):
     cfg = read_config(path)
     keys = env + [k.strip() for k in cfg.get('keys') or [] if isinstance(k, str) and k.strip()]
     models = cfg.get('models') if isinstance(cfg.get('models'), list) and cfg['models'] \
-        and all(isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free') for m in cfg['models']) else None
+        and all(isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m) for m in cfg['models']) else None
     models = model_order(models, cfg.get('auto_models'))
     limit = cfg['daily_limit'] if isinstance(cfg.get('daily_limit'), int) and not isinstance(cfg['daily_limit'], bool) else FREE_DAILY
     limit = max(1, min(FREE_DAILY, limit))
@@ -433,9 +433,15 @@ def settings(path=None):
 
 # ---------- free and stealth models (refreshed daily from the public model list; no key needed) ----------
 
+def free_id(mid):
+    """Model ids that cost nothing: the `:free` variants, and OpenRouter's stealth models (free while in preview)."""
+    return isinstance(mid, str) and (mid.endswith(':free') or mid.startswith('stealth/'))
+
+
 def is_free(m):
-    # A zero price in a stale catalog is not a durable free-tier guarantee.
-    return str(m.get('id', '')).endswith(':free')
+    # A zero price in a stale catalog is not a durable free-tier guarantee; stealth ids must also be priced at 0.
+    mid, price = str(m.get('id', '')), (m.get('pricing') or {})
+    return mid.endswith(':free') or (mid.startswith('stealth/') and str(price.get('prompt')) in ('0', '0.0') and str(price.get('completion')) in ('0', '0.0'))
 
 
 def is_stealth(m):
@@ -463,9 +469,9 @@ def model_order(chosen, auto):
     """Stealth models first (auto-added), then the chosen list (or the built-in fallback). Models that vanished from
     the live free list are dropped, but the built-in fallback always stays so there is a working order."""
     auto = auto if isinstance(auto, dict) else {}
-    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free')]
-    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str) and m.endswith(':free')}
-    base = [m for m in (chosen or MODELS) if isinstance(m, str) and m.endswith(':free')]
+    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m)]
+    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str) and free_id(m)}
+    base = [m for m in (chosen or MODELS) if isinstance(m, str) and free_id(m)]
     if live:
         base = [m for m in base if m in live] or [m for m in MODELS if m in live] or list(MODELS)
     return tuple(list(dict.fromkeys(stealth[:3] + base))[:MODELS_MAX])
@@ -528,7 +534,7 @@ def set_models(models=None, daily_limit=None, path=None):
     cfg = read_config(path)
     if models is not None:
         if not isinstance(models, list) or not 1 <= len(models) <= MODELS_MAX \
-                or not all(isinstance(m, str) and MODEL_RX.fullmatch(m.strip()) and m.strip().endswith(':free') for m in models):
+                or not all(isinstance(m, str) and MODEL_RX.fullmatch(m.strip()) and free_id(m.strip()) for m in models):
             raise ValueError(f'models must be 1-{MODELS_MAX} free ids like vendor/model:free')
         cfg['models'] = list(dict.fromkeys(m.strip() for m in models))
     if daily_limit is not None:
@@ -567,7 +573,7 @@ def _retry_after(v):
 
 
 def _post(url, key, model, messages, timeout, max_tokens, json_mode):
-    if not isinstance(model, str) or not MODEL_RX.fullmatch(model) or not model.endswith(':free'):
+    if not isinstance(model, str) or not MODEL_RX.fullmatch(model) or not free_id(model):
         raise ValueError('only :free models may be requested')
     body = {'model': model, 'messages': messages, 'max_tokens': max_tokens, 'temperature': 0.1,
             'reasoning': {'effort': 'low', 'exclude': True}}
