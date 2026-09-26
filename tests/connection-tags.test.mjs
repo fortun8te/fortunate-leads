@@ -11,7 +11,7 @@ function section(from, to) {
 }
 const mention = { tag: 'mentions you', grp: 'source', source: 'auto', kind: 'auto', count: 1, total: 1 };
 function mount(tags = [mention]) {
-  const query = { value: '#mention' }, suggestions = {}, detail = {};
+  const query = { value: '#mention' }, suggestions = {}, detail = { dataset: {}, addEventListener() {}, insertAdjacentHTML() {}, querySelectorAll: () => [], querySelector: () => null };
   const renderedTags = [];
   const nodes = { '#q': query, '#suggest': suggestions, '#detail': detail };
   const person = { id: 42, handle: 'mention_only', bio: 'Made with @owner', tags, lists: 0, edges: [] };
@@ -23,11 +23,14 @@ function mount(tags = [mention]) {
     esc: value => String(value ?? ''), fmt: value => String(value ?? ''),
     plural: (n, word) => `${n} ${word}s`, avatar: () => '', igLink: () => '', safeUrl: () => null,
     swatch: () => '', tagTok: tag => `#"${tag}"`, words: value => [value],
+    // Lead workflow helpers that renderDetail calls; not under test here.
+    detailViewState: new Map(), detailAccess: { capture() {}, restore() {} }, noteQueue: { peek() {} }, noteStatus: () => '',
+    rememberWorkflowForm() {}, wireWorkflow() {}, workflowHTML: () => '', workflowSummaryHTML: () => '',
     tagChip: tag => { renderedTags.push(tag.tag); return `<span>${tag.tag}</span>`; }
   });
   vm.runInContext(section('const tagName =', '// ---------- state ----------'), context);
   vm.runInContext(section('let sugg =', 'function moveSuggest'), context);
-  vm.runInContext(section('function seedEdges(', "$('#detail').addEventListener('click'"), context);
+  vm.runInContext(section('function seedEdges(', "$('#detail').addEventListener('click', async"), context);
   return { context, person, suggestions, detail, renderedTags };
 }
 
@@ -49,7 +52,8 @@ test('a mention remains visible alongside a separately observed follow', () => {
 test('detail shows the automatic mention tag and preserves manual source tags', () => {
   const ui = mount([mention, { tag: 'Already know them', grp: 'source', source: 'manual' }]);
   vm.runInContext('renderDetail()', ui.context);
-  assert.deepEqual(ui.renderedTags, ['Already know them', 'mentions you']);
+  // Manual tags render again, removable, inside the Edit tags disclosure.
+  assert.deepEqual(ui.renderedTags, ['Already know them', 'mentions you', 'Already know them']);
   assert.match(ui.detail.innerHTML, /class="you-line">Mentions you/);
   assert.equal(ui.person.edges.length, 0);
 });

@@ -9,6 +9,12 @@ const start = app.indexOf("document.addEventListener('keydown', (e) => {", app.i
 const end = app.indexOf('\n});', start) + 4;
 assert.ok(start >= 0 && end > start, 'production keyboard handler exists');
 const handlerCode = app.slice(start, end);
+const accessibility = readFileSync(new URL('../web/accessibility.js', import.meta.url), 'utf8');
+
+// Just enough of Element.closest for the real accessibility helpers: match on tag name.
+function element(tagName) {
+  return { tagName, closest(selector) { return selector.split(',').some(s => s.trim().split(/[\[:]/)[0] === tagName.toLowerCase()) ? this : null; } };
+}
 
 function mount() {
   let handler;
@@ -19,6 +25,7 @@ function mount() {
   const nodes = {
     '#pane-map': { classList: { contains: name => classes.has(name) } },
     '#help': help,
+    '#detail': { contains: () => false },
     '#tag-in': { focus: record('tag-focus') },
     '#q': { focus: record('search-focus') }
   };
@@ -30,10 +37,15 @@ function mount() {
     M: { fit: record('fit'), zoomBy: record('zoom'), toggleLabels: record('labels'), next: record('next') },
     gPending: 0, CYCLE: [null, 'saved'], STATUSES: ['saved', 'contacted', 'replied', 'done', 'skipped'],
     mark: record('mark'), window: { open: record('open') }, applyDensity: record('density'),
-    location, hashFor: view => '#/' + view
+    location, hashFor: view => '#/' + view,
+    // Lead detail accessibility helpers: a non-modal (desktop) detail panel.
+    detailAccess: { isModal: () => false, focusInitial() {}, handleKeydown: () => false }, closeDetail: record('close'), setHelp: show => { help.hidden = !show; }
   };
-  vm.runInNewContext(handlerCode, context);
-  const press = (key, tagName = 'BUTTON') => handler({ key, target: { tagName }, preventDefault() {}, metaKey: false, ctrlKey: false, altKey: false });
+  vm.createContext(context);
+  vm.runInContext(accessibility, context);
+  context.LeadAccessibility = context.window.LeadAccessibility;  // the stub window receives the export
+  vm.runInContext(handlerCode, context);
+  const press = (key, tagName = 'BODY') => handler({ key, target: element(tagName), preventDefault() {}, metaKey: false, ctrlKey: false, altKey: false });
   return { effects, classes, help, location, press };
 }
 
@@ -58,6 +70,7 @@ test('comparison retains app help, density, search and navigation shortcuts', ()
   const ui = mount();
   ui.press('?');
   assert.equal(ui.help.hidden, false);
+  ui.help.hidden = true;  // the open help dialog holds keys until it is dismissed
   ui.press('d');
   ui.press('/');
   ui.press('g');

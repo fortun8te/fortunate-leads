@@ -22,7 +22,7 @@ class Events {
     this.listeners.get(type).add(listener);
   }
   removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-  emit(type, event) { for (const listener of this.listeners.get(type) || []) listener(event); }
+  emit(type, event) { for (const listener of this.listeners.get(type) || []) { listener(event); if (event?.immediate) break; } }
 }
 class Element extends Events {
   constructor(doc, tag, attributes = {}) {
@@ -158,7 +158,8 @@ function fixture({ mobile = true, globals = false } = {}) {
   } else access = window.LeadAccessibility.createDetailFocus({ panel, isMobile: () => mobile, fallbackFocus: () => fallback });
   const key = (key, target = document.activeElement, options = {}) => {
     const event = { key, target, defaultPrevented: false, stopped: false,
-      preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...options };
+      preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; },
+      stopImmediatePropagation() { this.stopped = true; this.immediate = true; }, ...options };
     for (let node = target?.nodeType === 3 ? target.parentElement : target; node; node = node.parentElement) {
       node.emit('keydown', event); if (event.stopped) return event;
     }

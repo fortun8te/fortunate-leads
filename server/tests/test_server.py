@@ -28,6 +28,7 @@ sys.modules['qualify'] = stub
 import db  # noqa: E402
 import migrate  # noqa: E402
 import server  # noqa: E402
+server.qualify = stub  # an earlier test module may have imported server with the real qualify
 
 EXT = server.EXT_ORIGIN
 

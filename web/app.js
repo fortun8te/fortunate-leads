@@ -3124,6 +3124,19 @@ setInterval(loadScraper, 3000);
 setInterval(() => { if (!document.hidden) { loadCounts(); loadFacets(); } }, 30000);
 setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open && !S.pick.size) resetLeads(true); }, 45000);
 setInterval(() => { if (offlineSince) setOnline(false); if (S.view === 'scraper') renderScraper(); else renderStatus(); }, 1000);
+// Due/overdue follow-up lists roll over at local midnight; a queued profile read shows up once it lands.
+const refresher = LeadRefresh.createRefreshCoordinator({
+  getState: () => ({
+    hidden: document.hidden, view: S.view, followUp: S.f.follow_up, loading: S.loading, openId: S.open ?? null,
+    personPending: !!(S.person && (S.person.profile_read_pending || S.person.profile_read?.state === 'reading')),
+    personLoading: !!S.person?.loading,
+  }),
+  refreshLeads: () => resetLeads(true),
+  loadPerson: (id) => refreshPerson(id),
+  onDayChange: () => { if (S.open) renderDetail(); },
+});
+setInterval(() => refresher.tick(), 30000);
+document.addEventListener('visibilitychange', () => refresher.visibilityChanged());
 
 async function loadBiofetch() {
   try { const b = await api.get('/api/settings/biofetch'); $('#bf-on').classList.toggle('on', !!b.on); $('#bf-uid').value = b.ig_user_id || '';

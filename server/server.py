@@ -1642,6 +1642,9 @@ def plan_priority(lists, prefilter):
 def retag_if_changed(conn):
     """When the rule taxonomy changes (qualify.TAGS_VERSION), let the qualify batch re-derive everyone's auto tags.
     LLM verdicts survive: requalify keeps them while the input hash is unchanged."""
+    # "knows you" is an owner-only claim now; retire the old automatic copies even when the version is current.
+    if conn.execute("DELETE FROM tags WHERE tag='knows you' AND source='auto'").rowcount:
+        conn.commit()
     version = getattr(qualify, 'TAGS_VERSION', None)
     if version is None or db.get_setting(conn, 'tags_version') == version:
         return False

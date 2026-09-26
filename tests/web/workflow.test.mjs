@@ -71,10 +71,10 @@ test('refreshing retained filtered rows fetches from zero and renders No matches
   const renderFunction = source.slice(source.indexOf('function renderRows() {'), source.indexOf("$('#scroll').addEventListener('scroll'"));
   const state = { gen:0, rows:[{id:1}], total:1, done:true, loading:false, pick:new Set(), f:{follow_up:'due'}, sort:'follow_up' };
   const nodes = new Map();
-  const select = (name) => { if (!nodes.has(name)) nodes.set(name, {style:{},classList:{toggle(){}},scrollTop:0,clientHeight:800,innerHTML:''});return nodes.get(name); };
+  const select = (name) => { if (!nodes.has(name)) nodes.set(name, {style:{},classList:{toggle(){}},scrollTop:0,clientHeight:800,innerHTML:'',setAttribute(){},querySelector:()=>null,contains:()=>false});return nodes.get(name); };
   const urls = [];
   const context = vm.createContext({
-    S:state,PAGE:100,$:select,LeadWorkflow:globalThis.LeadWorkflow,URLSearchParams,
+    S:state,PAGE:100,$:select,document:{activeElement:null},CSS:{escape:String},LeadWorkflow:globalThis.LeadWorkflow,URLSearchParams,
     api:{get:async(url)=>{urls.push(url);return {rows:[],total:0};}},
     toQuery:()=>new URLSearchParams('follow_up=due'), rowH:()=>64, plural:(n)=>String(n), int:String,
     renderBulk(){}, exporting:false, rowHTML:()=>'<div>Old row</div>', filterCount:()=>1, offlineSince:null,
