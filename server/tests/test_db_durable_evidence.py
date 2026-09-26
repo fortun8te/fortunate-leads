@@ -134,7 +134,8 @@ class BaseMigrationTests(unittest.TestCase):
                 self.assertEqual(tuple(upgraded.execute('SELECT tag,source FROM tags').fetchone()), ('Known personally', 'manual'))
                 self.assertEqual(upgraded.execute('SELECT bio FROM people').fetchone()[0], 'saved bio')
                 self.assertEqual(upgraded.execute('SELECT count(*) FROM edges').fetchone()[0], 1)
-                self.assertEqual(upgraded.execute('SELECT count(*) FROM current_edges').fetchone()[0], 0)
+                # Edges from before evidence tracking stay current until a fresh run of their list.
+                self.assertEqual(upgraded.execute('SELECT count(*) FROM current_edges').fetchone()[0], 1)
                 self.assertEqual(upgraded.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
                 upgraded.close()
 

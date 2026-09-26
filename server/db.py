@@ -174,6 +174,14 @@ def init(path):
                      "WHERE person_id IN (SELECT person_id FROM edges)")
         mark_network_dirty(conn, (r[0] for r in conn.execute("SELECT DISTINCT person_id FROM edges")))
         conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_v1','true')")
+    # Edges scraped before evidence tracking count as current until a fresh run of that list says
+    # otherwise (complete_list_snapshot then marks the missing ones absent). Without this every older
+    # list vanished from lead counts and the map until it was scraped again.
+    if not conn.execute("SELECT 1 FROM settings WHERE key='edge_evidence_legacy_v1'").fetchone():
+        conn.execute("INSERT OR IGNORE INTO edge_evidence(seed,person_id,direction,active,observed_at,checked_at) "
+                     "SELECT seed,person_id,direction,1,first_seen,coalesce(first_seen,'') FROM edges")
+        mark_network_dirty(conn, (r[0] for r in conn.execute("SELECT DISTINCT person_id FROM edges")))
+        conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_legacy_v1','true')")
     # Revisions catch edits that counts/timestamps cannot distinguish, including
     # out-of-process imports. Settings is excluded to avoid recursive updates.
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
