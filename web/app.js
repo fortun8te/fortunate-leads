@@ -847,9 +847,10 @@ const rowH = () => parseFloat(css('--row')) || 64;
 // min = how they were found and audience size. Everything else sits in between.
 const TOP_TAGS = new Set(['AI: Top fit', 'Fit: strong']);
 const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
-// Tag hierarchy, loudest first. Orange = reasons to reach out, red = reasons not to, black = your own words.
-//   hero  solid orange    the verdicts: leadscout says strong, top fit
-//   plus  orange outline  strong buying signals
+// Tag hierarchy, loudest first. Warm = promising, red = caution, neutral = your own words.
+//   hero  solid warm      strong verdicts
+//   maybe warm tint       possible verdicts
+//   plus  warm outline    supporting signals
 //   own   black           tags you set yourself
 //   niche bold white      what they sell
 //   ctx   grey            context
@@ -857,7 +858,8 @@ const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
 //   flag  solid red       deal-breakers
 //   min   faint           how they were found, audience size
 const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
-const PLUS_TAGS = new Set(['Scout: Possible', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market', 'Founder', 'Brand', 'Store', 'Shopify',
+const MAYBE_TAGS = new Set(['Scout: Possible', 'Fit: good']);
+const PLUS_TAGS = new Set(['AI: Decision maker', 'AI: Runs ads', 'AI: US market', 'Founder', 'Brand', 'Store', 'Shopify',
   'Shop Link', 'US', 'US market', 'DTC', 'Already know them']);
 const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
 const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
@@ -866,13 +868,14 @@ function tagTier(t) {
   if (FLAG_TAGS.has(name)) return 'flag';
   if (HERO_TAGS.has(name)) return 'hero';
   if (SOFT_TAGS.has(name)) return 'soft';
+  if (MAYBE_TAGS.has(name)) return 'maybe';
   if (PLUS_TAGS.has(name)) return 'plus';
   if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
 }
-const TIER_ORDER = { hero: 0, flag: 1, plus: 2, own: 3, niche: 4, soft: 5, ctx: 6, '': 6, min: 7 };
+const TIER_ORDER = { hero: 0, flag: 1, maybe: 2, plus: 3, own: 4, niche: 5, soft: 6, ctx: 7, '': 7, min: 8 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
@@ -1793,7 +1796,7 @@ const T = {
   // Overview: the tags that make a lead first, then every other automatic tag grouped in plain words. Click = filter Leads.
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
-    const priority = auto.filter((t) => ['hero', 'plus', 'niche'].includes(tagTier(t)));
+    const priority = auto.filter((t) => ['hero', 'maybe', 'plus', 'niche'].includes(tagTier(t)));
     const caution = auto.filter((t) => ['flag', 'soft'].includes(tagTier(t)));
     const highlighted = new Set([...priority, ...caution]);
     const rest = auto.filter((t) => !highlighted.has(t));
