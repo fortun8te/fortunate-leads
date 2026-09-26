@@ -83,7 +83,7 @@ Auto tag vocabulary (all `grp` fixed by `qualify.TAXONOMY`):
 - role: Brand, Store, Agency, Freelancer, Creative (photographer/UGC/3D/video), Creator, Supplier, SaaS, Coach, Personal
 - niche: Skincare, Beauty, Supplements, Apparel, Jewelry, Home, Pets, Coffee, Food & Drink, Fitness, Wellness, Baby, Accessories, Outdoor, Tech Gadgets
 - signal: Founder, Scaling, Hiring, Ecom (DTC/e-commerce/Shopify words), Shopify, Shop Link, Link Hub, Email, US, NL, UK, Verified, Business
-- size: <1k, 1k-10k, 10k-100k, 100k-1M, 1M+ · source: via @seed, in N lists, knows you, follows you, you follow
+- size: <1k, 1k-10k, 10k-100k, 100k-1M, 1M+ · source: via @seed, in N lists, Instagram link, follows you, you follow
 Precision over recall: promo codes for someone else's brand ("code X at @brand") count as Creator, not Brand; "dog owner", "CEO of my life",
 "of course", "available on Spotify", "model agency", "mama to baby", affiliate storefronts (shopmy/LTK) and look-alike domains
 (restorehealth.com, theworkshop.com) no longer fire. Instagram's own category label is used only when unambiguous ("… (Brand)", "E-commerce website", "Jewelry/watches").
@@ -113,7 +113,7 @@ Staged pipeline (all stages run in background threads; HTTP handlers and ingest 
    count moves by ≥ 5 (or 20 %); then LLM verdicts from another prompt version with score ≥ 35 (warm or near it) are re-run. Bounded pool: `llm_workers` concurrent
    calls (default 4) spread across providers/keys.
 
-`person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `knows you` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
+`person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `Instagram link` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
 
 **Providers** (`server/llm.py`, stdlib): the local proxy first, then `https://openrouter.ai/api/v1/chat/completions` direct, rotating
 keys from `OPENROUTER_API_KEYS` (comma-separated) and `data/openrouter.json` `{"keys":[...],"models":[...],"daily_limit":n}` (written
@@ -245,3 +245,7 @@ Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_a
 person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
 `input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
 judgement re-runs the model for that person.
+
+## Evidence-based pair comparison
+
+See [CONNECTIONS.md](CONNECTIONS.md) for `/api/connections`, the additive observation ledger, input validation and limitations. The existing overview `/api/map` remains compatible. Follow links and bio mentions no longer generate an automatic personal-relationship claim.

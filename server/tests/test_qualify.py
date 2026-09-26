@@ -79,7 +79,7 @@ LABELLED = [
        followers=86000, is_business=1), E('adswithcami', 'floris.ads'), {'buyer'}, {'Brand', 'Jewelry', 'Shop Link'}, {'Agency'}),
     # --- connectors
     (P('floris.ads', 'Meta ads for ecom brands 📈 Media buyer | €20M+ managed | DM "SCALE"', 'Floris | Ecom Ads', followers=8800),
-     E('fortun8te:following', 'rutdeletter'), {'connector'}, {'Freelancer', 'knows you', 'you follow'}, {'Brand', 'Personal'}),
+     E('fortun8te:following', 'rutdeletter'), {'connector'}, {'Freelancer', 'Instagram link', 'you follow'}, {'Brand', 'Personal'}),
     (P('peakgrowth.agency', 'We help DTC brands scale with paid social 🚀 Clients: 7-8 figure Shopify brands | Book a call ↓', 'Peak Growth Agency',
        'https://calendly.com/peakgrowth', 'Advertising/Marketing', 4100, is_business=1), E('markbuildsbrands', 'shepscales'),
      {'connector'}, {'Agency', 'Scaling', 'Shopify'}, {'Brand', 'Shop Link'}),
@@ -210,9 +210,16 @@ class Pieces(unittest.TestCase):
 
     def test_source_tags(self):
         tags = dict(q.rule_tags(P('x', 'hi'), E('fortun8te:followers', 'fortun8te:following', 'shepscales', 'noah_nahar:following'), ME))
-        for t in ('via @shepscales', 'via @noah_nahar', 'in 3 lists', 'knows you', 'follows you', 'you follow'):
+        for t in ('via @shepscales', 'via @noah_nahar', 'in 3 lists', 'Instagram link', 'follows you', 'you follow'):
             self.assertEqual(tags.get(t), 'source', t)
         self.assertNotIn('via @fortun8te', tags)
+
+    def test_bio_mention_is_not_a_relationship_or_follow(self):
+        tags = dict(q.rule_tags(P('x', 'inspired by @fortun8te'), [], ME))
+        self.assertEqual(tags.get('mentions you'), 'source')
+        self.assertNotIn('Instagram link', tags)
+        self.assertNotIn('knows you', tags)
+        self.assertNotIn('mentions you', dict(q.rule_tags(P('x', 'hello @fortun8te.other'), [], ME)))
 
     def test_size_bands(self):
         for f, band in ((10, '<1k'), (1000, '1k-10k'), (99999, '10k-100k'), (100000, '100k-1M'), (2000000, '1M+')):

@@ -95,6 +95,7 @@
 
         <div class="mpane" id="pane-map">
           <div class="mbar">
+            <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
             <div class="seg" id="map-scope"><button data-v="leads" class="on" title="People in 2+ lists and likely brands">Connected</button><button data-v="all">All</button></div>
             <label class="search"><input class="input" id="map-q" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
@@ -102,6 +103,7 @@
             <button class="btn" id="map-labels" title="Labels (l)">Labels</button>
             <button class="btn" id="map-fit" title="Zoom to fit (f)">Fit</button>
           </div>
+          <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
           <div class="stage" id="stage">
             <canvas id="canvas"></canvas>
             <div class="hover" id="hover" hidden></div>
@@ -350,6 +352,7 @@
 <script src="vendor/d3-force.min.js"></script>
 <script src="workflow.js"></script>
 <script src="app.js"></script>
+<script src="connections.js" defer></script>
 <script src="controls.js"></script>
 </body>
 </html>
