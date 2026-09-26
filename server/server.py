@@ -1934,6 +1934,8 @@ def requalify(conn, p, me, net=None):
     v = qualify.rule_verdict(p, tags, net)
     conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at, content_fit) "
                  "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
+    if old and old['model'] == 'leadscout':
+        deepscout.reapply(conn, p, net)
 
 
 def qualify_batch(conn, limit=1000):
@@ -2031,7 +2033,7 @@ def fewshot(conn):
                 ex.append({'handle':r['handle'],'name':r['name'],'bio':(r['bio'] or '')[:200],'label':label})
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if cur and version and version != cur.get('version'):
-        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ? AND coalesce(score,0)>=?",
+        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error','leadscout') AND prompt IS NOT ? AND coalesce(score,0)>=?",
                      (version, FEWSHOT_RERUN))
     db.set_setting(conn, 'fewshot', {'n': n, 'examples': ex, 'version': version})
     conn.commit()
@@ -2112,7 +2114,7 @@ def run_llm(conn, rows, skip):
         if qualify.input_hash(latest_p, edges_of(conn, p['id']), latest_net) != qualify.input_hash(p, it['edges'], it['net']):
             continue
         if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=?, content_fit=? '
-                        'WHERE person_id=? AND updated_at=?',
+                        "WHERE person_id=? AND updated_at=? AND model!='leadscout'",
                         (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges'], it['net']),
                          v.get('prompt'), json.dumps(v.get('evidence') or []),
                          v.get('content_fit', min(getattr(qualify, 'ROLE_CAP', {}).get(v['role'], 100), v['fit']) if v.get('fit') is not None else None),

@@ -68,6 +68,8 @@ def run(p, model='space-bunny'):
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if out.returncode != 0:
+        return None
     data = qualify.parse_json(out.stdout)
     if not isinstance(data, dict) or data.get('verdict') not in VERDICT_TAG:
         return None
@@ -119,16 +121,29 @@ def apply(conn, p, data):
     conn.execute('INSERT OR REPLACE INTO deep_research VALUES(?,?,?,?,?,?,?,?)',
                  (p['id'], data['verdict'], int(reachable), summary, json.dumps(_clean_tags(data.get('tags'))),
                   json.dumps(sources), json.dumps(data, ensure_ascii=False)[:8000], db.now()))
-    v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
-    fit = v['content_fit'] if v and v['content_fit'] is not None else 50
-    fit = 10 if data['verdict'] == 'no' or not reachable else max(fit, 85) if data['verdict'] == 'strong' else min(max(fit, 50), 75)
-    import server   # the server owns network context and blending
-    net = server.network_context(conn, [p['id']]).get(p['id'])
-    score = qualify.blend(fit, net)
-    conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=? WHERE person_id=?",
-                 (fit, score, qualify._tier(score, True), summary or None, p['id']))
+    reapply(conn, p)
     conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout'", (p['id'],))
     retag(conn, p['id'])
+
+
+def reapply(conn, p, net=None):
+    """Restore the saved scout's final verdict after a later rule pass on this person."""
+    row = conn.execute('SELECT verdict, reachable, summary FROM deep_research WHERE person_id=?',
+                       (p['id'],)).fetchone() if _has_table(conn) else None
+    if not row:
+        return False
+    v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
+    if not v:
+        return False
+    fit = v['content_fit'] if v and v['content_fit'] is not None else 50
+    fit = 10 if row['verdict'] == 'no' or not row['reachable'] else max(fit, 85) if row['verdict'] == 'strong' else min(max(fit, 50), 75)
+    if net is None:
+        import server   # the server owns network context and blending
+        net = server.network_context(conn, [p['id']]).get(p['id'])
+    score = qualify.blend(fit, net)
+    conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=? WHERE person_id=?",
+                 (fit, score, qualify._tier(score, bool((p.get('bio') or '').strip())), row['summary'] or None, p['id']))
+    return True
 
 
 def candidates(conn, limit, exclude):
@@ -160,12 +175,17 @@ def usage(days=7):
 
 def status(conn):
     ensure(conn)
+    waiting = conn.execute(
+        "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id "
+        "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
+        "AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id)",
+        (SCOUT_MIN,)).fetchone()[0]
     return {'on': db.get_setting(conn, 'scout') is not False, 'available': available(),
             'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
             'models': [{'id': k, 'label': v['label']} for k, v in MODELS.items()],
             'done_today': conn.execute("SELECT count(*) FROM deep_research WHERE at>=date('now')").fetchone()[0],
             'done': conn.execute('SELECT count(*) FROM deep_research').fetchone()[0],
-            'waiting': len(candidates(conn, 100000, set())), 'usage': usage()}
+            'waiting': waiting, 'usage': usage()}
 
 
 class ScoutPool:
@@ -208,6 +228,12 @@ class ScoutPool:
             try:
                 if data is None:
                     raise ValueError('no usable answer')
+                # The agent can spend minutes researching. Check the exact profile it saw
+                # under the same short write transaction that saves its answer.
+                conn.execute('BEGIN IMMEDIATE')
+                current = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
+                if not current or prompt(dict(current)) != prompt(p):
+                    return
                 apply(conn, p, data)
                 conn.commit()
             finally:
