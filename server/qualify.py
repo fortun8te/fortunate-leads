@@ -19,6 +19,7 @@ PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't8-markets'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+PREFILTER_VERSION = 'p3-broad'  # bump when an existing Broad-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy

@@ -99,7 +99,8 @@
           <div class="mbar">
             <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
             <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People in 2+ lists and likely brands">Connected</button><button data-v="all" aria-pressed="false">All</button></div>
-            <label class="search"><input class="input" id="map-q" type="search" aria-label="Find in displayed map" placeholder="Find in displayed map" title="Searches only displayed accounts, up to 10,000 matching people." autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
+            <label class="map-density" for="map-density">Show <select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option></select></label>
+            <label class="search"><input class="input" id="map-q" type="search" aria-label="Find in displayed map" placeholder="Find in displayed map" title="Searches only displayed accounts, up to 3,000 matching people." autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
             <button class="btn" id="map-labels" aria-pressed="true" title="Labels (l)">Labels</button>

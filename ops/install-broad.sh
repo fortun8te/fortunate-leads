@@ -55,6 +55,9 @@ EOF
   launchctl bootstrap "$dom" "$AGENTS/$1.plist"
 }
 mkdir -p "$AGENTS" "$HOME/Library/Logs"
+# The old zero-shot Laya sidecar (com.fortunate.laya) used the same port; Broad replaces it.
+launchctl bootout "$dom/com.fortunate.laya" 2>/dev/null || true
+rm -f "$AGENTS/com.fortunate.laya.plist"
 plist com.fortunate.leads.broad "<string>$PY</string><string>$REPO/sidecar/broad_server.py</string>" \
   "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>"
 launchctl bootout "$dom/com.fortunate.leads.broad-train" 2>/dev/null || true

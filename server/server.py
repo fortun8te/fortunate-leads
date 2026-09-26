@@ -1091,26 +1091,40 @@ def clear_caches():
 
 SEED_LINKS = [None]   # [(key, computed_at, links)]: replaced whole, never mutated, so readers can't race a writer
 SEED_LINKS_TOP = 50
-SEED_LINKS_MIN_AGE = 30   # s: while a list is streaming in, recompute the overlap at most this often (same db)
 
 
-def seed_links(conn):
-    key = (CFG['db'], data_rev(conn))   # the trigger-maintained revision covers edge evidence
-    cached, now = SEED_LINKS[0], datetime.now().timestamp()
-    if cached and (cached[0] == key or (cached[0][0] == key[0] and now - cached[1] < SEED_LINKS_MIN_AGE)):
+def seed_links(conn, cacheable=None):
+    # A caller's uncommitted revision can be reused after rollback. API reads
+    # pass an explicit committed-snapshot flag from before cached() opens one.
+    if cacheable is None:
+        cacheable = not conn.in_transaction
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    key = (path or ('memory', id(conn)), data_rev(conn))
+    cached = SEED_LINKS[0] if cacheable else None
+    if cached and cached[0] == key:
         return cached[2]
-    # Overlap means people currently observed in both seed lists, not historical discoveries.
-    rows = conn.execute('SELECT group_concat(DISTINCT seed) FROM current_edges GROUP BY person_id HAVING count(DISTINCT seed)>1')
+    # Overlap means people currently observed in both source lists. The
+    # transactionally maintained distinct membership table avoids rejoining
+    # every edge to evidence on each exact-revision refresh.
+    members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
+    rows = conn.execute('SELECT group_concat(seed) FROM map_seed_member GROUP BY person_id HAVING count(*)>1' if members_ready else
+                        'SELECT group_concat(DISTINCT seed) FROM current_edges GROUP BY person_id HAVING count(DISTINCT seed)>1')
     pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split(','))), 2) for r in rows))
     top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
     links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
-    SEED_LINKS[0] = (key, now, links)
+    if cacheable:
+        SEED_LINKS[0] = (key, datetime.now().timestamp(), links)
     return links
 
 
 def api_map(conn, q, b):
-    # seed_links has its own (time-throttled) cache and is structural, so it stays outside the per-filter one
-    return dict(cached(conn, 'map', q, lambda: map_graph(conn, q)), seed_links=seed_links(conn))
+    # cached() reads the revision and computes the complete response in one
+    # snapshot. Capturing the caller's state first keeps rollback-only reads
+    # out of both caches while allowing committed UI polls to reuse the result.
+    committed = not conn.in_transaction
+    return cached(conn, 'map', q, lambda: dict(map_graph(conn, q), seed_links=seed_links(conn, cacheable=committed)))
 
 
 def api_connections(conn, q, b):
@@ -1132,26 +1146,86 @@ def map_graph(conn, q):
     for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
         where.append('p.id IN (SELECT person_id FROM current_edges WHERE seed=?)')
         args.append(seed)
-    cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds UNION SELECT seed FROM edges)'] + where)
-    # one materialized pass over the filtered people; both picks below sort that set (cost follows the filter's size)
-    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.content_fit, v.reason, m.status, m.note, '
-            'count(DISTINCT e.seed) AS degree FROM people p JOIN current_edges e ON e.person_id=p.id '
-            f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
+    # Older databases, or an interrupted backfill without the ready marker,
+    # retain the exact read-through query until db.init repairs the summary.
+    people_ready = db.get_setting(conn, 'map_people_present_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3
+    summary_ready = people_ready and db.get_setting(conn, 'map_person_degree_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6
+    if summary_ready:
+        where = [part.replace(LISTS, 'd.degree') for part in where]
+    sources_ready = db.get_setting(conn, 'map_source_handles_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_sources_%'").fetchone()[0] == 6
+    rank_ready = summary_ready and sources_ready and people_ready and db.get_setting(conn, 'map_rank_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_rank_%'").fetchone()[0] == 6
+    excluded = ('p.handle NOT IN (SELECT handle FROM map_source_handles)' if sources_ready else
+                'p.handle NOT IN (SELECT handle FROM seeds UNION SELECT seed FROM edges)')
+    cond = ' AND '.join([excluded] + where)
+    # Materialize only ranking fields for the full match set. Display fields
+    # are fetched after the limit; otherwise millions of names, notes and
+    # reasons are copied into SQLite's temporary sort table on every refresh.
+    if summary_ready:
+        base = ('SELECT p.id, v.score, d.degree FROM map_person_degree d JOIN people p ON p.id=d.person_id '
+                f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond}')
+    else:
+        base = ('SELECT p.id, v.score, count(DISTINCT e.seed) AS degree '
+                'FROM people p JOIN current_edges e ON e.person_id=p.id '
+                f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
     by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
     multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
-    rows = conn.execute(f"""WITH b AS MATERIALIZED ({base})
-        SELECT (SELECT count(*) FROM b) AS total, picked.* FROM (
-          SELECT * FROM (SELECT 0 AS part, * FROM b WHERE degree>=2 ORDER BY degree DESC, score DESC, id LIMIT ?)
-          UNION ALL SELECT * FROM (SELECT 1 AS part, * FROM b {by_score})
-        ) picked""", (*args, multi_n, limit)).fetchall()
-    total = rows[0]['total'] if rows else 0
+    # The common unfiltered overview can follow two exact ranking indexes and
+    # stop after its display limit. Other filters still use the general query.
+    # The UI always adds its local date; it changes only follow-up filters.
+    simple = rank_ready and set(q) <= {'scope', 'limit', 'today'}
+    if simple:
+        source_cond = 'd.hidden=0 AND ' + excluded
+        source_join = 'FROM map_person_degree d JOIN people p ON p.id=d.person_id '
+        total = conn.execute('SELECT count(*) FROM map_person_degree WHERE hidden=0').fetchone()[0]
+        # Force the tiny source registry outermost; SQLite otherwise sometimes
+        # scans every ranked person before joining its handle.
+        total -= conn.execute('SELECT count(*) FROM map_source_handles h CROSS JOIN people p '
+                              'CROSS JOIN map_person_degree d WHERE p.handle=h.handle '
+                              'AND d.person_id=p.id AND d.hidden=0').fetchone()[0]
+        rows = []
+        if multi_n:
+            rows.extend(conn.execute('SELECT 0 AS part,d.person_id AS id,d.score,d.degree '
+                                     f'{source_join} WHERE {source_cond} AND d.degree>=2 '
+                                     'ORDER BY d.degree DESC,d.score DESC,d.person_id LIMIT ?', (multi_n,)).fetchall())
+        rows.extend(conn.execute('SELECT 1 AS part,d.person_id AS id,d.score,d.degree '
+                                 f'{source_join} WHERE {source_cond} '
+                                 'ORDER BY d.score IS NULL,d.score DESC,d.degree DESC,d.person_id LIMIT ?',
+                                 (limit,)).fetchall())
+    else:
+        rows = conn.execute(f"""WITH b AS MATERIALIZED ({base})
+            SELECT (SELECT count(*) FROM b) AS total, picked.* FROM (
+              SELECT * FROM (SELECT 0 AS part, * FROM b WHERE degree>=2 ORDER BY degree DESC, score DESC, id LIMIT ?)
+              UNION ALL SELECT * FROM (SELECT 1 AS part, * FROM b {by_score})
+            ) picked""", (*args, multi_n, limit)).fetchall()
+        total = rows[0]['total'] if rows else 0
     multi = [r for r in rows if r['part'] == 0]
     seen = {r['id'] for r in multi}
-    people = multi + [r for r in rows if r['part'] == 1 and r['id'] not in seen][:limit - len(multi)]
-    seeds = conn.execute('SELECT s.handle, (SELECT count(DISTINCT e.person_id) FROM current_edges e WHERE e.seed=s.handle) AS degree, p.id AS pid, '
+    picked = multi + [r for r in rows if r['part'] == 1 and r['id'] not in seen][:limit - len(multi)]
+    display = {}
+    for chunk in chunks([r['id'] for r in picked]):
+        marks = ','.join('?' * len(chunk))
+        for row in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,p.followers,'
+                                'v.tier,v.score,v.content_fit,v.reason,m.status,m.note '
+                                'FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
+                                'LEFT JOIN marks m ON m.person_id=p.id '
+                                f'WHERE p.id IN ({marks})', chunk):
+            display[row['id']] = row
+    people = [dict(display[r['id']], degree=r['degree']) for r in picked]
+    members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
+    source_from = 'map_source_handles' if sources_ready else '(SELECT handle FROM seeds UNION SELECT seed FROM edges)'
+    seed_degree = ('coalesce(md.degree,0)' if members_ready else
+                   '(SELECT count(DISTINCT e.person_id) FROM current_edges e WHERE e.seed=s.handle)')
+    degree_join = 'LEFT JOIN map_seed_degree md ON md.seed=s.handle ' if members_ready else ''
+    seeds = conn.execute(f'SELECT s.handle, {seed_degree} AS degree, p.id AS pid, '
                          'p.pic_file, p.followers, v.tier, v.score, m.status, m.note, coalesce(sd.is_me, 0) AS is_me '
-                         'FROM (SELECT handle FROM seeds UNION SELECT seed FROM edges) s LEFT JOIN seeds sd ON sd.handle=s.handle '
-                         'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
+                         f'FROM {source_from} s LEFT JOIN seeds sd ON sd.handle=s.handle '
+                         f'{degree_join}LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
                          'LEFT JOIN marks m ON m.person_id=p.id').fetchall()
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
@@ -1238,6 +1312,7 @@ def eta_hours(left, per_hour):
 
 
 RATE_WINDOW = timedelta(hours=6)   # measured throughput includes pacing breaks and cooldowns
+OBSERVED_RATE_WINDOW = timedelta(minutes=1)
 
 
 def measured_rate(conn, sql, now):
@@ -1248,6 +1323,13 @@ def measured_rate(conn, sql, now):
         return None
     hours = max(0.25, (now - utc(first)).total_seconds() / 3600)
     return n / hours
+
+
+def observed_per_minute(conn, sql, now):
+    """Count persisted work in the exact trailing minute; None means no history to measure."""
+    since = iso(now - OBSERVED_RATE_WINDOW)
+    recent, all_time = conn.execute(sql, (since,)).fetchone()
+    return recent if all_time else None
 
 
 def eta_with_budget(left, per_hour, per_request, lanes, kind, now):
@@ -1292,6 +1374,8 @@ def progress(conn, accts):
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
+    lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
+    bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
     q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
@@ -1299,8 +1383,10 @@ def progress(conn, accts):
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
         'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
+                  'per_minute': lists_min,
                   'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
         'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
+                 'per_minute': bios_min,
                  'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
                  # No reads measured yet: fall back to what the daily bio limits allow.
                  'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
@@ -1936,7 +2022,9 @@ def requalify(conn, p, me, net=None):
     _, lfit = laya_row(conn, p['id'])
     pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
     old = conn.execute('SELECT model, input_hash FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
-    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net)
+    scout_current = bool(old and old['model'] == 'leadscout' and deepscout.fresh(conn, p))
+    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net) and (
+        old['model'] != 'leadscout' or scout_current)
     if not keep_llm:  # the LLM's extra auto tags stay as long as its verdict does
         conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
     auto = qualify.rule_tags(p, edges, me)
@@ -1955,6 +2043,8 @@ def requalify(conn, p, me, net=None):
     v = qualify.rule_verdict(p, tags, net)
     conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at, content_fit) "
                  "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
+    if scout_current:
+        deepscout.reapply(conn, p, net)
 
 
 def qualify_batch(conn, limit=1000):
@@ -2058,7 +2148,7 @@ def fewshot(conn):
                 ex.append({'handle':r['handle'],'name':r['name'],'bio':(r['bio'] or '')[:200],'label':label})
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if cur and version and version != cur.get('version'):
-        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ? AND coalesce(score,0)>=?",
+        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error','leadscout') AND prompt IS NOT ? AND coalesce(score,0)>=?",
                      (version, FEWSHOT_RERUN))
     db.set_setting(conn, 'fewshot', {'n': n, 'examples': ex, 'version': version})
     conn.commit()
@@ -2149,7 +2239,7 @@ def run_llm(conn, rows, skip):
         if qualify.input_hash(latest_p, edges_of(conn, p['id']), latest_net) != qualify.input_hash(p, it['edges'], it['net']):
             continue
         if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=?, content_fit=? '
-                        'WHERE person_id=? AND updated_at=?',
+                        "WHERE person_id=? AND updated_at=? AND model!='leadscout'",
                         (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges'], it['net']),
                          v.get('prompt'), json.dumps(v.get('evidence') or []),
                          v.get('content_fit', min(getattr(qualify, 'ROLE_CAP', {}).get(v['role'], 100), v['fit']) if v.get('fit') is not None else None),
@@ -2281,6 +2371,22 @@ def retag_if_changed(conn):
     db.set_setting(conn, 'tags_version', version)
     conn.commit()
     return True
+
+
+def refresh_laya_prefilter_if_changed(conn):
+    """Queue only Laya-scored verdicts after a prefilter policy change.
+
+    The version write and invalidation share one transaction, so an interrupted
+    startup can safely retry. The normal qualify worker reblends in batches.
+    """
+    version = qualify.PREFILTER_VERSION
+    if db.get_setting(conn, 'laya_prefilter_version') == version:
+        return 0
+    changed = conn.execute("UPDATE verdicts SET updated_at='' WHERE person_id IN "
+                           "(SELECT person_id FROM laya)").rowcount
+    db.set_setting(conn, 'laya_prefilter_version', version)
+    conn.commit()
+    return changed
 
 
 EARLY_LISTS = 2   # while lists are still collecting, only people already in this many lists get a bio read
@@ -2489,7 +2595,10 @@ def main():
     CFG.update(db=str(Path(a.db).resolve()), port=a.port)
     Path(CFG['db']).parent.mkdir(parents=True, exist_ok=True)
     conn = db.init(CFG['db'])
+    deepscout.ensure(conn)
+    conn.commit()
     retag_if_changed(conn)
+    refresh_laya_prefilter_if_changed(conn)
     conn.close()
     start_workers(threading.Event())
     print(f'Fortunate Leads on http://127.0.0.1:{a.port}  db={CFG["db"]}', flush=True)

@@ -153,8 +153,10 @@ class LaneTest(Base):
         self.assertTrue(self.call('/api/accounts')[1]['accounts'][0]['is_main'])
         self.assertIn('Your main account is the only one online, so it reads lists too — add a second account to protect it',
                       [x['text'] for x in self.call('/api/accounts')[1]['alerts']])
-        jb = self.nxt('b')['job']                       # a second (non-main) account takes over the lists
-        self.assertEqual(jb['kind'], 'list')
+        self.assertIsNone(self.nxt('b', 'list')['job'])  # the main account's in-flight page keeps its lease
+        self.assertEqual(self.page('a', got, 2, 'c1')[1]['received'], 2)
+        jb = self.nxt('b', 'list')['job']                 # then the second account resumes at the saved cursor
+        self.assertEqual((jb['kind'], jb['cursor'], jb['received']), ('list', 'c1', 2))
         self.assertIsNone(self.nxt('a', 'list')['job'])
         self.assertEqual(self.nxt('a', 'list,profile')['job']['kind'], 'profile')   # main: bios only now
         self.call('/api/accounts/lane-b', {'role': 'bios'})   # nobody else takes lists: the main account does again

@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -42,6 +43,39 @@ class PipelineTest(Base):
                 db.add_edge(self.conn, s, ids[h], d)
         self.conn.commit()
         return ids
+
+    def test_progress_reports_observed_trailing_minute_rates(self):
+        # No saved work is an insufficient-data state, not a configured-cap estimate.
+        self.assertIsNone(server.progress(self.conn, [])['lists']['per_minute'])
+        self.assertIsNone(server.progress(self.conn, [])['bios']['per_minute'])
+
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(seconds=30)).isoformat()
+        old = (now - timedelta(seconds=61)).isoformat()
+        self.conn.executemany('INSERT INTO pages(job_id,cursor,at,lane,users) VALUES(?,?,?,?,?)', [
+            (1, 'a', recent, 'lane-a', 5), (2, 'a', recent, 'lane-b', 7), (3, 'a', old, 'lane-a', 100),
+        ])
+        self.conn.executemany('INSERT INTO people(handle,bio,bio_at,first_seen,updated_at) VALUES(?,?,?,?,?)', [
+            ('bio-a', 'x', recent, recent, recent), ('bio-b', 'y', recent, recent, recent),
+            ('bio-old', 'z', old, old, old),
+        ])
+        ids = {r['handle']: r['id'] for r in self.conn.execute('SELECT id,handle FROM people')}
+        self.conn.executemany('INSERT INTO verdicts(person_id,model,updated_at) VALUES(?,?,?)', [
+            (ids['bio-a'], 'llm', recent), (ids['bio-b'], 'llm', recent), (ids['bio-old'], 'llm', old),
+        ])
+        self.conn.commit()
+
+        progress = server.progress(self.conn, [])
+        self.assertEqual(progress['lists']['per_minute'], 12)  # both lanes, excludes the 61-second-old page
+        self.assertEqual(progress['bios']['per_minute'], 2)
+
+        # Known history with no events in the window is a real observed zero.
+        self.conn.execute('UPDATE pages SET at=?', (old,))
+        self.conn.execute('UPDATE people SET bio_at=?', (old,))
+        self.conn.execute('UPDATE verdicts SET updated_at=?', (old,))
+        self.conn.commit()
+        progress = server.progress(self.conn, [])
+        self.assertEqual((progress['lists']['per_minute'], progress['bios']['per_minute']), (0, 0))
 
     def test_network_context(self):
         ids = self.people({'good1': ('x', [('s1', 'followers')]), 'good2': ('x', [('s1', 'followers')]), 'no1': ('x', [('s2', 'followers')]),

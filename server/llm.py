@@ -277,6 +277,7 @@ class Providers:
                     last = f'{model}: invalid provider reply'
                     with self.lock:
                         self.errors[pid] = last
+                        self._backoff((pid, model), None, BACKOFF_BASE, BACKOFF_CAP)
                     continue
                 with self.lock:
                     # A concurrent failure may have established a new cooldown while this call ran.

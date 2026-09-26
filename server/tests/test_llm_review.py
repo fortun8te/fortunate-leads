@@ -144,6 +144,21 @@ class ProviderSafetyTest(unittest.TestCase):
                 p.chat([])
             blocked.assert_not_called()
 
+    def test_invalid_proxy_reply_cools_that_model(self):
+        p = self.pool(limit=3)
+        seen = []
+
+        def post(url, key, model, *args):
+            seen.append(('proxy' if key is None else 'key', model))
+            if key is None:
+                raise ValueError('provider did not confirm requested model')
+            return 'ok'
+
+        with patch.object(llm, '_post', side_effect=post):
+            self.assertEqual(p.chat([], models=(MODEL_A,)), ('ok', MODEL_A))
+            self.assertEqual(p.chat([], models=(MODEL_A,)), ('ok', MODEL_A))
+        self.assertEqual(seen, [('proxy', MODEL_A), ('key', MODEL_A), ('key', MODEL_A)])
+
     def test_401_on_test_disables_key_and_status_is_broken(self):
         p = self.pool()
         with patch.object(llm, '_post', side_effect=llm._Http(401, None, KEY)):
