@@ -86,7 +86,8 @@ def valid_answers(answers):
 
 
 def decide(people):
-    """people: dicts with id, profile fields and 'rules' (the rules score) -> {id: {'broad': p}}; {} when anything is off."""
+    """people: dicts with id, profile fields, 'rules' (rules score) and 'tags' (rule tags joined by \\x1f) -> {id: {'broad': p}};
+    {} when anything is off."""
     out = {}
     try:
         ids = [str(p['id']) for p in people]
@@ -100,7 +101,8 @@ def decide(people):
     for i in range(0, len(people), BATCH):
         chunk = people[i:i + BATCH]
         expected = set(ids[i:i + BATCH])
-        body = {'items': [{'id': str(p['id']), 'person': person(p), 'rules': p.get('rules') or 0} for p in chunk]}
+        body = {'items': [{'id': str(p['id']), 'person': person(p), 'rules': p.get('rules') or 0,
+                           'tags': [t for t in str(p.get('tags') or '').split('\x1f') if t]} for p in chunk]}
         req = urllib.request.Request(URL + '/decide', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'},
                                      method='POST')
         try:

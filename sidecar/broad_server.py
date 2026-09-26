@@ -1,7 +1,7 @@
 """Broad stage sidecar on 127.0.0.1:18742 (loopback only). Stdlib HTTP around sidecar/broad.py.
 
 GET  /health  -> {"ok", "model": "broad", "deployment_version": head version, "device", "labels"}
-POST /decide  {"items": [{"id", "person": {handle,name,category,bio,followers}, "rules": 0-100}]}
+POST /decide  {"items": [{"id", "person": {handle,name,category,bio,followers}, "rules": 0-100, "tags": [rule tags]}]}
            -> {"model": "broad", "deployment_version", "results": [{"id", "p": 0-1}]}
 The head file is re-read when it changes (after train_broad.py), so retraining needs no restart.
 usage: sidecar/.venv/bin/python sidecar/broad_server.py [--port 18742]"""
@@ -71,13 +71,14 @@ def make_handler(model):
                     raise ValueError('1-%d items' % MAX_ITEMS)
                 people = [dict(it['person']) for it in items]
                 rules = [float(it.get('rules') or 0) for it in items]
+                tags = [[str(t) for t in it.get('tags') or []] for it in items]
             except (ValueError, KeyError, TypeError) as e:
                 return self._send(400, {'error': str(e)[:200]})
             with lock:
                 fresh()
                 if model.head is None:
                     return self._send(503, {'error': 'no trained head yet (run train_broad.py)'})
-                ps = model.score(people, rules)
+                ps = model.score(people, rules, tags)
                 version = model.version
             self._send(200, {'model': 'broad', 'deployment_version': version,
                              'results': [{'id': it['id'], 'p': round(p, 4)} for it, p in zip(items, ps)]})

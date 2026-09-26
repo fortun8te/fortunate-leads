@@ -1979,7 +1979,8 @@ def laya_step(conn):
         return False
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
     rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh,
-               coalesce(v.content_fit, v.score) AS rules
+               coalesce(v.content_fit, v.score) AS rules,
+               (SELECT group_concat(t.tag, char(31)) FROM tags t WHERE t.person_id=p.id AND t.source='auto') AS tags
         FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
         WHERE coalesce(p.bio,'')!='' AND instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
           AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
