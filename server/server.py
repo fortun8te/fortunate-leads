@@ -2068,11 +2068,34 @@ def laya_step(conn):
     if control.stage_paused(conn, 'ai') or not laya.available():
         return False
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
-    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
-        FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
-        WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
-          AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
-        ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    signature = laya.cache_signature()
+    if db.get_setting(conn, 'laya_queue_signature') != signature:
+        # One full scan is necessary when the model/questions/policy change or
+        # an older database first opens. Subsequent batches read the index.
+        conn.execute('DELETE FROM laya_queue')
+        conn.execute("""INSERT INTO laya_queue(person_id,bio_blank,prefilter)
+            SELECT p.id,coalesce(p.bio,'')='',v.prefilter
+            FROM people p LEFT JOIN laya l ON l.person_id=p.id
+            LEFT JOIN verdicts v ON v.person_id=p.id
+            WHERE instr(p.handle,'~')=0 AND NOT EXISTS
+              (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+              AND (l.person_id IS NULL OR l.input_hash IS NOT
+                laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))""")
+        db.set_setting(conn, 'laya_queue_signature', signature)
+        conn.commit()
+    rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+        FROM laya_queue q JOIN people p ON p.id=q.person_id
+        LEFT JOIN laya l ON l.person_id=p.id
+        ORDER BY q.bio_blank,q.prefilter DESC,q.person_id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    # A profile can change back to an already cached hash. Drop that one queue
+    # entry rather than sending the same profile to the sidecar again.
+    current = [r['id'] for r in rows if r['lh'] == laya_hash(*(r[k] for k in
+               ('handle','name','bio','category','website','followers')))]
+    if current:
+        conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(pid,) for pid in current])
+        conn.commit()
+        current_ids = set(current)
+        rows = [r for r in rows if r['id'] not in current_ids]
     if not rows:
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
@@ -2093,6 +2116,7 @@ def laya_step(conn):
     conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
                      [(r['id'], laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))), json.dumps(answers[r['id']]),
                        laya.fit(answers[r['id']]), ts) for r in done])
+    conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(r['id'],) for r in done])
     # The qualify batch folds the new ranking signal into prefilter on its next pass.
     conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
     conn.commit()

@@ -88,6 +88,73 @@ CREATE INDEX IF NOT EXISTS marks_status ON marks(status);
 CREATE INDEX IF NOT EXISTS jobs_next ON jobs(state, kind, priority);
 CREATE INDEX IF NOT EXISTS jobs_list_seed_state ON jobs(kind,seed,direction,state);
 CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
+-- Only pending Laya work is ranked. The signature-specific population is rebuilt
+-- once by laya_step; these triggers keep subsequent profile/rank changes current.
+CREATE TABLE IF NOT EXISTS laya_queue(person_id INTEGER PRIMARY KEY, bio_blank INTEGER NOT NULL,
+  prefilter INTEGER);
+CREATE INDEX IF NOT EXISTS laya_queue_rank ON laya_queue(bio_blank,prefilter DESC,person_id);
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_insert AFTER INSERT ON people BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT NEW.id,coalesce(NEW.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=NEW.id)
+  WHERE instr(NEW.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_update AFTER UPDATE OF handle,name,bio,category,website,followers ON people
+WHEN OLD.handle IS NOT NEW.handle OR OLD.name IS NOT NEW.name OR OLD.bio IS NOT NEW.bio
+  OR OLD.category IS NOT NEW.category OR OLD.website IS NOT NEW.website OR OLD.followers IS NOT NEW.followers
+BEGIN
+  DELETE FROM laya_queue WHERE person_id=NEW.id;
+  INSERT INTO laya_queue
+  SELECT NEW.id,coalesce(NEW.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=NEW.id)
+  WHERE instr(NEW.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_delete AFTER DELETE ON people BEGIN
+  DELETE FROM laya_queue WHERE person_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_insert AFTER INSERT ON verdicts BEGIN
+  UPDATE laya_queue SET prefilter=NEW.prefilter WHERE person_id=NEW.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_update AFTER UPDATE OF prefilter ON verdicts
+WHEN OLD.prefilter IS NOT NEW.prefilter BEGIN
+  UPDATE laya_queue SET prefilter=NEW.prefilter WHERE person_id=NEW.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_delete AFTER DELETE ON verdicts BEGIN
+  UPDATE laya_queue SET prefilter=NULL WHERE person_id=OLD.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_delete AFTER DELETE ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=OLD.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_insert AFTER INSERT ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=NEW.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_update AFTER UPDATE ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=NEW.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_insert AFTER INSERT ON seeds WHEN NEW.is_me=1 BEGIN
+  DELETE FROM laya_queue WHERE person_id IN (SELECT id FROM people WHERE handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_delete AFTER DELETE ON seeds WHEN OLD.is_me=1 BEGIN
+  INSERT OR IGNORE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',v.prefilter FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
+  WHERE p.handle=OLD.handle AND instr(p.handle,'~')=0;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_update AFTER UPDATE OF handle,is_me ON seeds
+WHEN OLD.handle IS NOT NEW.handle OR OLD.is_me IS NOT NEW.is_me BEGIN
+  INSERT OR IGNORE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',v.prefilter FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
+  WHERE p.handle=OLD.handle AND OLD.is_me=1 AND instr(p.handle,'~')=0;
+  DELETE FROM laya_queue WHERE NEW.is_me=1 AND person_id IN (SELECT id FROM people WHERE handle=NEW.handle);
+END;
 """
 
 BIO_FIELDS = {'bio', 'bio_at', 'bio_src', 'website', 'category', 'followers', 'following', 'posts', 'is_business'}
