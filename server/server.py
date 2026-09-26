@@ -1308,8 +1308,19 @@ def progress(conn, accts):
                  'estimate': not bios_h},
         'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
-                    'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
+                    'keys': len(llm.get().keys) if hasattr(llm, 'get') else None, 'engine': ai_engine(conn),
+                    **stage_counts(conn)},
     }
+
+
+def stage_counts(conn):
+    """How far each qualification stage got (Rules -> Broad -> Bulk -> Special), for the Scraper page."""
+    c = conn.execute("SELECT count(*), sum(model NOT IN ('rules','error')), sum(model='leadscout') FROM verdicts").fetchone()
+    bios = conn.execute("SELECT count(*) FROM people WHERE coalesce(bio,'')!=''").fetchone()[0]
+    broad = conn.execute("SELECT count(*) FROM laya WHERE input_hash LIKE ?", ('profile:%',)).fetchone()[0] if laya.last_known() else 0
+    special = conn.execute("SELECT count(*) FROM deep_research").fetchone()[0] if deepscout._has_table(conn) else 0
+    return {'ruled': c[0] or 0, 'bios_total': bios, 'broad_scored': broad, 'broad_up': laya.last_known(),
+            'bulk_done': c[1] or 0, 'special_done': special}
 
 
 def soak(conn, now):

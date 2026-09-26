@@ -83,18 +83,18 @@ Environment in Settings and can only be removed where they are set.
 The same page sets model calls at once, the model threshold, the bio floor (planned bio reads skip people whose
 prefilter score is below it; Read now always works) and whether qualification starts by itself once the lists are done.
 
-## 7. Laya sidecar (optional)
+## 7. Broad stage sidecar (optional)
 
-A local model that adds one soft signal to the ranking. The server uses it when it answers and skips it otherwise.
+Laya's encoder plus a small head trained on Grok's Bulk verdicts: it sorts every bio so Bulk spends its calls on the
+likeliest leads. The server uses it when it answers and skips it otherwise.
 
 ```sh
-cd sidecar
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt   # torch + transformers, about 2 GB with the model
-.venv/bin/python laya_server.py             # first run downloads the model to ~/.cache/huggingface
+ops/install-broad.sh                                  # venv (~1 GB with torch) + sidecar LaunchAgent
+sidecar/.venv/bin/python sidecar/train_broad.py       # candidate head from the labels
+sidecar/.venv/bin/python sidecar/train_broad.py --promote   # serve it once you have reviewed it
 ```
 
-Settings, Services shows whether it is running. More options: `sidecar/README.md`.
+Settings, Services shows whether it is running. More: `sidecar/README.md`.
 
 ## 8. First run checklist
 

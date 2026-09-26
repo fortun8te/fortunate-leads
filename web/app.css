@@ -1111,3 +1111,6 @@ button:disabled { cursor:default; opacity:.5; }
 .d-tag-edit { margin-top: var(--s2); display: grid; gap: var(--s2); }
 .kv-list { display: grid; gap: 6px; }
 .kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); }
+
+.q-st { display: block; line-height: 1.6; }
+.q-st b { display: inline-block; min-width: 64px; font-weight: 600; }

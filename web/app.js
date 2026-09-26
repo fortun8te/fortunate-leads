@@ -2114,9 +2114,7 @@ function renderScraper() {
     stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go${L.per_hour ? ` · ${int(Math.round(L.per_hour))} per hour` : ''}`,
       listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
-    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
-      : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
-      Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
+    stage('3. Qualify', qualifyLine(Q), Q.left ? 0 : 100, !Q.on ? 'AI off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
   ].join('');
   $('#ext-ver').textContent = x.version ? 'Extension v' + x.version : '';
   const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
@@ -2396,6 +2394,18 @@ $('#wiz').addEventListener('click', (e) => {
 
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
 const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, dirty: false };
+// The four qualification stages in one line each: Rules -> Broad -> Bulk -> Special.
+function qualifyLine(Q) {
+  const bulk = Q.engine === 'grok' ? 'Grok 4.7' : Q.engine === 'auto' ? 'free models, then Grok' : 'free models';
+  const rows = [
+    ['Rules', `${int(Q.ruled || 0)} ranked`],
+    ['Broad', Q.broad_up ? `${int(Q.broad_scored || 0)} of ${int(Q.bios_total || 0)} bios scored` : 'not running'],
+    ['Bulk', Q.on ? `${int(Q.bulk_done || 0)} done · ${int(Q.left || 0)} waiting · ${bulk}${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
+      : `paused · ${int(Q.left || 0)} waiting (press Resume on AI)`],
+    ['Special', `${int(Q.special_done || 0)} checked on the web`],
+  ];
+  return rows.map(([k, v]) => `<span class="q-st"><b>${k}</b> ${esc(v)}</span>`).join('');
+}
 async function loadSettings() {
   loadBiofetch();
   const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
@@ -2420,7 +2430,7 @@ function renderScout() {
   const use = sc.usage.length ? sc.usage.map((u) => `<div class="kv-row"><span>${esc(u.model)}<small class="muted"> · ${esc(u.provider || '')}</small></span>
       <span class="num">${int(u.runs)} runs · ${tok(u.tokens_in + u.tokens_out)} tokens</span></div>`).join('') : '<div class="muted">No runs this week.</div>';
   el.innerHTML = `
-    <div class="set-row"><div><b>Check the best leads with Hermes</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Hermes (hermesme) not found on this Mac'}</span></div>
+    <div class="set-row"><div><b>Special: check the best leads on the web</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Hermes (hermesme) not found on this Mac'}</span></div>
       <button class="toggle${sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${sc.on}" aria-label="Leadscout on"><i></i></button></div>
     <div class="set-row"><div><b>Model</b><span class="muted">If it fails, the agent falls back to Gemma, then Grok, then Nemotron.</span></div>
       <div class="seg" id="scout-model">${sc.models.map((m) => `<button data-m="${esc(m.id)}" class="${sc.model === m.id ? 'on' : ''}" aria-pressed="${sc.model === m.id}" title="${esc(m.label)}">${esc(m.label.split(' (')[0])}</button>`).join('')}</div></div>
@@ -2465,7 +2475,7 @@ function renderServices() {
   const h = SET.health && typeof SET.health === 'object' ? SET.health : null, l = SET.llm;
   const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
   $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
-    + row('Laya sidecar', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Optional. Start it with python3 sidecar/laya_server.py (see docs/SETUP.md).');
+    + row('Broad (Laya)', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Optional. Install it with ops/install-broad.sh (see sidecar/README.md).');
 }
 function keyStatus(p) {
   if (p.disabled) return { text: 'Refused', cls: 'bad' };
