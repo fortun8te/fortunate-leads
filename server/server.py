@@ -32,6 +32,7 @@ import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
 import laya  # noqa: E402
+import broad_features  # noqa: E402
 import llm  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
@@ -1978,16 +1979,20 @@ def laya_step(conn):
     if control.stage_paused(conn, 'ai') or not laya.available():
         return False
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
-    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh,
-               coalesce(v.content_fit, v.score) AS rules,
-               (SELECT group_concat(t.tag, char(31)) FROM tags t WHERE t.person_id=p.id AND t.source='auto') AS tags
+    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
         FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
         WHERE coalesce(p.bio,'')!='' AND instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
           AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
         ORDER BY v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     if not rows:
         return False
-    answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
+    items = []
+    for row in rows:
+        item = dict(row)
+        item['rules'], tags = broad_features.from_profile(item)
+        item['tags'] = '\x1f'.join(tags)
+        items.append(item)
+    answers = laya.decide(items)   # no DB lock is held during the call
     if not answers:
         return False
     if control.stage_paused(conn, 'ai'):

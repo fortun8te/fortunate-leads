@@ -1,8 +1,6 @@
 #!/bin/bash
-# Installs the Broad stage as two LaunchAgents:
-#   com.fortunate.leads.broad          the sidecar on 127.0.0.1:18742 (starts at login, restarts if it dies)
-#   com.fortunate.leads.broad-train    retrains the head on the latest Grok verdicts every night at 04:30
-#                                      (keeps the current head unless the new one finds at least as many good leads)
+# Installs the Broad sidecar on 127.0.0.1:18742. Training and deployment are manual
+# until independent owner-reviewed lead quality has been measured.
 # First run sets up sidecar/.venv (laya + scikit-learn, ~1 GB with torch). Model weights must already be in
 # sidecar/.cache/huggingface or be fetched once with: HF_HUB_OFFLINE=0 sidecar/.venv/bin/python -c "import laya; laya.load('convaiinnovations/laya', subfolder='multilingual')"
 #
@@ -28,7 +26,14 @@ if [ ! -x "$PY" ]; then
   "$PY" -m pip install -q -r "$REPO/sidecar/requirements.txt"
 fi
 "$PY" -c 'import laya, sklearn' || { echo "sidecar/.venv is missing laya or scikit-learn" >&2; exit 1; }
-[ -f "$REPO/data/broad_head.pkl" ] || echo "note: no trained head yet; the sidecar answers 503 until train_broad.py has run" >&2
+"$PY" - "$REPO/data/broad_head.pkl" "$REPO/sidecar" <<'PY' || { echo "promote a reviewed Broad candidate before installing" >&2; exit 1; }
+import pickle, sys
+sys.path.insert(0, sys.argv[2])
+import broad
+with open(sys.argv[1], 'rb') as f:
+    head = pickle.load(f)
+assert head.get('feature_version') == broad.FEATURE_VERSION and head.get('tags') == list(broad.TAGS)
+PY
 
 plist() {  # label, program args (xml), extra keys (xml)
   cat > "$AGENTS/$1.plist" <<EOF
@@ -52,6 +57,6 @@ EOF
 mkdir -p "$AGENTS" "$HOME/Library/Logs"
 plist com.fortunate.leads.broad "<string>$PY</string><string>$REPO/sidecar/broad_server.py</string>" \
   "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>"
-plist com.fortunate.leads.broad-train "<string>$PY</string><string>$REPO/sidecar/train_broad.py</string>" \
-  "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>"
-echo "installed: broad sidecar (log $LOG) + nightly retrain 04:30"
+launchctl bootout "$dom/com.fortunate.leads.broad-train" 2>/dev/null || true
+rm -f "$AGENTS/com.fortunate.leads.broad-train.plist"
+echo "installed: broad sidecar (log $LOG); training is manual"

@@ -1,7 +1,7 @@
 """Client for the Broad stage sidecar (sidecar/broad_server.py on 127.0.0.1:18742): Laya's multilingual encoder plus a head
 trained on the Bulk stage's Grok verdicts. Stdlib only.
 
-It answers one number per person: how likely Grok would call them a good lead (buyer, fit >= 60). It is a ranking signal for
+It answers one uncalibrated ranking score per person for Grok's buyer/fit >= 60 label. It is a ranking signal for
 who gets a Bulk (Grok) call next; it never gives a verdict and never creates tags.
 Down or slow -> skipped silently (health is checked with a 3 s timeout and cached for 60 s).
 """

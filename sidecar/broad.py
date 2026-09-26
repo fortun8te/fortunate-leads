@@ -14,6 +14,7 @@ os.environ.setdefault('HF_HOME', str(HERE / '.cache' / 'huggingface'))
 os.environ.setdefault('HF_HUB_OFFLINE', '1')
 
 HEAD = Path(os.environ.get('BROAD_HEAD', HERE.parent / 'data' / 'broad_head.pkl'))
+FEATURE_VERSION = 'profile-rules-v1'
 CHECKPOINT, SUBFOLDER = 'convaiinnovations/laya', 'multilingual'
 FEATURE_WEIGHT = 3   # rules features scaled next to the unit-norm embedding
 MAX_LEN = 96         # bios are short: same quality as 128 tokens, ~20% faster
@@ -46,7 +47,7 @@ class Model:
 
     def reload(self):
         head = pickle.loads(HEAD.read_bytes()) if HEAD.exists() else None
-        self.head = head if head and head.get('tags') == list(TAGS) else None   # a head from other features cannot score these
+        self.head = head if head and head.get('tags') == list(TAGS) and head.get('feature_version') == FEATURE_VERSION else None
         return self.head is not None
 
     @property
@@ -63,7 +64,7 @@ class Model:
         return np.hstack([self.embed(people), np.array([features(r, p.get('followers'), t) for p, r, t in zip(people, rules, tags)])])
 
     def score(self, people, rules, tags):
-        """people: dicts with handle/name/category/bio/followers; rules: rules score; tags: rule tags -> P(good lead) each."""
+        """Return uncalibrated ranking scores; the balanced head is not a probability of a qualified client."""
         return self.head['clf'].predict_proba(self.matrix(people, rules, tags))[:, 1].tolist()
 
 

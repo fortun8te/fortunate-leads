@@ -21,6 +21,7 @@ class LayaStub(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.__class__.last_body = body
         self._send({'results': [{'id': it['id'], 'p': 0.9} for it in body['items']], 'model': laya.MODEL,
                     'deployment_version': 'broad-test'})
 
@@ -162,7 +163,13 @@ class PipelineTest(Base):
             ids = self.people({'nobio': (None, [('s1', 'followers')]), 'withbio': ('we make candles', [('s1', 'followers')])})
             server.qualify_batch(self.conn)
             before = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['withbio'],)).fetchone()[0]
+            self.conn.execute("UPDATE verdicts SET model='grok-4.7', content_fit=99, score=99 WHERE person_id=?", (ids['withbio'],))
+            self.conn.execute("INSERT OR IGNORE INTO tags VALUES(?, 'AI: Fit strong', 'ai', 'auto')", (ids['withbio'],))
+            self.conn.commit()
             self.assertTrue(server.laya_step(self.conn))
+            sent = LayaStub.last_body['items'][0]
+            self.assertNotEqual(sent['rules'], 99)  # no Grok answer in Broad's inputs
+            self.assertNotIn('AI: Fit strong', sent['tags'])
             self.assertEqual(self.conn.execute('SELECT count(*) FROM laya').fetchone()[0], 1)   # bios only
             self.assertFalse(server.laya_step(self.conn))   # nothing new to score
             self.conn.execute("UPDATE people SET bio='we make kandles' WHERE id=?", (ids['withbio'],))   # same length, new text

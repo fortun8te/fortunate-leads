@@ -1,12 +1,13 @@
-"""Train the Broad head on the Bulk stage's Grok verdicts (the teacher), report held-out quality, save data/broad_head.pkl.
+"""Train a Broad candidate on Grok verdicts and owner marks; deployment needs --promote.
 
 Labels, later sources overriding earlier ones for the same person:
   1. every person with a Grok verdict in the leads database
   2. data/labels/*.jsonl in name order (Grok batches, then hand reviews: "by" set -> weight 2)
   3. Michael's own marks (interested/talking/client = good, no = not) -> weight 3: his feedback always wins
-A good lead = buyer with fit >= 60. The saved head only replaces the old one when it finds at least as many
-good leads in its top 30% as the one in use (checked on the same folds).
-usage: sidecar/.venv/bin/python sidecar/train_broad.py [--db data/leads.sqlite] [--min 300]"""
+A good lead here means Grok says buyer with fit >= 60. Cross-validation only
+measures agreement with that teacher on the labelled sample, not lead quality.
+usage: sidecar/.venv/bin/python sidecar/train_broad.py [--db data/leads.sqlite]
+       sidecar/.venv/bin/python sidecar/train_broad.py --promote  # copy the reviewed candidate unchanged"""
 import argparse
 import hashlib
 import json
@@ -20,6 +21,9 @@ from pathlib import Path
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import broad  # noqa: E402  (sets HF_HOME before laya loads)
+# Keep site-packages ahead of server/laya.py so broad.Model imports the Laya package.
+sys.path.append(str(broad.HERE.parent / 'server'))
+import broad_features  # noqa: E402
 
 GOOD_FIT = 60
 
@@ -43,20 +47,32 @@ def labels(db_path):
         good = r['status'] != 'no'
         rows[r['id']] = dict({k: r[k] for k in ('id', 'handle', 'name', 'category', 'bio', 'followers')},
                              role='buyer' if good else 'unrelated', fit=85 if good else 10, w=3.0)
-    rules = dict(con.execute("SELECT person_id, coalesce(content_fit, score) FROM verdicts"))
-    tags = {}
-    for pid, t in con.execute("SELECT person_id, tag FROM tags WHERE source='auto'"):
-        tags.setdefault(pid, []).append(t)
     con.close()
     out = [r for r in rows.values() if r.get('role') and isinstance(r.get('fit'), (int, float))]
-    return out, [rules.get(r['id']) or 0 for r in out], [tags.get(r['id'], []) for r in out]
+    signals = [broad_features.from_profile(r) for r in out]
+    return out, [score for score, _ in signals], [tags for _, tags in signals]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--db', default=str(broad.HERE.parent / 'data' / 'leads.sqlite'))
     ap.add_argument('--min', type=int, default=300)
+    ap.add_argument('--promote', action='store_true', help='serve the existing candidate unchanged after independent review')
     a = ap.parse_args()
+    candidate = broad.HEAD.with_name('broad_candidate.pkl')
+    if a.promote:
+        if not candidate.exists():
+            print('no candidate head to promote')
+            return 1
+        record = pickle.loads(candidate.read_bytes())
+        if record.get('feature_version') != broad.FEATURE_VERSION or record.get('tags') != list(broad.TAGS):
+            print('candidate feature schema does not match this code')
+            return 1
+        tmp = broad.HEAD.with_suffix('.tmp')
+        tmp.write_bytes(candidate.read_bytes())
+        tmp.replace(broad.HEAD)
+        print('promoted', record['version'], 'to', broad.HEAD)
+        return 0
     import numpy as np
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import StratifiedKFold
@@ -84,20 +100,17 @@ def main():
         new[te] = head().fit(x[tr], good[tr], sample_weight=w[tr]).predict_proba(x[te])[:, 1]
     base = np.array(rules, dtype=float)
     q_new, q_rules = top30(new), top30(base)
-    q_old = top30(np.array(model.score(rows, rules, tags))) if model.head and model.head.get('tags') == list(broad.TAGS) else 0   # optimistic for the old head: it may have seen these
-    print(f'good leads in top 30%: new {q_new:.0%} | rules {q_rules:.0%} | current head {q_old:.0%}' if model.head else
-          f'good leads in top 30%: new {q_new:.0%} | rules {q_rules:.0%}')
-    if model.head and q_new + 0.02 < q_old:
-        print('kept the current head')
-        return 0
+    print(f'Grok agreement on the labelled sample, good leads in top 30%: candidate {q_new:.0%} | rules {q_rules:.0%}')
     clf = head().fit(x, good, sample_weight=w)
     version = 'broad-' + hashlib.sha256(pickle.dumps(clf.coef_)).hexdigest()[:10]
-    broad.HEAD.parent.mkdir(parents=True, exist_ok=True)
-    tmp = broad.HEAD.with_suffix('.tmp')
+    target = candidate
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix('.tmp')
     tmp.write_bytes(pickle.dumps({'clf': clf, 'version': version, 'n': len(rows), 'good': int(good.sum()), 'top30': q_new,
-                                  'rules_top30': q_rules, 'tags': list(broad.TAGS), 'at': time.time()}))
-    tmp.replace(broad.HEAD)
-    print('saved', version, 'to', broad.HEAD)
+                                  'rules_top30': q_rules, 'tags': list(broad.TAGS),
+                                  'feature_version': broad.FEATURE_VERSION, 'at': time.time()}))
+    tmp.replace(target)
+    print('saved', version, 'to', target)
     return 0
 
 
