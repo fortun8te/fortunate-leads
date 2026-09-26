@@ -1236,6 +1236,7 @@ def eta_hours(left, per_hour):
 
 
 RATE_WINDOW = timedelta(hours=6)   # measured throughput includes pacing breaks and cooldowns
+OBSERVED_RATE_WINDOW = timedelta(minutes=1)
 
 
 def measured_rate(conn, sql, now):
@@ -1246,6 +1247,13 @@ def measured_rate(conn, sql, now):
         return None
     hours = max(0.25, (now - utc(first)).total_seconds() / 3600)
     return n / hours
+
+
+def observed_per_minute(conn, sql, now):
+    """Count persisted work in the exact trailing minute; None means no history to measure."""
+    since = iso(now - OBSERVED_RATE_WINDOW)
+    recent, all_time = conn.execute(sql, (since,)).fetchone()
+    return recent if all_time else None
 
 
 def eta_with_budget(left, per_hour, per_request, lanes, kind, now):
@@ -1290,6 +1298,8 @@ def progress(conn, accts):
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
+    lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
+    bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
     q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
@@ -1297,8 +1307,10 @@ def progress(conn, accts):
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
         'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
+                  'per_minute': lists_min,
                   'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
         'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
+                 'per_minute': bios_min,
                  'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
                  # No reads measured yet: fall back to what the daily bio limits allow.
                  'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),

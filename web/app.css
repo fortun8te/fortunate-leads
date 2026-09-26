@@ -532,18 +532,23 @@ table.tbl { width: 100%; border-collapse: collapse; }
 /* Tags view */
 #view-tags, #view-scraper, #view-accounts, #view-settings { overflow-y: auto; display: none; }
 #view-tags.on, #view-scraper.on, #view-accounts.on, #view-settings.on { display: block; }
-.tg-groups { display: grid; gap: var(--s6); }
-.tg-top { padding: var(--s5); background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
+.tg-groups { display: grid; gap: var(--s4); }
+.tg-top { padding: var(--s5); background: var(--bg1); border: 1px solid var(--line2); border-left: 3px solid var(--t-orange); border-radius: var(--r); }
+.tg-caution { padding: var(--s4) var(--s5); background: var(--bg1); border: 1px solid var(--line); border-left: 3px solid var(--t-red); border-radius: var(--r); }
+.tg-caution .tg-chips { margin-top: var(--s1); }
 .tg-rest { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s6) var(--s6); }
 .tg-sec { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .tg-ch { display: flex; align-items: baseline; gap: var(--s2); }
-.tg-ch h3 { font-size: var(--fs-md); font-weight: 600; }
+.tg-ch h3 { font-size: var(--fs-md); font-weight: 600; letter-spacing: -.01em; }
+.tg-top .tg-ch h3 { color: var(--t-orange); }
+.tg-caution .tg-ch h3 { color: var(--t-red); }
 .tg-sec > p { font-size: var(--fs-sm); }
 .tg-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--s2); }
 .tchip { display: inline-flex; align-items: center; gap: var(--s2); height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid transparent; background: var(--bg2); color: var(--fg2); font-size: var(--fs-sm); max-width: 100%; }
 .tchip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tchip b { font-weight: 400; color: var(--fg3); }
-.tchip:hover { border-color: var(--line3); }
+.tchip b { font-weight: 500; color: inherit; font-variant-numeric: tabular-nums; }
+.tchip:hover { border-color: var(--line3); filter: brightness(1.12); }
+:root[data-theme="light"] .tchip:hover { filter: brightness(.94); }
 .tchip.t-key { background: var(--chip-key); color: var(--fg); font-weight: 500; }
 .tchip.t-top { background: var(--fg); color: var(--inv); font-weight: 600; }
 .tchip.t-top b { color: inherit; opacity: .6; }
@@ -1096,10 +1101,10 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
-/* Tag hierarchy (see tagTier in app.js): orange = reach out, red = do not, black = your own. */
-:root { --t-orange: #ff8a1f; --t-orange-ink: #140800; --t-red: #e5484d; --t-red-ink: #ffffff; --t-own: #000000; --t-own-ink: #ffffff; --t-own-ring: #5c5c5c; }
-:root[data-theme="light"] { --t-orange: #e86a00; --t-orange-ink: #ffffff; --t-red: #d93036; --t-own: #111111; --t-own-ring: #111111; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --t-orange: #e86a00; --t-orange-ink: #ffffff; --t-red: #d93036; --t-own: #111111; --t-own-ring: #111111; } }
+/* Tag hierarchy (see tagTier in app.js): warm = promising, red = caution, solid neutral = your own. */
+:root { --t-orange: #ff9b42; --t-orange-ink: #241000; --t-red: #f5787b; --t-red-ink: #28090b; --t-own: #343434; --t-own-ink: #ffffff; --t-own-ring: #646464; }
+:root[data-theme="light"] { --t-orange: #a94400; --t-orange-ink: #ffffff; --t-red: #a91f2b; --t-red-ink: #ffffff; --t-own: #242424; --t-own-ring: #242424; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --t-orange: #a94400; --t-orange-ink: #ffffff; --t-red: #a91f2b; --t-red-ink: #ffffff; --t-own: #242424; --t-own-ring: #242424; } }
 .tag.t-hero, .tchip.t-hero { background: var(--t-orange); color: var(--t-orange-ink); font-weight: 700; box-shadow: none; }
 .tag.t-plus, .tchip.t-plus { background: transparent; color: var(--t-orange); box-shadow: inset 0 0 0 1.5px var(--t-orange); font-weight: 600; }
 .tag.t-own, .tchip.t-own { background: var(--t-own); color: var(--t-own-ink); box-shadow: inset 0 0 0 1px var(--t-own-ring); font-weight: 600; }
@@ -1107,6 +1112,17 @@ button:disabled { cursor:default; opacity:.5; }
 .tag.t-ctx, .tchip.t-ctx { background: var(--bg2); color: var(--fg2); font-weight: 400; box-shadow: none; }
 .tag.t-soft, .tchip.t-soft { background: transparent; color: var(--t-red); box-shadow: inset 0 0 0 1.5px var(--t-red); font-weight: 500; }
 .tag.t-flag, .tchip.t-flag { background: var(--t-red); color: var(--t-red-ink); font-weight: 700; box-shadow: none; }
+.fi.t-hero .sw, .fi.t-plus .sw { --fg-c: var(--t-orange); opacity: 1; }
+.fi.t-flag .sw, .fi.t-soft .sw { --fg-c: var(--t-red); opacity: 1; }
+.fi.t-own .sw { --fg-c: var(--fg); opacity: 1; }
+.tag.t-hero:focus-visible, .tag.t-plus:focus-visible, .tag.t-soft:focus-visible, .tag.t-flag:focus-visible,
+.tchip:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .tg-top, .tg-caution { padding: var(--s4); }
+  .tg-groups { gap: var(--s3); }
+  .tg-chips { gap: 8px; }
+  .tchip { min-height: 32px; height: auto; padding-block: 6px; }
+}
 .row .tags { display: flex; flex-wrap: wrap; align-content: center; gap: 4px; max-height: calc(var(--row) - 8px); overflow: hidden; }
 .d-tag-edit { margin-top: var(--s2); display: grid; gap: var(--s2); }
 .kv-list { display: grid; gap: 6px; }
