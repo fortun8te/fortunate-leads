@@ -159,9 +159,9 @@ def reopen_private_for_viewer(conn, row, now):
     """A newly usable identity reopens only lists stopped after access denials; keep the saved prefix."""
     if not row['ig_id'] or not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
         return
-    for lst in conn.execute("SELECT l.seed,l.direction FROM lists l WHERE "
+    for lst in conn.execute("SELECT DISTINCT l.seed,l.direction FROM list_private_denials seen "
+                            "JOIN lists l ON l.seed=seen.seed AND l.direction=seen.direction WHERE "
                             "(l.state='private' OR (l.state='partial' AND l.released_why='private')) "
-                            "AND EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction) "
                             "AND NOT EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction AND d.viewer_ig_id=?)",
                             (row['ig_id'],)).fetchall():
         if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
