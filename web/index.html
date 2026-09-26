@@ -14,6 +14,7 @@
 </script>
 <link rel="preload" href="vendor/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="connections.css">
 </head>
 <body>
 <div class="shell">
@@ -93,6 +94,22 @@
         </div>
 
         <div class="mpane" id="pane-map">
+          <div class="connection-tabs" role="group" aria-label="Map view">
+            <button class="btn on" id="connection-explore" aria-pressed="true">Connection explorer</button>
+            <button class="btn" id="connection-overview" aria-pressed="false">Network overview</button>
+          </div>
+          <section id="connection-panel" class="connection-panel" aria-label="Connection explorer">
+            <div class="connection-intro"><h2>Find the connection</h2><p>Choose two accounts to explore the follows recorded between them.</p></div>
+            <form id="connection-form" class="connection-form">
+              <div class="connection-field"><label for="connection-from">Start from</label><input class="input" id="connection-from" type="search" placeholder="Your account or a known contact" autocomplete="off" spellcheck="false" aria-describedby="connection-input-help"><div id="connection-from-results" class="connection-suggestions" hidden></div></div>
+              <div class="connection-field"><label for="connection-to">Find a path to</label><input class="input" id="connection-to" type="search" placeholder="Search any imported account" autocomplete="off" spellcheck="false" aria-describedby="connection-input-help"><div id="connection-to-results" class="connection-suggestions" hidden></div></div>
+              <div class="connection-field"><label for="connection-mode">Explore</label><select class="input" id="connection-mode"><option value="all">Follows in either direction</option><option value="following">Follow arrows forward</option></select></div>
+              <button type="submit" class="btn primary" id="connection-run">Find paths</button>
+            </form>
+            <p id="connection-input-help" class="connection-help">Search the full imported dataset, or enter an exact @handle. Lead filters apply to the overview only.</p>
+            <div id="connection-status" class="connection-status" role="status" aria-live="polite">Choose a starting account and a target to begin.</div>
+            <div id="connection-results"></div>
+          </section>
           <div class="mbar">
             <div class="seg" id="map-scope"><button data-v="leads" class="on" title="People in 2+ lists and likely brands">Connected</button><button data-v="all">All</button></div>
             <label class="search"><input class="input" id="map-q" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
@@ -349,5 +366,6 @@
 <script src="vendor/d3-force.min.js"></script>
 <script src="app.js"></script>
 <script src="controls.js"></script>
+<script src="connections.js"></script>
 </body>
 </html>

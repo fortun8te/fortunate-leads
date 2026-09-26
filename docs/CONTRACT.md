@@ -23,6 +23,32 @@ Server: `python3 server/server.py` → serves `http://127.0.0.1:8777` (UI at `/`
 Write endpoints under `/api/ext/*` accept requests only when `Origin` is `chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf` (the manifest `key` keeps that id). UI endpoints accept only same-origin (Host 127.0.0.1:8777 / localhost:8777); **every UI `POST` must carry `Origin: http://127.0.0.1:8777` (or localhost)** — browsers send it, `curl` needs `-H 'Origin: http://127.0.0.1:8777'`. GETs need no Origin. No tokens, no pairing.
 Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`.
 
+## Connection evidence API
+
+Both endpoints are local, read-only and independent of lead/overview filters. Unknown accounts return 404;
+malformed selectors, modes or limits return 400.
+
+- `GET /api/connections/search?q=handle_prefix&limit=12`: returns `accounts`, `truncated`, `limit`. Prefixes are literal,
+  case-insensitive handles. Empty query prioritizes own/source accounts. Historical identity variants are labeled separately.
+- `GET /api/connections?from=ig:123&to=ig:456&mode=all&limit=12`: returns `source`, `target`, `paths`, `nodes`,
+  directed `edges`, `direct_edges`, typed `common_neighbors`, `coverage`, `search`, `ranking` and `interpretation`.
+
+Selectors: exact handle / Instagram profile URL, `ig:<captured ID>`, `person:<local ID>`, `seed:<source handle>`,
+`legacy:<source handle>`, or `legacy-person:<local ID>`. Prefer IDs returned by search; current handles and legacy records
+can refer to different identities. Historical nodes cannot be intermediates. `all` traverses follows either way while
+preserving their actual arrows; `following` traverses only forward. Paths are simple, at most three hops, ordered by length,
+reciprocal observed hops, then IDs. Limits accept 1–50; default 12.
+
+Each hop references an edge ID, records traversal direction, and states whether both follow directions were recorded.
+Each edge includes its actual `from`/`to` IDs plus source-list evidence and first/last recording dates. `search_truncated`
+means exploration was incomplete; `results_truncated` means more candidates were found than displayed. Neither the ranking
+nor a missing result estimates friendship, introduction likelihood or current follow status. `coverage` is current
+handle-keyed list metadata and explicitly does not verify historical identity or edge freshness.
+
+The existing `/api/map` retains its membership-link contract, adding `display` with shown/matched people and truncation,
+plus `semantics` explaining that source-overlap links represent shared list members across either direction.
+See [research and design](CONNECTION_MAPPING.md) and [validation](CONNECTION_MAPPING_VALIDATION.md).
+
 ## Data model (SQLite, WAL)
 
 ```sql
@@ -35,6 +61,11 @@ lists(seed TEXT, direction TEXT CHECK(direction IN('followers','following')), st
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction))
 edges(seed TEXT, person_id INT, direction TEXT, first_seen TEXT, PRIMARY KEY(seed,person_id,direction))
   -- direction='followers': person follows seed. 'following': seed follows person.
+edge_observations(seed TEXT, person_id INT, direction TEXT, seed_ig_id TEXT NOT NULL DEFAULT '',
+  person_ig_id TEXT NOT NULL DEFAULT '', first_seen TEXT, last_seen TEXT,
+  PRIMARY KEY(seed,person_id,direction,seed_ig_id,person_ig_id))
+  -- IDs captured with the actual observation. Empty means unknown, never inferred from current handles.
+  -- Legacy edges migrate with empty endpoint IDs and last_seen=NULL. Duplicate page retries do not refresh dates.
 tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')), PRIMARY KEY(person_id,tag))
   -- auto: qualifier (rebuilt on requalify) · rule: user tag rules (synced on ingest) · manual: Michael. One source per (person, tag).
   -- indexes tags_tag_src(tag,source,person_id,grp) covering, tags_person_src(person_id,source,tag).

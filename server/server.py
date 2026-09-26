@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
 import control  # noqa: E402
+import connections  # noqa: E402
 import db  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
@@ -157,7 +158,7 @@ def ext_list_page(conn, q, b):
             u = dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
                      ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None)
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
-            db.add_edge(conn, seed, pid, direction, ts)
+            db.add_edge(conn, seed, pid, direction, ts, seed_ig_id=b.get('ig_id'), observe=bool(fresh), person_ig_id=u.get('ig_id'))
             pids.append(pid)
     rules.sync(conn, pids)
     received = conn.execute('SELECT count(*) FROM edges WHERE seed=? AND direction=?', (seed, direction)).fetchone()[0]
@@ -702,6 +703,17 @@ def api_read(conn, q, b, pid):
 
 # ---------- map ----------
 
+def api_connection_search(conn, q, b):
+    return connections.search(conn, q.get('q', [''])[0], limit=qint(q, 'limit') if 'limit' in q else 12)
+
+
+def api_connections(conn, q, b):
+    try:
+        return connections.explore(conn, q.get('from', [''])[0], q.get('to', [''])[0],
+                                   mode=q.get('mode', ['all'])[0], limit=qint(q, 'limit') if 'limit' in q else 12)
+    except LookupError as e:
+        raise NotFound(str(e)) from None
+
 def data_rev(conn):
     """Changes whenever anything the lead list, tag facets or map show changes (llm_rev: LLM verdicts keep updated_at)."""
     r = conn.execute("SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), "
@@ -766,7 +778,7 @@ def map_graph(conn, q):
     cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds)'] + where)
     # one materialized pass over the filtered people; both picks below sort that set (cost follows the filter's size)
     base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.reason, m.status, m.note, '
-            'count(DISTINCT e.seed) AS degree FROM people p JOIN edges e ON e.person_id=p.id '
+            'count(DISTINCT e.seed) AS degree, count(*) OVER () AS matched_count FROM people p JOIN edges e ON e.person_id=p.id '
             f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
     by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
     multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
@@ -802,7 +814,12 @@ def map_graph(conn, q):
                'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
-    return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
+    matched = rows[0]['matched_count'] if rows else 0
+    return {'nodes': nodes, 'links': links, 'rev': data_rev(conn),
+            'display': {'shown_people': len(people), 'matched_people': matched, 'limit': limit,
+                        'truncated': len(people) < matched},
+            'semantics': {'links': 'List membership; direction identifies the observed follow.',
+                          'seed_links': 'Shared list members across either direction, not direct follows.'}}
 
 
 def ext_aggregate(conn, accts, now):
@@ -1117,6 +1134,7 @@ ROUTES = [
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/scraper', api_scraper),
+    ('GET', r'/api/connections/search', api_connection_search), ('GET', r'/api/connections', api_connections),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),

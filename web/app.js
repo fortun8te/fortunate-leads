@@ -1078,6 +1078,10 @@ document.addEventListener('keydown', (e) => {
   const work = S.view === 'leads' || S.view === 'map';
   if (k === '/' && S.view === 'tags') { e.preventDefault(); $('#tg-q').focus(); return; }
   if (!work) return;
+  if (S.view === 'map' && !$('#connection-panel').hidden) {
+    if (k === '/') { e.preventDefault(); $('#connection-from').focus(); }
+    return;
+  }
   if (k === '/') { e.preventDefault(); $('#q').focus(); return; }
   if (k === '#') { e.preventDefault(); const q = $('#q'); q.value = (q.value.trim() ? q.value.trim() + ' ' : '') + '#'; q.focus(); suggest(); return; }
   if (k === '[') { toggleSide(); return; }
@@ -1975,6 +1979,7 @@ const M = {
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false,
   show() {
+    if (!$('#connection-panel').hidden) { this.hide(); return; }
     this.shown = true;
     this.resize();
     if (!this.loaded || this.stale) this.load();
@@ -2069,7 +2074,7 @@ const M = {
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
     }
     const nl = this.leads.length;
-    $('#map-count').textContent = `${int(nl)} people · ${plural(this.seeds.length, 'source account')}`;
+    $('#map-count').textContent = `${int(nl)}${d.display ? ' of ' + int(d.display.matched_people) : ''} people · ${plural(this.seeds.length, 'source account')}`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     this.simulate(old.size ? 0.5 : 1);
     this.search();

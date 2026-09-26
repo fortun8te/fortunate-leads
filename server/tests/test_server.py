@@ -330,6 +330,8 @@ class ServerTest(Base):
         n = db.connect(str(out))
         edges = {tuple(r) for r in n.execute('SELECT e.seed, p.handle, e.direction FROM edges e JOIN people p ON p.id=e.person_id')}
         self.assertEqual(edges, {('seedy', 'amy', 'followers'), ('seedy', 'bo', 'following'), ('fortun8te', 'bo', 'followers')})
+        observations = {tuple(r) for r in n.execute('SELECT seed,seed_ig_id,person_ig_id,direction FROM edge_observations')}
+        self.assertEqual(observations, {('seedy','100','1','followers'), ('seedy','100','','following'), ('fortun8te','5','','followers')})
         amy = n.execute("SELECT * FROM people WHERE handle='amy'").fetchone()
         self.assertEqual((amy['ig_id'], amy['name'], amy['bio'], amy['is_private'], amy['followers']), ('1', 'Amy', 'founder', 0, 1500))
         lists = {(r['seed'], r['direction']): r['state'] for r in n.execute('SELECT * FROM lists')}

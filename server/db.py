@@ -12,6 +12,15 @@ CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE TABLE IF NOT EXISTS edges(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
   PRIMARY KEY(seed,person_id,direction));
+CREATE TABLE IF NOT EXISTS edge_observations(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT,
+  seed_ig_id TEXT NOT NULL DEFAULT '', person_ig_id TEXT NOT NULL DEFAULT '', first_seen TEXT, last_seen TEXT,
+  PRIMARY KEY(seed,person_id,direction,seed_ig_id,person_ig_id));
+CREATE INDEX IF NOT EXISTS observations_person ON edge_observations(person_id,seed,direction);
+CREATE INDEX IF NOT EXISTS observations_source ON edge_observations(seed_ig_id,seed,direction,person_id);
+CREATE INDEX IF NOT EXISTS observations_source_person ON edge_observations(seed_ig_id,person_id,seed,direction);
+CREATE INDEX IF NOT EXISTS observations_member_id ON edge_observations(person_ig_id,seed_ig_id,seed,direction);
+CREATE INDEX IF NOT EXISTS observations_member ON edge_observations(person_ig_id,person_id,seed,direction,seed_ig_id);
+CREATE INDEX IF NOT EXISTS observations_pair ON edge_observations(seed_ig_id,person_ig_id,person_id,seed,direction);
 CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
   PRIMARY KEY(person_id,tag));
 CREATE TABLE IF NOT EXISTS tag_rules(id INTEGER PRIMARY KEY, tag TEXT NOT NULL, grp TEXT NOT NULL DEFAULT 'signal',
@@ -131,6 +140,12 @@ def init(path):
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
     migrate_statuses(conn)
+    # Old list records did not capture the source account ID. Never infer it from today's handle owner.
+    if not get_setting(conn, 'edge_observations_v1', False):
+        conn.execute("INSERT OR IGNORE INTO edge_observations(seed,person_id,direction,seed_ig_id,person_ig_id,first_seen,last_seen) "
+                     "SELECT e.seed,e.person_id,e.direction,'','',e.first_seen,NULL FROM edges e WHERE NOT EXISTS "
+                     "(SELECT 1 FROM edge_observations o WHERE o.seed=e.seed AND o.person_id=e.person_id AND o.direction=e.direction)")
+        set_setting(conn, 'edge_observations_v1', True)
     conn.commit()
     return conn
 
@@ -179,15 +194,35 @@ def upsert_person(conn, u, ts=None):
 
 
 def merge_people(conn, keep, drop):
+    conn.execute('INSERT INTO edge_observations(seed,person_id,direction,seed_ig_id,person_ig_id,first_seen,last_seen) '
+                 'SELECT seed,?,direction,seed_ig_id,person_ig_id,first_seen,last_seen FROM edge_observations WHERE person_id=? '
+                 'ON CONFLICT(seed,person_id,direction,seed_ig_id,person_ig_id) DO UPDATE SET '
+                 'first_seen=min(edge_observations.first_seen,excluded.first_seen), '
+                 'last_seen=CASE WHEN edge_observations.last_seen IS NULL THEN excluded.last_seen '
+                 'WHEN excluded.last_seen IS NULL THEN edge_observations.last_seen '
+                 'ELSE max(edge_observations.last_seen,excluded.last_seen) END', (keep, drop))
+    conn.execute('DELETE FROM edge_observations WHERE person_id=?', (drop,))
     for t in ('edges', 'tags', 'marks', 'verdicts'):
         conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
         conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
     conn.execute('DELETE FROM people WHERE id=?', (drop,))
 
 
-def add_edge(conn, seed, person_id, direction, ts=None):
-    return conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
-                        (norm_handle(seed), person_id, direction, ts or now())).rowcount == 1
+def add_edge(conn, seed, person_id, direction, ts=None, seed_ig_id=None, observe=True, person_ig_id=None):
+    seed, ts = norm_handle(seed), ts or now()
+    added = conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
+                         (seed, person_id, direction, ts)).rowcount == 1
+    if observe:
+        # Only a source ID supplied with this list observation can identify its historical owner.
+        sid = str(seed_ig_id).strip() if isinstance(seed_ig_id, (str, int)) and not isinstance(seed_ig_id, bool) else ''
+        member = str(person_ig_id).strip() if isinstance(person_ig_id, (str, int)) and not isinstance(person_ig_id, bool) else ''
+        conn.execute('INSERT INTO edge_observations VALUES(?,?,?,?,?,?,?) '
+                     'ON CONFLICT(seed,person_id,direction,seed_ig_id,person_ig_id) DO UPDATE SET '
+                     'first_seen=min(edge_observations.first_seen,excluded.first_seen), '
+                     'last_seen=CASE WHEN edge_observations.last_seen IS NULL THEN excluded.last_seen '
+                     'ELSE max(edge_observations.last_seen,excluded.last_seen) END',
+                     (seed, person_id, direction, sid, member, ts, ts))
+    return added
 
 
 def get_setting(conn, key, default=None):

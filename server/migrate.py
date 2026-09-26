@@ -57,9 +57,11 @@ def migrate(old_path, out_path, batch_path):
             skipped += 1
             continue
         if dst in seed_ids:  # src follows the seed
-            db.add_edge(conn, ents[dst]['handle'], pid[src], 'followers', day)
+            db.add_edge(conn, ents[dst]['handle'], pid[src], 'followers', day,
+                        seed_ig_id=ents[dst]['platform_id'], person_ig_id=ents[src]['platform_id'])
         if src in seed_ids:  # the seed follows dst
-            db.add_edge(conn, ents[src]['handle'], pid[dst], 'following', day)
+            db.add_edge(conn, ents[src]['handle'], pid[dst], 'following', day,
+                        seed_ig_id=ents[src]['platform_id'], person_ig_id=ents[dst]['platform_id'])
 
     lists = {}
     for c in collections:
