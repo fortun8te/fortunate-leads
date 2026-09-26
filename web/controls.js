@@ -9,7 +9,7 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
   const PER = { lists: 'people', bios: 'bios', ai: 'scores' };
-  let data = null, busy = false, offline = false, timer = 0, tick = 0;
+  let data = null, busy = false, offline = false, failure = '', timer = 0, tick = 0, revision = 0;
 
   const el = document.createElement('div');
   el.className = 'fl-ctl';
@@ -33,38 +33,40 @@
     return s.wait.seconds - (Date.now() - data.got) / 1e3;
   }
   function word(s) {
+    if (offline) return 'last known: ' + s.state;
     if (s.state === 'paused') return 'paused';
     if (s.state === 'waiting') {
       const l = left(s);
-      return (/break/i.test(s.wait.why) ? 'break' : /slow down/i.test(s.wait.why) ? 'resting' : 'waiting') + (l != null ? ' ' + clock(l) : '');
+      return (/break/i.test(s.wait?.why) ? 'break' : /slow down/i.test(s.wait?.why) ? 'resting' : 'waiting') + (l != null ? ' ' + clock(l) : '');
     }
     if (s.state === 'idle') return /no instagram account/i.test(s.now) ? 'no account online' : /paused or offline/i.test(s.now) ? 'no account free' : 'nothing to do';
+    if (s.state !== 'running') return ({off: 'off', error: 'needs attention', failed: 'failed', starting: 'starting'})[s.state] || 'status unavailable';
     return 'running' + (s.hour ? ' · ' + n(s.hour) + '/h' : '');
   }
   function tip(s) {
-    return `${s.label}: ${s.now}\n\n${s.help}\n\nLast hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
+    return `${s.label}: ${s.now}\n\n${s.help}\n\n${n(s.queue)} waiting.\nLast hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
   }
 
   function render() {
     mount();
     if (!data) { el.innerHTML = `<span class="fl-ctl-msg">${offline ? 'Server offline, controls unavailable.' : 'Loading controls…'}</span>`; return; }
     const pills = data.stages.map((s) => {
-      const on = s.state === 'running' || s.state === 'waiting';
+      const on = !offline && s.state === 'running';
       const act = s.paused ? 'resume' : 'pause';
       const what = s.paused ? `Resume ${s.label.toLowerCase()}` : `Pause ${s.label.toLowerCase()}`;
       return `<div class="fl-ctl-pill ${s.state}" title="${esc(tip(s))}">
         <i class="fl-ctl-dot${on ? ' on' : ''}"></i><b>${SHORT[s.id]}</b><span class="fl-ctl-word">${esc(word(s))}</span>
-        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" title="${esc(what + '. ' + s.help)}" ${busy ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
+        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" title="${esc(what + '. ' + s.help)}" ${busy || offline ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
       </div>`;
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
     const lead = data.stages.find((s) => s.state === 'running') || data.stages.find((s) => s.state === 'waiting');
-    const sentence = offline ? 'Server offline: showing the last known state.' :
-      data.all_paused ? 'Everything is paused. Nothing is sent to Instagram or the AI model.' :
-      lead ? `${lead.label}: ${lead.now}` : 'Nothing is working right now.';
+    const sentence = offline ? 'Server offline: showing the last known state.' : failure || (
+      data.all_paused ? 'Everything is paused. No new work will start. Current requests may still finish.' :
+      lead ? `${lead.label}: ${lead.now}` : 'Nothing is working right now.');
     const all = data.all_paused
-      ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Start collecting lists, reading bios and AI scoring again." ${busy ? 'disabled' : ''}>Resume all</button>`
-      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy ? 'disabled' : ''}>Stop all</button>`;
+      ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. AI scoring has its own Resume button." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
+      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;
     el.innerHTML = `<div class="fl-ctl-pills">${pills}</div><span class="fl-ctl-now" title="${esc(sentence)}">${esc(sentence)}</span>${all}`;
     el.dataset.running = String(running);
   }
@@ -73,26 +75,35 @@
     el.querySelectorAll('.fl-ctl-word').forEach((w, i) => { const s = data.stages[i]; if (s) w.textContent = word(s); });
   }
   async function load() {
+    if (busy) return;
+    const current = ++revision;
     try {
       const r = await fetch('/api/control', { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
-      const j = await r.json(), key = JSON.stringify(j.stages) + j.all_paused;
+      const j = await r.json();
+      if (!Array.isArray(j.stages)) throw new Error('Invalid status');
+      if (current !== revision || busy) return;
+      const key = JSON.stringify(j.stages) + j.all_paused;
       const same = data && !offline && key === data.key;   // unchanged: keep the buttons, just count down
       data = Object.assign(j, { got: Date.now(), key });
       offline = false;
       if (same) return countdown();
-    } catch { offline = true; }
+    } catch { if (current !== revision || busy) return; offline = true; }
     render();
   }
   async function send(body) {
-    busy = true; render();
+    if (busy || offline) return;
+    ++revision;
+    busy = true; failure = ''; render();
     try {
       const r = await fetch('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json();
-      if (r.ok && j.stages) data = Object.assign(j, { got: Date.now() });
-    } catch {}
+      if (!r.ok || !Array.isArray(j.stages)) throw new Error(j.error || 'Could not save');
+      data = Object.assign(j, { got: Date.now() });
+    } catch { failure = 'Change failed. Check the current state and try again.'; }
     busy = false;
     await load();
+    render();
   }
 
   el.addEventListener('click', (e) => {

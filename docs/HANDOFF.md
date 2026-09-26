@@ -1,4 +1,4 @@
-# Handoff — state on 2026-09-24 (evening)
+# Handoff — through 2026-09-26
 
 Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md](CONTRACT.md) (API, schema, pacing) and
 [RESEARCH.md](RESEARCH.md) (Instagram endpoints and limits).
@@ -14,14 +14,14 @@ Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md]
 - **Qualification**: network first. Every score is 60 % network strength (lists, seeds that follow them, seed yield from marks,
   links to Michael and his good/client accounts) and 40 % the profile read (rules or the LLM fit, role-capped but softer:
   connectors and creators are no longer pushed to zero). Staged: prefilter → rule tags/verdict → optional Laya → LLM for the top.
-- **Settings page**: OpenRouter keys (masked, add, test, remove, status, requests today), model order (free first), daily limit,
+- **Settings page**: OpenRouter keys (masked, add, test, remove, status, requests today), free-model order, daily limit,
   model calls at once, model threshold, bio floor, main account list share, proxy and Laya health.
 - **Web**: redesigned shell (Inter, tokens, sidebar), fit-first rows via `sort=fit`, filter-aware counts, map nodes with `fit`.
 - **Speed** (tests/bench.py, synthetic 100k people / 133k edges / 500k tags, median ms before → after):
   leads connected 224 → 169, leads min_lists=2 262 → 157, tags warm 279 → 6 (cached), map warm 260 → 6 (cached),
   map cold 483 → 382, seed_links 206 → 132, soak 27 → 5.5, network_context(200) 8.4 → 4.3, data_rev 9.1 → 5.6.
 
-## Verified here (Linux container)
+## Earlier verification (2026-09-24 Linux build)
 - `python3 -m unittest discover -s server/tests`, `python3 -m unittest sidecar/test_laya.py`, `node --test extension/test/*.test.mjs`.
 - `node tests/e2e/driver.mjs` (8 simulated hours, faults, outage; checks list gaps, request spacing and the 11-min window) and
   `--lanes 1,2,4` (exclusivity, handoff, per-lane cooldowns, window per account).
@@ -29,8 +29,8 @@ Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md]
 - Playwright (Chromium) on every page at 1440 and 390 px against the real server on a seeded temp DB and against `?mock=1`:
   no console errors, no horizontal overflow. Screenshots in `docs/ui/` (mock data).
 
-## Needs the Mac
-1. `ops/install-launchagent.sh --with-backup`, then `ops/doctor.sh` (never run on the Mac yet).
+## Earlier Mac checklist (historical)
+1. The server LaunchAgent and dedicated public collector environment were installed on the Mac on 2026-09-26. Use `ops/doctor.sh` for current health.
 2. Reload the extension in every profile (3.5.0) and add the scout accounts through Accounts → Add account.
 3. Soak: a few hours with 2+ accounts; watch Accounts for limits. `ops/soak.md` has the checklist. The 72/11 min window and the
    300 bios/day default are conservative guesses; tune only after a clean soak.
@@ -53,3 +53,36 @@ Start with [SETUP.md](SETUP.md) (install, run, troubleshoot), then [CONTRACT.md]
   data/leads.backup-pre-statuses-*.sqlite). Status, note and manual tags feed the LLM prompt and input_hash.
 - Map: hit test against drawn radius on live nodes (the cached quadtree missed new/big nodes); seeds with a person row open
   that person's panel; solid line = follows the seed, dashed = seed follows them.
+
+## 2026-09-26 public bio collector
+
+- An optional logged-out collector reads public profile bios through configured egresses. It shares the durable
+  `jobs` profile queue with the extension and runs as a child of the local server on port 8777. It does not read lists.
+  It is off by default; setup and controls are in [SCRAPER_OPERATIONS.md](SCRAPER_OPERATIONS.md).
+- The integrated worker uses no Instagram session cookies. It stores confirmed observations in `people`, preserves
+  the source observation time, and will not replace a newer bio with an older cache entry. Missing or uncertain bios
+  remain retryable. Leases, retry times, results, and connection cooldowns are stored in SQLite; active requests
+  cancel on pause or shutdown.
+- A separate `igscrape` CLI/web UI is also available for pasted handles and JSON/CSV export. Its cache and job
+  handling are separate from the integrated queue. The legacy `/runs` API keeps job metadata in memory.
+- A five-minute live run processed **1,229 fresh, complete, saved bios in 301.2 seconds = 244.8 bios/min**,
+  with 32 concurrent profile tasks and 36 configured Tor circuits. There were 88 error/retry results, excluded
+  from that rate, and no cache hits. Evidence: `data/reports/live-worker-5min.json` on the operator's Mac.
+  This demonstrates the lower part of the 200–500 target in this environment. It does not demonstrate 500/min
+  or guarantee the same rate as Instagram, Tor exits, and fallback coverage change.
+- Qualification accepts `:free` models only. Rule verdicts remain available if no free model answers. A model
+  verdict or high request rate is not evidence that a lead is a qualified buyer.
+
+Earlier verification and Mac follow-ups above describe the 2026-09-24 build. Recheck them against this build
+before treating those tests or setup steps as current results.
+
+## Current integration notes
+
+- Extension 3.8.0 sends lease tokens and requested page cursors. A repeated page cursor preserves returned
+  people and marks the list partial. Per-run member counts remain separate from historical connection edges.
+- AI off is durable, including website summaries. The collection worker can run without AI scoring or an
+  active Instagram browser session; logged-in list collection still needs the extension.
+- Standalone callback delivery is at least once. A crash after the callback succeeds but before its saved
+  acknowledgement can replay that item; integrations should upsert by stable identity.
+- A follow is observed direction evidence, not proof that two people know each other. Known relationships
+  and manually entered notes remain distinct from automatically collected edges.

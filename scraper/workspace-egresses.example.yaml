@@ -1,0 +1,14 @@
+# Copy to data/scraper-egresses.yaml after checking ops/tor-status.py reports ready.
+# Isolated circuits can share exit IPs: 36 lanes are not 36 independent exits.
+# 36 * 15 requests/min / 1.5 requests/profile = 360 profiles/min theoretical ceiling.
+# This is not observed successful bio throughput. Respect server cooldowns.
+# 36 lanes at 10 req/min start at 360 requests/min, about 240 profiles/min.
+# Effective concurrency is min(worker concurrency, healthy lanes * per-lane limit).
+# Bootstrap and SOCKS readiness do not prove exit availability or successful bios.
+# Tor restarts have a 60-second launch cooldown; persisted server cooldowns still apply.
+# Workspace defaults: concurrency 32; max_inflight_per_egress 2.
+egresses:
+  - type: tor
+    host: 127.0.0.1
+    port: 9152
+    circuits: 36

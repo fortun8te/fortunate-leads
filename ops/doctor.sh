@@ -58,7 +58,6 @@ info() { report INFO "$@"; }
 report_lines() { while IFS='|' read -r st label detail; do [ -n "$st" ] && report "$st" "$label" "$detail"; done; }
 
 describe_pid() { echo "pid $1: $(proc_cmd "$1")${2:+ (cwd $(proc_cwd "$1"))}"; }
-is_old_project() { case "$(proc_cmd "$1") $(proc_cwd "$1")" in *Documents/Codex*) return 0 ;; esac; return 1; }
 
 agent_pid='' agent_on=0
 if is_macos && agent_loaded "$FL_LABEL"; then
@@ -68,24 +67,46 @@ fi
 
 # --- --fix -----------------------------------------------------------------------
 if [ "$fix" = 1 ]; then
+  agent_checkout_owned "$FL_LABEL" server/server.py || {
+    echo "refusing --fix: server label or plist belongs to another checkout" >&2
+    exit 1
+  }
   echo "== fix"
+  for checked_port in "$FL_OLD_PORT" "$FL_PORT"; do
+    for checked_pid in $(port_pids "$checked_port"); do
+      [ "$checked_port" != "$FL_PORT" ] || [ "$checked_pid" != "$agent_pid" ] || continue
+      if ! owned_server_pid "$checked_pid"; then
+        echo "refusing --fix: :$checked_port belongs to an unverified process: $(describe_pid "$checked_pid" cwd)" >&2
+        exit 1
+      fi
+    done
+  done
   old="$(port_pids "$FL_OLD_PORT")"
   if [ -n "$old" ]; then
     for pid in $old; do
+      if ! owned_server_pid "$pid"; then
+        echo "refusing --fix: :$FL_OLD_PORT belongs to an unverified process: $(describe_pid "$pid" cwd)" >&2
+        exit 1
+      fi
       echo "stopping :$FL_OLD_PORT $(describe_pid "$pid" cwd)"
-      is_old_project "$pid" && echo "  (old project server; close its Cursor session in ~/Documents/Codex or it comes back)"
     done
     # shellcheck disable=SC2086  # one PID per word
-    stop_pids $old
+    stop_pids $old || exit 1
   fi
   if ! is_macos; then
     echo "not macOS: LaunchAgent restart skipped"
   elif agent_loaded "$FL_LABEL"; then
     strays="$(port_pids "$FL_PORT" | grep -vx "${agent_pid:-none}")"
     if [ -n "$strays" ]; then
-      echo "stopping hand-started :$FL_PORT server ${strays//$'\n'/ } (the agent needs the port)"
+      for pid in $strays; do
+        if ! owned_server_pid "$pid"; then
+          echo "refusing --fix: :$FL_PORT belongs to an unverified process: $(describe_pid "$pid" cwd)" >&2
+          exit 1
+        fi
+      done
+      echo "stopping checkout server on :$FL_PORT: ${strays//$'\n'/ }"
       # shellcheck disable=SC2086  # one PID per word
-      stop_pids $strays
+      stop_pids $strays || exit 1
     fi
     echo "restarting $FL_LABEL"
     launchctl kickstart -k "$FL_DOMAIN/$FL_LABEL" || echo "kickstart failed"
@@ -127,12 +148,16 @@ elif agent_loaded "$FL_LABEL"; then
   last_exit="$(agent_field "$FL_LABEL" "last exit code")"
   plist="$FL_AGENTS/$FL_LABEL.plist"
   if [ "$state" = running ]; then
-    pass agent "$FL_LABEL running, pid ${agent_pid:-?}, last exit ${last_exit:-n/a}"
+    pass agent "$FL_LABEL running, pid ${agent_pid:-?}"
   else
     fail agent "$FL_LABEL loaded but state=${state:-?}, last exit ${last_exit:-n/a} (see $FL_LOG; --fix)"
   fi
-  if [ -f "$plist" ] && ! grep -qF "$FL_REPO/server/server.py" "$plist"; then
-    warn agent-path "$plist does not point at $FL_REPO (re-run install-launchagent.sh)"
+  case "$last_exit" in
+    ''|0) pass agent-exit "last exit ${last_exit:-n/a}" ;;
+    *) warn agent-exit "last exit $last_exit (see $FL_LOG)" ;;
+  esac
+  if ! agent_checkout_owned "$FL_LABEL" server/server.py; then
+    fail agent-path "server label or plist belongs to another checkout"
   fi
 elif [ -f "$FL_AGENTS/$FL_LABEL.plist" ]; then
   fail agent "installed at $FL_AGENTS/$FL_LABEL.plist but not loaded (--fix)"
@@ -163,11 +188,7 @@ elif [ -z "$old" ]; then
   pass "port $FL_OLD_PORT" "free (old server not running)"
 else
   for pid in $old; do
-    if is_old_project "$pid"; then
-      fail "port $FL_OLD_PORT" "OLD PROJECT server from ~/Documents/Codex: $(describe_pid "$pid" cwd). Close that Cursor session, then --fix"
-    else
-      fail "port $FL_OLD_PORT" "$(describe_pid "$pid" cwd) (--fix stops it)"
-    fi
+    fail "port $FL_OLD_PORT" "$(describe_pid "$pid" cwd) (stop manually unless this checkout owns it)"
   done
 fi
 
@@ -373,10 +394,31 @@ else
   else
     pass backup "newest $(basename "$newest"), ${age_h} h old, $count kept"
   fi
+  backup_check="$("$FL_PYTHON" - "$newest" "$quick" <<'PY'
+import sqlite3, sys, urllib.parse
+path, quick = sys.argv[1], sys.argv[2] == '1'
+try:
+    uri = 'file:%s?mode=ro&immutable=1' % urllib.parse.quote(path)
+    con = sqlite3.connect(uri, uri=True, timeout=30)
+    rows = [row[0] for row in con.execute('PRAGMA ' + ('quick_check' if quick else 'integrity_check'))]
+    con.close()
+    if rows == ['ok']:
+        print('PASS|backup-check|newest backup passes SQLite integrity check')
+    else:
+        print('FAIL|backup-check|newest backup is corrupt: ' + '; '.join(rows[:3]))
+except sqlite3.Error as exc:
+    print('FAIL|backup-check|cannot read newest backup: ' + str(exc))
+PY
+)"
+  report_lines <<<"$backup_check"
 fi
 if is_macos && have launchctl; then
   if agent_loaded "$FL_BACKUP_LABEL"; then
-    pass backup-agent "$FL_BACKUP_LABEL loaded (daily 03:30), last exit $(agent_field "$FL_BACKUP_LABEL" "last exit code")"
+    backup_exit="$(agent_field "$FL_BACKUP_LABEL" "last exit code")"
+    case "$backup_exit" in
+      ''|0) pass backup-agent "$FL_BACKUP_LABEL loaded (daily 03:30), last exit ${backup_exit:-n/a}" ;;
+      *) fail backup-agent "$FL_BACKUP_LABEL last exit $backup_exit (see $FL_BACKUP_LOG)" ;;
+    esac
   else
     warn backup-agent "not installed (install-launchagent.sh --with-backup)"
   fi

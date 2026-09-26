@@ -66,9 +66,9 @@ The operator resumes holds 12 to 15 min after they appear, following `HOLD_POLIC
 
 ## Checks
 
-- Every list ends `done` or `private`, or waits in a running cooldown or hold. A `done` list has exactly its size, or 49 when Instagram capped it.
+- Every list ends `done` or `private`, a capped list ends `partial` with its 49 returned users, or it waits in a running cooldown or hold. A `done` list has exactly its size.
 - Edges per list match exactly the set of users the fake served in usable answers. There are no duplicate edge rows.
-- Pages sent twice get `duplicate` back and do not change the count.
+- Pages resent after the cursor advances get `stale` back (older servers may say `duplicate`); neither response changes the count.
 - After each restart, the next request for that list uses the right cursor, and no list starts over from page 1.
 - Each observed hit matches an independent model of the policy (10 min doubling per hit, cap 24 h, Retry-After, 3 hits until midnight, 5 min lane pause). It also matches `core.js applyHit` replayed on the exact state from before the hit.
 - No Instagram request happens during a cooldown window, a hold or a pause, before `nextAt`, or while another request holds the lane.

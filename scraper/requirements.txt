@@ -1,0 +1,5 @@
+# runtime only (no test tools) - keeps the install small
+httpx[http2,socks]>=0.27
+fastapi>=0.110
+uvicorn>=0.29
+pyyaml>=6

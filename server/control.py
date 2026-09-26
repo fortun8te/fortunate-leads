@@ -69,7 +69,8 @@ def stop_all(conn):
 
 def resume_all(conn):
     db.set_setting(conn, 'paused', False)
-    for s in STAGES:
+    # Collection controls never opt into model calls. AI has its own explicit switch.
+    for s in ('lists', 'bios'):
         set_stage(conn, s, False)
 
 
@@ -83,6 +84,11 @@ def lane_wait(conn, row, kind, now):
     if row['hold']:
         return ('Instagram asks this account to log in again' if row['hold'] == 'login'
                 else 'Instagram wants a security check on this account'), None
+    budget = accounts.budget_of(conn, row).get(kind, 0)
+    today = accounts.jload(row['today'], {}) or {}
+    used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
+    if (kind == 'list' or budget) and used >= budget:
+        return 'Daily request budget reached', int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
     cool = row['list_cool_until'] if kind == 'list' else None
     for until in (cool, row['cooldown_until']):
         u = utc(until) if until else None
@@ -126,11 +132,31 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     # accounts that could do this stage: online, not paused, role allows it
     role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
     able = [a for a in accts if a['online'] and not a['paused'] and (a['role'] or 'both') in role_ok]
-    working = [a for a in able if a['job'] and a['job']['kind'] == kind]
+    working = [a for a in able if not a['hold'] and a['job'] and a['job']['kind'] == kind]
+    if stage == 'bios' and not working:
+        import public_bios
+        if public_bios.settings(conn)['on']:
+            queue = public_bios.outstanding(conn)
+            out['queue'] = queue
+            heartbeat = db.get_setting(conn, 'public_bios_heartbeat') or {}
+            if now.timestamp() - heartbeat.get('epoch', 0) >= 10:
+                issue = db.get_setting(conn, 'public_bios_error')
+                return dict(out, state='waiting', now=issue or 'Waiting for the public bio collector to start.')
+            if not queue and not heartbeat.get('inflight'):
+                return dict(out, state='idle', now='Public bio collector is ready, nothing waiting.')
+            if heartbeat.get('healthyEgresses') == 0:
+                cooldowns = db.get_setting(conn, 'public_bios_cooldowns') or {}
+                waits = [v.get('until', 0) - now.timestamp() for v in cooldowns.values()
+                         if v.get('until', 0) > now.timestamp()]
+                seconds = max(1, int(min(waits))) if waits else None
+                why = 'Public bio connections are resting'
+                return dict(out, state='waiting', wait={'why': why, 'seconds': seconds},
+                            now=f"{why}{', next retry in ' + mins(seconds) if seconds else ''}.")
+            return dict(out, state='running', now=f'Reading public bios, {queue:,} waiting.')
     if not accts or not any(a['online'] for a in accts):
-        return dict(out, state='idle', now='No Instagram account is online. Open Chrome with the extension.')
+        return dict(out, state='waiting' if queue else 'idle', now=f'No Instagram account is online. {queue:,} jobs waiting. Open Chrome with the extension.')
     if not able:
-        return dict(out, state='idle', now='Every account that does this is paused or offline.')
+        return dict(out, state='waiting' if queue else 'idle', now=f'Every account that does this is paused or offline. {queue:,} jobs waiting.')
     if working:
         a = working[0]
         j = a['job']
@@ -144,28 +170,35 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         (why, sec), a = min(waits, key=lambda x: x[0][1] if x[0][1] is not None else 1e9)
         return dict(out, state='waiting', wait={'why': why, 'seconds': sec},
                     now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
-    return dict(out, state='running', now='Running.')
+    return dict(out, state='waiting', now=f'Waiting for an account to pick up work, {queue:,} jobs queued.')
 
 
 def account_out(conn, a, row, now, all_paused):
     base = {'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
-            'status': a['status'], 'hour': a['hour'], 'today': a['today'], 'wait': None}
+            'status': a['status'], 'hour': a['hour'], 'today': a['today'], 'wait': None,
+            'budget': a['budget'], 'hold': a['hold'], 'job': a['job']}
     if a['paused']:
         return dict(base, state='paused', now='Paused by you.')
     if not a['online']:
         return dict(base, state='offline', now='Offline: its Chrome window is closed or asleep.')
+    if a['hold']:
+        why, sec = lane_wait(conn, row, 'list', now)
+        return dict(base, state='waiting', wait={'why': why, 'seconds': sec}, now=why + '.')
     if a['job']:
         j = a['job']
         what = f"@{j['seed']}'s {j['direction']}" if j['kind'] == 'list' else f"the bio of @{j['handle']}"
         return dict(base, state='running', now=f'Reading {what}.')
     if all_paused:
         return dict(base, state='paused', now='Nothing to do: lists and bios are both paused.')
-    for kind in ('list', 'profile'):
-        w = lane_wait(conn, row, kind, now)
-        if w:
-            why, sec = w
-            return dict(base, state='waiting', wait={'why': why, 'seconds': sec},
-                        now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
+    kinds = [KIND[s] for s in ('lists', 'bios') if not stage_paused(conn, s)
+             and (a['role'] or 'both') in (s, 'both')]
+    if not kinds:
+        return dict(base, state='paused', now='The stages assigned to this account are paused.')
+    waits = [lane_wait(conn, row, kind, now) for kind in kinds]
+    if all(waits):
+        why, sec = min(waits, key=lambda w: w[1] if w[1] is not None else float('inf'))
+        return dict(base, state='waiting', wait={'why': why, 'seconds': sec},
+                    now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
     return dict(base, state='idle', now='Online, waiting for work.')
 
 
@@ -195,7 +228,7 @@ def apply(conn, b):
         conn.execute('BEGIN IMMEDIATE')
         try:
             accounts.edit(conn, b['account'], {'paused': pause})
-        except LookupError:
+        except Exception:
             conn.rollback()
             raise
         conn.commit()

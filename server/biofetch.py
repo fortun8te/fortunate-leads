@@ -16,6 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import db
+import control
 
 GRAPH = 'https://graph.facebook.com/v23.0/'
 FIELDS = 'username,name,biography,website,followers_count,follows_count,media_count,profile_picture_url,id'
@@ -108,6 +109,8 @@ def _cool(conn, st, why, now):
 
 def step(conn, now=None):
     """One handle. Returns True when it made a call (the worker then waits `gap`)."""
+    if control.stage_paused(conn, 'bios'):
+        return False
     s, st = settings(conn), state(conn)
     now = now or datetime.now(timezone.utc)
     if not (s['on'] and s['token'] and s['ig_user_id']):
@@ -134,7 +137,7 @@ def step(conn, now=None):
     if status == 200 and isinstance(bd, dict):
         p = {'handle': h, 'bio': bd.get('biography') or '', 'name': bd.get('name'), 'followers': bd.get('followers_count'),
              'following': bd.get('follows_count'), 'posts': bd.get('media_count'), 'is_business': 1,
-             'bio_at': ts, 'bio_src': 'meta_bd'}
+             'bio_at': ts, 'bio_src': 'meta_bd', 'pic_url': bd.get('profile_picture_url')}
         w = bd.get('website')
         if isinstance(w, str) and w.strip().lower().startswith(('http://', 'https://')):
             p['website'] = w.strip()

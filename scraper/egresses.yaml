@@ -1,0 +1,53 @@
+# egresses.yaml - which internet connections ("egresses") the scraper sends requests through.
+#
+# More healthy egresses = more profiles per minute. Each one is paced on its own
+# (about 40-60 profiles/min each) and is rested automatically if Instagram pushes back.
+#
+# How to use: remove the "# " in front of an example (keep the two-space indent), fill in
+# your details, save, then check it with:   igscrape egresses
+# The file lives at ~/ig-scraper/egresses.yaml and is used automatically.
+# Use another file for one run with:        igscrape -e other.yaml nasa
+
+egresses:
+
+  # 1) DIRECT - this computer's own internet connection. On by default.
+  - type: direct
+    # maxRpm: 60           # optional: max requests per minute on this connection (a profile ~= 1-2 requests)
+
+  # 2) TOR (socks5) - one line gives many separate Tor circuits. Needs Tor running
+  #    (Mac: `brew install tor`, then `tor` with "SocksPort 9050 IsolateSOCKSAuth" in its torrc).
+  # - type: tor
+  #   host: 127.0.0.1
+  #   port: 9050
+  #   circuits: 8          # 8 independent exits; a blocked one is swapped for a fresh one
+  #
+  #    ...or a single plain SOCKS5 proxy (Tor or anything else):
+  # - type: proxy
+  #   name: tor-single
+  #   url: socks5://127.0.0.1:9050
+
+  # 3) HTTP PROXY - a paid or free proxy. user:pass@ is optional.
+  # - type: proxy
+  #   name: my-proxy
+  #   url: http://user:password@proxy.example.com:8080
+  #   maxRpm: 40
+  #
+  #    Short form, one per line, also works:
+  # - socks5://user:pass@203.0.113.7:1080
+  # - 203.0.113.8:3128
+
+  # 4) RELAY - a URL template (e.g. a Cloudflare Worker) that fetches the page for you.
+  #    {url} is replaced by the (encoded) Instagram URL.
+  # - type: relay
+  #   name: cf-relay-1
+  #   url: https://my-relay.example.workers.dev/?u={url}
+  #   headers:
+  #     x-relay-key: "put-your-secret-here"
+
+  # 5) REMOTE MAC NODE - another Mac (e.g. at home) running mac_proxy.py, reached over Tailscale.
+  #    On that Mac:  python3 mac_proxy.py --bind 100.x.y.z --port 8899   (its Tailscale IP)
+  # - type: mac-node
+  #   name: home-mac
+  #   host: 100.x.y.z      # the other Mac's Tailscale IP
+  #   port: 8899
+  #   maxRpm: 30           # be gentle with a home connection

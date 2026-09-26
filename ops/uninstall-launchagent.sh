@@ -21,10 +21,24 @@ if ! is_macos; then
   exit 1
 fi
 
+# Verify every requested label before removing either one.
+for label in "${labels[@]}"; do
+  entry=server/server.py
+  [ "$label" != "$FL_BACKUP_LABEL" ] || entry=ops/backup.sh
+  agent_checkout_owned "$label" "$entry" || {
+    echo "error: $label belongs to another checkout; refusing removal" >&2
+    exit 1
+  }
+done
+
 for label in "${labels[@]}"; do
   plist="$FL_AGENTS/$label.plist"
   if agent_loaded "$label"; then
-    agent_unload "$label" && echo "unloaded $label"
+    if ! agent_unload "$label"; then
+      echo "error: $label is still loaded; leaving its plist in place" >&2
+      exit 1
+    fi
+    echo "unloaded $label"
   fi
   if [ -f "$plist" ]; then
     rm -f "$plist" && echo "removed $plist"

@@ -1,0 +1,5 @@
+# Public release template. Add only connections you own or are allowed to use.
+# The default uses this computer's own internet connection.
+egresses:
+  - type: direct
+    name: direct

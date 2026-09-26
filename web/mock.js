@@ -51,11 +51,14 @@
   const size = (f) => f < 1000 ? '<1k' : f < 10000 ? '1k-10k' : f < 100000 ? '10k-100k' : f < 1000000 ? '100k-1M' : '1M+';
 
   const people = [];
-  const lists = (id) => new Set(edges.get(id).map((e) => e.seed)).size;
+  const currentEdges = (id) => edges.get(id).filter(e => e.state === 'observed');
+  const lists = (id) => new Set(currentEdges(id).map((e) => e.seed)).size;
   const edges = new Map(); // id -> [{seed, direction}]
   const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
   const notes = new Map();
+  const markRevs = new Map();
+  const readQueue = new Set();
   const handles = new Set();
   const N = 3200;
 
@@ -97,7 +100,12 @@
     for (const nb of SEEDS[primary].nb) if (chance(0.16)) ss.add(nb);
     if (chance(0.05)) ss.add(pickSeed());
     if (ss.size >= 2 && chance(0.2)) ss.add(pickSeed());
-    edges.set(i, [...ss].map((s) => ({ seed: s, direction: s === ME ? (chance(0.6) ? 'followers' : 'following') : chance(0.75) ? 'followers' : 'following' })));
+    edges.set(i, [...ss].map((s) => ({ seed: s, state: i % 11 === 0 ? 'unverified' : i % 7 === 0 ? 'absent' : 'observed', first_seen: people[i - 1].first_seen, observed_at: i % 11 === 0 ? null : now(), checked_at: i % 11 === 0 ? null : now(), direction: s === ME ? (chance(0.6) ? 'followers' : 'following') : chance(0.75) ? 'followers' : 'following' })));
+  }
+
+  for (const p of people.filter(p => p.id % 5 === 0 && lists(p.id))) {
+    const seed = SEED_LIST.find(s => !edges.get(p.id).some(e => e.seed === s));
+    edges.get(p.id).push({seed, direction:'following', state: p.id % 10 ? 'absent' : 'unverified', first_seen:p.first_seen, observed_at:null, checked_at:p.id % 10 ? now() : null});
   }
 
   function autoTags(p) {
@@ -117,7 +125,7 @@
     if (p.is_verified) add('Verified', 'signal');
     if (p.is_business) add('Business', 'signal');
     add(size(p.followers), 'size');
-    const es = edges.get(p.id);
+    const es = currentEdges(p.id);
     const others = [...new Set(es.map((e) => e.seed))].filter((s) => s !== ME).sort();
     others.forEach((s) => add('via @' + s, 'source'));
     const mine = es.filter((e) => e.seed === ME);
@@ -133,6 +141,9 @@
   const MANUAL = ['Warm intro', 'Pitch Q4', 'Met at event', 'Follow up', 'Dream client'];
   people.forEach((p) => { if (p.bio && chance(0.035)) tags.get(p.id).push({ tag: pick(MANUAL), grp: 'custom', source: 'manual' }); });
   people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['interested', 'interested', 'contacted', 'talking', 'client', 'no'])); });
+
+  marks.set(1, 'client'); notes.set(1, 'Met at the sample design meetup. Follow up on packaging.');
+  marks.forEach((_, id) => markRevs.set(id, now()));
 
   // Tag rules.
   let ruleId = 3;
@@ -206,15 +217,21 @@
   const row = (p) => ({
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
-    tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+    tags: tags.get(p.id), via: [...new Set(currentEdges(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+    history_via: [...new Set(edges.get(p.id).map(e => e.seed))], history_lists: new Set(edges.get(p.id).map(e => e.seed)).size,
+    note: notes.get(p.id) || null, mark_rev: markRevs.get(p.id) || '',
   });
-  const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
+  const verdictFields = (id) => { const v = verdicts.get(id); const es = currentEdges(id), mine = new Set(es.filter(e => e.seed === ME).map(e => e.direction));
+    const relationship = mine.size === 2 ? 'mutual' : mine.has('followers') ? 'follows' : mine.has('following') ? 'followed' : null;
+    const n = lists(id), connection_strength = Math.min(100, 30 + [0, 0, 25, 38, 46][Math.min(n, 4)] + Math.max(0, n - 4) * 3 + Math.min(10, es.filter(e => e.direction === 'following').length * 5) + ({mutual:16, follows:10, followed:8}[relationship] || 0));
+    const business_fit = v.tier === 'unread' ? null : v.score;
+    return { tier: v.tier, score: business_fit == null ? v.score : Math.round(.6 * connection_strength + .4 * business_fit), business_fit, connection_strength, relationship, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
   function filtered(q) {
     const all = csv(q, 'tags'), any = csv(q, 'any'), not = csv(q, 'not');
-    const sts = csv(q, 'status'), text = (q.get('q') || '').toLowerCase().trim();
+    const sts = csv(q, 'status').map(s => s === 'good' ? 'interested' : s), text = (q.get('q') || '').toLowerCase().trim();
     const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
     const fmin = q.get('followers_min'), fmax = q.get('followers_max'), tiers = csv(q, 'tier');
     return people.filter((p) => {
@@ -255,15 +272,14 @@
   function seedLinks() {
     const m = new Map();
     edges.forEach((es) => {
-      const ss = [...new Set(es.map((e) => e.seed))].sort();
+      const ss = [...new Set(es.filter(e => e.state === 'observed').map((e) => e.seed))].sort();
       for (let a = 0; a < ss.length; a++) for (let b = a + 1; b < ss.length; b++) { const k = ss[a] + '|' + ss[b]; m.set(k, (m.get(k) || 0) + 1); }
     });
     return [...m].map(([k, shared]) => { const [a, b] = k.split('|'); return { source: 's:' + a, target: 's:' + b, shared }; });
   }
 
   let mapRev = 1;
-  let extraMap = 0;
-  setInterval(() => { mapRev++; extraMap += 5; }, 25000);
+  const bump = () => ++mapRev;
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
@@ -278,7 +294,7 @@
   };
   function tickScraper() {
     const t = Date.now();
-    if (scraper.paused || t < scraper.nextAt) return;
+    if (scraper.paused || scraper.stagePauses?.lists || t < scraper.nextAt) return;
     const l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
     if (!l) return;
     l.state = 'running';
@@ -293,7 +309,7 @@
   const ago_ = (ms) => new Date(Date.now() - ms).toISOString();
   const H = 3600000;
   const acct = (o) => ({ label: null, role: 'both', is_main: false, paused: false, budget_custom: false, budget: { list: 3000, profile: 300 },
-    version: '3.5.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
+    version: '3.9.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
     rate: null, last_limit: null, today: { list: 0, profile: 0 }, hour: { pages: 0, people: 0 }, activity: null, text: null, job: null, lists: [],
     last_seen: ago_(3000), first_seen: ago_(9 * 24 * H), ...o, name: '@' + o.handle });
   const accounts = [
@@ -316,6 +332,8 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
+  const demoScenario = new URLSearchParams(location.search || '').get('mock_scenario') || 'cooldown';
+  const publicBios = {scope: 'queued', on: true, ready: demoScenario !== 'setup', running: false, state: 'starting', concurrency: 16, freshPerMinute: 0, freshFiveMinutes: 27, etaRatePerMinute: null, remaining: 1200, etaSeconds: null, successes: 1840, errors: 12, cached: 310, deferred: 8, terminalErrors: 3, setupMissing: demoScenario === 'setup' ? ['egress configuration'] : [], configPath: 'demo/public-bios.json', cooldowns: demoScenario === 'cooldown' ? {demo: {until: Date.now() / 1000 + 120}} : {}, worker: {healthyEgresses: demoScenario === 'cooldown' ? 0 : 2, inflight: 0}, lastError: demoScenario === 'cooldown' ? 'Demo connections are resting after a rate limit.' : null};
   const settings = { main_list_share: 0 };
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
@@ -340,7 +358,7 @@
     const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
     const w = (k) => ({ pages: Math.round(342 / k), people: Math.round(11280 / k), new_people: Math.round(6400 / k), profiles: 0 });
     return {
-      ext: { online: true, version: '3.5.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
+      ext: { online: true, version: '3.9.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
         last_seen: now(), last_error: null,
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
@@ -348,20 +366,26 @@
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
-      queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
+      queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: readQueue.size },
     };
   }
 
+  function validateTags(add, remove) {
+    for (const list of [add, remove]) if (list != null && !Array.isArray(list)) throw {status:400, message:'tags must be arrays'};
+    for (const t of add || []) if (typeof t !== 'string' || !t.trim() || t.trim().length > 64 || t.includes(',')) throw {status:400, message:'tag must be 1-64 characters without commas'};
+  }
   function editTags(id, add, remove) {
-    const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source === 'auto');
+    validateTags(add, remove);
+    const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source !== 'manual');
     (add || []).forEach((a) => {
-      a = String(a).trim();
+      a = a.replace(/\s+/g, ' ').trim();
       if (!a) return;
       const i = t.findIndex((x) => x.tag === a);
       if (i >= 0 && t[i].source !== 'manual') t.splice(i, 1);
       if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'custom', source: 'manual' });
     });
     tags.set(id, t);
+    applyRules(); bump();
   }
 
   function route(method, url, body) {
@@ -369,10 +393,60 @@
     const q = u.searchParams;
     const path = u.pathname;
     let m;
+    const fail = (message, status = 400, detail = {}) => { throw {status, message, detail}; };
+    const integer = (key, fallback, lo, hi) => {
+      const raw = q.get(key); if (raw == null || !raw.trim()) return fallback;
+      if (!/^[+-]?\d+$/.test(raw.trim())) fail(key + ' must be a whole number');
+      return Math.min(hi, Math.max(lo, Number(raw) || fallback));
+    };
+    const pauses = scraper.stagePauses || (scraper.stagePauses = {lists: false, bios: false, ai: !scraper.qualify});
+    const setStage = (id, pause) => {
+      pauses[id] = pause;
+      if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; }
+    };
+    const publicView = () => {
+      const running = publicBios.on && publicBios.ready && !pauses.bios && demoScenario !== 'starting';
+      return {...publicBios, running, state: !publicBios.on ? 'off' : !publicBios.ready ? 'setup_needed' : pauses.bios ? 'paused' : running ? 'running' : 'starting'};
+    };
+    if (path === '/api/control') {
+      if (method === 'POST') {
+        if (!['pause', 'resume'].includes(body.action)) fail('action must be pause or resume');
+        if (body.stage == null && typeof body.account === 'string') {
+          const a = accounts.find(a => a.lane_id === body.account);
+          if (!a) fail('no such account', 404);
+          a.paused = body.action === 'pause'; if (a.paused) a.job = null;
+          a.status = statusOf(a);
+        } else {
+          if (!['lists', 'bios', 'ai', 'all'].includes(body.stage)) fail('Invalid stage');
+          for (const id of body.stage === 'all' ? ['lists', 'bios', 'ai'] : [body.stage]) setStage(id, body.action === 'pause');
+        }
+      }
+      const labels = {lists: 'Collect lists', bios: 'Read bios', ai: 'AI scoring'};
+      const pb = publicView();
+      return {at: now(), all_paused: Object.values(pauses).every(Boolean), accounts: accounts.map(a => ({...a, state: a.paused ? 'paused' : !a.online ? 'offline' : a.hold || a.cooldown_until ? 'waiting' : 'running', now: a.paused ? 'Paused by you.' : a.last_error || 'Demo account online', wait: null})), stages: Object.keys(labels).map(id => {
+        const waiting = id === 'bios' && pb.on && (!pb.ready || !pb.running || pb.worker.healthyEgresses === 0);
+        return {id, label: labels[id], paused: pauses[id], state: pauses[id] ? 'paused' : waiting ? 'waiting' : 'running',
+          now: pauses[id] ? 'Paused in demo' : waiting ? pb.lastError || 'Waiting for public bio setup.' : 'Working through the demo queue',
+          wait: waiting ? {why: pb.lastError || 'Setup needed', seconds: pb.ready ? 120 : null} : null,
+          unit: {lists:'people', bios:'bios', ai:'scores'}[id], queue: id === 'bios' ? pb.remaining : id === 'ai' ? 17 : 12,
+          help: 'Demo controls only affect sample data.', hour: id === 'bios' ? 27 : 112, today: id === 'bios' ? 1840 : 2431};
+      })};
+    }
+    if (path === '/api/qual') {
+      let list = sorted(filtered(q), q.get('sort') === 'score' ? 'score' : 'recent');
+      const ai = p => verdicts.get(p.id)?.model && verdicts.get(p.id).model !== 'rules';
+      const summary = {verdicts: people.length, ai: people.filter(ai).length, rules: people.filter(p => !ai(p)).length};
+      if (q.get('view') === 'ai') list = list.filter(ai);
+      if (q.get('view') === 'rules') list = list.filter(p => !ai(p));
+      const offset = integer('offset', 0, 0, Number.MAX_SAFE_INTEGER), limit = integer('limit', 30, 1, 100);
+      return {total: list.length, summary, rows: list.slice(offset, offset + limit).map(p => ({...row(p), verdict: verdicts.get(p.id), category: p.category, bio_at: p.bio_at, site: null}))};
+    }
+    if (/^\/api\/qual\/\d+\/deeper$/.test(path)) return {ok: true, note: 'Demo only. No live profile was read.'};
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');
-      const off = +q.get('offset') || 0, lim = Math.min(500, +q.get('limit') || 50);
-      return { total: list.length, rows: list.slice(off, off + lim).map(row) };
+      if (!['score', 'fit', 'connected', 'followers', 'recent'].includes(q.get('sort') || 'score')) fail('bad sort');
+      const off = integer('offset', 0, 0, Number.MAX_SAFE_INTEGER), lim = integer('limit', 50, 1, 500);
+      return { total: list.length, rows: list.slice(off, off + lim).map(row), rev: mapRev };
     }
     if (path === '/api/tags') {
       const inSet = new Set(filtered(q).map((p) => p.id));
@@ -396,18 +470,21 @@
         const grp = (t.find((x) => x.tag === to) || {}).grp || 'custom';
         tags.set(id, [...t.filter((x) => !(x.tag === from && x.source === 'manual') && x.tag !== to), { tag: to, grp, source: 'manual' }]);
       });
-      return { renamed };
+      bump(); return { renamed };
     }
     if (path === '/api/tags/delete') {
       let deleted = 0;
       tags.forEach((t, id) => { const n = t.filter((x) => !(x.tag === body.tag && x.source === 'manual')); if (n.length !== t.length) { deleted++; tags.set(id, n); } });
-      return { deleted };
+      bump(); return { deleted };
     }
     if (path === '/api/people/bulk') {
-      const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
+      if (!Array.isArray(body.ids) || body.ids.length > 500) fail('ids must contain at most 500 people');
+      if ('status' in body && body.status !== null && !['good','interested','contacted','talking','client','no'].includes(body.status)) fail('bad status');
+      validateTags(body.add, body.remove);
+      const ids = [...new Set(body.ids.map(Number).filter(id => tags.has(id)))];
       ids.forEach((id) => {
         if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) { if (body.status) marks.set(id, body.status); else marks.delete(id); }
+        if ('status' in body) { if (body.status) marks.set(id, body.status === 'good' ? 'interested' : body.status); else marks.delete(id); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + bump()).toISOString() : ''); }
       });
       return { ok: true, changed: ids.length };
     }
@@ -438,7 +515,7 @@
       return { ok: true };
     }
     if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
-      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
+      const c = { hot: 0, warm: 0, cold: 0, unread: 0, interested: 0, talking: 0, no: 0, contacted: 0, client: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
       const without = (k) => { const x = new URLSearchParams(q); x.delete(k); return x; };
       filtered(without('tier')).forEach((p) => { c[verdicts.get(p.id).tier]++; });
       const st = without('status'); if (!st.get('status')) st.set('status', 'all');
@@ -449,34 +526,57 @@
     if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, note: notes.get(id) || '' };
-      if (m[3] === 'mark') { if (body.status) marks.set(id, body.status); else marks.delete(id); if (body.note !== undefined) notes.set(id, body.note); return { ok: true }; }
+      if (!m[3] && method === 'GET') return { ...row(p), edges: currentEdges(id).map(({seed, direction, observed_at}) => ({seed, direction, observed_at})), edge_history: edges.get(id).map(e => ({...e})), verdict: { ...verdicts.get(id), content_fit: verdictFields(id).business_fit }, note: notes.get(id) || null };
+      if (method !== 'POST') return null;
+      if (m[3] === 'mark') {
+        const current = () => ({status: marks.get(id) || null, note: notes.get(id) || null, mark_rev: markRevs.get(id) || ''});
+        for (const key of ['if_match', 'mark_rev']) if (key in body && typeof body[key] !== 'string') fail(key + ' must be text');
+        if ('if_match' in body && 'mark_rev' in body && body.if_match !== body.mark_rev) fail('conflicting revisions');
+        const expected = body.if_match ?? body.mark_rev;
+        if (expected !== undefined && expected !== current().mark_rev) fail('This record changed. Review the latest note before retrying.', 409, {...current(), current: current()});
+        const status = body.status === 'good' ? 'interested' : body.status;
+        if ('status' in body && status !== null && !['interested','contacted','talking','client','no'].includes(status)) fail('bad status');
+        if ('note' in body && body.note !== null && (typeof body.note !== 'string' || body.note.length > 5000)) fail('note must be text');
+        if ('status' in body) { if (status) marks.set(id, status); else marks.delete(id); }
+        if ('note' in body) { if (body.note) notes.set(id, body.note); else notes.delete(id); }
+        if ('status' in body || 'note' in body) { bump(); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + mapRev).toISOString() : ''); }
+        return {ok: true, ...current()};
+      }
       if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
-      if (m[3] === 'read') return { ok: true };
+      if (m[3] === 'read') { readQueue.add(id); return { ok: true }; }
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
-      const limit = Math.min(5000, +q.get('limit') || 400);
-      let list = filtered(q);
-      if (scope === 'leads') list = list.filter((p) => lists(p.id) >= 2 || (tags.get(p.id).some((x) => x.tag === 'Brand' || x.tag === 'Founder') && p.followers > 3000));
-      list = sorted(list, 'connected').slice(0, limit + (scope === 'leads' ? extraMap : 0));
+      const limit = integer('limit', 400, 10, 3000);
+      let list = filtered(q).filter(p => lists(p.id) > 0 && !SEED_LIST.includes(p.handle) && (!q.get('seed') || currentEdges(p.id).some(e => e.seed === q.get('seed'))));
+      const total = list.length;
+      list = sorted(list, scope === 'all' ? 'score' : 'connected').slice(0, limit);
       const set = new Set(list.map((p) => p.id));
       const deg = new Map();
-      edges.forEach((es) => new Set(es.map((e) => e.seed)).forEach((s) => deg.set(s, (deg.get(s) || 0) + 1)));
+      edges.forEach((es) => new Set(es.filter(e => e.state === 'observed').map((e) => e.seed)).forEach((s) => deg.set(s, (deg.get(s) || 0) + 1)));
       const nodes = SEED_LIST.map((s) => ({ id: 's:' + s, kind: 'seed', label: s, handle: s, pic: null, degree: deg.get(s) || 0, is_me: s === ME }));
       const links = [];
       list.forEach((p) => {
-        const ss = [...new Set(edges.get(p.id).map((e) => e.seed))];
+        const ss = [...new Set(currentEdges(p.id).map((e) => e.seed))];
         nodes.push({ id: 'p:' + p.id, kind: 'lead', label: p.handle, handle: p.handle, name: p.name, pic: p.pic, degree: ss.length, lists: ss.length,
           status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag).slice(0, 4), seeds: ss, ...verdictFields(p.id),
-          fit: FIT[verdicts.get(p.id).tier] });
-        edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction }); });
+          note: notes.get(p.id) || null, fit: FIT[verdicts.get(p.id).tier] });
+        edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction, state: e.state, observed_at: e.observed_at, checked_at: e.checked_at }); });
       });
-      return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
+      return { nodes, links, seed_links: seedLinks(), total, limit, rev: mapRev };
+    }
+    if (path === '/api/public-bios' || path === '/api/settings/public-bios') {
+      if (method === 'POST') {
+        if ('on' in body && typeof body.on !== 'boolean') fail('on must be true or false');
+        if ('scope' in body && !['queued','missing'].includes(body.scope)) fail('Choose queued or missing profiles');
+        if ('concurrency' in body && (!Number.isInteger(body.concurrency) || body.concurrency < 1 || body.concurrency > 32)) fail('Choose 1–32 profiles at once');
+        for (const key of ['on','scope','concurrency']) if (key in body) publicBios[key] = body[key];
+      }
+      return publicView();
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
-    if (path === '/api/settings/accounts') { settings.main_list_share = +body.main_list_share; return { ok: true, main_list_share: settings.main_list_share }; }
+    if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
     if (path === '/api/llm') return llmView();
     if (path === '/api/llm/health') return { proxy: { url: 'http://127.0.0.1:18741', up: false }, laya: { url: 'http://127.0.0.1:18742', up: true } };
     if (path === '/api/llm/keys') {
@@ -499,9 +599,9 @@
       return { ok: true, models: llm.models, daily_limit: llm.daily_limit };
     }
     if (path === '/api/setup') {
-      startWizardLane();
+      // Setup reads do not create accounts.
       return { repo: '/Users/michael/fortunate-leads', extension_path: '/Users/michael/fortunate-leads/extension', extension_id: 'fgdbghllamedgihmdcolaggnbhnakjnf',
-        extension_version: '3.5.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
+        extension_version: '3.9.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
     }
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/remove$/))) {
       const i = accounts.findIndex((a) => a.lane_id === m[1]);
@@ -511,25 +611,32 @@
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)$/)) && method === 'POST') {
       const a = accounts.find((x) => x.lane_id === m[1]);
       if (!a) return null;
+      if ('role' in body && !['lists','bios','both'].includes(body.role)) fail('role must be lists, bios or both');
+      for (const k of ['paused','is_main']) if (k in body && typeof body[k] !== 'boolean') fail(k + ' must be true or false');
+      if ('label' in body && body.label !== null && (typeof body.label !== 'string' || body.label.trim().length > 40)) fail('label must be up to 40 characters');
+      if ('budget' in body && body.budget !== null) {
+        if (typeof body.budget !== 'object' || Array.isArray(body.budget)) fail('budget must be {list, profile} or null');
+        for (const k of ['list','profile']) if (k in body.budget && body.budget[k] !== null && (typeof body.budget[k] !== 'number' || !Number.isFinite(body.budget[k]))) fail('budget.' + k + ' must be a number');
+      }
       if (body.role) a.role = body.role;
-      if ('paused' in body) a.paused = !!body.paused;
+      if ('paused' in body) { a.paused = body.paused; if (a.paused) a.job = null; }
       if ('is_main' in body) a.is_main = !!body.is_main;
       if ('label' in body) { a.label = body.label; a.name = a.handle ? '@' + a.handle : a.label || 'lane ' + a.lane_id.slice(0, 8); }
       if ('budget' in body) {
         a.budget_custom = !!body.budget;
         a.budget = { list: body.budget?.list ?? 3000, profile: body.budget?.profile ?? 300 };
       }
-      if (a.status === 'running' || a.status === 'paused') a.status = statusOf(a);
+      a.status = statusOf(a);
       return { ok: true, account: { ...a } };
     }
-    if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
+    if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; setStage('lists', body.paused); setStage('bios', body.paused); return { ok: true }; }
     if (path === '/api/settings/qualify') {
-      if ('on' in body) scraper.qualify = !!body.on;
+      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); setStage('ai', !body.on); }
       if ('auto' in body) scraper.qualify_auto = !!body.auto;
       for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
       return { ok: true, qualify: scraper.qualify };
     }
-    if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
+    if (path === '/api/scraper/budget') { for (const [k, cap] of [['list',10000],['profile',2000]]) if (k in body && (!Number.isInteger(body[k]) || body[k] < 0 || body[k] > cap)) fail(k + ' budget must be a whole number within its limit'); scraper.budget = {...scraper.budget, ...body}; return { ok: true }; }
     if (path === '/api/scraper/snowball') {
       const want = body.min_status === 'client' ? ['client'] : ['interested', 'talking', 'client'];
       const seeds = people.filter((p) => want.includes(marks.get(p.id)) && !scraper.lists.some((l) => l.seed === p.handle && l.direction === 'following'))
@@ -549,10 +656,15 @@
   window.fetch = function (url, opts = {}) {
     const s = String(url);
     if (!s.startsWith('/api/')) return realFetch(url, opts);
-    const body = opts.body ? JSON.parse(opts.body) : null;
-    let res;
-    try { res = route(opts.method || 'GET', s, body); } catch (e) { console.warn('mock', s, e); res = null; }
-    const bad = res && res.ok === false;
-    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: !res ? 404 : bad ? 400 : 200, headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
+    let res, status = 200;
+    try {
+      let body = null;
+      try { body = opts.body ? JSON.parse(opts.body) : null; } catch { throw {status:400, message:'invalid JSON'}; }
+      if ((opts.method || 'GET').toUpperCase() === 'POST' && (!body || Array.isArray(body) || typeof body !== 'object')) throw {status:400, message:'expected a JSON object'};
+      res = route((opts.method || 'GET').toUpperCase(), s, body);
+      if (res == null) { status = 404; res = {ok:false, error:'not found'}; }
+      else if (res.ok === false) status = 400;
+    } catch (e) { status = e.status || 500; res = {ok:false, error:e.message || 'mock error', ...e.detail}; }
+    return new Promise(r => setTimeout(() => r(new Response(JSON.stringify(res), {status, headers:{'Content-Type':'application/json'}})), 40 + Math.random() * 80));
   };
 })();

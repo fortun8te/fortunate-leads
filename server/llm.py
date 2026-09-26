@@ -15,10 +15,13 @@ import os
 import re
 import ssl
 import threading
+import tempfile
+import math
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 PROXY = 'http://127.0.0.1:18741/api/v1/chat/completions'
@@ -28,7 +31,7 @@ CONFIG = Path(__file__).resolve().parent.parent / 'data' / 'openrouter.json'
 REPLY_MAX = 1_000_000
 BACKOFF_BASE, BACKOFF_CAP = 30, 3600       # s, per (provider, model) after 429 / 402 / 5xx without Retry-After
 DOWN_BASE, DOWN_CAP = 10, 300              # s, whole provider after a transport error (proxy not running)
-FREE_DAILY = 1000                          # requests per key and free model per UTC day (OpenRouter free tier with credits)
+FREE_DAILY = 1000                          # conservative local ceiling per key across all free models, per UTC day
 MODELS_URL = 'https://openrouter.ai/api/v1/models'
 KEY_URL = 'https://openrouter.ai/api/v1/key'
 MODELS_EVERY = 24 * 3600                   # s between refreshes of the free / stealth model list
@@ -100,18 +103,29 @@ def write_config(cfg, path=None):
     """Atomic write, readable by the owner only (the file holds API keys)."""
     path = Path(path or CONFIG)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        json.dump(cfg, f, indent=2)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
 
 
 class Providers:
     """Provider 'proxy' (no key) first, then one OpenRouter provider per key. State (cooldowns, counters, errors) is keyed
     by the provider id ('proxy' or key_id), so keys can be added or removed while the server runs."""
 
-    def __init__(self, keys=None, models=None, proxy=PROXY, daily_limit=FREE_DAILY, env_keys=()):
+    def __init__(self, keys=None, models=None, proxy=PROXY, daily_limit=FREE_DAILY, env_keys=(), state_path=None):
         self.lock = threading.Lock()
         self.proxy = proxy
         self.cool = {}        # (pid, model|'*') -> (until, strikes)
@@ -121,26 +135,66 @@ class Providers:
         self.spent = {}       # pid -> epoch s: this key's free daily requests are used up until then
         self.checked = {}     # pid -> (epoch s, state) from the last test
         self.rr = 0
+        self.state_path = Path(state_path) if state_path else None
+        self._load_state()
         self.configure(keys, models, daily_limit, env_keys)
+
+    def _load_state(self):
+        """Restore only local usage metadata. The sidecar never contains API keys."""
+        if not self.state_path:
+            return
+        try:
+            state = json.loads(self.state_path.read_text())
+            if state.get('day') == _today():
+                self.count = {(pid, model): (_today(), n)
+                              for pid, models in state.get('counts', {}).items()
+                              for model, n in models.items()
+                              if isinstance(pid, str) and isinstance(model, str)
+                              and isinstance(n, int) and not isinstance(n, bool) and n >= 0}
+            self.spent = {pid: until for pid, until in state.get('spent', {}).items()
+                          if isinstance(pid, str) and isinstance(until, (int, float))
+                          and math.isfinite(until) and until > time.time()}
+            self.cool = {(pid, model): (until, strikes)
+                         for pid, models in state.get('cooldowns', {}).items()
+                         for model, (until, strikes) in models.items()
+                         if isinstance(pid, str) and isinstance(model, str)
+                         and isinstance(until, (int, float)) and math.isfinite(until)
+                         and until > time.time() and isinstance(strikes, int) and 0 <= strikes <= 64}
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def _save_state(self):
+        if not self.state_path:
+            return
+        today = _today()
+        counts = {}
+        for (pid, model), (day, n) in self.count.items():
+            if day == today and pid != 'proxy':
+                counts.setdefault(pid, {})[model] = n
+        cooldowns = {}
+        for (pid, model), (until, strikes) in self.cool.items():
+            if until > time.time():
+                cooldowns.setdefault(pid, {})[model] = [until, strikes]
+        state = {'day': today, 'counts': counts, 'cooldowns': cooldowns,
+                 'spent': {pid: until for pid, until in self.spent.items() if until > time.time()}}
+        write_config(state, self.state_path)
 
     def configure(self, keys, models=None, daily_limit=FREE_DAILY, env_keys=()):
         with self.lock:
             self.keys = [k for k in dict.fromkeys(keys or []) if k]
             self.env_keys = set(env_keys)
-            self.models = tuple(models or MODELS)
-            self.daily_limit = daily_limit
+            self.models = tuple(m for m in (models or MODELS) if isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free')) or MODELS
+            self.daily_limit = max(1, min(FREE_DAILY, daily_limit))
             live = {'proxy'} | {key_id(k) for k in self.keys}
-            for d in (self.cool, self.count):
-                for k in [k for k in d if k[0] not in live]:
-                    del d[k]
+            # Keep usage and backoff when a key is temporarily removed and later re-added.
             self.disabled &= live
-            self.spent = {k: v for k, v in self.spent.items() if k in live}
             self.checked = {k: v for k, v in self.checked.items() if k in live}
             self.errors = {k: v for k, v in self.errors.items() if k in live}
 
     @classmethod
     def load(cls, path=None, proxy=PROXY):
-        return cls(proxy=proxy, **settings(path))
+        config_path = Path(path or CONFIG)
+        return cls(proxy=proxy, state_path=config_path.with_name(config_path.stem + '.state.json'), **settings(path))
 
     def reload(self, path=None):
         self.configure(**settings(path))
@@ -155,8 +209,8 @@ class Providers:
             if self.cool.get(k, (0, 0))[0] > now:
                 return False
         if key and self.daily_limit:
-            day, n = self.count.get((pid, model), ('', 0))
-            if day == _today() and n >= self.daily_limit:
+            n = sum(n for (p, _), (day, n) in self.count.items() if p == pid and day == _today())
+            if n >= self.daily_limit:
                 return False
         return True
 
@@ -173,18 +227,23 @@ class Providers:
 
     def _backoff(self, key, retry_after, base, cap):
         _, strikes = self.cool.get(key, (0, 0))
-        wait = retry_after if retry_after else min(cap, base * 2 ** strikes)
-        self.cool[key] = (time.time() + wait, strikes + 1)
+        wait = retry_after if retry_after else min(cap, base * 2 ** min(strikes, 16))
+        self.cool[key] = (time.time() + wait, min(strikes + 1, 64))
+        self._save_state()
 
     def _bump(self, pid, model):
         day, n = self.count.get((pid, model), ('', 0))
         self.count[(pid, model)] = (_today(), (n if day == _today() else 0) + 1)
+        self._save_state()
 
     def chat(self, messages, models=None, timeout=45, budget=90, max_tokens=400, json_mode=True):
         """-> (content, model). Raises Unavailable when no provider/model answered usefully within the budget."""
         deadline = time.monotonic() + budget
         last = 'no provider available'
-        for model in models or self.models:
+        selected = tuple(models or self.models)
+        if not all(isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free') for m in selected):
+            raise ValueError('only :free models may be requested')
+        for model in selected:
             for pid, url, key in self._order():
                 left = deadline - time.monotonic()
                 if left <= 1:
@@ -197,13 +256,14 @@ class Providers:
                 try:
                     content = _post(url, key, model, messages, min(timeout, left), max_tokens, json_mode)
                 except _Http as e:
-                    last = f'{model}: HTTP {e.code}' + (f' {e.text[:120]}' if e.text else '')
+                    last = f'{model}: HTTP {e.code}'
                     with self.lock:
                         self.errors[pid] = last
                         if e.code in (401, 403) and key:
                             self.disabled.add(pid)
                         elif key and _is_spent(e.code, e.text):
                             self.spent[pid] = e.reset or _next_midnight()
+                            self._save_state()
                         elif e.code in (402, 408, 429) or e.code >= 500:
                             self._backoff((pid, model), e.retry_after, BACKOFF_BASE, BACKOFF_CAP)
                     continue
@@ -214,14 +274,15 @@ class Providers:
                         self._backoff((pid, '*'), None, DOWN_BASE, DOWN_CAP)
                     continue
                 except ValueError as e:   # bad / substituted reply: this model, not the provider
-                    last = str(e)[:160]
+                    last = f'{model}: invalid provider reply'
                     with self.lock:
                         self.errors[pid] = last
                     continue
                 with self.lock:
-                    self.cool.pop((pid, model), None)
-                    self.cool.pop((pid, '*'), None)
-                    self.errors.pop(pid, None)
+                    # A concurrent failure may have established a new cooldown while this call ran.
+                    if not any(self.cool.get(k, (0, 0))[0] > time.time()
+                               for k in ((pid, model), (pid, '*'))):
+                        self.errors.pop(pid, None)
                     self.checked[pid] = (time.time(), 'ok')
                 return content, model
         raise Unavailable(last)
@@ -240,6 +301,22 @@ class Providers:
         msgs = [{'role': 'user', 'content': 'Reply with the JSON object {"ok": true}.'}]
         err, state, until, model = None, 'ok', None, models[0]
         for model in models[:3]:   # a model that is down right now says nothing about the key
+            with self.lock:
+                if any(self.cool.get(k, (0, 0))[0] > time.time() for k in ((pid, model), (pid, '*'))):
+                    err, state = 'provider is cooling down', 'error'
+                    continue
+            if key:
+                with self.lock:
+                    used = sum(n for (p, _), (day, n) in self.count.items()
+                               if p == pid and day == _today())
+                    if self.spent.get(pid, 0) > time.time() or self.daily_limit and used >= self.daily_limit:
+                        err, state = 'local daily request limit reached', 'spent'
+                        until = self.spent.get(pid) or _next_midnight()
+                        break
+                    if any(self.cool.get(k, (0, 0))[0] > time.time() for k in ((pid, model), (pid, '*'))):
+                        err, state = 'provider is cooling down', 'error'
+                        continue
+                    self._bump(pid, model)
             try:
                 _post(url, key, model, msgs, timeout, 20, True)
             except _Http as e:
@@ -250,32 +327,38 @@ class Providers:
                     until = e.reset or _next_midnight()
                     err, state = 'free requests for today used up', 'spent'
                     break
+                if e.code in (402, 408, 429) or e.code >= 500:
+                    with self.lock:
+                        self._backoff((pid, model), e.retry_after, BACKOFF_BASE, BACKOFF_CAP)
                 err, state = f'HTTP {e.code}' + (' (rate limited)' if e.code == 429 else
                                                  ' (proxy could not reach OpenRouter)' if not key and e.code == 502 else ''), 'error'
                 continue
             except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
-                reason = getattr(e, 'reason', None)
-                err, state = 'not reachable (' + (str(reason)[:80] if reason else type(e).__name__) + ')', 'unreachable'
+                with self.lock:
+                    self._backoff((pid, '*'), None, DOWN_BASE, DOWN_CAP)
+                err, state = 'not reachable (' + type(e).__name__ + ')', 'unreachable'
                 break
             except ValueError as e:
-                err, state = str(e)[:160], 'error'
+                err, state = 'invalid provider reply', 'error'
                 continue
             err, state = None, 'ok'
             break
         with self.lock:
-            if key:
-                self._bump(pid, model)
             self.checked[pid] = (time.time(), state)
             if state == 'ok':
                 self.disabled.discard(pid)
-                self.spent.pop(pid, None)
-                self.errors.pop(pid, None)
-                self.cool.pop((pid, model), None)
-                self.cool.pop((pid, '*'), None)
+                if self.spent.get(pid, 0) <= time.time():
+                    self.spent.pop(pid, None)
+                if not any(self.cool.get(k, (0, 0))[0] > time.time()
+                           for k in ((pid, model), (pid, '*'))):
+                    self.errors.pop(pid, None)
             else:
                 self.errors[pid] = f'{model}: {err}'
                 if state == 'spent':
                     self.spent[pid] = until
+                    self._save_state()
+                elif state == 'broken' and key:
+                    self.disabled.add(pid)
         return {'passed': state == 'ok', 'state': state, 'model': model, 'ms': round((time.monotonic() - t) * 1000),
                 'error': err, 'until': _iso(until) if until else None}
 
@@ -285,8 +368,8 @@ class Providers:
             return 'broken'
         if self.spent.get(pid, 0) > now:
             return 'spent'
-        if key and self.daily_limit and self.models and all(
-                self.count.get((pid, m), ('', 0)) >= (_today(), self.daily_limit) for m in self.models):
+        if key and self.daily_limit and sum(n for (p, _), (day, n) in self.count.items()
+                                            if p == pid and day == _today()) >= self.daily_limit:
             return 'spent'
         if any(u > now for (i, _), (u, _) in self.cool.items() if i == pid):
             err = self.errors.get(pid) or ''
@@ -341,17 +424,18 @@ def settings(path=None):
     cfg = read_config(path)
     keys = env + [k.strip() for k in cfg.get('keys') or [] if isinstance(k, str) and k.strip()]
     models = cfg.get('models') if isinstance(cfg.get('models'), list) and cfg['models'] \
-        and all(isinstance(m, str) for m in cfg['models']) else None
+        and all(isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free') for m in cfg['models']) else None
     models = model_order(models, cfg.get('auto_models'))
     limit = cfg['daily_limit'] if isinstance(cfg.get('daily_limit'), int) and not isinstance(cfg['daily_limit'], bool) else FREE_DAILY
+    limit = max(1, min(FREE_DAILY, limit))
     return {'keys': keys, 'models': models, 'daily_limit': limit, 'env_keys': env}
 
 
 # ---------- free and stealth models (refreshed daily from the public model list; no key needed) ----------
 
 def is_free(m):
-    pr = m.get('pricing') or {}
-    return str(m.get('id', '')).endswith(':free') or (str(pr.get('prompt')) == '0' and str(pr.get('completion')) == '0')
+    # A zero price in a stale catalog is not a durable free-tier guarantee.
+    return str(m.get('id', '')).endswith(':free')
 
 
 def is_stealth(m):
@@ -379,9 +463,9 @@ def model_order(chosen, auto):
     """Stealth models first (auto-added), then the chosen list (or the built-in fallback). Models that vanished from
     the live free list are dropped, but the built-in fallback always stays so there is a working order."""
     auto = auto if isinstance(auto, dict) else {}
-    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m)]
-    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str)}
-    base = list(chosen or MODELS)
+    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m) and m.endswith(':free')]
+    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str) and m.endswith(':free')}
+    base = [m for m in (chosen or MODELS) if isinstance(m, str) and m.endswith(':free')]
     if live:
         base = [m for m in base if m in live] or [m for m in MODELS if m in live] or list(MODELS)
     return tuple(list(dict.fromkeys(stealth[:3] + base))[:MODELS_MAX])
@@ -444,12 +528,12 @@ def set_models(models=None, daily_limit=None, path=None):
     cfg = read_config(path)
     if models is not None:
         if not isinstance(models, list) or not 1 <= len(models) <= MODELS_MAX \
-                or not all(isinstance(m, str) and MODEL_RX.fullmatch(m.strip()) for m in models):
-            raise ValueError(f'models must be 1-{MODELS_MAX} ids like vendor/model:free')
+                or not all(isinstance(m, str) and MODEL_RX.fullmatch(m.strip()) and m.strip().endswith(':free') for m in models):
+            raise ValueError(f'models must be 1-{MODELS_MAX} free ids like vendor/model:free')
         cfg['models'] = list(dict.fromkeys(m.strip() for m in models))
     if daily_limit is not None:
-        if not isinstance(daily_limit, int) or isinstance(daily_limit, bool) or not 0 <= daily_limit <= 100_000:
-            raise ValueError('daily_limit must be a whole number 0-100000')
+        if not isinstance(daily_limit, int) or isinstance(daily_limit, bool) or not 1 <= daily_limit <= FREE_DAILY:
+            raise ValueError(f'daily_limit must be a whole number 1-{FREE_DAILY}')
         cfg['daily_limit'] = daily_limit
     write_config(cfg, path)
     get().reload(path)
@@ -473,12 +557,18 @@ def _reset(v):
 
 def _retry_after(v):
     try:
-        return max(1.0, min(float(v), 24 * 3600)) if v else None
-    except ValueError:
-        return None
+        seconds = float(v)
+    except (TypeError, ValueError):
+        try:
+            seconds = parsedate_to_datetime(v).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(1.0, min(seconds, 24 * 3600))
 
 
 def _post(url, key, model, messages, timeout, max_tokens, json_mode):
+    if not isinstance(model, str) or not MODEL_RX.fullmatch(model) or not model.endswith(':free'):
+        raise ValueError('only :free models may be requested')
     body = {'model': model, 'messages': messages, 'max_tokens': max_tokens, 'temperature': 0.1,
             'reasoning': {'effort': 'low', 'exclude': True}}
     if json_mode:
@@ -496,18 +586,18 @@ def _post(url, key, model, messages, timeout, max_tokens, json_mode):
         except OSError:
             text = ''
         exc.close()
-        raise _Http(code, ra, _error_text(text), _reset(h.get('X-RateLimit-Reset') if h else None)) from None
+        raise _Http(code, ra, _error_text(text, key), _reset(h.get('X-RateLimit-Reset') if h else None)) from None
     if not isinstance(data, dict):
         raise ValueError(f'{model}: reply is not an object')
     if data.get('error'):
         err = data['error']
         code = err.get('code') if isinstance(err, dict) else None
         if isinstance(code, int) and code in (401, 402, 403, 429) or isinstance(code, int) and code >= 500:
-            raise _Http(code, None, _error_text(json.dumps(data)))
-        raise ValueError(f'{model}: ' + str(err)[:160])
-    returned = str(data.get('model') or model)
-    if returned.split(':')[0] != model.split(':')[0]:
-        raise ValueError(f'{model}: provider substituted {returned}')
+            raise _Http(code, None, _error_text(json.dumps(data), key))
+        raise ValueError(f'{model}: provider returned an error')
+    returned = data.get('model')
+    if returned != model:
+        raise ValueError(f'{model}: provider did not confirm the requested model')
     try:
         content = data['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError):
@@ -517,8 +607,13 @@ def _post(url, key, model, messages, timeout, max_tokens, json_mode):
     return content
 
 
-def _error_text(text):
-    """The human part of an OpenRouter error body (never contains the key)."""
+def _error_text(text, key=None):
+    """Extract diagnostic text with authentication values removed."""
+    text = str(text or '')
+    if key:
+        text = text.replace(key, '[redacted]')
+    text = re.sub(r'(?i)bearer\s+[^\s\"\']+', 'Bearer [redacted]', text)
+    text = re.sub(r'sk-[A-Za-z0-9_-]+', '[redacted]', text)
     try:
         d = json.loads(text)
         e = d.get('error') if isinstance(d, dict) else None
@@ -536,10 +631,12 @@ def _iso(t):
     return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec='seconds')
 
 
+PROVIDERS_LOCK = threading.Lock()
 PROVIDERS = [None]   # the process-wide instance, created on first use
 
 
 def get():
-    if PROVIDERS[0] is None:
-        PROVIDERS[0] = Providers.load()
-    return PROVIDERS[0]
+    with PROVIDERS_LOCK:
+        if PROVIDERS[0] is None:
+            PROVIDERS[0] = Providers.load()
+        return PROVIDERS[0]

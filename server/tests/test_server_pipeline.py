@@ -17,12 +17,14 @@ class LayaStub(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self._send({'ok': True})
+        self._send({'ok': True, 'model': laya.MODEL, 'deployment_version': laya.DEPLOYMENT_VERSION})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        self._send({'results': [{'id': it['id'], 'answers': {'brand_account': {'p': 0.95}, 'dtc_founder': {'p': 0.9}}}
-                                for it in body['items']]})
+        self._send({'results': [{'id': it['id'], 'answers': {q['key']: {'p': (0.95 if q['key'] == 'brand_account' else 0.9)}
+                                                            for q in body['questions']}}
+                                for it in body['items']], 'model': laya.MODEL,
+                    'deployment_version': laya.DEPLOYMENT_VERSION})
 
     def _send(self, obj):
         data = json.dumps(obj).encode()
@@ -149,6 +151,8 @@ class PipelineTest(Base):
             del server.qualify.prompt_version
 
     def test_laya_prequalifies_without_bio_and_is_soft(self):
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
         httpd = ThreadingHTTPServer(('127.0.0.1', 0), LayaStub)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         old = laya.URL
@@ -169,8 +173,8 @@ class PipelineTest(Base):
             server.qualify_batch(self.conn)
             after = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['nobio'],)).fetchone()[0]
             self.assertNotEqual(before, after)
-            self.assertIn('Brand', {r[0] for r in self.conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='auto'",
-                                                                    (ids['nobio'],))})   # p >= 0.9 brand_account
+            self.assertNotIn('Brand', {r[0] for r in self.conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='auto'",
+                                                                       (ids['nobio'],))})  # Laya is advisory only
             self.assertNotIn('Founder', {r[0] for r in self.conn.execute('SELECT tag FROM tags WHERE person_id=?', (ids['nobio'],))})
         finally:
             server.qualify.prefilter = stub_pre
@@ -220,7 +224,7 @@ class PipelineTest(Base):
         c.close()
         db.init(server.CFG['db']).close()
         cols = [r[1] for r in self.conn.execute('PRAGMA table_info(verdicts)')]
-        self.assertEqual(cols[-2:], ['prompt', 'evidence'])
+        self.assertEqual(cols[-3:], ['prompt', 'evidence', 'content_fit'])
         self.people({'x': ('founder', [('s1', 'followers')])})
         self.assertEqual(server.qualify_batch(self.conn), 1)
 
@@ -233,6 +237,8 @@ class PerfTest(Base):
         self.assertEqual(self.conn.execute('PRAGMA temp_store').fetchone()[0], 2)   # MEMORY
 
     def test_tags_and_map_are_cached_until_data_changes(self):
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
         pid = db.upsert_person(self.conn, {'handle': 'ann', 'bio': 'founder'})
         db.add_edge(self.conn, 's1', pid, 'followers')
         self.conn.commit()
@@ -283,8 +289,8 @@ class LLMSettingsTest(Base):
         self.assertTrue(t['error'].startswith('not reachable ('))
         self.assertEqual(self.call('/api/llm/keys/0123456789/test', {})[0], 404)
         self.assertEqual(self.call('/api/llm/models', {'models': ['bad model']})[0], 400)
-        m = self.call('/api/llm/models', {'models': ['a/b:free', 'c/d'], 'daily_limit': 50})[1]
-        self.assertEqual((m['models'], m['daily_limit']), (['a/b:free', 'c/d'], 50))
+        m = self.call('/api/llm/models', {'models': ['a/b:free', 'c/d:free'], 'daily_limit': 50})[1]
+        self.assertEqual((m['models'], m['daily_limit']), (['a/b:free', 'c/d:free'], 50))
         self.assertEqual(json.loads(self.cfg.read_text())['keys'], [key])            # other fields kept
         self.assertEqual(self.call('/api/llm/keys', {'key': key}, origin='http://evil.test')[0], 403)
         self.assertEqual(self.call(f'/api/llm/keys/{kid}/remove', {})[1], {'ok': True})
