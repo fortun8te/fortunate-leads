@@ -159,17 +159,29 @@ def why_released(row, now):
 
 def release(conn, now, only=None):
     """Give back the leases and list ownership of lanes that are not healthy. Caller commits.
-    A paused lane may still be finishing the job it holds, so its leases go only once they expire."""
+    A healthy lane changing role (or yielding lists to a new account) and a paused lane may still be
+    finishing a request. Keep that lease until its callback or expiry; login and list cooldowns hand off now."""
     rows = {r['lane_id']: r for r in conn.execute('SELECT * FROM accounts')}
     share = list_share(conn, rows.values(), now)
     ok = {k for k, r in rows.items() if keeps_lists(r, now, share)}
     ts = iso(now)
     fine = {k for k, r in rows.items() if healthy(r, now)}
-    jobs = [j for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL")
-            if j['lane'] not in (ok if j['kind'] == 'list' else fine) and (only is None or j['lane'] == only)
-            and not (j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold'] and (j['leased_until'] or '') > ts)]
-    held = {j['lane'] for j in conn.execute("SELECT lane FROM jobs WHERE state='leased' AND lane IS NOT NULL AND leased_until>?", (ts,))
-            if j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold']}
+    jobs, held = [], set()
+    for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL"):
+        if only is not None and j['lane'] != only:
+            continue
+        if j['lane'] in (ok if j['kind'] == 'list' else fine):
+            continue
+        row = rows.get(j['lane'])
+        # A role/share/pause change cannot undo a request already sent to Instagram. A login wall,
+        # list limit, offline lane, or expired lease can be handed off immediately.
+        finishing = (row and (j['leased_until'] or '') > ts and not row['hold']
+                     and not later(row['list_cool_until'], now) and (row['paused'] or healthy(row, now)))
+        if finishing:
+            if j['kind'] == 'list':
+                held.add(j['lane'])
+        else:
+            jobs.append(j)
     lists = [x for x in conn.execute("SELECT seed, direction, lane FROM lists WHERE lane IS NOT NULL "
                                      "AND state NOT IN ('done','private','error')")
              if x['lane'] not in ok and x['lane'] not in held and (only is None or x['lane'] == only)]

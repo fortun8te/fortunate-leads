@@ -847,38 +847,34 @@ const rowH = () => parseFloat(css('--row')) || 64;
 // min = how they were found and audience size. Everything else sits in between.
 const TOP_TAGS = new Set(['AI: Top fit', 'Fit: strong']);
 const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
-// Tag hierarchy, loudest first. Orange = reasons to reach out, red = reasons not to, black = your own words.
-//   hero  solid orange    the verdicts: leadscout says strong, top fit
-//   plus  orange outline  strong buying signals
-//   own   black           tags you set yourself
-//   niche bold white      what they sell
-//   ctx   grey            context
-//   soft  red outline     soft negatives: probably not a buyer
-//   flag  solid red       deal-breakers
-//   min   faint           how they were found, audience size
+// Verdicts carry the strongest emphasis. Roles, evidence and product categories
+// describe a lead; they are not verdicts and should not all look like warnings.
 const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
-const PLUS_TAGS = new Set(['Scout: Possible', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market', 'Founder', 'Brand', 'Store', 'Shopify',
-  'Shop Link', 'US', 'US market', 'DTC', 'Already know them']);
+const MAYBE_TAGS = new Set(['Scout: Possible', 'Fit: good']);
+const ROLE_TAGS = new Set(['Founder', 'Brand', 'Store', 'AI: Decision maker']);
+const PLUS_TAGS = new Set(['AI: Runs ads', 'AI: US market', 'Shopify', 'Shop Link', 'US', 'US market', 'DTC']);
 const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
 const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
   const name = tagName(t);
+  if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (FLAG_TAGS.has(name)) return 'flag';
   if (HERO_TAGS.has(name)) return 'hero';
-  if (SOFT_TAGS.has(name)) return 'soft';
+  if (MAYBE_TAGS.has(name)) return 'maybe';
+  if (SOFT_TAGS.has(name)) return 'review';
+  if (ROLE_TAGS.has(name) || t.grp === 'role') return 'role';
   if (PLUS_TAGS.has(name)) return 'plus';
-  if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
 }
-const TIER_ORDER = { hero: 0, flag: 1, plus: 2, own: 3, niche: 4, soft: 5, ctx: 6, '': 6, min: 7 };
+const TIER_ORDER = { hero: 0, flag: 1, maybe: 2, role: 3, plus: 4, own: 5, niche: 6, review: 7, ctx: 8, '': 8, min: 9 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = isViaTag(t.tag) ? t.tag.slice(4) : t.tag;
   const tier = tagTier(t);
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}" data-tag="${esc(t.tag)}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
 const GORDER = { ai: -1, role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
@@ -906,7 +902,7 @@ function rowHTML(r, i, h) {
     <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}<small class="priority">Priority ${r.score == null ? '–' : esc(r.score)}</small></div>
     <div class="conn c-conn">${connHTML(r)}</div>
-    <div class="tags c-tags">${tags.slice(0, 6).map((t) => tagChip(t)).join('')}${tags.length > 6 ? `<span class="more">+${tags.length - 6}</span>` : ''}</div>
+    <div class="tags c-tags">${tags.slice(0, 3).map((t) => tagChip(t)).join('')}${tags.length > 3 ? `<span class="more" title="${esc(tags.slice(3).map((t) => t.tag).join(' · '))}">+${tags.length - 3}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <span class="c-st">${statHTML(r.status)}</span>
     <div class="mnum">${fitBadge(r)}<span>Priority ${r.score == null ? '–' : esc(r.score)} · Connection ${r.connection_strength == null ? '–' : esc(r.connection_strength)}</span>${statHTML(r.status)}</div>
@@ -1191,9 +1187,10 @@ const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).sp
 // The Hermes leadscout's final read: verdict, two sentences and the pages it used.
 function scoutHTML(sc) {
   if (!sc) return '';
-  const label = { strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict;
-  const cls = sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
-  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+  const label = sc.stale ? 'Older read · unverified' : ({ strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict);
+  const cls = sc.stale || sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
+  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.stale || sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+    ${sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : ''}
     <p class="d-reason">${esc(sc.summary || '')}</p>
     ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
 }
@@ -1793,34 +1790,39 @@ const T = {
   // Overview: the tags that make a lead first, then every other automatic tag grouped in plain words. Click = filter Leads.
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
-    const priority = auto.filter((t) => ['hero', 'plus', 'niche'].includes(tagTier(t)));
-    const caution = auto.filter((t) => ['flag', 'soft'].includes(tagTier(t)));
-    const highlighted = new Set([...priority, ...caution]);
+    const fit = auto.filter((t) => ['hero', 'maybe'].includes(tagTier(t)));
+    const roles = auto.filter((t) => tagTier(t) === 'role');
+    const evidence = auto.filter((t) => tagTier(t) === 'plus');
+    const caution = auto.filter((t) => ['flag', 'review'].includes(tagTier(t)));
+    const highlighted = new Set([...fit, ...roles, ...evidence, ...caution]);
     const rest = auto.filter((t) => !highlighted.has(t));
     const G = [
-      ['role', 'Other roles', 'Role labels outside the highlighted signals.'],
-      ['signal', 'Other hints in their profile', 'Hiring, shop link, country and similar.'],
+      ['niche', 'Product categories', 'What they make or sell.'],
+      ['signal', 'Other profile clues', 'Hiring, contact details and similar.'],
       ['size', 'Audience size', 'Follower count bands.'],
       ['via', 'Where we found them', 'The account whose list they came from.'],
       ['source', 'Collection and follows', 'In several lists, follows you, you follow them.'],
     ];
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
-    const known = new Set(['role', 'signal', 'size', 'source']);
+    const known = new Set(['niche', 'signal', 'size', 'source']);
     const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
     const sec = (key, title, desc, list, cls = '') => {
-      if (!list.length && key !== 'priority') return '';
-      list = [...list].sort((a, b) => (key === 'priority' || key === 'caution' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : key === 'priority' ? 8 : 12;
+      if (!list.length) return '';
+      list = [...list].sort((a, b) => (key === 'fit' || key === 'caution' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : key === 'fit' ? 6 : 12;
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
         <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
           : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    $('#tg-groups').innerHTML = sec('priority', 'Promising signals', 'Fit, role and product clues worth checking first.', priority, 'tg-top')
-      + sec('caution', 'Caution', 'Signals to check before reaching out.', caution, 'tg-caution')
-      + sec('role', G[0][1], G[0][2], pick('role'))
-      // Everything else stays one click away so the page opens with just the useful tags.
+    const essentials = roles.length || evidence.length ? `<div class="tg-essentials${!roles.length || !evidence.length ? ' single' : ''}">${sec('roles', 'Roles', 'What the account appears to be.', roles)}${sec('evidence', 'Business clues', 'Shop, market and buying signals.', evidence)}</div>` : '';
+    $('#tg-groups').innerHTML = (q && !auto.length ? '<p class="muted">No matching automatic tags.</p>' : '')
+      + sec('fit', 'Fit assessments', 'Generated judgments to verify against the profile.', fit, 'tg-top')
+      + essentials
+      + sec('caution', 'Check before outreach', 'Possible mismatch or a reason to pause.', caution, 'tg-caution')
+      + sec('niche', G[0][1], G[0][2], pick('niche'))
+      // Collection metadata stays one click away from the decision-making labels.
       + `<details class="adv tg-more"${q ? ' open' : ''}><summary>More tags</summary><div class="tg-rest">${G.slice(1).map(([k, t, d]) => sec(k, t, d, pick(k))).join('')
         + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>`;
   },
@@ -2733,7 +2735,8 @@ const MARKED = new Set(['interested', 'contacted', 'talking', 'client']);
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
-  loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false,
+  loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
+  limit: 400, rawData: null, audienceKey: null, dataRev: null,
   show() {
     this.shown = true;
     this.resize();
@@ -2741,6 +2744,7 @@ const M = {
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin()) this.sim.restart();
     $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels));
+    $('#map-density').value = String(this.limit);
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
   resize() {
@@ -2757,22 +2761,42 @@ const M = {
   reloadSoon: debounce(() => M.load(), 250),
   url() {
     const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
-    p.set('scope', this.scope); p.set('limit', this.scope === 'all' ? 10000 : 3000);
+    p.set('scope', this.scope); p.set('limit', this.limit);
     return '/api/map?' + p;
   },
   async load(poll) {
     if (this.loading && poll) return;
+    const seq = ++this.loadSeq;
     this.loading = true;
     const url = this.url();
     let d;
-    try { d = await api.get(url); } catch (e) { this.loading = false; if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map'); return; }
+    try { d = await api.get(url); } catch (e) {
+      if (seq !== this.loadSeq) return;
+      this.loading = false;
+      if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map');
+      return;
+    }
+    if (seq !== this.loadSeq) return;
     this.loading = false;
     if (url !== this.url()) return;
     this.loaded = true; this.stale = false;
     const key = d.rev + '|' + url;
     if (key === this.rev && this.nodes.length) return;
+    const audience = url.replace(/&limit=\d+$/, '');
+    let shown = d;
+    // A smaller ranked sample can omit the open person. Keep that one known
+    // node and its recorded links only while audience and data revision agree.
+    const selectedId = this.focus?.kind === 'seed' ? null : this.focus?.id || (S.open ? 'p:' + S.open : null);
+    if (selectedId && this.audienceKey === audience && this.dataRev === d.rev && this.rawData &&
+        !d.nodes.some((n) => n.id === selectedId)) {
+      const previous = this.rawData.nodes.find((n) => n.id === selectedId);
+      if (previous) shown = { ...d, nodes: [...d.nodes, previous],
+        links: [...d.links, ...this.rawData.links.filter((l) => l.source === selectedId || l.target === selectedId)],
+        keptSelected: true };
+    }
+    this.rawData = d; this.audienceKey = audience; this.dataRev = d.rev;
     this.rev = key;
-    this.build(d);
+    this.build(shown);
   },
   build(d) {
     // A new filter gets a fresh, fitted layout; a refresh of the same view keeps positions and pins.
@@ -2841,11 +2865,12 @@ const M = {
     }
     const nl = this.leads.length;
     const total = Math.max(nl, Number(d.total) || 0);
-    $('#map-count').textContent = `${int(nl)} of ${int(total)} matching people shown · ${plural(this.seeds.length, 'source account')}${total > nl ? ` · map limit ${int(d.limit || nl)}` : ''}`;
+    $('#map-count').textContent = `${int(nl)} of ${int(total)} matching people shown · ${plural(this.seeds.length, 'source account')}${d.keptSelected ? ' · selected person kept on map' : ''}`;
     const absent = this.historyLinks.filter((l) => l.state === 'absent').length;
     const unverified = this.historyLinks.length - absent;
-    $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees.`;
+    $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees. Other matching people may be outside this sample; choose a larger Show setting to see more.`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
+    if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     this.simulate(old.size ? 0.5 : 1);
     this.search();
     if (!nl) this.draw();
@@ -2982,17 +3007,18 @@ const M = {
     const hd = this.hood();
     const match = this.matchSet;
     const dim = !!hd || (match && match.size > 0);
+    const overview = this.leads.length > 250 && k < 0.85;
     const on = (n) => hd ? hd.set.has(n.id) : match && match.size ? match.has(n.id) : true;
     // Viewport culling bounds in world coords.
     const vx0 = -this.x / k - 20, vy0 = -this.y / k - 20, vx1 = (this.w - this.x) / k + 20, vy1 = (this.h - this.y) / k + 20;
     const inView = (n) => n.x + n.r > vx0 && n.x - n.r < vx1 && n.y + n.r > vy0 && n.y - n.r < vy1;
 
     // Seed overlap edges, weighted by shared people.
-    for (const l of this.seedLinks) {
+    for (const l of overview && !hd ? this.seedLinks.slice(0, 12) : this.seedLinks) {
       const a = l.source, b = l.target;
       const w = 1 + 5 * (l.shared / this.maxShared);
       const hot = hd && (hd.n === a || hd.n === b);
-      c.globalAlpha = hd ? (hot ? 0.8 : 0.06) : 0.28;
+      c.globalAlpha = hd ? (hot ? 0.8 : 0.04) : overview ? 0.18 : 0.28;
       c.strokeStyle = hot ? fg2 : fg4; c.lineWidth = Math.max(w, 1 / k);
       c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
     }
@@ -3000,34 +3026,41 @@ const M = {
     const historicalPass = (state, alpha, dash) => {
       c.globalAlpha = alpha;
       c.setLineDash(dash); c.beginPath();
-      for (const l of this.historyLinks) if (l.state === state) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+      for (const l of this.historyLinks) if (l.state === state &&
+          (!overview || (hd && (l.source === hd.n || l.target === hd.n)))) {
+        c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
+      }
       c.stroke();
       c.setLineDash([]);
     };
     c.strokeStyle = line; c.lineWidth = 1 / k;
-    historicalPass('absent', dim ? 0.04 : 0.18, [1 / k, 6 / k]);
-    historicalPass('unverified', dim ? 0.06 : 0.28, [6 / k, 5 / k]);
+    historicalPass('absent', overview && hd ? 0.45 : dim ? 0.04 : 0.18, [1 / k, 6 / k]);
+    historicalPass('unverified', overview && hd ? 0.55 : dim ? 0.06 : 0.28, [6 / k, 5 / k]);
     // Solid hairline = they follow the seed (or both ways); dashed = the seed follows them.
-    const edgePass = (multi, alpha) => {
+    const edgePass = (multi, alpha, selectedOnly = false) => {
       c.globalAlpha = alpha;
       for (const dashed of [false, true]) {
         c.setLineDash(dashed ? [3 / k, 3 / k] : []); c.beginPath();
-        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed) { c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y); }
+        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed &&
+            (!selectedOnly || l.source === hd.n || l.target === hd.n)) {
+          c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
+        }
         c.stroke();
       }
       c.setLineDash([]);
     };
     // Crowded maps fade the single-list lines so clusters and coloured dots stay readable.
     const crowd = this.leads.length > 5000 ? 0.4 : this.leads.length > 1500 ? 0.7 : 1;
-    edgePass(false, dim ? 0.03 : 0.1 * crowd);
-    c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
+    if (!overview) {
+      edgePass(false, dim ? 0.03 : 0.1 * crowd);
+      c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
+    }
     if (hd) {
-      c.globalAlpha = 0.85; c.strokeStyle = fg2; c.lineWidth = 1.2 / k; c.beginPath();
-      for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
-      c.stroke();
+      c.strokeStyle = fg2; c.lineWidth = 1.2 / k;
+      edgePass(false, 0.85, true); edgePass(true, 0.85, true);
     }
     // Leads: dots coloured by fit, sized by lists; one batched path per fit, dimmed pass first.
-    const minPx = 2.4 / k;
+    const minPx = (this.leads.length > 1500 ? 1.7 : 2.2) / k;
     const fitColor = Object.fromEntries(FITS.map((f) => [f, css('--fit-' + f)]));
     fitColor.unread = fg4;   // on the dark canvas the list colour for unread is too faint to find
     const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
@@ -3080,6 +3113,10 @@ const M = {
     c.restore();
     c.globalAlpha = 1;
     this.drawLabels(hd, match, fg, fg2, fg3, bg, sans);
+    if (overview && !hd) {
+      c.fillStyle = fg3; c.font = '12px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+      c.fillText('Showing strongest shared-list links · Zoom in for recorded follow lines', 16, 28);
+    }
     if (this.loaded && !this.leads.length) { c.fillStyle = fg3; c.font = '14px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('No people match these filters', 16, 28); }
   },
   // Screen-space labels with greedy collision avoidance.
@@ -3120,7 +3157,9 @@ const M = {
     const few = this.leads.length <= 120;
     if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong' || n.judge === 'good');
     cand.sort((a, b) => imp(b) - imp(a));
-    const max = hd || (match && match.size) || few ? 160 : Math.round(Math.min(120, (this.w * this.h / 26000) * Math.max(1, k * k)));
+    const overview = this.leads.length > 250 && k < 0.85;
+    const max = hd ? (hd.n.kind === 'seed' ? 24 : 12) : (match && match.size) ? 24 : few ? 160 :
+      Math.round(Math.min(overview ? 12 : 120, (this.w * this.h / 26000) * Math.max(1, k * k)));
     let shown = 0;
     for (const n of cand) {
       if (shown >= max) break;
@@ -3301,6 +3340,11 @@ function seedCardClick(e) {
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
 $('#map-labels').onclick = () => M.toggleLabels();
+$('#map-density').onchange = (e) => {
+  const limit = Number(e.target.value);
+  if (![400, 1000, 3000].includes(limit) || limit === M.limit) return;
+  M.limit = limit; M.load();
+};
 $('#zoom-in').onclick = () => M.zoomBy(1.4);
 $('#zoom-out').onclick = () => M.zoomBy(1 / 1.4);
 $('#map-q').addEventListener('input', debounce(() => M.search(), 120));

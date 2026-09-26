@@ -4,9 +4,9 @@ compare returns JSON-ready nodes, directed links with independent source observa
 ranked two-hop connectors, and collection coverage. Scores are deterministic heuristics,
 not probabilities. Historical union edges cannot establish current absence or freshness.
 """
-import heapq
 import math
 import re
+import uuid
 from datetime import datetime, timezone
 
 
@@ -220,11 +220,21 @@ def compare(conn, source_handle, target_handle, limit=20):
     """
     if conn.in_transaction:
         return _compare(conn, source_handle, target_handle, limit)
+    temp_mode = conn.execute('PRAGMA temp_store').fetchone()[0]
+    # db.connect uses MEMORY. For the normal standalone API read, use SQLite's
+    # file temp store to keep dense intersections out of process RSS. A caller
+    # transaction or existing temp object retains its original storage policy.
+    switch_temp_store = temp_mode != 1 and conn.execute(
+        'SELECT 1 FROM sqlite_temp_master LIMIT 1').fetchone() is None
+    if switch_temp_store:
+        conn.execute('PRAGMA temp_store=FILE')
     conn.execute('BEGIN')
     try:
         return _compare(conn, source_handle, target_handle, limit)
     finally:
         conn.rollback()
+        if switch_temp_store:
+            conn.execute(f'PRAGMA temp_store={temp_mode}')
 
 
 def _compare(conn, source_handle, target_handle, limit=20):
@@ -241,30 +251,10 @@ def _compare(conn, source_handle, target_handle, limit=20):
     if a['id'] == b['id']:
         raise ValueError('Choose two different profiles.')
     endpoints = {a['id'], b['id']}
-    endpoint_rows = g.observations(endpoints)
+    selected, total, endpoint_rows = _ranked_endpoint_rows(conn, g, a, b, limit)
     links = g.links(endpoint_rows, include_evidence=False)
-    neighbors = {endpoint: set() for endpoint in endpoints}
-    for src, dst in links:
-        if src in endpoints:
-            neighbors[src].add(dst)
-        if dst in endpoints:
-            neighbors[dst].add(src)
-    candidates = (neighbors[a['id']] & neighbors[b['id']]) - endpoints
-    degrees = g.degrees(candidates) if candidates else {}
-
-    def ranked_candidates():
-        for x in candidates:
-            ax, xa = (a['id'], x) in links, (x, a['id']) in links
-            bx, xb = (b['id'], x) in links, (x, b['id']) in links
-            tier = 3 if ax and xa and bx and xb else 2 if (ax and xb) or (bx and xa) else 1
-            yield (-tier, degrees[x], g.nodes[x]['handle'].lower(), x)
-
-    # Keep only compact top-k ranking records; rich result objects are bounded
-    # by the requested limit, even when the endpoints share every profile.
-    selected = heapq.nsmallest(limit, ranked_candidates())
-    total = len(candidates)
     connectors = []
-    for _, degree, _, x in selected:
+    for x, degree in selected:
         ax, xa = (a['id'], x) in links, (x, a['id']) in links
         bx, xb = (b['id'], x) in links, (x, b['id']) in links
         motifs = [name for name, yes in [('reciprocal_support', ax and xa and bx and xb),
@@ -309,3 +299,111 @@ def _compare(conn, source_handle, target_handle, limit=20):
                              'Reported completion is collector metadata, not independently verified coverage.',
                              'Manual known tags describe the operator relationship, not a relationship to the target.',
                              'First observed is not when a follow began; last observed is available only for tracked collection pages.'])
+
+
+def _ranked_endpoint_rows(conn, g, a, b, limit):
+    """Stage endpoint edges on SQLite's temp store, keeping Python state O(limit).
+
+    Each directed edge keeps its source record. Canonical IDs use the same seed
+    and person rules as _Graph; the temporary tables are removed before the
+    caller's read transaction is released.
+    """
+    suffix = uuid.uuid4().hex
+    seed_table, edge_table, candidate_table, pid_table, candidate_seed_table = (
+        'cg_' + name + '_' + suffix for name in ('seeds', 'edges', 'candidates', 'pids', 'candidate_seeds'))
+    tables = (seed_table, edge_table, candidate_table, pid_table, candidate_seed_table)
+    person_key = ("CASE WHEN COALESCE(NULLIF(p.ig_id,''), NULLIF(alias.ig_id,'')) IS NOT NULL "
+                  "THEN 'ig:' || COALESCE(NULLIF(p.ig_id,''), NULLIF(alias.ig_id,'')) "
+                  "ELSE 'person:' || p.id END")
+    try:
+        conn.execute(f'CREATE TEMP TABLE {seed_table}(handle TEXT PRIMARY KEY COLLATE NOCASE, node_id TEXT)')
+        conn.executemany(f'INSERT INTO {seed_table} VALUES(?,?)',
+                         ((handle, node['id']) for handle, node in g.seed_nodes.items()))
+        conn.execute(f'''CREATE TEMP TABLE {edge_table}(
+            seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
+            seed_key TEXT, person_key TEXT, PRIMARY KEY(seed,person_id,direction))''')
+        select = (f' SELECT e.seed,e.person_id,e.direction,e.first_seen,s.node_id,{person_key} '
+                  f'FROM edges e JOIN {seed_table} s ON s.handle=e.seed '
+                  'JOIN people p ON p.id=e.person_id LEFT JOIN seeds alias ON alias.handle=p.handle '
+                  "WHERE e.direction IN ('followers','following') AND s.node_id != " + person_key)
+        insert = f'INSERT OR IGNORE INTO {edge_table}' + select
+        for handle, node in g.seed_nodes.items():
+            if node['id'] in (a['id'], b['id']):
+                conn.execute(insert + ' AND e.seed=?', (handle,))
+        for pid, node in g.people.items():
+            if node['id'] in (a['id'], b['id']):
+                conn.execute(insert + ' AND e.person_id=?', (pid,))
+        conn.execute(f'''CREATE TEMP TABLE {candidate_table}(
+            node_id TEXT PRIMARY KEY, mask INT, min_pid INT, display_handle TEXT, degree INT DEFAULT 0)''')
+        # Bits are A->X, X->A, B->X, X->B. Multiple aliases and observations
+        # collapse to one canonical candidate without losing direction.
+        conn.execute(f'''INSERT INTO {candidate_table}(node_id,mask,min_pid)
+            WITH seen AS (
+              SELECT person_key AS node_id, person_id AS pid,
+                CASE WHEN seed_key=? THEN CASE direction WHEN 'following' THEN 1 ELSE 2 END
+                     ELSE CASE direction WHEN 'following' THEN 4 ELSE 8 END END AS bit
+              FROM {edge_table} WHERE seed_key IN (?,?) AND person_key NOT IN (?,?)
+              UNION ALL
+              SELECT seed_key, NULL,
+                CASE WHEN person_key=? THEN CASE direction WHEN 'following' THEN 2 ELSE 1 END
+                     ELSE CASE direction WHEN 'following' THEN 8 ELSE 4 END END
+              FROM {edge_table} WHERE person_key IN (?,?) AND seed_key NOT IN (?,?)
+            ), masks AS (
+              SELECT node_id, MAX(bit&1)+MAX(bit&2)+MAX(bit&4)+MAX(bit&8) AS mask,
+                     MIN(pid) AS min_pid FROM seen GROUP BY node_id
+            ) SELECT node_id,mask,min_pid FROM masks WHERE (mask&3)!=0 AND (mask&12)!=0''',
+            (a['id'], a['id'], b['id'], a['id'], b['id'], a['id'], a['id'], b['id'], a['id'], b['id']))
+        total = conn.execute(f'SELECT COUNT(*) FROM {candidate_table}').fetchone()[0]
+        conn.execute(f'CREATE TEMP TABLE {pid_table}(node_id TEXT, pid INT, PRIMARY KEY(node_id,pid))')
+        conn.execute(f'''INSERT OR IGNORE INTO {pid_table}
+            SELECT c.node_id,e.person_id FROM {edge_table} e
+            JOIN {candidate_table} c ON c.node_id=e.person_key''')
+        conn.executemany(f'INSERT OR IGNORE INTO {pid_table} VALUES(?,?)',
+                         ((node['id'], pid) for pid, node in g.people.items()
+                          if node['id'] not in (a['id'], b['id'])))
+        conn.execute(f'''CREATE TEMP TABLE {candidate_seed_table} AS
+            SELECT s.handle,s.node_id FROM {seed_table} s
+            JOIN {candidate_table} c ON c.node_id=s.node_id''')
+        conn.execute(f'''UPDATE {candidate_table} SET display_handle=
+            (SELECT handle FROM people WHERE id=min_pid)''')
+        for node in g.nodes.values():
+            conn.execute(f'UPDATE {candidate_table} SET display_handle=? WHERE node_id=?',
+                         (node['handle'], node['id']))
+        if total:
+            # Count distinct canonical neighbors in SQL. This matches _Graph.degrees,
+            # including alias collapse and reciprocal edge deduplication, without
+            # allocating one Python set per candidate.
+            conn.execute(f'''UPDATE {candidate_table} SET degree=COALESCE((
+                SELECT degree FROM (
+                  SELECT node_id,COUNT(DISTINCT neighbor) AS degree FROM (
+                    SELECT cp.node_id,s.node_id AS neighbor
+                    FROM {pid_table} cp CROSS JOIN edges e INDEXED BY edges_person_seed
+                    JOIN {seed_table} s ON s.handle=e.seed
+                    WHERE e.person_id=cp.pid AND e.direction IN ('followers','following')
+                      AND s.node_id!=cp.node_id
+                    UNION ALL
+                    SELECT s.node_id,{person_key} AS neighbor
+                    FROM {candidate_seed_table} s CROSS JOIN edges e
+                    JOIN people p ON p.id=e.person_id
+                    LEFT JOIN seeds alias ON alias.handle=p.handle
+                    WHERE e.seed=s.handle AND e.direction IN ('followers','following')
+                      AND {person_key}!=s.node_id
+                  ) GROUP BY node_id
+                ) d WHERE d.node_id={candidate_table}.node_id
+              ),0)''')
+        ranked = conn.execute(f'''SELECT node_id,degree FROM {candidate_table}
+            ORDER BY CASE WHEN (mask&15)=15 THEN 3
+                          WHEN ((mask&1)!=0 AND (mask&8)!=0) OR ((mask&4)!=0 AND (mask&2)!=0) THEN 2
+                          ELSE 1 END DESC,
+                     degree, lower(display_handle), node_id LIMIT ?''', (limit,)).fetchall()
+        selected = [(row['node_id'], row['degree']) for row in ranked]
+        shown_ids = [a['id'], b['id']] + [key for key, _ in selected]
+        placeholders = ','.join('?' * len(shown_ids))
+        endpoint_rows = [dict(row) for row in conn.execute(
+            f'''SELECT seed,person_id,direction,first_seen FROM {edge_table}
+                WHERE seed_key IN ({placeholders}) AND person_key IN ({placeholders})''',
+            shown_ids + shown_ids)]
+        return selected, total, endpoint_rows
+    finally:
+        for table in reversed(tables):
+            conn.execute(f'DROP TABLE IF EXISTS temp.{table}')

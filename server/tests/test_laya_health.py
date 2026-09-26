@@ -1,7 +1,10 @@
 """Health checks must run even when the monotonic clock starts near zero."""
 import io
 import sys
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,3 +46,20 @@ class HealthCacheTest(unittest.TestCase):
             self.assertIsNone(laya.last_known())
             self.assertFalse(laya.available(now=2))
             self.assertEqual(request.call_count, 2)
+
+    def test_concurrent_health_checks_share_one_probe(self):
+        laya.reset()
+        start = threading.Barrier(8)
+
+        def check():
+            start.wait()
+            return laya.available(now=0)
+
+        def slow_response(*_):
+            time.sleep(0.04)
+            return io.BytesIO(HEALTHY)
+
+        with patch.object(laya, '_open', side_effect=slow_response) as request:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                self.assertEqual(list(pool.map(lambda _: check(), range(8))), [True] * 8)
+            self.assertEqual(request.call_count, 1)

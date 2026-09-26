@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 18742
-DEFAULT_MODEL = os.environ.get("LAYA_MODEL", "convaiinnovations/laya-multilingual")
+DEFAULT_MODEL = os.environ.get("LAYA_MODEL", "convaiinnovations/laya:multilingual")
 DEPLOYMENT_VERSION = os.environ.get("LAYA_DEPLOYMENT_VERSION", "laya-0.3.20-checkpoint-1")
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_ITEMS = 500
@@ -129,8 +129,11 @@ def to_laya_questions(qs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def from_laya_answers(qs: List[Dict[str, Any]], answers: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    if not isinstance(answers, dict) or set(answers) != set(to_laya_questions(qs)):
+def from_laya_answers(qs: List[Dict[str, Any]], answers: Dict[str, Dict[str, Any]],
+                      expected_keys=None) -> Dict[str, Any]:
+    if expected_keys is None:
+        expected_keys = set(to_laya_questions(qs))
+    if not isinstance(answers, dict) or set(answers) != expected_keys:
         raise ValueError("model answer keys do not match questions")
     res: Dict[str, Any] = {}
     for q in qs:
@@ -263,6 +266,7 @@ def make_handler(backend, default_questions: List[Dict[str, Any]]):
                     texts.append(t)
                 qs = validate_questions(req["questions"] if "questions" in req else default_questions)
                 lq = to_laya_questions(qs)
+                expected_keys = set(lq)
             except (ValueError, TypeError, json.JSONDecodeError) as e:
                 return self._send(400, {"error": str(e)})
             try:
@@ -277,7 +281,7 @@ def make_handler(backend, default_questions: List[Dict[str, Any]]):
                         raise ValueError("model result must be an object")
                     if "state" in row and row["state"] != text:
                         raise ValueError("model result state order mismatch")
-                results = [{"id": it["id"], "answers": from_laya_answers(qs, r["answers"])}
+                results = [{"id": it["id"], "answers": from_laya_answers(qs, r["answers"], expected_keys)}
                            for it, r in zip(items, raw)]
             except Exception as e:  # model failure -> 500, caller should skip
                 log.error("predict failed (%s)", type(e).__name__)
