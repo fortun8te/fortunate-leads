@@ -28,6 +28,7 @@ import laya  # noqa: E402
 import llm  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
+import workflows  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
@@ -208,6 +209,7 @@ def ext_profile(conn, q, b):
     ts = db.now()
     p['bio'] = p.get('bio') or ''
     p['bio_at'] = ts
+    p['bio_src'] = 'extension'
     pid = db.upsert_person(conn, p, ts)
     rules.sync(conn, [pid])
     handle = db.norm_handle(p['handle'])
@@ -332,6 +334,7 @@ def lead_rows(conn, rows):
         return []
     marks = ','.join('?' * len(ids))
     tags, via = {}, {}
+    followups = {r['person_id']: {k: r[k] for k in ('due_on', 'note', 'completed_at', 'updated_at')} for r in conn.execute(f'SELECT * FROM followups WHERE person_id IN ({marks})', ids)}
     for t in conn.execute(f'SELECT * FROM tags t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
         tags.setdefault(t['person_id'], []).append({'tag': t['tag'], 'grp': t['grp'], 'source': t['source']})
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
@@ -340,7 +343,7 @@ def lead_rows(conn, rows):
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
              'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
              'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'], 'status': r['status'],
-             'note': r['note'] or None} for r in rows]
+             'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
 
 
 def csv(q, key):
@@ -409,12 +412,13 @@ def lead_filter(q, status_default=True):
         if n is not None:
             where.append(f'p.followers {op} ?')
             args.append(n)
+    workflows.filters(q, where, args)
     return where, args
 
 
 TIER_RANK = "CASE coalesce(v.tier,'unread') WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END"
 FIT = {'hot': 'strong', 'warm': 'good', 'cold': 'weak'}   # the UI's name for a tier; anything else is 'unread'
-SORTS = {'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
+SORTS = {'follow_up': '(SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL) IS NULL, (SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL)', 'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
          'connected': 'lists DESC, p.followers IS NULL, p.followers DESC',
          'fit': f'{TIER_RANK}, lists DESC, v.score IS NULL, v.score DESC, p.followers IS NULL, p.followers DESC',
          'score': 'v.score IS NULL, v.score DESC, p.followers DESC'}
@@ -485,7 +489,13 @@ def api_person(conn, q, b, pid):
         except ValueError:
             ev = []
         verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
-    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'])
+    # Active work takes precedence over history; otherwise show the latest request for this profile.
+    job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? "
+                       "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
+    pending = bool(job and job['state'] in ('queued', 'leased'))
+    profile_read = {'state': {'leased': 'reading', 'error': 'failed'}.get(job['state'], job['state'])} if job else None
+    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'],
+                activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read)
 
 
 KEEP = object()   # "leave this field as it is"
@@ -493,7 +503,15 @@ KEEP = object()   # "leave this field as it is"
 
 def set_status(conn, pids, status=KEEP, note=KEEP):
     """Upsert marks. KEEP leaves a field alone; None / '' clears it. A row with neither status nor note is removed."""
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
     ts = db.now()
+    for pid in dict.fromkeys(pids):
+        old = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
+        for kind, value in (('status', status), ('note', note)):
+            before = old[kind] if old else None
+            if value is not KEEP and (value or None) != (before or None):
+                workflows.event(conn, pid, kind, before=before, after=value or None)
     sets = [f'{col}=excluded.{col}' for col, v in (('status', status), ('note', note)) if v is not KEEP]
     if sets:
         rows = [(p, None if status is KEEP else status, None if note is KEEP else (note or None), ts) for p in pids]
@@ -707,7 +725,7 @@ def data_rev(conn):
     r = conn.execute("SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), "
                      "(SELECT count(*) FROM edges), (SELECT count(*) FROM seeds), (SELECT max(updated_at) FROM marks), "
                      "(SELECT count(*) FROM marks), (SELECT count(*) FROM tags), (SELECT count(*) FROM tag_rules), "
-                     "(SELECT value FROM settings WHERE key='llm_rev')").fetchone()
+                     "(SELECT value FROM settings WHERE key='llm_rev'), (SELECT max(updated_at) FROM followups), (SELECT count(*) FROM followups), (SELECT max(id) FROM activity)").fetchone()
     return zlib.crc32('|'.join(map(str, r)).encode())
 
 
@@ -717,7 +735,7 @@ CACHE_LOCK = threading.Lock()
 
 
 def cached(conn, name, q, compute):
-    key = (name, CFG['db'], tuple(sorted((k, tuple(v)) for k, v in q.items())), data_rev(conn))
+    key = (name, CFG['db'], datetime.now().date().isoformat(), tuple(sorted((k, tuple(v)) for k, v in q.items())), data_rev(conn))
     with CACHE_LOCK:
         if key in CACHE:
             CACHE.move_to_end(key)
@@ -1127,6 +1145,7 @@ ROUTES = [
 ]
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
 ROUTES += qual_api.routes(sys.modules[__name__])
+ROUTES += workflows.routes(sys.modules[__name__])
 
 
 class Server(ThreadingHTTPServer):
@@ -1233,6 +1252,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             return self.send(500, {'ok': False, 'error': str(e)})
+        if isinstance(out, workflows.CsvResponse):
+            return self.send(200, out.data, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="fortunate-leads.csv"', 'Cache-Control': 'no-store'})
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):

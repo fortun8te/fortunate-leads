@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, sc
   model TEXT, input_hash TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS followups(person_id INTEGER PRIMARY KEY, due_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', completed_at TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', before_value TEXT, after_value TEXT, happened_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person_id);
+CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
@@ -179,10 +183,102 @@ def upsert_person(conn, u, ts=None):
 
 
 def merge_people(conn, keep, drop):
-    for t in ('edges', 'tags', 'marks', 'verdicts'):
-        conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
-        conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
-    conn.execute('DELETE FROM people WHERE id=?', (drop,))
+    import workflows
+    if keep == drop:
+        return
+    # Leave committing to the caller, including when called outside an existing transaction.
+    if not conn.in_transaction:
+        conn.execute('BEGIN')
+    conn.execute('SAVEPOINT merge_people')
+    try:
+        if conn.execute('SELECT count(*) FROM people WHERE id IN (?,?)', (keep, drop)).fetchone()[0] != 2:
+            raise ValueError('both people must exist before merging')
+        conn.execute('UPDATE activity SET person_id=? WHERE person_id=?', (keep, drop))
+        kept, dropped = workflows.follow_up(conn, keep), workflows.follow_up(conn, drop)
+        if dropped:
+            # Keep an open reminder over completed; then earliest due. Record both snapshots on conflict.
+            chosen = min([x for x in (kept, dropped) if x], key=lambda x: (x['completed_at'] is not None, x['due_on']))
+            conn.execute('INSERT OR REPLACE INTO followups VALUES(?,?,?,?,?)', (keep, chosen['due_on'], chosen['note'], chosen['completed_at'], chosen['updated_at']))
+            conn.execute('DELETE FROM followups WHERE person_id=?', (drop,))
+            if kept:
+                workflows.event(conn, keep, 'follow_up_merged', before={'kept': kept, 'merged': dropped}, after=chosen)
+
+        km = conn.execute('SELECT * FROM marks WHERE person_id=?', (keep,)).fetchone()
+        dm = conn.execute('SELECT * FROM marks WHERE person_id=?', (drop,)).fetchone()
+        before, after = {}, {}
+        if km and dm:
+            note = km['note'] or dm['note']
+            if km['note'] and dm['note'] and km['note'] != dm['note']:
+                combined = km['note'] + '\n\n' + dm['note']
+                # Keep the editable note within its limit; the full dropped note stays in history.
+                note = combined if len(combined) <= 5000 else km['note']
+            status = km['status'] or dm['status']
+            before, after = dict(dm), {'status': status, 'note': note}
+            conn.execute('UPDATE marks SET status=?,note=?,updated_at=? WHERE person_id=?', (status, note, now(), keep))
+
+        # Derived scores belong to their profile inputs. Keep the survivor's result.
+        # Website reads instead keep the newest useful evidence, ahead of empty failures.
+        def site_priority(row):
+            try:
+                signals = json.loads(row['signals'] or '{}')
+            except (ValueError, TypeError):
+                signals = {}
+            useful = bool(row['title'] or row['summary'] or isinstance(signals, dict) and signals or not row['error'])
+            try:
+                stamp = datetime.fromisoformat((row['at'] or '').replace('Z', '+00:00'))
+                stamp = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+            except (ValueError, TypeError):
+                stamp = datetime.min.replace(tzinfo=timezone.utc)
+            return useful, stamp
+
+        conflicts, chosen_records = {}, {}
+        singletons = ['verdicts', 'laya']
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_reads'").fetchone():
+            singletons.append('site_reads')
+        for table in singletons:
+            kept = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (keep,)).fetchone()
+            dropped = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (drop,)).fetchone()
+            if kept and dropped:
+                if any(kept[key] != dropped[key] for key in kept.keys() if key != 'person_id'):
+                    chosen = kept
+                    if table == 'site_reads' and site_priority(dropped) > site_priority(kept):
+                        chosen = dropped
+                        columns = ('url', 'final_url', 'title', 'summary', 'signals', 'error', 'model', 'at')
+                        conn.execute('UPDATE site_reads SET ' + ','.join(key + '=?' for key in columns) + ' WHERE person_id=?',
+                                     (*[dropped[key] for key in columns], keep))
+                    conflicts[table] = {'kept': dict(kept), 'merged': dict(dropped)}
+                    chosen_records[table] = dict(chosen, person_id=keep)
+            conn.execute(f'UPDATE OR IGNORE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+            conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
+
+        for dropped in conn.execute('SELECT * FROM tags WHERE person_id=?', (drop,)).fetchall():
+            kept = conn.execute('SELECT * FROM tags WHERE person_id=? AND tag=?', (keep, dropped['tag'])).fetchone()
+            if kept and (kept['grp'], kept['source']) != (dropped['grp'], dropped['source']):
+                chosen = dropped if dropped['source'] == 'manual' and kept['source'] != 'manual' else kept
+                conflicts.setdefault('tags', []).append({'kept': dict(kept), 'merged': dict(dropped)})
+                chosen_records.setdefault('tags', []).append(dict(chosen, person_id=keep))
+                if chosen is dropped:
+                    conn.execute('UPDATE tags SET grp=?,source=? WHERE person_id=? AND tag=?',
+                                 (dropped['grp'], dropped['source'], keep, dropped['tag']))
+
+        # An overlapping list membership must not erase when it was first observed.
+        for edge in conn.execute('SELECT * FROM edges WHERE person_id=?', (drop,)).fetchall():
+            conn.execute('UPDATE edges SET first_seen=? WHERE person_id=? AND seed=? AND direction=? '
+                         'AND (first_seen IS NULL OR first_seen>?)',
+                         (edge['first_seen'], keep, edge['seed'], edge['direction'], edge['first_seen']))
+        for table in ('edges', 'tags', 'marks'):
+            conn.execute(f'UPDATE OR IGNORE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+            conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
+        if conflicts:
+            before['records'], after['records'] = conflicts, chosen_records
+        if before:
+            workflows.event(conn, keep, 'identity_merged', before=before, after=after)
+        conn.execute('DELETE FROM people WHERE id=?', (drop,))
+    except Exception:
+        conn.execute('ROLLBACK TO merge_people')
+        conn.execute('RELEASE merge_people')
+        raise
+    conn.execute('RELEASE merge_people')
 
 
 def add_edge(conn, seed, person_id, direction, ts=None):

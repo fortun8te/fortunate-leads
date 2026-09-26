@@ -115,11 +115,11 @@ function connHTML(r) {
 }
 
 // ---------- state ----------
-const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', fmin: null, fmax: null });
+const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
   f: emptyFilter(), sort: store.get('sort', 'fit'),
-  tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null, views: [], viewsLocal: false,
+  tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null, views: [],
   rows: [], total: null, done: false, loading: false, error: false, gen: 0,
   cur: -1, open: null, person: null, seedCard: null,
   pick: new Set(), anchor: -1, picking: false,
@@ -134,6 +134,7 @@ function toQuery(f = S.f, sort = S.sort, withSort = true) {
   if (f.any.length) p.set('any', f.any.join(','));
   if (f.not.length) p.set('not', f.not.join(','));
   if (f.status) p.set('status', f.status);
+  if (f.follow_up) p.set('follow_up', f.follow_up);
   if (f.tier) p.set('tier', f.tier);
   if (f.q) p.set('q', f.q);
   if (f.min) p.set('min_lists', f.min);
@@ -150,11 +151,12 @@ function fromQuery(qs) {
   const numOr = (k) => p.get(k) != null && p.get(k) !== '' && !isNaN(+p.get(k)) ? +p.get(k) : null;
   return {
     f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', tier: FIT_TIER[TIER_FIT[p.get('tier')]] || '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
+      follow_up: ['due', 'overdue', 'scheduled', 'completed', 'none'].includes(p.get('follow_up')) ? p.get('follow_up') : '',
       bio: ['0', '1'].includes(p.get('has_bio')) ? p.get('has_bio') : '', seed: (p.get('seed') || '').replace(/^@/, ''), fmin: numOr('followers_min'), fmax: numOr('followers_max') },
     sort: p.get('sort') || 'fit',
   };
 }
-const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
+const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.follow_up + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
 const modeOf = (t) => S.f.tags.includes(t) ? 'inc' : S.f.any.includes(t) ? 'any' : S.f.not.includes(t) ? 'exc' : null;
 function setMode(t, mode) {
   S.f.tags = S.f.tags.filter((x) => x !== t); S.f.any = S.f.any.filter((x) => x !== t); S.f.not = S.f.not.filter((x) => x !== t);
@@ -168,7 +170,12 @@ function clickTag(t, e) {
   filtersChanged();
 }
 const folLabel = (a, b) => a != null && b != null ? `${fmt(a)}-${fmt(b)}` : a != null ? `${fmt(a)}+` : `<${fmt((b || 0) + 1)}`;
-const parseNum = (s) => { const m = String(s).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)([km]?)$/); return m ? Math.round(+m[1] * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1)) : null; };
+const parseNum = (s) => {
+  const m = String(s).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)([km]?)$/);
+  if (!m) return null;
+  const n = Math.round(+m[1] * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1));
+  return Number.isSafeInteger(n) ? n : null;
+};
 
 // Token text for a tag. Tags with spaces are quoted.
 function tagTok(t, mode) {
@@ -179,6 +186,7 @@ function tagTok(t, mode) {
 function tokens() {
   const out = [];
   for (const mode of MODES) for (const t of S.f[mode === 'inc' ? 'tags' : mode === 'any' ? 'any' : 'not']) out.push({ k: 'tag', tag: t, mode, text: tagTok(t, mode) });
+  if (S.f.follow_up) out.push({ k: 'follow_up', text: 'followup:' + S.f.follow_up });
   if (S.f.status) out.push({ k: 'status', text: 'status:' + S.f.status });
   if (S.f.tier) out.push({ k: 'tier', text: 'fit:' + TIER_FIT[S.f.tier] });
   if (S.f.min) out.push({ k: 'min', text: `lists:${S.f.min}+` });
@@ -187,7 +195,7 @@ function tokens() {
   if (S.f.fmin != null || S.f.fmax != null) out.push({ k: 'fol', text: 'followers:' + folLabel(S.f.fmin, S.f.fmax) });
   return out;
 }
-const TOKEN_RX = /^[~+|-]?(#|via:)|^(status|fit|lists|bio|seed|followers):/i;
+const TOKEN_RX = /^[~+|-]?(#|via:)|^(status|fit|lists|bio|seed|followers|followup):/i;
 function canonTag(name) { return S.tagBy.has(name) ? name : S.tagLower.get(name.toLowerCase()) || null; }
 // Parses one typed token. Returns a function that applies it, or null.
 function parseToken(w, strict) {
@@ -202,13 +210,17 @@ function parseToken(w, strict) {
     const mode = m[1] === '~' || m[1] === '|' ? 'any' : m[1] === '-' ? 'exc' : 'inc';
     return () => setMode(canonTag('via @' + m[2]) || 'via @' + m[2].toLowerCase(), mode);
   }
-  if ((m = w.match(/^status:(\w*)$/i))) {
+  if ((m = w.match(/^followup:(due|overdue|scheduled|completed|none)$/i))) return () => { S.f.follow_up = m[1].toLowerCase(); };
+  if ((m = w.match(/^status:(\w+)$/i))) {
     let s = m[1].toLowerCase(); if (s === 'unmarked') s = 'none'; s = LEGACY_STATUS[s] || s;
     if (s && s !== 'open' && s !== 'none' && s !== 'all' && !STATUSES.includes(s)) return null;
     return () => { S.f.status = s === 'open' ? '' : s; };
   }
-  if ((m = w.match(/^fit:(\w+)$/i))) { const t = FIT_TIER[m[1].toLowerCase()]; return t ? () => { S.f.tier = t; } : null; }
-  if ((m = w.match(/^lists:(\d+)\+?$/i))) return () => { S.f.min = +m[1] > 1 ? +m[1] : 0; };
+  if ((m = w.match(/^fit:(strong|good|weak|unread)$/i))) return () => { S.f.tier = FIT_TIER[m[1].toLowerCase()]; };
+  if ((m = w.match(/^lists:(\d+)\+?$/i))) {
+    const n = Number(m[1]);
+    return Number.isSafeInteger(n) ? () => { S.f.min = n > 1 ? n : 0; } : null;
+  }
   if ((m = w.match(/^bio:(yes|no|1|0)$/i))) return () => { S.f.bio = /^(yes|1)$/i.test(m[1]) ? '1' : '0'; };
   if ((m = w.match(/^seed:@?([\w.]+)$/i))) return () => { S.f.seed = m[1].toLowerCase(); };
   if ((m = w.match(/^followers:(.+)$/i))) {
@@ -216,9 +228,12 @@ function parseToken(w, strict) {
     let a = null, b = null, x;
     if ((x = v.match(/^([\d.]+[km]?)\+$/i)) || (x = v.match(/^>=?([\d.]+[km]?)$/i))) a = parseNum(x[1]);
     else if ((x = v.match(/^<([\d.]+[km]?)$/i))) { b = parseNum(x[1]); if (b != null) b -= 1; }
-    else if ((x = v.match(/^([\d.]+[km]?)-([\d.]+[km]?)$/i))) { a = parseNum(x[1]); b = parseNum(x[2]); }
+    else if ((x = v.match(/^([\d.]+[km]?)-([\d.]+[km]?)$/i))) {
+      a = parseNum(x[1]); b = parseNum(x[2]);
+      if (a == null || b == null || a > b) return null;
+    }
     else return null;
-    if (a == null && b == null) return null;
+    if ((a == null && b == null) || (b != null && b < 0)) return null;
     return () => { S.f.fmin = a; S.f.fmax = b; };
   }
   return null;
@@ -262,6 +277,7 @@ window.addEventListener('hashchange', route);
 
 const WORK_SUB = { leads: 'Everyone the scraper found, best fit first.', map: 'Who is connected to whom. Click a dot to open that person.' };
 function setView(v) {
+  if (S.open && S.view !== v) noteQueue.flush(S.open).catch(() => {});
   const prev = S.view;
   S.view = v;
   const work = v === 'leads' || v === 'map';
@@ -289,8 +305,21 @@ function setView(v) {
 }
 
 // Apply a filter change: URL, sidebar, tokens, list, facets, map.
+function filterScopeKey(f = S.f) {
+  const canonical = { ...f };
+  for (const key of ['tags', 'any', 'not']) canonical[key] = [...new Set(f[key])].sort();
+  return toQuery(canonical, S.sort, false).toString();
+}
+let appliedFilterKey = filterScopeKey(fromQuery(parseHash().qs).f);
 function filtersChanged(o = {}) {
   S.f.tags = [...new Set(S.f.tags)]; S.f.any = [...new Set(S.f.any)]; S.f.not = [...new Set(S.f.not)];
+  const nextFilterKey = filterScopeKey();
+  if (nextFilterKey !== appliedFilterKey) {
+    const hadSelection = S.pick.size || S.picking;
+    S.pick.clear(); S.anchor = -1;
+    if (hadSelection) toast('Selection cleared because filters changed');
+  }
+  appliedFilterKey = nextFilterKey;
   if (o.url !== false) setURL(o.push !== false);
   syncTabs();
   renderFilters(); renderTokens();
@@ -353,7 +382,7 @@ let facetGen = 0;
 async function loadFacets() {
   const g = ++facetGen;
   let d;
-  try { d = await api.get('/api/tags?' + toQuery(S.f, S.sort, false)); } catch (e) { return; }
+  try { d = await api.get('/api/tags?' + LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false))); } catch (e) { return; }
   if (g !== facetGen) return;
   S.tagList = mergeTags(d);
   S.tagBy = new Map(S.tagList.map((t) => [t.tag, t]));
@@ -367,15 +396,36 @@ let countGen = 0;
 async function loadCounts() {
   const g = ++countGen;
   let d;
-  try { d = await api.get('/api/counts?' + toQuery(S.f, S.sort, false)); } catch (e) { return; }
+  try { d = await api.get('/api/counts?' + LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false))); } catch (e) { return; }
   if (g !== countGen) return;
   S.counts = d;
   $('#n-leads').textContent = fmt(d.total);
   renderFilters();
 }
+const viewState = { draft: '', busy: false, error: '', generation: 0, deleting: new Set() };
+// Keep older browser-only saves intact until their owner explicitly restores them.
+const browserViews = store.get('views', []);
+const legacyViews = Array.isArray(browserViews) ? browserViews.filter((v) => v && typeof v.name === 'string' && typeof v.query === 'string') : [];
+function savedViewQuery(query) {
+  const p = fromQuery(query);
+  for (const key of ['tags', 'any', 'not']) p.f[key] = [...new Set(p.f[key])].sort();
+  return toQuery(p.f, p.sort).toString();
+}
+function acceptSavedView(view) {
+  S.views = [...S.views.filter((v) => String(v.id) !== String(view.id) && v.name !== view.name), view]
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 async function loadViews() {
-  try { S.views = await api.get('/api/views'); S.viewsLocal = false; }
-  catch (e) { S.views = store.get('views', []); S.viewsLocal = true; }
+  const generation = ++viewState.generation;
+  try {
+    const views = await api.get('/api/views');
+    if (generation !== viewState.generation) return;
+    if (!Array.isArray(views)) throw new Error('Invalid views response');
+    S.views = views; viewState.error = '';
+  } catch (e) {
+    if (generation !== viewState.generation) return;
+    viewState.error = 'Could not load saved views.';
+  }
   renderFilters();
 }
 
@@ -399,19 +449,29 @@ function tagSection(key, title, list, labelFn) {
     ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">Less</button>` : ''}</div>`;
 }
 function renderFilters() {
+  const nameInput = $('#v-name');
+  if (S.saving && nameInput) viewState.draft = nameInput.value;
+  const focused = document.activeElement;
+  const focus = ['f-find', 'v-name'].includes(focused?.id)
+    ? { id: focused.id, start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection } : null;
   const c = S.counts || {};
-  const qs = toQuery().toString();
+  const qs = savedViewQuery(toQuery().toString());
+  const recoverable = legacyViews.map((v, index) => ({ ...v, index })).filter((v) => !S.views.some((saved) => saved.name === v.name && savedViewQuery(saved.query) === savedViewQuery(v.query)));
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
-  let h = `<div class="fsec f-x"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
-    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="View name" autocomplete="off"><button class="btn solid">Save</button></form>` : ''}
-    <button class="fi${!active ? ' on' : ''}" data-view=""><span>Everyone</span><b>${fmt(c.total)}</b></button>
-    ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
+  let h = `<div class="fsec"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
+    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" aria-label="View name" placeholder="View name" autocomplete="off" maxlength="80" value="${esc(viewState.draft)}"><button class="btn solid" ${viewState.busy ? 'disabled' : ''}>${viewState.busy ? 'Saving…' : 'Save'}</button></form>` : ''}
+    <button class="fi${qs === '' ? ' on' : ''}" data-view="" aria-pressed="${qs === ''}"><span>Open leads</span></button>
+    <button class="fi${LeadDaily.isDueView(S.f, S.sort) ? ' on' : ''}" data-view="${esc(LeadDaily.dueQuery())}" aria-pressed="${LeadDaily.isDueView(S.f, S.sort)}"><span>Due follow-ups</span></button>
+    ${viewState.error ? `<span class="fnone" role="status">${esc(viewState.error)}</span><button class="fi" id="v-retry"><span>Retry</span></button>` : ''}
+    ${S.views.map((v) => `<button class="fi${savedViewQuery(v.query) === qs ? ' on' : ''}" data-view="${esc(v.query)}" aria-pressed="${savedViewQuery(v.query) === qs}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}
+    ${recoverable.length ? `<h4>Browser copies</h4><span class="fnone">Open a copy, then Save to restore it.</span>${recoverable.map((v) => `<button class="fi" data-vrecover="${v.index}"><span>${esc(v.name)}</span></button>`).join('')}` : ''}</div>
     <div class="fsec"><h4>Status</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
     ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}" title="${esc(SDESC[s])}"><span>${slabel(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b>${fmt(c.none)}</b></button>
     <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including Not a fit"><span>All</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
+    <div class="fsec"><h4>Follow-up</h4>${['due', 'overdue', 'scheduled', 'completed', 'none'].map((v) => `<button class="fi${S.f.follow_up === v ? ' on' : ''}" data-follow-up="${v}"><span>${v === 'due' ? 'Due today or earlier' : ucf(v)}</span></button>`).join('')}</div>
     <div class="fsec"><h4>Fit</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
     <div class="fsec fsegs f-x"><h4>Shape</h4>
@@ -437,11 +497,13 @@ function renderFilters() {
     ${active ? '<button class="fi" id="f-clear" title="Clear filters (c)"><span>Clear all</span></button>' : ''}</div>`;
   const el = $('#filters');
   el.classList.toggle('xo', open);
-  const st = el.scrollTop, focus = document.activeElement?.id === 'f-find', pos = focus ? document.activeElement.selectionStart : 0;
+  const st = el.scrollTop;
   el.innerHTML = h;
+  if (focus) {
+    const input = $('#' + focus.id);
+    if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(focus.start, focus.end, focus.direction); }
+  }
   el.scrollTop = st;
-  if (focus) { const f = $('#f-find'); f.focus(); f.setSelectionRange(pos, pos); }
-  if (S.saving && document.activeElement?.id !== 'v-name') $('#v-name')?.focus();
 }
 $('#filters').addEventListener('click', async (e) => {
   const t = e.target;
@@ -450,7 +512,18 @@ $('#filters').addEventListener('click', async (e) => {
   if (less) { S.tagMore[less.dataset.less] = false; return renderFilters(); }
   if (t.id === 'f-reset' || t.closest('#f-clear')) return clearFilters();
   if (t.closest('#f-more')) { S.fmore = !(S.fmore || S.tagFind || S.saving); S.tagFind = ''; S.saving = false; store.set('fmore', S.fmore); return renderFilters(); }
-  if (t.id === 'v-new') { S.saving = !S.saving; return renderFilters(); }
+  if (t.id === 'v-new') { S.saving = !S.saving; renderFilters(); if (S.saving) $('#v-name')?.focus(); return; }
+  if (t.closest('#v-retry')) return loadViews();
+  const recover = t.closest('[data-vrecover]');
+  if (recover) {
+    if (viewState.busy) return;
+    const view = legacyViews[+recover.dataset.vrecover];
+    if (!view) return;
+    applyQuery(view.query);
+    viewState.draft = view.name;
+    if ($('#v-name')) $('#v-name').value = view.name;
+    startSaveView(); return;
+  }
   const vdel = t.closest('[data-vdel]');
   if (vdel) { e.stopPropagation(); return deleteView(vdel.dataset.vdel); }
   const b = t.closest('button');
@@ -460,6 +533,7 @@ $('#filters').addEventListener('click', async (e) => {
   if (d.view != null) { applyQuery(d.view); if (narrow()) setDrawer(false); return; }
   // Segments toggle: clicking the active option turns it off.
   if (d.status != null) S.f.status = d.status;
+  else if (d.followUp != null) S.f.follow_up = S.f.follow_up === d.followUp ? '' : d.followUp;
   else if (d.tier != null) S.f.tier = S.f.tier === d.tier ? '' : d.tier;
   else if (d.min != null) S.f.min = S.f.min === +d.min ? 0 : +d.min;
   else if (d.bio != null) S.f.bio = S.f.bio === d.bio ? '' : d.bio;
@@ -467,13 +541,16 @@ $('#filters').addEventListener('click', async (e) => {
   else return;
   filtersChanged();
 });
-$('#filters').addEventListener('input', (e) => { if (e.target.id === 'f-find') { S.tagFind = e.target.value; renderFilters(); } });
+$('#filters').addEventListener('input', (e) => {
+  if (e.target.id === 'v-name') viewState.draft = e.target.value;
+  if (e.target.id === 'f-find') { S.tagFind = e.target.value; renderFilters(); }
+});
 $('#filters').addEventListener('keydown', (e) => {
   if (e.target.id === 'f-find' && e.key === 'Enter') {
     const first = $('#filters [data-tag]');
     if (first) clickTag(first.dataset.tag, e);
   }
-  if (e.target.id === 'v-name' && e.key === 'Escape') { S.saving = false; renderFilters(); }
+  if (e.target.id === 'v-name' && e.key === 'Escape') { S.saving = false; renderFilters(); $('#v-new')?.focus(); }
 });
 $('#filters').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -485,31 +562,54 @@ function applyQuery(qs) {
   filtersChanged();
 }
 async function saveView(name) {
-  if (!name) return;
+  if (!name || viewState.busy) return;
   const query = toQuery().toString();
-  S.saving = false;
-  if (S.viewsLocal) {
-    S.views = [...S.views, { id: Date.now(), name, query }]; store.set('views', S.views);
-  } else {
-    try { await api.post('/api/views', { name, query }); } catch (e) { toast('Could not save view'); }
-    await loadViews();
+  const draft = $('#v-name')?.value ?? name;
+  viewState.draft = draft; viewState.busy = true; ++viewState.generation;
+  renderFilters();
+  try {
+    const saved = await api.post('/api/views', { name, query });
+    ++viewState.generation;
+    acceptSavedView(saved);
+    const latest = $('#v-name')?.value ?? viewState.draft;
+    if (latest === draft) { S.saving = false; viewState.draft = ''; }
+    toast('View saved');
+  } catch (e) {
+    toast('Could not save view. Try again.');
+  } finally {
+    viewState.busy = false; renderFilters();
   }
-  renderFilters(); toast('View saved');
 }
 async function deleteView(id) {
   const v = S.views.find((x) => String(x.id) === String(id));
-  if (!v) return;
-  if (S.viewsLocal) { S.views = S.views.filter((x) => x !== v); store.set('views', S.views); renderFilters(); }
-  else {
-    try { await api.post(`/api/views/${encodeURIComponent(id)}/delete`); } catch (e) { toast('Could not delete view'); return; }
-    await loadViews();
+  const key = String(id);
+  if (!v || viewState.deleting.has(key)) return;
+  viewState.deleting.add(key); ++viewState.generation;
+  try {
+    await api.post(`/api/views/${encodeURIComponent(id)}/delete`);
+    ++viewState.generation;
+    S.views = S.views.filter((x) => String(x.id) !== key);
+    renderFilters();
+  } catch (e) {
+    toast('Could not delete view. Try again.'); return;
+  } finally {
+    viewState.deleting.delete(key);
   }
-  toast(`Deleted ${v.name}`, () => { S.saving = false; (S.viewsLocal ? Promise.resolve(S.views.push(v)) : api.post('/api/views', { name: v.name, query: v.query })).then(loadViews); });
+  toast(`Deleted ${v.name}`, () => restoreDeletedView(v));
+}
+async function restoreDeletedView(view) {
+  ++viewState.generation;
+  try {
+    const restored = await api.post('/api/views', { name: view.name, query: view.query });
+    ++viewState.generation; acceptSavedView(restored); renderFilters(); toast('View restored');
+  } catch (e) {
+    toast('Could not restore view. Try again.', () => restoreDeletedView(view));
+  }
 }
 function startSaveView() {
   if (narrow()) setDrawer(true);
   else if (!S.side) toggleSide();
-  S.saving = true; renderFilters();
+  S.saving = true; renderFilters(); $('#v-name')?.focus();
 }
 $('#save-view').onclick = startSaveView;
 function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; }
@@ -523,6 +623,7 @@ function renderTokens() {
 }
 function removeToken(t) {
   if (t.k === 'tag') setMode(t.tag, null);
+  else if (t.k === 'follow_up') S.f.follow_up = '';
   else if (t.k === 'status') S.f.status = '';
   else if (t.k === 'tier') S.f.tier = '';
   else if (t.k === 'min') S.f.min = 0;
@@ -533,8 +634,9 @@ function removeToken(t) {
 function editToken(t) {
   removeToken(t);
   const inp = $('#q');
-  inp.value = (inp.value.trim() ? inp.value.trim() + ' ' : '') + t.text;
+  const draft = (inp.value.trim() ? inp.value.trim() + ' ' : '') + t.text;
   filtersChanged();
+  inp.value = draft;
   inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
   suggest();
 }
@@ -555,7 +657,8 @@ $('#qbox').addEventListener('dblclick', (e) => {
   const tk = e.target.closest('[data-t]');
   if (tk) { const t = tokens()[+tk.dataset.t]; if (t) editToken(t); }
 });
-const qFree = (v) => words(v).filter((w) => !TOKEN_RX.test(w)).join(' ').trim();
+// Only valid tokens are reserved for filters. Misspelled filters remain searchable text.
+const qFree = (v) => words(v).filter((w) => !/^[~+|-]?#$/.test(w) && (!TOKEN_RX.test(w) || !parseToken(w, false))).join(' ').trim();
 const qInput = debounce(() => {
   const q = qFree($('#q').value);
   if (q !== S.f.q) { S.f.q = q; filtersChanged({ push: false }); }
@@ -662,13 +765,16 @@ const lists = (r) => Math.max(0, Math.round(+(r.lists ?? (Array.isArray(r.via) ?
 async function resetLeads(keep) {
   const gen = ++S.gen;
   if (!keep) { S.rows = []; S.total = null; S.cur = -1; $('#scroll').scrollTop = 0; }
-  S.done = false; S.error = false; S.loading = false;
+  S.done = false; S.error = false;
+  // Rendering retained rows must not start an append before this replacement.
+  S.loading = true;
   renderRows();
+  S.loading = false;
   await loadMore(gen, keep ? Math.max(PAGE, S.rows.length) : PAGE, keep);
 }
 // Best fit (sort=fit): strong, good, weak, unread, each tier most connected first, then by score.
 function fetchLeads(offset, limit) {
-  const p = toQuery(S.f, S.sort, false);
+  const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
   p.set('sort', S.sort); p.set('offset', offset); p.set('limit', limit);
   return api.get('/api/leads?' + p);
 }
@@ -730,7 +836,7 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${igLink(r.handle)}${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
+    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
@@ -744,6 +850,7 @@ function renderRows() {
   $('#count').textContent = S.total == null ? '' : plural(S.total, 'person', 'people') + (S.pick.size ? ` · ${int(S.pick.size)} selected` : '');
   $('#pane-leads').classList.toggle('selecting', S.pick.size > 0);
   renderBulk();
+  $('#export-selected').disabled = exporting || !S.pick.size;
   const loadedPicked = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
   $('#sel-page').className = 'ck' + (loadedPicked ? ' on' : S.pick.size ? ' part' : '');
   if (!S.rows.length) {
@@ -909,7 +1016,7 @@ async function mark(id, status) {
   const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
   const prev = r ? r.status : null;
   patchRow(id, { status });
-  try { await api.post(`/api/person/${id}/mark`, { status }); loadCounts(); }
+  try { await api.post(`/api/person/${id}/mark`, { status }); loadCounts(); refreshActivity(id); }
   catch (e) { patchRow(id, { status: prev }); toast('Could not save'); }
 }
 function patchRow(id, patch) {
@@ -923,18 +1030,22 @@ function current() { return S.open ? S.person || S.rows.find((r) => r.id === S.o
 
 // ---------- detail ----------
 async function openDetail(id) {
+  if (S.open && S.open !== id) noteQueue.flush(S.open).catch(() => {});
+  detailAccess.open();
   S.open = id; S.seedCard = null;
   const base = S.rows.find((r) => r.id === id);
   const node = M.byId.get('p:' + id);
   S.person = base ? { ...base, loading: true } : node ? { id, handle: node.handle, name: node.name, followers: node.followers, lists: node.lists, status: node.status, tags: [], loading: true } : { id, loading: true, handle: '', tags: [] };
   $('#detail').hidden = false;
   renderDetail(); renderRows(); M.draw();
+  detailAccess.sync();
   await refreshPerson(id);
 }
 async function refreshPerson(id) {
   try {
     const p = await api.get('/api/person/' + id);
     if (S.open !== id) return;
+    noteQueue.reconcile(id, p.note || '');
     S.person = p;
     const r = S.rows.find((x) => x.id === id);
     if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, reason: p.reason });
@@ -945,10 +1056,12 @@ async function refreshPerson(id) {
   renderDetail(); renderRows();
 }
 function closeDetail() {
+  if (S.open) noteQueue.flush(S.open).catch(() => {});
   S.open = null; S.person = null; S.seedCard = null;
   $('#detail').hidden = true;
   M.focus = null;
   renderRows(); M.resize();
+  detailAccess.close();
 }
 // One row per seed; both directions read as mutual.
 function seedEdges(edges) {
@@ -958,7 +1071,43 @@ function seedEdges(edges) {
 }
 const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
 const evidenceOf = (v) => (Array.isArray(v?.evidence) ? v.evidence : []).filter((q) => typeof q === 'string' && q.trim());
+const detailViewState = new Map();
+function detailView(id) {
+  if (!detailViewState.has(id)) detailViewState.set(id, { sections: {}, tag: '' });
+  return detailViewState.get(id);
+}
+function rememberDetailView() {
+  $('#detail').querySelectorAll('details[data-detail-section][data-owner]').forEach((el) => {
+    detailView(+el.dataset.owner).sections[el.dataset.detailSection] = el.open;
+  });
+  const tag = $('#tag-in');
+  if (tag?.dataset.owner) detailView(+tag.dataset.owner).tag = tag.value;
+}
+function detailProfileState(p) {
+  const state = p.profile_read?.state === 'reading' ? 'reading' : p.profile_read_pending ? 'queued' : p.profile_read?.state || '';
+  const pending = state === 'queued' || state === 'reading';
+  const message = state === 'queued' ? 'Profile refresh queued' : state === 'reading' ? 'Reading profile' : state === 'failed' ? 'Could not refresh profile. Open Profile details to retry.' : '';
+  const source = { extension: 'Instagram browser', tab: 'Instagram browser', meta_bd: 'Profile lookup' }[p.bio_src] || (p.bio_src ? 'Other profile source' : 'Source not recorded');
+  return { pending, failed: state === 'failed', message, source, button: pending ? state === 'reading' ? 'Reading profile…' : 'Refresh queued' : state === 'failed' ? 'Retry profile read' : p.bio_at ? 'Refresh profile' : 'Read profile' };
+}
+async function retryDetail(id) {
+  if (S.person?.id !== id || S.person.loading) return;
+  S.person.loading = true; S.person.failed = false;
+  renderDetail();
+  await refreshPerson(id);
+}
+$('#detail').addEventListener('toggle', (e) => {
+  const el = e.target;
+  if (el.matches('details[data-detail-section][data-owner]')) detailView(+el.dataset.owner).sections[el.dataset.detailSection] = el.open;
+}, true);
+$('#detail').addEventListener('input', (e) => {
+  if (e.target.id === 'tag-in' && e.target.dataset.owner) detailView(+e.target.dataset.owner).tag = e.target.value;
+});
+$('#detail').addEventListener('click', (e) => {
+  if (e.target.closest('#d-retry') && S.person) retryDetail(S.person.id);
+});
 function renderDetail() {
+  rememberDetailView();
   if (S.seedCard) return renderSeedCard();
   const p = S.person;
   if (!p) return;
@@ -969,42 +1118,55 @@ function renderDetail() {
     .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
-  const focused = document.activeElement?.id;
-  const tagVal = $('#tag-in')?.value || '';
-  const noteEl = $('#note'), noteVal = noteEl && +noteEl.dataset.id === p.id ? noteEl.value : p.note || '';
+  const panel = $('#detail');
+  const detailFocus = detailAccess.capture();
+  const view = detailView(p.id);
+  const tagVal = view.tag;
+  const noteVal = noteQueue.peek(p.id)?.draft ?? p.note ?? '';
+  rememberWorkflowForm();
   const have = new Set((p.tags || []).map((t) => t.tag));
   const quick = (S.tagList || []).filter((t) => t.grp !== 'source' && !have.has(t.tag)).sort((a, b) => b.total - a.total).slice(0, 6);
   const reason = p.reason || v.reason;
   const ev = evidenceOf(v);
   const you = youLink(p);
   const role = p.role || v.role;
-  $('#detail').innerHTML = `
+  const profile = detailProfileState(p);
+  const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
+  panel.dataset.owner = String(p.id);
+  panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
-      <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
+      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
+      <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
+    ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <div class="d-sec d-fit">
       <div class="d-fit-h">${p.loading ? '' : fitBadge({ ...p, tier: p.tier || v.tier, score: p.score ?? v.score }, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
       <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
       ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}</div>
+    ${workflowSummaryHTML(p)}
     <div class="d-sec"><h4>Connections<span class="grow"></span><span class="num">${n ? 'In ' + plural(n, 'list') : ''}</span></h4>
       ${you ? `<div class="you-line">${you}</div>` : ''}
       <div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual' : d.has('following') ? 'Followed by them' : d.has('followers') ? 'Follows them' : ''}</span></button>`).join('') : '<span class="muted">–</span>'}</div></div>
-    <div class="d-sec"><h4>Profile</h4><div class="d-bio${p.bio ? '' : ' muted'}">${p.bio ? esc(p.bio) : p.loading ? '' : p.failed ? 'Could not load' : 'No bio read yet'}</div>
-      <div class="d-stats">
-        <div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
+    <div class="d-sec"><h4>Profile</h4><div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
       <div class="d-links">
-        <a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>
-        ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}
-        ${!p.bio && !p.loading ? '<button class="btn" id="d-read">Read bio</button>' : ''}</div></div>
-    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
-      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
-      ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4>Note<span class="grow"></span><span class="d-note" id="note-st">${p.note ? 'Saved' : 'Saves as you type'}</span></h4><textarea class="input" id="note" data-id="${p.id}" placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>`;
+        ${p.handle ? `<a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>` : ''}
+        ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}</div>
+      <p class="muted profile-freshness">${p.bio_at ? 'Last read ' + esc(new Date(p.bio_at).toLocaleString()) : 'No recorded profile read'}</p>
+      ${profile.message ? `<p class="${profile.failed ? 'bad' : 'muted'} profile-freshness" role="status">${esc(profile.message)}</p>` : ''}
+      <details class="adv d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile details</summary>
+        <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
+        <p class="muted profile-freshness">${esc(profile.source)}</p>
+        ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}</details></div>
+    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, false)).join('') : '<span class="muted">None</span>'}</div>
+      <details class="adv d-disclosure" data-detail-section="tags" data-owner="${p.id}" ${view.sections.tags ? 'open' : ''}><summary id="d-tags-summary">Edit tags</summary>
+        ${tags.some((t) => t.source === 'manual') ? `<div class="d-tags">${tags.filter((t) => t.source === 'manual').map((t) => tagChip(t, true)).join('')}</div>` : ''}
+        <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add tag" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
+        ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</details></div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>${workflowHTML(p)}`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
-  if (focused === 'tag-in') $('#tag-in').focus();
-  if (focused === 'note') { const t = $('#note'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  wireWorkflow(p);
+  detailAccess.restore(detailFocus);
 }
 $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-close')) return closeDetail();
@@ -1022,27 +1184,41 @@ $('#detail').addEventListener('click', async (e) => {
   const sd = e.target.closest('[data-seed]');
   if (sd) { const t = canonTag('via @' + sd.dataset.seed); if (t) clickTag(t, e); else { S.f.seed = sd.dataset.seed; filtersChanged(); } return; }
   if (e.target.id === 'd-read') {
-    try { await api.post(`/api/person/${p.id}/read`); toast('Profile read queued'); } catch (err) { toast('Could not queue'); }
+    e.target.disabled = true;
+    try { await api.post(`/api/person/${p.id}/read`); if (S.person?.id === p.id) { S.person.profile_read_pending = true; renderDetail(); } toast('Profile refresh queued'); } catch (err) { e.target.disabled = false; toast('Could not queue: ' + err.message); }
   }
 });
 $('#detail').addEventListener('submit', (e) => {
   e.preventDefault();
+  if (e.target.id !== 'tag-form') return;
   const v = $('#tag-in').value.trim();
   if (v && S.person) { $('#tag-in').value = ''; editTags(S.person.id, [v], []); }
 });
-$('#detail').addEventListener('keydown', (e) => { if (e.key === 'Escape' && /INPUT|TEXTAREA/.test(e.target.tagName)) { e.stopPropagation(); e.target.blur(); } });
-const saveNote = debounce(async (id, note) => {
-  try {
-    await api.post(`/api/person/${id}/mark`, { note });
-    if (S.person?.id === id) { S.person.note = note; if ($('#note-st')) { $('#note-st').textContent = 'Saved'; $('#note-st').className = 'd-note ok'; } }
-    const r = S.rows.find((x) => x.id === id), n = M.byId.get('p:' + id);
-    if (r) { r.note = note || null; renderRows(); }
-    if (n) n.note = note || null;
-  } catch (e) { if ($('#note-st')) { $('#note-st').textContent = 'Not saved, check the server'; $('#note-st').className = 'd-note bad'; } }
-}, 600);
-$('#detail').addEventListener('input', (e) => {
-  if (e.target.id === 'note' && S.person) { $('#note-st').textContent = 'Saving…'; $('#note-st').className = 'd-note'; saveNote(S.person.id, e.target.value); }
+$('#detail').addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !LeadAccessibility.isEditableTarget(e.target)) return;
+  e.stopPropagation();
+  (document.activeElement || e.target).blur();
+  if (detailAccess.isModal()) detailAccess.focusInitial();
 });
+const noteQueue = LeadWorkflow.createNoteQueue({
+  initial: store.get('note-drafts', {}),
+  persist: (drafts) => store.set('note-drafts', drafts),
+  save: async (id, note) => {
+    await api.post(`/api/person/${id}/mark`, { note });
+    const r = S.rows.find((x) => x.id === id), n = M.byId.get('p:' + id);
+    if (r) r.note = note || null;
+    if (n) n.note = note || null;
+    if (S.person?.id === id) { S.person.note = note; refreshActivity(id); }
+    renderRows();
+  },
+  change: (id) => { if (S.person?.id === id && $('#note-st')) $('#note-st').textContent = noteStatus(id); },
+});
+function noteStatus(id) { const e = noteQueue.peek(id); if (!e) return 'Saves as you type'; return e.error ? 'Not saved — draft kept. Edit to retry.' : e.pending || e.draft !== e.saved ? 'Saving…' : 'Saved'; }
+$('#detail').addEventListener('input', (e) => {
+  if (e.target.id === 'note' && S.person) noteQueue.edit(S.person.id, e.target.value, S.person.note || '');
+});
+window.addEventListener('beforeunload', (e) => { if (noteQueue.dirty()) { noteQueue.flushAll().catch(() => {}); e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) noteQueue.flushAll().catch(() => {}); });
 async function editTags(id, add, remove) {
   try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('Could not save tag'); return; }
   await refreshPerson(id);
@@ -1050,13 +1226,289 @@ async function editTags(id, add, remove) {
   if (add.length) toast(`Tagged ${add[0]}`, () => editTags(id, [], add));
 }
 
+// Date-only follow-ups stay in the browser's local calendar; saved views remain relative.
+const workflowDrafts = new Map();
+function rememberWorkflowForm() {
+  const groups = [
+    ['#followup-form', { due: '#followup-date', action: '#followup-note' }],
+    ['#activity-form', { kind: '#activity-kind', body: '#activity-body', when: '#activity-when', status: '#activity-status', followChoice: '#activity-followup', nextDue: '#activity-followup-date', nextAction: '#activity-followup-note' }],
+  ];
+  for (const [selector, fields] of groups) {
+    const form = $(selector); if (!form) continue;
+    const id = +form.dataset.owner, previous = form._workflowValues || {};
+    const draft = { ...workflowDrafts.get(id) }, versions = { ...draft._versions };
+    let changed = false;
+    for (const [key, selector] of Object.entries(fields)) {
+      const field = $(selector); if (!field) continue;
+      const value = field.value;
+      if (!form._workflowPrime && previous[key] !== value) {
+        draft[key] = value; versions[key] = (versions[key] || 0) + 1; changed = true;
+      }
+      previous[key] = value;
+    }
+    form._workflowValues = previous; form._workflowPrime = false;
+    if (changed) { draft._versions = versions; workflowDrafts.set(id, draft); }
+  }
+  for (const [selector, key] of [['#followup-editor', 'followOpen'], ['#activity-editor', 'activityOpen'], ['#activity-options', 'optionsOpen']]) {
+    const el = $(selector); if (!el) continue;
+    if (el._workflowOpen !== el.open) workflowDrafts.set(+el.dataset.owner, { ...workflowDrafts.get(+el.dataset.owner), [key]: el.open });
+    el._workflowOpen = el.open;
+  }
+}
+function localDateTime() { const d = new Date(); return LeadWorkflow.localToday(d) + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+const followUpBusy = new Set(), activityBusy = new Set(), activityMoreBusy = new Set();
+const workflowMessages = new Map(), activityFetchVersions = new Map();
+const activityFields = ['kind', 'body', 'when', 'status', 'followChoice', 'nextDue', 'nextAction'];
+const activityLabels = { dm: 'DM sent', reply: 'Reply received', call: 'Call', meeting: 'Meeting', note: 'Note', status: 'Status changed', follow_up_scheduled: 'Follow-up scheduled', follow_up_completed: 'Follow-up completed', follow_up_cleared: 'Follow-up cleared', identity_merged: 'Profiles merged', follow_up_merged: 'Follow-ups merged' };
+function activityHTML(activity, id = S.person?.id) {
+  if (!activity) return '<p class="muted">Activity is unavailable.</p><button class="btn" id="activity-retry" type="button">Retry activity</button>';
+  const rows = activity.rows || [], all = !!workflowDrafts.get(id)?.historyOpen;
+  const visible = all ? rows : rows.slice(0, 3);
+  return `<ol class="activity-list">${visible.map((a) => `<li><div><strong>${esc(activityLabels[a.kind] || a.kind)}</strong><time datetime="${esc(a.happened_at)}">${esc(new Date(a.happened_at).toLocaleString())}</time></div>${a.body ? `<p>${esc(a.body)}</p>` : ''}${a.before_value != null || a.after_value != null ? `<p class="muted">${esc(activityValue(a.before_value))} → ${esc(activityValue(a.after_value))}</p>` : ''}</li>`).join('')}</ol>${!rows.length ? '<p class="muted">No activity recorded yet.</p>' : ''}<div class="workflow-actions">${rows.length > 3 || activity.next_cursor ? `<button class="btn" type="button" id="activity-show-all" aria-expanded="${all}">${all ? 'Show less activity' : 'Show all activity'}</button>` : ''}${all && activity.next_cursor ? `<button class="btn" type="button" id="activity-more" ${activityMoreBusy.has(id) ? 'disabled' : ''}>Load older activity</button>` : ''}</div>`;
+}
+function activityValue(value) {
+  if (value == null || value === '') return 'None';
+  if (typeof value === 'object') {
+    if (value.kept || value.merged) return 'Kept: ' + activityValue(value.kept) + ' · Merged: ' + activityValue(value.merged);
+    return [value.due_on, value.status ? slabel(value.status) : '', value.note, value.completed_at ? 'Completed' : ''].filter(Boolean).join(' · ') || JSON.stringify(value);
+  }
+  return String(value);
+}
+function workflowBusy(id) { return followUpBusy.has(id) || activityBusy.has(id); }
+function workflowShortcuts(target) {
+  return `<div class="workflow-shortcuts" role="group" aria-label="Choose follow-up date">${[[0, 'Today'], [1, 'Tomorrow'], [7, 'In a week']].map(([days, label]) => `<button type="button" class="btn" data-workflow-days="${days}" data-workflow-date="${target}">${label}</button>`).join('')}</div>`;
+}
+function workflowSummaryHTML(p) {
+  if (p.loading || p.failed) return '';
+  const f = p.follow_up, open = f && !f.completed_at, d = workflowDrafts.get(p.id) || {};
+  const today = LeadWorkflow.localToday(), overdue = open && f.due_on < today;
+  const status = !f ? 'No follow-up scheduled' : f.completed_at ? 'Follow-up completed' : (overdue ? 'Overdue · ' : f.due_on === today ? 'Due today · ' : 'Scheduled · ') + f.due_on;
+  const disabled = workflowBusy(p.id) ? 'disabled' : '';
+  return `<section class="d-sec workflow" id="workflow-summary"><h4>Next action<span class="grow"></span><span class="muted">${esc(p.status ? slabel(p.status) : 'No status')}</span></h4>
+    <div class="workflow-summary-line"><p class="${overdue ? 'bad' : 'muted'}">${esc(status)}</p>${open ? `<button type="button" class="btn" id="followup-complete" data-follow-action="complete" ${disabled}>Complete</button>` : ''}</div>
+    ${open && f.note ? `<p class="workflow-next-action">${esc(f.note)}</p>` : ''}
+    <details class="workflow-editor" id="followup-editor" data-owner="${p.id}" data-workflow-disclosure="followOpen" ${d.followOpen ? 'open' : ''}><summary id="followup-editor-summary">${open ? 'Change follow-up' : f ? 'Schedule next follow-up' : 'Add follow-up'}</summary>
+      <form id="followup-form" data-owner="${p.id}" class="workflow-form" aria-describedby="followup-state" aria-busy="${workflowBusy(p.id)}"><label for="followup-date">Date</label><input class="input" id="followup-date" type="date" required value="${esc(d.due ?? (open ? f.due_on : ''))}">${workflowShortcuts('followup-date')}
+        <label for="followup-note">Next action (optional)</label><input class="input" id="followup-note" maxlength="500" value="${esc(d.action ?? (open ? f.note || '' : ''))}" placeholder="Send portfolio, check reply…"><div class="workflow-actions"><button class="btn solid" id="followup-save" type="submit" ${disabled}>${open ? 'Save follow-up' : 'Schedule follow-up'}</button>${f ? `<button type="button" class="btn" id="followup-clear" data-follow-action="clear" ${disabled}>Clear follow-up</button>` : ''}</div></form></details>
+    <p id="followup-state" role="status" aria-live="polite">${esc(workflowMessages.get(p.id)?.followup || '')}</p></section>`;
+}
+function workflowHTML(p) {
+  if (p.loading || p.failed) return '';
+  const d = workflowDrafts.get(p.id) || {}, f = p.follow_up, open = f && !f.completed_at;
+  const followChoices = [['', 'Keep current follow-up'], ['schedule', open ? 'Reschedule follow-up' : 'Schedule next follow-up']];
+  if (open || ['complete', 'complete_and_schedule'].includes(d.followChoice)) followChoices.push(['complete', 'Complete current follow-up'], ['complete_and_schedule', 'Complete and schedule next']);
+  if (f || d.followChoice === 'clear') followChoices.push(['clear', 'Clear follow-up']);
+  const scheduling = ['schedule', 'complete_and_schedule'].includes(d.followChoice);
+  return `<section class="d-sec workflow" id="workflow-activity"><h4>Activity</h4>
+    <details class="workflow-editor" id="activity-editor" data-owner="${p.id}" data-workflow-disclosure="activityOpen" ${d.activityOpen ? 'open' : ''}><summary id="activity-editor-summary">Log interaction</summary>
+      <form id="activity-form" data-owner="${p.id}" class="workflow-form" aria-describedby="activity-state" aria-busy="${workflowBusy(p.id)}"><label for="activity-kind">Interaction</label><select id="activity-kind" class="select">${['dm', 'reply', 'call', 'meeting', 'note'].map((k) => `<option value="${k}" ${d.kind === k ? 'selected' : ''}>${activityLabels[k]}</option>`).join('')}</select>
+        <label for="activity-when">When (your local time)</label><input class="input" id="activity-when" type="datetime-local" required value="${esc(d.when ?? localDateTime())}"><label for="activity-body">Details</label><textarea class="input" id="activity-body" maxlength="5000" required placeholder="What happened?">${esc(d.body || '')}</textarea>
+        <details class="workflow-optional" id="activity-options" data-owner="${p.id}" data-workflow-disclosure="optionsOpen" ${(d.optionsOpen ?? !!(d.status || d.followChoice)) ? 'open' : ''}><summary id="activity-options-summary">Change status or follow-up (optional)</summary>
+          <div class="workflow-form"><label for="activity-status">Status</label><select id="activity-status" class="select"><option value="">Keep current status</option>${STATUSES.map((s) => `<option value="${s}" ${d.status === s ? 'selected' : ''}>${esc(slabel(s))}</option>`).join('')}</select>
+            <label for="activity-followup">Follow-up</label><select id="activity-followup" class="select">${followChoices.map(([value, label]) => `<option value="${value}" ${d.followChoice === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+            <div class="workflow-form" id="activity-followup-fields" ${scheduling ? '' : 'hidden'}><label for="activity-followup-date">Next follow-up date</label><input class="input" id="activity-followup-date" type="date" value="${esc(d.nextDue || '')}" ${scheduling ? 'required' : 'disabled'}>${workflowShortcuts('activity-followup-date')}<label for="activity-followup-note">Next action (optional)</label><input class="input" id="activity-followup-note" maxlength="500" value="${esc(d.nextAction || '')}" ${scheduling ? '' : 'disabled'} placeholder="What will you do next?"></div></div></details>
+        <button class="btn solid" id="activity-save" type="submit" ${workflowBusy(p.id) ? 'disabled' : ''}>Save interaction</button></form></details>
+    <p id="activity-state" role="status" aria-live="polite">${esc(workflowMessages.get(p.id)?.activity || '')}</p><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div></section>`;
+}
+function wireWorkflow(p) {
+  if (p.loading || p.failed) return;
+  for (const selector of ['#followup-form', '#activity-form']) { const form = $(selector); if (form) form._workflowPrime = true; }
+  for (const selector of ['#followup-editor', '#activity-editor', '#activity-options']) { const el = $(selector); if (el) el._workflowOpen = el.open; }
+  rememberWorkflowForm(); syncWorkflowControls(p.id);
+}
+function syncWorkflowControls(id) {
+  if (S.person?.id !== id) return;
+  const busy = workflowBusy(id);
+  for (const selector of ['#followup-save', '#followup-complete', '#followup-clear', '#activity-save']) { const el = $(selector); if (el) el.disabled = busy; }
+  for (const selector of ['#followup-form', '#activity-form']) $(selector)?.setAttribute('aria-busy', String(busy));
+  for (const key of ['followup', 'activity']) { const el = $('#' + key + '-state'); if (el) el.textContent = workflowMessages.get(id)?.[key] || ''; }
+  const choice = $('#activity-followup')?.value, scheduling = ['schedule', 'complete_and_schedule'].includes(choice);
+  const fields = $('#activity-followup-fields'); if (fields) fields.hidden = !scheduling;
+  const date = $('#activity-followup-date'); if (date) { date.disabled = !scheduling; date.required = scheduling; }
+  const note = $('#activity-followup-note'); if (note) note.disabled = !scheduling;
+}
+function workflowMessage(id, key, message) {
+  workflowMessages.set(id, { ...workflowMessages.get(id), [key]: message }); syncWorkflowControls(id);
+}
+function snapshotWorkflowDraft(id, form, fields) {
+  const draft = { ...workflowDrafts.get(id) };
+  for (const key of fields) if (form?._workflowValues && key in form._workflowValues) draft[key] = form._workflowValues[key];
+  workflowDrafts.set(id, draft);
+  return { ...draft, _versions: { ...draft._versions } };
+}
+function acknowledgeWorkflowDraft(id, submitted, fields, closedKey) {
+  const current = workflowDrafts.get(id) || {};
+  const result = LeadWorkflow.reconcileWorkflowDraft(current, submitted, fields);
+  // A changed form is one coherent newer draft, so retain its unchanged context too.
+  if (result.unchanged) workflowDrafts.set(id, { ...result.draft, ...(closedKey ? { [closedKey]: false } : {}) });
+  return result.unchanged;
+}
+function applyWorkflowResponse(id, response) {
+  const patch = {};
+  if (Object.hasOwn(response, 'follow_up')) patch.follow_up = response.follow_up;
+  if (Object.hasOwn(response, 'status')) patch.status = response.status;
+  const row = S.rows.find((item) => item.id === id); if (row) Object.assign(row, patch);
+  if ('status' in patch) M.patch([id], { status: patch.status });
+  if (S.person?.id === id) {
+    Object.assign(S.person, patch);
+    if (Array.isArray(response.rows)) {
+      activityFetchVersions.set(id, (activityFetchVersions.get(id) || 0) + 1);
+      S.person.activity = { rows: response.rows, next_cursor: response.next_cursor };
+    }
+    renderDetail();
+  }
+  renderRows();
+}
+async function refreshActivity(id) {
+  if (S.person?.id !== id) return;
+  const version = (activityFetchVersions.get(id) || 0) + 1; activityFetchVersions.set(id, version);
+  try {
+    const activity = await api.get(`/api/person/${id}/activity?limit=50`);
+    if (S.person?.id === id && activityFetchVersions.get(id) === version) {
+      S.person.activity = activity;
+      const el = $('#activity-timeline'); if (el) el.innerHTML = activityHTML(activity, id);
+    }
+  } catch (error) { if (S.person?.id === id && !S.person.activity) workflowMessage(id, 'activity', 'Could not load activity: ' + error.message); }
+}
+async function updateFollowUp(id, body, button) {
+  if (workflowBusy(id)) return;
+  rememberWorkflowForm();
+  const baseline = S.person?.id === id ? S.person.follow_up : null;
+  const submitted = snapshotWorkflowDraft(id, $('#followup-form'), ['due', 'action']);
+  followUpBusy.add(id); workflowMessage(id, 'followup', 'Saving…');
+  try {
+    const response = await api.post(`/api/person/${id}/follow-up`, body);
+    if (S.person?.id === id) rememberWorkflowForm();
+    const untouchedReminder = submitted.due === (baseline && !baseline.completed_at ? baseline.due_on : '') && submitted.action === (baseline && !baseline.completed_at ? baseline.note || '' : '');
+    if (!body.action || untouchedReminder) acknowledgeWorkflowDraft(id, submitted, ['due', 'action'], 'followOpen');
+    workflowMessage(id, 'followup', body.action === 'complete' ? 'Follow-up completed' : body.action === 'clear' ? 'Follow-up cleared' : 'Follow-up saved');
+    applyWorkflowResponse(id, response);
+    refreshActivity(id); loadCounts(); loadFacetsSoon(); resetLeads(true);
+  } catch (error) {
+    workflowMessage(id, 'followup', 'Could not save: ' + error.message + '. Your draft is kept.');
+    if (S.person?.id === id) { const editor = $('#followup-editor'); if (editor) editor.open = true; }
+  } finally { followUpBusy.delete(id); syncWorkflowControls(id); }
+}
+async function saveInteraction(id, form) {
+  if (workflowBusy(id)) return;
+  rememberWorkflowForm();
+  const submitted = snapshotWorkflowDraft(id, form, activityFields), date = new Date(submitted.when);
+  if (!Number.isFinite(date.getTime())) { workflowMessage(id, 'activity', 'Choose a valid date and time.'); return; }
+  if (!submitted.body?.trim()) { workflowMessage(id, 'activity', 'Add a few details about the interaction.'); return; }
+  const body = { kind: submitted.kind, body: submitted.body, happened_at: date.toISOString() };
+  if (submitted.status) body.status = submitted.status;
+  if (submitted.followChoice) {
+    if (['schedule', 'complete_and_schedule'].includes(submitted.followChoice)) {
+      if (!submitted.nextDue) { workflowMessage(id, 'activity', 'Choose the next follow-up date.'); return; }
+      body.follow_up = { due_on: submitted.nextDue, note: submitted.nextAction || '' };
+      if (submitted.followChoice === 'complete_and_schedule') body.follow_up.action = 'complete_and_schedule';
+    } else body.follow_up = { action: submitted.followChoice };
+  }
+  const reminder = snapshotWorkflowDraft(id, $('#followup-form'), ['due', 'action']);
+  const baseline = S.person?.id === id ? S.person.follow_up : null;
+  activityBusy.add(id); workflowMessage(id, 'activity', 'Saving…');
+  try {
+    const response = await api.post(`/api/person/${id}/activity`, body);
+    if (S.person?.id === id) rememberWorkflowForm();
+    const cleared = acknowledgeWorkflowDraft(id, submitted, activityFields, 'activityOpen');
+    if (cleared) workflowDrafts.set(id, { ...workflowDrafts.get(id), optionsOpen: false });
+    if (body.follow_up && reminder.due === (baseline && !baseline.completed_at ? baseline.due_on : '') && reminder.action === (baseline && !baseline.completed_at ? baseline.note || '' : '')) acknowledgeWorkflowDraft(id, reminder, ['due', 'action'], 'followOpen');
+    workflowMessage(id, 'activity', 'Interaction saved');
+    applyWorkflowResponse(id, response);
+    if (!Array.isArray(response.rows)) refreshActivity(id);
+    if (body.status || body.follow_up) { loadCounts(); loadFacetsSoon(); resetLeads(true); }
+  } catch (error) {
+    workflowMessage(id, 'activity', 'Could not save: ' + error.message + '. Your draft is kept.');
+    if (S.person?.id === id) { const editor = $('#activity-editor'); if (editor) editor.open = true; }
+  } finally { activityBusy.delete(id); syncWorkflowControls(id); }
+}
+$('#detail').addEventListener('input', (e) => { if (e.target.closest('.workflow-form')) rememberWorkflowForm(); });
+$('#detail').addEventListener('change', (e) => {
+  if (e.target.closest('.workflow-form')) { rememberWorkflowForm(); if (S.person) syncWorkflowControls(S.person.id); }
+});
+$('#detail').addEventListener('toggle', (e) => {
+  const el = e.target;
+  if (!el.matches?.('details[data-workflow-disclosure]') || !el.isConnected) return;
+  if (el._workflowOpen === el.open) return;
+  const id = +el.dataset.owner, key = el.dataset.workflowDisclosure;
+  workflowDrafts.set(id, { ...workflowDrafts.get(id), [key]: el.open }); el._workflowOpen = el.open;
+  if (key === 'activityOpen' && el.open && !workflowDrafts.get(id)?.when && !workflowBusy(id)) {
+    const field = $('#activity-when');
+    if (field) { field.value = localDateTime(); rememberWorkflowForm(); }
+  }
+}, true);
+$('#detail').addEventListener('submit', async (e) => {
+  if (!['followup-form', 'activity-form'].includes(e.target.id)) return;
+  e.preventDefault();
+  const id = +e.target.dataset.owner; if (S.person?.id !== id) return;
+  if (e.target.id === 'followup-form') return updateFollowUp(id, { due_on: $('#followup-date').value, note: $('#followup-note').value }, e.submitter);
+  return saveInteraction(id, e.target);
+});
+$('#detail').addEventListener('click', async (e) => {
+  const id = S.person?.id; if (!id) return;
+  const shortcut = e.target.closest('[data-workflow-days]');
+  if (shortcut) {
+    const field = $('#' + shortcut.dataset.workflowDate); if (!field || field.disabled) return;
+    field.value = LeadWorkflow.addLocalDays(+shortcut.dataset.workflowDays); rememberWorkflowForm(); return;
+  }
+  const action = e.target.closest('[data-follow-action]');
+  if (action) return updateFollowUp(id, { action: action.dataset.followAction }, action);
+  if (e.target.id === 'activity-retry') return refreshActivity(id);
+  if (e.target.id === 'activity-show-all') {
+    const d = workflowDrafts.get(id) || {}; workflowDrafts.set(id, { ...d, historyOpen: !d.historyOpen });
+    $('#activity-timeline').innerHTML = activityHTML(S.person.activity, id); $('#activity-show-all')?.focus(); return;
+  }
+  if (e.target.id !== 'activity-more' || activityMoreBusy.has(id)) return;
+  const button = e.target, activity = S.person.activity; if (!activity?.next_cursor) return;
+  activityMoreBusy.add(id); button.disabled = true;
+  try {
+    const page = await api.get(`/api/person/${id}/activity?limit=50&cursor=${encodeURIComponent(activity.next_cursor)}`);
+    if (S.person?.id === id && S.person.activity === activity) {
+      const seen = new Set(activity.rows.map((row) => row.id));
+      activity.rows.push(...page.rows.filter((row) => !seen.has(row.id))); activity.next_cursor = page.next_cursor;
+      $('#activity-timeline').innerHTML = activityHTML(activity, id); ($('#activity-more') || $('#activity-show-all'))?.focus();
+    }
+  } catch (error) { workflowMessage(id, 'activity', 'Could not load older activity: ' + error.message); }
+  finally { activityMoreBusy.delete(id); if (S.person?.id === id && $('#activity-more')) $('#activity-more').disabled = false; }
+});
+let exporting = false;
+async function exportLeads(selected) {
+  if (exporting) return;
+  const ids = [...S.pick], params = LeadWorkflow.runtimeQuery(toQuery());
+  params.set('sort', S.sort);
+  const query = params.toString();
+  if (selected && !ids.length) return;
+  exporting = true;
+  const state = $('#export-state'); state.textContent = 'Saving notes and preparing CSV…';
+  $('#export-filtered').disabled = true; $('#export-selected').disabled = true;
+  try {
+    await noteQueue.flushAll();
+    const response = await fetch('/api/leads/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selected ? { ids } : { query }) });
+    if (!response.ok) { let message = 'HTTP ' + response.status; try { message = (await response.json()).error || message; } catch {} throw new Error(message); }
+    const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `fortunate-leads-${selected ? 'selected' : 'filtered'}-${LeadWorkflow.localToday()}.csv`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    state.textContent = selected ? `Exported ${ids.length} selected leads` : 'Exported all matching leads';
+  } catch (error) { state.textContent = 'Export failed: ' + error.message + '. Your selection is kept; try again.'; }
+  finally { exporting = false; $('#export-filtered').disabled = false; $('#export-selected').disabled = !S.pick.size; }
+}
+$('#export-filtered').onclick = () => exportLeads(false);
+$('#export-selected').onclick = () => exportLeads(true);
+
 // ---------- keyboard ----------
+const detailAccess = LeadAccessibility.createDetailFocus({
+  panel: $('#detail'), isMobile: narrow,
+  fallbackFocus: () => S.view === 'leads' ? $('#rows .row.cur') || $('#q') : S.view === 'map' ? $('#canvas') : $('.tabs a.on'),
+});
 let gPending = 0;
 document.addEventListener('keydown', (e) => {
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+  if (detailAccess.handleKeydown(e)) return;
+  const typing = LeadAccessibility.isEditableTarget(e.target);
   if (e.key === 'Escape') {
+    gPending = 0;
     if (!$('#help').hidden) { $('#help').hidden = true; return; }
-    if (typing) { e.target.blur(); return; }
+    if (typing) { (document.activeElement || e.target).blur(); if (detailAccess.isModal()) detailAccess.focusInitial(); return; }
+    if (detailAccess.isModal()) { closeDetail(); return; }
     if ($('#filters').classList.contains('show')) { setDrawer(false); return; }
     if (S.open || S.seedCard) { closeDetail(); return; }
     if (S.view === 'map' && M.focus) { M.focus = null; M.draw(); return; }
@@ -1064,7 +1516,7 @@ document.addEventListener('keydown', (e) => {
     if (S.view === 'leads' && S.cur >= 0) { S.cur = -1; renderRows(); }
     return;
   }
-  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (LeadAccessibility.isInteractiveTarget(e.target) || $('#detail').contains(e.target) || detailAccess.isModal() || !$('#help').hidden || e.metaKey || e.ctrlKey || e.altKey) { gPending = 0; return; }
   const k = e.key;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
@@ -1093,7 +1545,7 @@ document.addEventListener('keydown', (e) => {
     if (p && /^[0-5]$/.test(k)) mark(p.id, k === '0' ? null : STATUSES[+k - 1]);
     if (p && k === 'm') mark(p.id, CYCLE[(CYCLE.indexOf(p.status ?? null) + 1) % CYCLE.length]);
     if (p && k === 'o') window.open(`https://www.instagram.com/${encodeURIComponent(p.handle)}/`, '_blank', 'noopener');
-    if (p && k === 't') { e.preventDefault(); $('#tag-in')?.focus(); }
+    if (p && k === 't') { e.preventDefault(); LeadAccessibility.revealAndFocus($('#tag-in')); }
     return;
   }
   if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp' || k === 'J' || k === 'K') {
@@ -1110,14 +1562,18 @@ document.addEventListener('keydown', (e) => {
   if (k === 'x') { if (S.cur < 0) select(0); togglePick(S.cur); return; }
   if (k === 'A') { pickAllInFilter(); return; }
   const r = current();
-  if (k === 'Enter' && S.rows[S.cur]) { openDetail(S.rows[S.cur].id); return; }
+  if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id); return; }
   if (S.pick.size && /^[0-5]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
   if (S.pick.size && k === 't') { e.preventDefault(); $('#bk-add')?.focus(); return; }
   if (!r) return;
   if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
   if (/^[0-5]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
   if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
-  if (k === 't') { e.preventDefault(); if (S.open !== r.id) openDetail(r.id).then(() => $('#tag-in')?.focus()); else $('#tag-in')?.focus(); }
+  if (k === 't') {
+    e.preventDefault();
+    const focusTag = () => { if (S.open === r.id) LeadAccessibility.revealAndFocus($('#tag-in')); };
+    if (S.open !== r.id) openDetail(r.id).then(focusTag); else focusTag();
+  }
 });
 $('#help-btn').onclick = () => { $('#help').hidden = false; };
 $('#help').onclick = () => { $('#help').hidden = true; };
@@ -1383,7 +1839,12 @@ function renderStatus() {
   $('#n-acc').textContent = alerts ? '!' + alerts : accs.length > 1 ? String(accs.length) : '';
 }
 async function loadScraper() {
-  try { S.sc = await api.get('/api/scraper'); } catch (e) { /* keep last */ }
+  if (S.scLoading) return;
+  S.scLoading = true;
+  if (S.view === 'scraper' && (!S.sc || S.scError)) renderScraper();
+  try { S.sc = await api.get('/api/scraper'); S.scError = false; }
+  catch (e) { S.scError = true; }
+  finally { S.scLoading = false; }
   renderStatus();
   if (S.view === 'scraper') renderScraper();
   if (S.view === 'accounts') renderAccounts();
@@ -1417,7 +1878,18 @@ function eta(h) {
 }
 function renderScraper() {
   const sc = S.sc;
-  if (!sc) { $('#stages').innerHTML = '<div class="muted">Loading</div>'; return; }
+  if (!sc || S.scError) {
+    const message = S.scError
+      ? sc ? 'Could not refresh. Showing last loaded data.' : 'Could not load collection status.'
+      : 'Loading collection status…';
+    const html = `<div class="row-flex"><span class="muted" role="status">${message}</span>${S.scError ? `<button class="btn" type="button" id="scr-retry"${S.scLoading ? ' disabled' : ''}>${S.scLoading ? 'Retrying…' : 'Retry'}</button>` : ''}</div>`;
+    if ($('#now').innerHTML !== html) $('#now').innerHTML = html;
+    if (!sc) {
+      $('#stages').innerHTML = '';
+      $('#lists-body').innerHTML = `<tr><td colspan="5" class="muted">${S.scError ? 'Lists are unavailable until collection status loads.' : 'Loading lists…'}</td></tr>`;
+      return;
+    }
+  }
   const x = sc.ext || {}, ls = sc.lists || [], pr = sc.progress || {};
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
@@ -1433,7 +1905,7 @@ function renderScraper() {
   const accs = sc.accounts || [];
   const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} this hour` : 'offline'}</span></span>`).join('')
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
-  $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
+  if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
   const h1 = sc.soak?.['1h'] || {};
   const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
   $('#scr-counts').innerHTML = tile('Scraped in the last hour', int(h1.new_people ?? h1.people ?? 0), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
@@ -1464,6 +1936,7 @@ function renderScraper() {
   const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   const rows = listsAll ? all : all.slice(0, 8);
+  const empty = ls.length ? { active: 'No active lists.', done: 'No completed lists.', issues: 'No issues.' }[listFilter] : 'No lists yet. Add an account above.';
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
     return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
@@ -1471,9 +1944,10 @@ function renderScraper() {
       <td class="r num">${int(l.received)}${l.total ? ' of ' + int(l.total) : ''}</td>
       <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(LIST_STATE[l.state] || ucf(l.state))}</span></td></tr>`;
   }).join('') + (all.length > rows.length ? `<tr><td colspan="5"><button class="btn ghost" id="lists-all">Show all ${int(all.length)}</button></td></tr>` : '')
-    : `<tr><td colspan="5" class="muted">No lists yet. Add an account above.</td></tr>`;
+    : `<tr><td colspan="5" class="muted">${empty}</td></tr>`;
 }
 let listsAll = false;
+$('#now').addEventListener('click', (e) => { if (e.target.closest('#scr-retry')) loadScraper(); });
 $('#lists-body').addEventListener('click', (e) => { if (e.target.closest('#lists-all')) { listsAll = true; renderScraper(); } });
 function backIn(t) {
   const m = Math.ceil(Math.max(0, Date.parse(t) - Date.now()) / 60000);
@@ -1996,7 +2470,7 @@ const M = {
   },
   reloadSoon: debounce(() => M.load(), 250),
   url() {
-    const p = toQuery(S.f, S.sort, false);
+    const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
     p.set('scope', this.scope); p.set('limit', this.scope === 'all' ? 5000 : 800);
     return '/api/map?' + p;
   },
@@ -2400,6 +2874,7 @@ function hoverCard(n) {
     ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>In ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
 }
 function openSeed(n) {
+  if (S.open) noteQueue.flush(S.open).catch(() => {});
   S.seedCard = n.id; S.open = null; S.person = null;
   $('#detail').hidden = false;
   renderSeedCard(); renderRows();
@@ -2538,6 +3013,7 @@ $('#view-work').classList.toggle('work-noside', !S.side);
   renderFilters(); renderTokens();
   resetLeads();
   loadFacets(); loadCounts(); loadScraper(); loadViews();
+  noteQueue.flushAll().catch(() => toast('Some notes are not saved. Your drafts are kept.'));
   setView(view);
 })();
 setInterval(loadScraper, 3000);

@@ -843,14 +843,23 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
 .set-forms details.adv { display: grid; gap: var(--s2); }
 
 /* Detail panel: fewer boxes, hierarchy from type and space */
-.detail { background: var(--bg); }
+.detail { min-width: 0; background: var(--bg); scroll-padding-block: var(--s4); }
 .d-head { padding: var(--s5) var(--s5) var(--s3); }
+.d-head .who { flex: 1; overflow-wrap: anywhere; }
+.detail :focus-visible { outline: 2px solid var(--fg2); outline-offset: 2px; }
+#d-person-title:focus { outline: 2px solid var(--fg2); outline-offset: 4px; border-radius: var(--r3); }
 .d-sec, .d-seed { padding: var(--s3) var(--s5) var(--s4); border-top: 0; }
+.d-sec { min-width: 0; }
+.d-bio, .d-reason, .evidence li, .you-line { overflow-wrap: anywhere; }
+.d-fit-h > .muted { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.d-links .btn:not(.solid) { min-width: 0; min-height: 30px; height: auto; padding-block: var(--s1); white-space: normal; overflow-wrap: anywhere; }
 .d-sec h4 { font-size: var(--fs-xs); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); }
 .d-sec h4 .num { letter-spacing: 0; text-transform: none; }
 .d-fit { padding-bottom: var(--s5); border-bottom: 1px solid var(--line); margin-bottom: var(--s2); }
 .edges { border: 0; border-radius: 0; margin: 0 calc(-1 * var(--s2)); }
-.edges button { height: 32px; padding: 0 var(--s2); border-radius: var(--r2); }
+.edges button { min-height: 32px; height: auto; padding: var(--s1) var(--s2); border-radius: var(--r2); }
+.edges b { min-width: 0; overflow-wrap: anywhere; }
+.edges span { flex: none; }
 .edges button + button { border-top: 0; }
 .d-stats { border: 0; margin-top: var(--s4); }
 .d-stats div { padding: 0; }
@@ -915,3 +924,55 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
 .fl-ctl-msg { color: var(--fg3, #707070); }
 @media (max-width: 640px) { .fl-ctl { padding: 8px 12px; } .fl-ctl-now { order: 3; flex-basis: 100%; } }
 /* ==== control strip — END ==== */
+
+/* Lead workflow controls share the existing compact detail panel. */
+.export-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 14px; border-bottom:1px solid var(--line); }
+.export-bar [role="status"] { font-size:12px; color:var(--fg2); flex:1; min-width:120px; }
+.workflow-form { display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; min-width:0; }
+.workflow-form > * { min-width:0; }
+.workflow-form label { font-size:12px; color:var(--fg2); }
+.workflow-form .input, .workflow-form .select { width:100%; min-width:0; box-sizing:border-box; }
+.workflow-form textarea { min-height:64px; resize:vertical; }
+.workflow-form > button { justify-self:start; }
+.workflow-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.workflow .btn { min-height:30px; height:auto; max-width:100%; padding-block:var(--s1); white-space:normal; overflow-wrap:anywhere; }
+.workflow-summary-line { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; }
+.workflow-summary-line > * { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+.workflow-summary-line .btn { flex:none; }
+.workflow-next-action { margin-top:var(--s2); white-space:pre-wrap; overflow-wrap:anywhere; }
+.workflow-shortcuts { display:flex; flex-wrap:wrap; gap:6px; }
+.workflow-editor { margin-top:var(--s2); }
+.workflow-editor[open] > .workflow-form { margin-top:var(--s2); }
+.workflow-optional[open] > :not(summary) { margin-top:var(--s2); }
+#activity-followup-fields { display:grid; grid-template-columns:minmax(0, 1fr); gap:var(--s2); min-width:0; }
+details:is(.d-disclosure, .workflow-editor, .workflow-optional) > summary {
+  display:flex; align-items:center; gap:var(--s2); width:100%; min-height:32px; padding:var(--s2) 0;
+  cursor:pointer; list-style:none; color:var(--fg2); font-size:var(--fs-sm); font-weight:500; overflow-wrap:anywhere;
+}
+details:is(.d-disclosure, .workflow-editor, .workflow-optional) > summary::-webkit-details-marker { display:none; }
+details:is(.d-disclosure, .workflow-editor, .workflow-optional) > summary::before {
+  content:""; width:6px; height:6px; flex:none; border:solid currentColor; border-width:0 1.5px 1.5px 0;
+  transform:rotate(-45deg); transition:transform .15s var(--ease);
+}
+details:is(.d-disclosure, .workflow-editor, .workflow-optional)[open] > summary::before { transform:rotate(45deg); }
+details:is(.d-disclosure, .workflow-editor, .workflow-optional) > summary:hover { color:var(--fg); }
+.d-disclosure .d-stats { margin-top:var(--s2); }
+.workflow [role="status"] { font-size:12px; overflow-wrap:anywhere; }
+.activity-list { list-style:none; padding:0; margin:16px 0 8px; }
+.activity-list li { padding:10px 0; border-top:1px solid var(--line); }
+.activity-list li > div { display:flex; flex-wrap:wrap; gap:5px 12px; justify-content:space-between; }
+.activity-list li > div > * { min-width:0; overflow-wrap:anywhere; }
+.activity-list strong { font-size:12px; font-weight:600; }
+.activity-list time { font-size:11px; color:var(--fg2); }
+.activity-list p { font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; margin:5px 0 0; }
+.profile-freshness { margin-top:var(--s2); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
+.d-disclosure .profile-freshness { margin-bottom:var(--s2); }
+button:disabled { cursor:default; opacity:.5; }
+
+.followup-chip { font-size:10px; border:1px solid var(--line3); border-radius:var(--r3); padding:1px 4px; white-space:nowrap; }
+
+@media (max-width: 640px) {
+  .workflow .btn, .workflow-form .input, .workflow-form .select { min-height:40px; }
+  details:is(.d-disclosure, .workflow-editor, .workflow-optional) > summary { min-height:40px; }
+  .d-close { width:40px; height:40px; }
+}
