@@ -1091,10 +1091,14 @@ SEED_LINKS = [None]   # [(key, computed_at, links)]: replaced whole, never mutat
 SEED_LINKS_TOP = 50
 
 
-def seed_links(conn):
+def seed_links(conn, cacheable=None):
+    # A caller's uncommitted revision can be reused after rollback. API reads
+    # pass an explicit committed-snapshot flag from before cached() opens one.
+    if cacheable is None:
+        cacheable = not conn.in_transaction
     path = conn.execute('PRAGMA database_list').fetchone()[2]
     key = (path or ('memory', id(conn)), data_rev(conn))
-    cached = SEED_LINKS[0]
+    cached = SEED_LINKS[0] if cacheable else None
     if cached and cached[0] == key:
         return cached[2]
     # Overlap means people currently observed in both source lists. The
@@ -1108,15 +1112,17 @@ def seed_links(conn):
     pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split(','))), 2) for r in rows))
     top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
     links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
-    SEED_LINKS[0] = (key, datetime.now().timestamp(), links)
+    if cacheable:
+        SEED_LINKS[0] = (key, datetime.now().timestamp(), links)
     return links
 
 
 def api_map(conn, q, b):
-    # The revision, selected people, and source overlaps must describe one
-    # committed snapshot even while collection writes another page.
-    with read_snapshot(conn):
-        return dict(cached(conn, 'map', q, lambda: map_graph(conn, q)), seed_links=seed_links(conn))
+    # cached() reads the revision and computes the complete response in one
+    # snapshot. Capturing the caller's state first keeps rollback-only reads
+    # out of both caches while allowing committed UI polls to reuse the result.
+    committed = not conn.in_transaction
+    return cached(conn, 'map', q, lambda: dict(map_graph(conn, q), seed_links=seed_links(conn, cacheable=committed)))
 
 
 def api_connections(conn, q, b):
@@ -1167,7 +1173,8 @@ def map_graph(conn, q):
     multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
     # The common unfiltered overview can follow two exact ranking indexes and
     # stop after its display limit. Other filters still use the general query.
-    simple = rank_ready and set(q) <= {'scope', 'limit'}
+    # The UI always adds its local date; it changes only follow-up filters.
+    simple = rank_ready and set(q) <= {'scope', 'limit', 'today'}
     if simple:
         source_cond = 'd.hidden=0 AND ' + excluded
         source_join = 'FROM map_person_degree d JOIN people p ON p.id=d.person_id '

@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -609,6 +610,22 @@ class TagsViewsMapTest(Base):
         shared = lambda: [x['shared'] for x in self.call('/api/map')[1]['seed_links']]  # noqa: E731
         self.assertEqual(shared(), [2, 2, 2])  # next refresh acknowledges the committed observation
         self.assertEqual(shared(), [2, 2, 2])
+
+    def test_default_ui_map_poll_reuses_response_until_revision_changes(self):
+        pid = self.people({'ann': ('founder', 500, ['s1'])})['ann']
+        url = '/api/map?today=2026-09-27&scope=leads&limit=3000'
+        server.clear_caches()
+        with mock.patch.object(server, 'map_graph', wraps=server.map_graph) as build:
+            first = self.call(url)[1]
+            self.assertEqual(self.call(url)[1], first)
+            self.assertEqual(build.call_count, 1)
+            db.add_edge(self.conn, 's2', pid, 'following')
+            self.conn.commit()
+            changed = self.call(url)[1]
+            self.assertEqual(build.call_count, 2)
+        self.assertGreater(changed['rev'], first['rev'])
+        self.assertEqual(next(n for n in changed['nodes'] if n['id'] == f'p:{pid}')['degree'], 2)
+        self.assertEqual(changed['seed_links'], [{'source': 's:s1', 'target': 's:s2', 'shared': 1}])
 
     def test_rule_preview(self):
         self.people(self.SPEC)

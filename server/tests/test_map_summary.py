@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault('FL_NO_ORSLOT', '1')
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -187,6 +188,31 @@ class MapSummaryTest(unittest.TestCase):
         hidden = server.api_map(self.conn, {}, None)
         self.assertEqual(hidden['total'], 0)
         self.assertGreater(hidden['rev'], historical['rev'])
+
+    def test_ui_query_uses_indexed_path_and_repeated_poll_uses_cache(self):
+        self.edge('sourcea', 1)
+        self.conn.commit()
+        query = {'today': ['2026-09-27'], 'scope': ['leads'], 'limit': ['3000']}
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        with mock.patch.object(server, 'map_graph', wraps=server.map_graph) as build:
+            first = server.api_map(self.conn, query, None)
+            second = server.api_map(self.conn, query, None)
+            self.assertEqual(build.call_count, 1)
+        self.conn.set_trace_callback(None)
+        self.assertEqual(first, second)
+        self.assertTrue(any('SELECT count(*) FROM map_person_degree WHERE hidden=0' in sql
+                            for sql in statements))
+        self.assertFalse(any('WITH b AS MATERIALIZED' in sql for sql in statements))
+        # A date paired with a follow-up filter still takes the general path.
+        self.conn.execute("INSERT INTO followups(person_id,due_on,updated_at) VALUES(1,'2026-09-28',?)",
+                          (self.ts,))
+        self.conn.commit()
+        due = server.api_map(self.conn, dict(query, follow_up=['due']), None)
+        self.assertEqual(due['total'], 0)
+        self.conn.execute("UPDATE followups SET due_on='2026-09-27' WHERE person_id=1")
+        self.conn.commit()
+        self.assertEqual(server.api_map(self.conn, dict(query, follow_up=['due']), None)['total'], 1)
 
     def test_missing_maintenance_trigger_falls_back_then_rebuilds(self):
         self.edge('sourcea', 1)

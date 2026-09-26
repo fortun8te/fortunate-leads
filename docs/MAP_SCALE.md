@@ -6,20 +6,22 @@ This change keeps the map an evidence view: an arrow records a directed follow o
 
 - `map_person_degree` holds one row per existing person with a current observed source, its distinct current-source count, ranking score, and hidden status. `map_source_handles` holds the handles used by seed records or any historical edge. `map_seed_member` holds one row per current person/source pair; `map_seed_degree` counts those rows by source. Storage and mutation work are linear in observations and current memberships. There is no stored source-pair product.
 - Triggers maintain each summary in the same SQLite transaction as changes to edges, decisive evidence, people, verdicts, marks, and source handles. Timestamp-only evidence updates skip the expensive membership recomputation. The map's simple unfiltered ranking uses two indexes and hydrates only displayed rows. Arbitrary filters use the exact general query.
-- `/api/map` reads revision, chosen people, and source overlap in one snapshot. The overlap cache is keyed to the exact committed data revision; a newly committed observation appears on the next poll. If readiness markers or maintenance triggers are missing, reads use the original `current_edges` path; `db.init()` rebuilds a missing summary on startup. A failed backfill leaves the ready marker unset and can be retried.
+- `/api/map` reads revision, chosen people, and source overlap in one snapshot. Its complete response cache and overlap cache are keyed to the exact committed data revision; a newly committed observation appears on the next poll. Uncommitted reads bypass both caches. If readiness markers or maintenance triggers are missing, reads use the original `current_edges` path; `db.init()` rebuilds a missing summary on startup. A failed backfill leaves the ready marker unset and can be retried.
 - The canvas keeps positions and pinned nodes when a new revision arrives. A request sequence rejects late responses, including two requests for the same URL. At distant zoom, crowded individual follow lines are hidden with an on-canvas zoom hint; selected or hovered connections remain visible.
 
 ## Synthetic measurements
 
-Generated with `tests/bench_map_scale.py` on this Mac. Each fixture has 12 source accounts, one or two directed current edges per person, exact evidence, verdict scores, and no live records. These are local measurements, not production guarantees. Baseline values are single uncached stage runs before this change; the updated API numbers are ten runs with nearest-rank p95.
+Generated with `tests/bench_map_scale.py` on this Mac. Each fixture has 12 source accounts, one or two directed current edges per person, exact evidence, verdict scores, and no live records. These are local in-process handler measurements, excluding HTTP transport and browser parsing, not production guarantees.
 
-| Edges / people | Before: 400-map stage | Before: overlap stage | After: complete API cold p50 / p95 | After: complete API warm p50 / p95 | Compact JSON, 400 map |
+The **actual default UI request** is `today=2026-09-27&scope=leads&limit=3000`. The date is only used when a follow-up filter is active. Earlier tests omitted it, so they missed a full-sort path that the UI always took. This table uses ten runs for the optimized path, with nearest-rank p95. The forced-general-plan column is a single same-fixture diagnostic that reproduces the old query choice; it is not a ten-run baseline.
+
+| Edges / people | Forced general plan, one cold run | UI cold p50 / p95 | Same-revision UI poll p50 / p95 | Compact JSON | Peak process RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 100k / 80k | 268 ms | 116 ms | 41 / 69 ms | 10 / 10 ms | 243 KB |
-| 1M / 800k | 2,869 ms | 1,356 ms | 339 / 393 ms | 28 / 29 ms | 272 KB |
-| 5M / 4M | 16,787 ms | 7,406 ms | 1,658 / 2,055 ms | 101 / 104 ms | 272 KB |
+| 100k / 80k | 256 ms | 90 / 147 ms | 0.20 / 0.27 ms | 1.80 MB | 123 MB |
+| 1M / 800k | 1,693 ms | 402 / 730 ms | 0.19 / 0.31 ms | 1.85 MB | 302 MB |
+| 5M / 4M | 5,915 ms | 1,793 / 3,003 ms | 0.18 / 0.30 ms | 2.03 MB | 326 MB |
 
-The before stages were measured separately and must not be added and presented as an API measurement. A same-fixture 5M read-through check, with all summary readiness markers disabled, returned exactly the same API data as the optimized path. That check took 28.26 seconds versus 1.93 seconds for the optimized complete API in the same process. The 5M indexed rank query plan uses `map_score_rank` and an indexed source-handle lookup; it no longer sorts 4M people for the top 400.
+The original uncached 400-person stages took 268/116 ms at 100k, 2,869/1,356 ms at 1M, and 16,787/7,406 ms at 5M for map selection and overlap respectively. Those stages were measured separately and must not be added and presented as an API timing. A same-fixture 5M read-through check, with all summary readiness markers disabled, returned exactly the same 400-person API data as the optimized path. That check took 28.26 seconds versus 1.93 seconds for the optimized complete API in the same process. The UI query now uses `map_score_rank` and an indexed source-handle lookup; it no longer sorts 4M people to choose the displayed sample.
 
 The broad 10,000-person overview remains bounded, but is heavier: one measured 5M cold request took 4.85 seconds and returned 6.77 MB compact JSON with 10,000 people and 19,901 links. A true all-edges canvas remains outside this endpoint's contract.
 
@@ -42,7 +44,7 @@ On the 5M fixture, 500 new current memberships took median 27.0 ms with summary 
 Use only an explicit synthetic scratch path. The generator bulk-loads without summary triggers, then `--migrate` performs the one-time backfill. A typical invocation is:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 tests/bench_map_scale.py --edges 100000 --db /private/tmp/fl-map-scale-100k.sqlite --build --migrate --api-only --runs 10
+PYTHONDONTWRITEBYTECODE=1 python3 tests/bench_map_scale.py --edges 100000 --db /private/tmp/fl-map-scale-100k.sqlite --build --migrate --api-only --ui-shaped --runs 10
 PYTHONDONTWRITEBYTECODE=1 python3 tests/bench_map_writes.py /private/tmp/fl-map-scale-100k.sqlite
 PYTHONPATH=server PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s server/tests -p test_map_summary.py -q
 node --test tests/ui/map.test.mjs

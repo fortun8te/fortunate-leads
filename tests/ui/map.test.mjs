@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
+const workflowSource = readFileSync(new URL('../../web/workflow.js', import.meta.url), 'utf8');
 const code = source.slice(source.indexOf('const LEAD_R ='), source.indexOf('function hoverCard('));
 function harness() {
   const elements = new Map(), images = [];
@@ -13,9 +14,10 @@ function harness() {
   };
   const c = vm.createContext({$, api, store:{get:()=>true}, debounce:f=>f, filterCount:()=>0,
     fitOf:n=>n.fit || 'unread', int:String, plural:(n,s)=>`${n} ${s}`, S:{f:{},view:'map'},
-    toQuery:()=>new URLSearchParams(), URLSearchParams, LeadWorkflow:{runtimeQuery:q=>q},
+    toQuery:()=>new URLSearchParams(), URLSearchParams,
     Image:class {constructor(){images.push(this);}}, document:{createElement:()=>({getContext:()=>null})},
     openDetail(){}, openSeed(){}});
+  vm.runInContext(workflowSource, c);
   vm.runInContext(code + '\nthis.map = M; this.cache = PICS; this.queue = picQueue;', c);
   c.map.simulate = () => {}; c.map.draw = () => {}; c.map.schedule = () => {};
   return {c, $, images, m:c.map, api};
@@ -47,6 +49,7 @@ test('map resolves history endpoints but excludes history from neighbours and di
 test('map reports displayed sample and search scope with same client/server cap', () => {
   const {m,$} = harness();m.scope='all';
   assert.match(m.url(),/limit=10000/);
+  assert.match(m.url(),/today=\d{4}-\d{2}-\d{2}/);
   m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:10000});
   assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
   assert.match($('#map-count').textContent,/map limit 10000/);

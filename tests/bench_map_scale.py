@@ -97,12 +97,13 @@ def measure(path, runs):
     return report
 
 
-def measure_api(path, runs):
+def measure_api(path, runs, ui_shaped=False):
     """Cold exact-revision refreshes and warm polls through the public handler."""
     conn = db.connect(path)
     server.CFG['db'] = path
-    query = {'limit': ['400']}
-    report = {'people': conn.execute('SELECT count(*) FROM people').fetchone()[0],
+    query = ({'today': ['2026-09-27'], 'scope': ['leads'], 'limit': ['3000']}
+             if ui_shaped else {'limit': ['400']})
+    report = {'query': query, 'people': conn.execute('SELECT count(*) FROM people').fetchone()[0],
               'edges': conn.execute('SELECT count(*) FROM edges').fetchone()[0],
               'db_bytes': Path(path).stat().st_size,
               'summary_rows': {
@@ -121,7 +122,7 @@ def measure_api(path, runs):
                         'p95_nearest_rank_ms': ordered[math.ceil(.95 * runs) - 1]}
     plan_sql = ('SELECT d.person_id FROM map_person_degree d JOIN people p ON p.id=d.person_id '
                 'WHERE d.hidden=0 AND p.handle NOT IN (SELECT handle FROM map_source_handles) '
-                'ORDER BY d.score IS NULL,d.score DESC,d.degree DESC,d.person_id LIMIT 400')
+                'ORDER BY d.score IS NULL,d.score DESC,d.degree DESC,d.person_id LIMIT ' + query['limit'][0])
     report['rank_plan'] = [r[3] for r in conn.execute('EXPLAIN QUERY PLAN ' + plan_sql)]
     report['response_bytes_compact'] = len(json.dumps(result, separators=(',', ':')).encode())
     report['peak_rss_bytes'] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -137,6 +138,7 @@ if __name__ == '__main__':
     parser.add_argument('--build', action='store_true')
     parser.add_argument('--migrate', action='store_true', help='apply summary backfill after a bulk synthetic build')
     parser.add_argument('--api-only', action='store_true', help='measure cold/warm complete map responses')
+    parser.add_argument('--ui-shaped', action='store_true', help='use the default map UI query, including today')
     args = parser.parse_args()
     if args.edges < 10 or args.runs < 1:
         parser.error('edges must be >= 10 and runs >= 1')
@@ -155,4 +157,4 @@ if __name__ == '__main__':
         started = time.perf_counter()
         db.init(args.db).close()
         print(json.dumps({'migration_s': round(time.perf_counter() - started, 2)}), flush=True)
-    print(json.dumps(measure_api(args.db, args.runs) if args.api_only else measure(args.db, args.runs), indent=2), flush=True)
+    print(json.dumps(measure_api(args.db, args.runs, args.ui_shaped) if args.api_only else measure(args.db, args.runs), indent=2), flush=True)
