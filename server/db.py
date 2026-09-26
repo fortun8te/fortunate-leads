@@ -150,6 +150,25 @@ def norm_handle(h):
     return h.lower()
 
 
+def normalize_ig_id(value):
+    """Blank external IDs are missing evidence, never a replacement identity."""
+    return (str(value).strip() or None) if value is not None else None
+
+
+def _preserve_seed_identity(conn, person):
+    """Keep handle-keyed history attached to its known owner before a rename.
+
+    An already identified seed can disagree with the current handle holder. Keep
+    that evidence intact; only fill absent IDs, including legacy blank values.
+    """
+    ig_id = normalize_ig_id(person['ig_id'])
+    if ig_id:
+        seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (person['handle'],)).fetchone()
+        if seed is not None and normalize_ig_id(seed['ig_id']) is None:
+            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=? AND ig_id IS ?',
+                         (ig_id, person['handle'], seed['ig_id']))
+
+
 def upsert_person(conn, u, ts=None):
     ts = ts or now()
     vals = {k: u[k] for k in PERSON_FIELDS if u.get(k) is not None}
@@ -157,17 +176,30 @@ def upsert_person(conn, u, ts=None):
         if k in vals:
             vals[k] = int(bool(vals[k]))
     if 'ig_id' in vals:
-        vals['ig_id'] = str(vals['ig_id'])
+        ig_id = normalize_ig_id(vals['ig_id'])
+        if ig_id is None:
+            del vals['ig_id']
+        else:
+            vals['ig_id'] = ig_id
     if 'handle' in vals:
         vals['handle'] = norm_handle(vals['handle'])
-    by_id = vals.get('ig_id') and conn.execute('SELECT id FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
-    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id FROM people WHERE handle=?', (vals['handle'],)).fetchone()
-    if not by_id and by_handle and by_handle['ig_id'] and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
+    by_id = vals.get('ig_id') and conn.execute('SELECT id, ig_id, handle FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
+    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id, handle FROM people WHERE handle=?', (vals['handle'],)).fetchone()
+    if by_handle and normalize_ig_id(by_handle['ig_id']) is None and vals.get('ig_id'):
+        seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (by_handle['handle'],)).fetchone()
+        seed_id = normalize_ig_id(seed['ig_id']) if seed is not None else None
+        if seed_id and seed_id != vals['ig_id']:
+            raise ValueError('seed account identity conflicts with incoming profile')
+    if by_id and vals.get('handle') and by_id['handle'].lower() != vals['handle']:
+        _preserve_seed_identity(conn, by_id)
+    if not by_id and by_handle and normalize_ig_id(by_handle['ig_id']) and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
         # a different account now holds this handle: the old row keeps its marks/edges/tags under a parked handle
+        _preserve_seed_identity(conn, by_handle)
         conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
         by_handle = None
     if by_id and by_handle and by_id['id'] != by_handle['id']:
-        if by_handle['ig_id']:  # the handle now belongs to this ig_id; the old holder renamed
+        if normalize_ig_id(by_handle['ig_id']):  # the handle now belongs to this ig_id; the old holder renamed
+            _preserve_seed_identity(conn, by_handle)
             conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
         else:  # same account seen before without ig_id: fold it in
             merge_people(conn, keep=by_id['id'], drop=by_handle['id'])
@@ -186,18 +218,44 @@ def upsert_person(conn, u, ts=None):
                         (*vals.values(), ts, ts)).lastrowid
 
 
+def _earliest_observed(left, right):
+    """Prefer the earliest trustworthy instant over invalid/naive/future dates.
+
+    If neither date establishes an instant, retain a deterministic source value
+    for legacy compatibility. It remains unknown to evidence readers. Two
+    missing values stay NULL; ledger callers use '' for their NOT NULL column.
+    """
+    valid = []
+    cutoff = utc_now()
+    for value in (left, right):
+        if not isinstance(value, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if dt.tzinfo is not None and dt <= cutoff:
+                valid.append(dt.astimezone(timezone.utc))
+        except (ValueError, OverflowError):
+            continue
+    if valid:
+        return min(valid).isoformat()
+    unknown = [value for value in (left, right) if isinstance(value, str) and value]
+    return min(unknown) if unknown else None
+
+
 def merge_people(conn, keep, drop):
     # Retain the earliest edge and every distinct page observation when identities merge.
+    conn.create_function('earliest_observed', 2, _earliest_observed)
     conn.execute('INSERT INTO edges(seed,person_id,direction,first_seen) '
                  'SELECT seed,?,direction,first_seen FROM edges WHERE person_id=? '
                  'ON CONFLICT(seed,person_id,direction) DO UPDATE SET first_seen='
-                 'min(coalesce(edges.first_seen,excluded.first_seen),coalesce(excluded.first_seen,edges.first_seen))',
+                 'earliest_observed(edges.first_seen,excluded.first_seen)',
                  (keep, drop))
     conn.execute('DELETE FROM edges WHERE person_id=?', (drop,))
     conn.execute('INSERT INTO edge_observations(seed,person_id,direction,page_key,job_id,observed_at) '
                  'SELECT seed,?,direction,page_key,job_id,observed_at FROM edge_observations WHERE person_id=? '
                  'ON CONFLICT(seed,person_id,direction,page_key) DO UPDATE SET '
-                 'observed_at=min(edge_observations.observed_at,excluded.observed_at)', (keep, drop))
+                 # The ledger's NOT NULL date uses an empty string for unknown.
+                 "observed_at=coalesce(earliest_observed(edge_observations.observed_at,excluded.observed_at),'')", (keep, drop))
     conn.execute('DELETE FROM edge_observations WHERE person_id=?', (drop,))
     for t in ('tags', 'marks', 'verdicts'):
         conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
@@ -219,7 +277,7 @@ def list_page_key(seed, direction, users, cursor, job_id=None):
     """
     if job_id is not None:
         return f'job:{job_id}:{cursor or ""}'
-    members = sorted({('id:' + str(u['ig_id'])) if u.get('ig_id') is not None
+    members = sorted({('id:' + ig_id) if (ig_id := normalize_ig_id(u.get('ig_id'))) is not None
                       else ('handle:' + norm_handle(u['handle'])) for u in users})
     payload = json.dumps([norm_handle(seed), direction, cursor or '', members], separators=(',', ':'))
     return 'import:' + hashlib.sha256(payload.encode()).hexdigest()

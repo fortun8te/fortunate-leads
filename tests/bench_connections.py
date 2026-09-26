@@ -4,6 +4,7 @@
 
 Reuses bench.py's seeded synthetic distribution, then adds a 20k-neighbor
 source. Also measures tracked history with three page observations per hub edge.
+Also compares two sources sharing the full candidate pool.
 Reports first-call and median timings, SQL statement counts, and result size.
 """
 import argparse
@@ -61,6 +62,14 @@ def main():
         conn.commit()
         report['history_rows'] = size * 3
         report['cases'].append(dict(case='20k_hub_tracked', **measure(conn, 'benchhub', 'seed0', args.runs)))
+        dense_sources = ('benchdensea', 'benchdenseb')
+        conn.executemany('INSERT INTO seeds(handle,added_at) VALUES(?,?)',
+                         ((seed, ts) for seed in dense_sources))
+        conn.executemany('INSERT INTO edges VALUES(?,?,?,?)',
+                         ((seed, pid, 'following', ts) for seed in dense_sources
+                          for pid in range(1, args.people + 1)))
+        conn.commit()
+        report['cases'].append(dict(case='dense_overlap', **measure(conn, *dense_sources, args.runs)))
         conn.close()
         print(json.dumps(report, indent=2))
 

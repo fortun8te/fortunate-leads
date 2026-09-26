@@ -85,7 +85,7 @@
       if (text !== undefined) node.textContent = text;
       return node;
     };
-    const svg = svgEl('svg', { viewBox: '0 0 660 145', role: 'img', 'aria-label': 'Observed follows. Each arrow points from the follower to the account they follow.', class: 'connections-diagram' });
+    const svg = svgEl('svg', { viewBox: '0 0 660 145', role: 'img', 'aria-label': 'Observed follows. Each arrow points from the follower to the account they follow.', 'aria-describedby': 'connection-directions', class: 'connections-diagram' });
     const defs = svgEl('defs', {});
     const marker = svgEl('marker', { id: 'connection-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' });
     marker.append(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'currentColor' }));
@@ -116,6 +116,7 @@
     const connectors = data.connectors || [];
     const direct = data.direct_relationships || [];
     const total = data.total_candidates ?? connectors.length;
+    results.append(el('h3', `Results for ${handle(data.source)} and ${handle(data.target)}`));
     status.textContent = `${direct.length} direct follow${direct.length === 1 ? '' : 's'} observed · Showing ${connectors.length} of ${total} shared accounts${data.truncated ? ' (limited to the top results)' : ''}.`;
     results.append(el('p', 'Experimental ordering: follow patterns first; fewer observed connections breaks ties. Not a friendship score.', 'connections-note'));
     if (!connectors.length && !direct.length) {
@@ -123,9 +124,18 @@
     }
     const layout = el('div', undefined, 'connections-layout');
     const choices = el('div', undefined, 'connections-choices');
+    choices.setAttribute('role', 'group');
     choices.setAttribute('aria-label', 'Observed connection patterns');
     const detail = el('section', undefined, 'connections-detail');
+    detail.id = 'connection-selected-evidence';
+    detail.setAttribute('tabindex', '-1');
     detail.setAttribute('aria-label', 'Selected connection evidence');
+    const selectionStatus = el('p', undefined, 'connections-note');
+    selectionStatus.setAttribute('role', 'status');
+    selectionStatus.setAttribute('aria-live', 'polite');
+    selectionStatus.setAttribute('aria-atomic', 'true');
+    const keyboardHint = el('p', 'From a connection choice, press Right Arrow to read its evidence.', 'connections-note');
+    keyboardHint.id = 'connection-keyboard-help';
     const options = [];
     if (direct.length) options.push({ title: 'Direct follows', nodes: [data.source, data.target], links: direct });
     for (const connector of connectors) {
@@ -140,11 +150,14 @@
     };
     function select(option, button) {
       for (const child of choices.children) child.setAttribute('aria-pressed', String(child === button));
+      selectionStatus.textContent = `Selected evidence: ${option.title}.`;
+      detail.setAttribute('aria-label', `Selected connection evidence: ${option.title}`);
       detail.replaceChildren(el('h3', option.title), diagram(option.nodes, option.links));
       detail.append(el('p', 'Arrows mean “follows”. They show the direction observed in collected lists.', 'connections-note'));
       const byId = new Map(option.nodes.map(node => [node.id, node]));
       const directions = el('ul');
-      for (const link of option.links) directions.append(el('li', `${handle(byId.get(link.source) || { id: link.source })} → ${handle(byId.get(link.target) || { id: link.target })} (follows)`));
+      directions.id = 'connection-directions';
+      for (const link of option.links) directions.append(el('li', `${handle(byId.get(link.source) || { id: link.source })} follows ${handle(byId.get(link.target) || { id: link.target })}`));
       detail.append(directions);
       if (option.connector?.motifs?.length) {
         const patterns = el('details', undefined, 'connections-evidence');
@@ -169,10 +182,23 @@
         if (option.connector.manual_known) button.append(el('span', 'Tagged: Michael knows this account'));
       } else button.append(el('span', 'Follow evidence between these two profiles'));
       button.setAttribute('aria-pressed', 'false');
+      button.setAttribute('aria-controls', detail.id);
+      button.setAttribute('aria-describedby', keyboardHint.id);
       button.addEventListener('click', () => select(option, button));
+      button.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        select(option, button);
+        detail.focus();
+      });
       choices.append(button);
     }
     if (options.length) {
+      const readEvidence = el('button', 'Read selected evidence', 'btn');
+      readEvidence.type = 'button';
+      readEvidence.setAttribute('aria-controls', detail.id);
+      readEvidence.addEventListener('click', () => detail.focus());
+      results.append(selectionStatus, readEvidence, keyboardHint);
       layout.append(choices, detail);
       results.append(layout);
       select(options[0], choices.firstElementChild);
@@ -217,6 +243,7 @@
       render(data);
     } catch (error) {
       if (current !== request || error.name === 'AbortError') return;
+      results.replaceChildren();
       status.textContent = `Could not compare profiles: ${error.message}. No conclusion about their connection can be drawn.`;
     } finally {
       if (current === request) panel.removeAttribute('aria-busy');

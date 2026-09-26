@@ -4,6 +4,7 @@ compare returns JSON-ready nodes, directed links with independent source observa
 ranked two-hop connectors, and collection coverage. Scores are deterministic heuristics,
 not probabilities. Historical union edges cannot establish current absence or freshness.
 """
+import heapq
 import math
 import re
 from datetime import datetime, timezone
@@ -101,12 +102,46 @@ class _Graph:
                     rows[(row['seed'].lower(), row['person_id'], row['direction'])] = dict(row)
         return list(rows.values())
 
-    def links(self, rows, include_evidence=True, only_keys=None):
-        missing = sorted({row['person_id'] for row in rows} - self.people.keys())
+    def load_people(self, rows):
+        missing = sorted({row['person_id'] for row in rows if row['person_id'] not in self.people})
         for start in range(0, len(missing), 400):
             chunk = missing[start:start + 400]
             for person in self.conn.execute('SELECT * FROM people WHERE id IN (' + ','.join('?' * len(chunk)) + ')', chunk):
                 self.person(person)
+
+    def degrees(self, ids):
+        """Count canonical neighbors without retaining another full link graph.
+
+        Both lookup orientations may visit the same edge. Neighbor sets collapse
+        those visits, reciprocal edges and agreeing identity aliases alike.
+        """
+        neighbors = {key: set() for key in ids}
+        pids = [pid for pid, node in self.people.items() if node['id'] in ids]
+        seeds = [handle for handle, node in self.seed_nodes.items() if node['id'] in ids]
+        for column, values in [('person_id', pids), ('seed', seeds)]:
+            for start in range(0, len(values), 400):
+                chunk = values[start:start + 400]
+                cursor = self.conn.execute(
+                    'SELECT seed, person_id, direction FROM edges WHERE ' + column
+                    + ' IN (' + ','.join('?' * len(chunk)) + ')', chunk)
+                while rows := cursor.fetchmany(400):
+                    self.load_people(rows)
+                    for row in rows:
+                        seed = self.seed_nodes.get(row['seed'].lower())
+                        person = self.people.get(row['person_id'])
+                        if seed is None or person is None or row['direction'] not in ('following', 'followers'):
+                            continue
+                        left, right = seed['id'], person['id']
+                        if left == right:
+                            continue
+                        if left in neighbors:
+                            neighbors[left].add(right)
+                        if right in neighbors:
+                            neighbors[right].add(left)
+        return {key: len(values) for key, values in neighbors.items()}
+
+    def links(self, rows, include_evidence=True, only_keys=None):
+        self.load_people(rows)
         links = {}
         for row in rows:
             seed = self.seed_nodes.get(row['seed'].lower())
@@ -131,11 +166,15 @@ class _Graph:
             if self.has_observations:
                 observations = self.conn.execute(
                     'SELECT observed_at, job_id, page_key FROM edge_observations WHERE seed=? AND person_id=? AND direction=?',
-                    (row['seed'], row['person_id'], row['direction'])).fetchall()
-                valid = [(stamp, item) for item in observations if (stamp := _timestamp(item['observed_at']))]
-                evidence['observation_count'] = len(observations)
-                if valid:
-                    last, item = max(valid, key=lambda pair: (pair[0], pair[1]['page_key']))
+                    (row['seed'], row['person_id'], row['direction']))
+                latest = None
+                for item in observations:
+                    evidence['observation_count'] += 1
+                    stamp = _timestamp(item['observed_at'])
+                    if stamp is not None and (latest is None or (stamp, item['page_key']) > latest[0]):
+                        latest = ((stamp, item['page_key']), item)
+                if latest is not None:
+                    (last, _), item = latest
                     evidence.update(last_observed=last, last_job_id=item['job_id'], last_page_key=item['page_key'],
                                     freshness='last_observed_available')
             if evidence not in link['evidence']:
@@ -211,31 +250,33 @@ def _compare(conn, source_handle, target_handle, limit=20):
         if dst in endpoints:
             neighbors[dst].add(src)
     candidates = (neighbors[a['id']] & neighbors[b['id']]) - endpoints
-    degree_links = g.links(g.observations(candidates), include_evidence=False) if candidates else {}
-    degrees = {key: set() for key in candidates}
-    for src, dst in degree_links:
-        if src in degrees:
-            degrees[src].add(dst)
-        if dst in degrees:
-            degrees[dst].add(src)
+    degrees = g.degrees(candidates) if candidates else {}
+
+    def ranked_candidates():
+        for x in candidates:
+            ax, xa = (a['id'], x) in links, (x, a['id']) in links
+            bx, xb = (b['id'], x) in links, (x, b['id']) in links
+            tier = 3 if ax and xa and bx and xb else 2 if (ax and xb) or (bx and xa) else 1
+            yield (-tier, degrees[x], g.nodes[x]['handle'].lower(), x)
+
+    # Keep only compact top-k ranking records; rich result objects are bounded
+    # by the requested limit, even when the endpoints share every profile.
+    selected = heapq.nsmallest(limit, ranked_candidates())
+    total = len(candidates)
     connectors = []
-    for x in candidates:
+    for _, degree, _, x in selected:
         ax, xa = (a['id'], x) in links, (x, a['id']) in links
         bx, xb = (b['id'], x) in links, (x, b['id']) in links
         motifs = [name for name, yes in [('reciprocal_support', ax and xa and bx and xb),
                   ('directed_path', ax and xb), ('reverse_path', bx and xa),
                   ('shared_follower', xa and xb), ('shared_followee', ax and bx)] if yes]
         tier = 3 if 'reciprocal_support' in motifs else 2 if ('directed_path' in motifs or 'reverse_path' in motifs) else 1
-        degree = len(degrees[x])
         penalty = 1 / math.log2(2 + degree)
         node = g.nodes[x]
         support = [links[key] for key in ((a['id'], x), (x, a['id']), (b['id'], x), (x, b['id'])) if key in links]
         connectors.append(dict(node=node, motifs=motifs, links=sorted(support, key=lambda l: (l['source'], l['target'])),
                                manual_known=False, rank=dict(tier=tier, observed_degree=degree,
                                hub_penalty=round(penalty, 6), heuristic_score=round(tier + penalty, 6))))
-    connectors.sort(key=lambda c: (-c['rank']['tier'], c['rank']['observed_degree'], c['node']['handle'].lower(), c['node']['id']))
-    total = len(connectors)
-    connectors = connectors[:limit]
     direct = [v for (src, dst), v in links.items() if src in endpoints and dst in endpoints]
     direct.sort(key=lambda l: (l['source'], l['target']))
     shown_links = {(l['source'], l['target']): l for l in direct}

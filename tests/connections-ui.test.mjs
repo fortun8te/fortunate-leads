@@ -11,7 +11,7 @@ class Element {
   setAttribute(k, v) { this.attrs[k] = v; }
   removeAttribute(k) { delete this.attrs[k]; }
   addEventListener(k, fn) { this.events[k] = fn; }
-  focus() {}
+  focus() { this.focused = true; }
   get firstElementChild() { return this.children[0]; }
 }
 const code = readFileSync(new URL('../web/connections.js', import.meta.url), 'utf8');
@@ -81,7 +81,7 @@ test('untrusted handles and evidence are rendered as text, with directed evidenc
   ui.calls[0].resolve(response(data));
   await pending;
   const displayed = text(ui.results);
-  assert.match(displayed, /<img src=x onerror=alert\(1\)> → @bob/);
+  assert.match(displayed, /<img src=x onerror=alert\(1\)> follows @bob/);
   assert.match(displayed, /Last observed: unknown/);
   assert.match(displayed, /Source: @<script>/);
   const walk = node => { assert.equal(Object.hasOwn(node, 'innerHTML'), false); node.children.forEach(walk); };
@@ -96,6 +96,20 @@ test('server failure does not imply absent connection', async () => {
   assert.equal(ui.panel.attrs['aria-busy'], undefined);
 });
 
+test('render failure removes any partial evidence before announcing no conclusion', async () => {
+  const ui = mount();
+  const pending = ui.submit('alice', 'bob');
+  const data = payload();
+  data.direct_relationships = [{ source: 'a', target: 'b' }];
+  data.coverage = {};
+  ui.calls[0].resolve(response(data));
+  await pending;
+  assert.match(ui.status.textContent, /Could not compare profiles/);
+  assert.match(ui.status.textContent, /No conclusion/);
+  assert.equal(ui.results.children.length, 0);
+  assert.equal(ui.panel.attrs['aria-busy'], undefined);
+});
+
 test('coverage separates historical recorded counts from reported totals', async () => {
   const ui = mount();
   const pending = ui.submit('alice', 'bob');
@@ -106,4 +120,58 @@ test('coverage separates historical recorded counts from reported totals', async
   assert.match(text(ui.results), /Recorded and reported counts differ/);
   assert.match(text(ui.results), /120 recorded across imports; 100 total reported/);
   assert.match(text(ui.results), /Experimental ordering/);
+});
+
+test('empty results identify submitted profiles after pending and completed form edits', async () => {
+  const ui = mount();
+  const pending = ui.submit('alice', 'bob');
+  ui.form.children[0].children[0].value = 'carol';
+  ui.form.children[1].children[0].value = 'dave';
+  ui.calls[0].resolve(response(payload()));
+  await pending;
+  assert.equal(ui.results.children[0].tag, 'h3');
+  assert.equal(ui.results.children[0].textContent, 'Results for @alice and @bob');
+  assert.match(text(ui.results), /No direct follows or shared accounts/);
+  ui.form.children[0].children[0].value = 'eve';
+  assert.equal(ui.results.children[0].textContent, 'Results for @alice and @bob');
+});
+
+test('candidate controls announce selection and provide a direct keyboard path to described evidence', async () => {
+  const ui = mount();
+  const pending = ui.submit('alice', 'bob');
+  const longHandle = 'a_full_thirty_character_handle';
+  const data = payload(longHandle);
+  data.direct_relationships = [{ source: 'a', target: 'b' }];
+  data.connectors = [{ node: { id: 'c', handle: 'carol' }, links: [{ source: 'a', target: 'c' }, { source: 'c', target: 'b' }], motifs: ['directed_path'] }];
+  ui.calls[0].resolve(response(data));
+  await pending;
+  const layout = ui.results.children.find(node => node.className === 'connections-layout');
+  const [choices, detail] = layout.children;
+  const announcement = ui.results.children.find(node => node.attrs.role === 'status');
+  const readEvidence = ui.results.children.find(node => node.tag === 'button');
+  assert.equal(choices.attrs.role, 'group');
+  assert.equal(choices.attrs['aria-label'], 'Observed connection patterns');
+  assert.equal(detail.attrs.tabindex, '-1');
+  assert.equal(announcement.attrs['aria-live'], 'polite');
+  assert.equal(announcement.textContent, 'Selected evidence: Direct follows.');
+  assert.equal(readEvidence.attrs['aria-controls'], detail.id);
+  readEvidence.events.click();
+  assert.equal(detail.focused, true);
+  detail.focused = false;
+  const candidate = choices.children[1];
+  assert.equal(candidate.attrs['aria-controls'], detail.id);
+  assert.ok(ui.results.children.some(node => node.id === candidate.attrs['aria-describedby']));
+  let prevented = false;
+  candidate.events.keydown({ key: 'ArrowRight', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(detail.focused, true);
+  assert.equal(candidate.attrs['aria-pressed'], 'true');
+  assert.equal(choices.children[0].attrs['aria-pressed'], 'false');
+  assert.equal(announcement.textContent, 'Selected evidence: @carol.');
+  assert.equal(detail.attrs['aria-label'], 'Selected connection evidence: @carol');
+  const svg = detail.children.find(node => node.tag === 'svg');
+  const directions = detail.children.find(node => node.id === svg.attrs['aria-describedby']);
+  assert.ok(directions);
+  assert.match(text(directions), new RegExp(`@${longHandle} follows @carol`));
+  assert.match(text(directions), /@carol follows @bob/);
 });
