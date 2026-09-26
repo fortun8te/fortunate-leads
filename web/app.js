@@ -106,8 +106,8 @@ function fitBadge(r, cls = '') {
 }
 // Seeds a person was found through, from the "via @seed" tags (these leave out Michael's own account).
 const viaSeeds = (r) => (r.tags || []).map(tagName).filter(isViaTag).map((t) => t.slice(5));
-const YOU = { 'follows you': 'Follows you', 'you follow': 'You follow', 'knows you': 'Knows you' };
-const youLink = (r) => { const names = (r.tags || []).map(tagName); const k = ['follows you', 'you follow', 'knows you'].find((t) => names.includes(t)); return k ? YOU[k] : ''; };
+const YOU = { 'follows you': 'Follows you', 'you follow': 'You follow', 'Instagram link': 'Instagram link' };
+const youLink = (r) => { const names = (r.tags || []).map(tagName); const k = ['follows you', 'you follow', 'Instagram link'].find((t) => names.includes(t)); return k ? YOU[k] : ''; };
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
 function connHTML(r) {
   const n = lists(r), via = viaSeeds(r), you = youLink(r);
@@ -585,7 +585,7 @@ function suggest() {
   if ((m = w.match(/^([~+|-]?)#"?([^"]*)$/))) {
     const pre = m[1], q = m[2].toLowerCase();
     const mode = pre === '~' || pre === '|' ? 'any' : pre === '-' ? 'exc' : 'inc';
-    items = S.tagList.filter((t) => t.grp !== 'source' || t.tag === 'knows you' || isViaTag(t.tag))
+    items = S.tagList.filter((t) => t.grp !== 'source' || t.tag === 'Instagram link' || isViaTag(t.tag))
       .filter((t) => !q || t.tag.toLowerCase().includes(q))
       .sort((a, b) => (b.tag.toLowerCase().startsWith(q)) - (a.tag.toLowerCase().startsWith(q)) || (b.count > 0) - (a.count > 0) || b.count - a.count || b.total - a.total)
       .slice(0, 14).map((t) => ({ text: tagTok(t.tag, mode), kind: t.kind, src: t.grp === 'source', count: t.count, note: t.kind === 'auto' ? t.grp : t.kind }));
@@ -965,7 +965,7 @@ function renderDetail() {
   const v = p.verdict || {};
   const edges = p.edges || (p.via || []).map((s) => ({ seed: s }));
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
-  const tags = (p.tags || []).filter((t) => t.grp !== 'source' || t.source === 'manual' || t.tag === 'knows you')
+  const tags = (p.tags || []).filter((t) => t.grp !== 'source' || t.source === 'manual' || t.tag === 'Instagram link')
     .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
@@ -2422,7 +2422,7 @@ function seedBlock(n) {
   const via = canonTag('via @' + n.label);
   return `<div class="d-sec"><h4>${n.is_me ? 'Your account' : 'Seed'}: its lists on the map</h4><div class="d-stats"><div><b>${fmt(n.degree)}</b><span>People</span></div><div><b>${fmt(n.vis)}</b><span>On map</span></div><div><b>${ov.length}</b><span>Overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>Lists</span></div></div></div>
     <div class="d-sec"><div class="d-links" style="margin-top:0">
-      ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'knows you')}">Filter to ${n.is_me ? 'people who know you' : '@' + esc(n.label)}</button>` : ''}
+      ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'Instagram link')}">Filter to ${n.is_me ? 'Instagram connections' : '@' + esc(n.label)}</button>` : ''}
       <button class="btn" data-only="${esc(n.label)}">seed:@${esc(n.label)}</button>
       <a class="btn" href="https://www.instagram.com/${encodeURIComponent(n.label)}/" target="_blank" rel="noopener">Instagram</a></div></div>
     ${ls.length ? `<div class="d-sec"><h4>Lists</h4><div class="ov">${ls.map((l) => `<span>${esc(ucf(l.direction))}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(ucf(l.state))}</span>`).join('')}</div></div>` : ''}

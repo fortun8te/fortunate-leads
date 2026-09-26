@@ -7,6 +7,8 @@ them, links to you and your clients), then the profile read by rules or a free L
 
 - Setup, first run, backups and troubleshooting: [docs/SETUP.md](docs/SETUP.md)
 - API and database: [docs/CONTRACT.md](docs/CONTRACT.md)
+- Connection mapping research and design: [docs/CONNECTION_MAPPING_RESEARCH.md](docs/CONNECTION_MAPPING_RESEARCH.md)
+- Pair comparison API: [docs/CONNECTIONS.md](docs/CONNECTIONS.md)
 - Current state: [docs/HANDOFF.md](docs/HANDOFF.md)
 
 ```sh

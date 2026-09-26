@@ -35,6 +35,27 @@ def migrate(old_path, out_path, batch_path):
     commanded = [db.norm_handle(json.loads(r[0]).get('handle')) for r in
                  old.execute("SELECT payload FROM exporter_commands WHERE type='collect' ORDER BY created_at")]
 
+    # Do not attach a different account's imported history to an existing seed handle.
+    # Preflight under the same write lock as the import, before any people or edge writes.
+    conn.execute('BEGIN IMMEDIATE')
+    seed_identities = {}
+    for r in conn.execute(
+            'SELECT handle,ig_id FROM seeds WHERE ig_id IS NOT NULL UNION '
+            'SELECT p.handle,p.ig_id FROM people p JOIN seeds s ON s.handle=p.handle WHERE p.ig_id IS NOT NULL'):
+        if r['ig_id']:
+            seed_identities.setdefault(db.norm_handle(r['handle']), set()).add(str(r['ig_id']))
+    for eid, e in ents.items():
+        handle, incoming = db.norm_handle(e['handle']), e['platform_id']
+        if incoming is None or incoming == '':
+            continue
+        if seed_identities.get(handle, set()) - {str(incoming)}:
+            conn.rollback()
+            conn.close()
+            old.close()
+            raise ValueError(f'seed account identity changed for @{handle}; import refused')
+        if eid in seed_ids:
+            seed_identities.setdefault(handle, set()).add(str(incoming))
+
     pid = {}
     for eid, e in ents.items():
         p = {k: v for k, (v, _) in profile.get(eid, {}).items() if v not in (None, '')}
@@ -48,7 +69,8 @@ def migrate(old_path, out_path, batch_path):
         conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (h, ts))
     for i in seed_ids:
         if ents[i]['platform_id']:
-            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (ents[i]['platform_id'], ents[i]['handle']))
+            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=? AND (ig_id IS NULL OR ig_id=?)',
+                         (ents[i]['platform_id'], ents[i]['handle'], ents[i]['platform_id']))
     conn.execute('UPDATE seeds SET is_me=1 WHERE handle=?', (ME,))
 
     skipped = 0

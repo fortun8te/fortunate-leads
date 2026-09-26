@@ -182,6 +182,11 @@ class LayaTest(unittest.TestCase):
         self.assertEqual(out[0], {'dtc_founder': 0.95, 'brand_account': 0.92, 'creator': 0.05})   # bad p dropped
         self.assertGreater(laya.fit(out[0]), 70)
 
+    def test_empty_cache_probes_even_near_clock_origin(self):
+        self.assertTrue(laya.available(now=1))
+        self.assertTrue(laya.available(now=2))
+        self.assertEqual(LayaStub.calls, ['health'])
+
     def test_down_or_slow_is_skipped(self):
         laya.URL = 'http://127.0.0.1:9'
         self.assertFalse(laya.available())

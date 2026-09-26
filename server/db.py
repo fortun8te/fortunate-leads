@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -12,6 +13,13 @@ CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE TABLE IF NOT EXISTS edges(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
   PRIMARY KEY(seed,person_id,direction));
+-- Only directly ingested page members get observations; never infer freshness from list timestamps.
+CREATE TABLE IF NOT EXISTS edge_observations(seed TEXT COLLATE NOCASE NOT NULL, person_id INT NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN('followers','following')), page_key TEXT NOT NULL, job_id INT,
+  observed_at TEXT NOT NULL, PRIMARY KEY(seed,person_id,direction,page_key));
+CREATE INDEX IF NOT EXISTS edge_observations_person ON edge_observations(person_id,seed,direction,observed_at);
+CREATE TABLE IF NOT EXISTS ingested_list_pages(page_key TEXT PRIMARY KEY, seed TEXT COLLATE NOCASE NOT NULL,
+  direction TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
   PRIMARY KEY(person_id,tag));
 CREATE TABLE IF NOT EXISTS tag_rules(id INTEGER PRIMARY KEY, tag TEXT NOT NULL, grp TEXT NOT NULL DEFAULT 'signal',
@@ -179,7 +187,19 @@ def upsert_person(conn, u, ts=None):
 
 
 def merge_people(conn, keep, drop):
-    for t in ('edges', 'tags', 'marks', 'verdicts'):
+    # Retain the earliest edge and every distinct page observation when identities merge.
+    conn.execute('INSERT INTO edges(seed,person_id,direction,first_seen) '
+                 'SELECT seed,?,direction,first_seen FROM edges WHERE person_id=? '
+                 'ON CONFLICT(seed,person_id,direction) DO UPDATE SET first_seen='
+                 'min(coalesce(edges.first_seen,excluded.first_seen),coalesce(excluded.first_seen,edges.first_seen))',
+                 (keep, drop))
+    conn.execute('DELETE FROM edges WHERE person_id=?', (drop,))
+    conn.execute('INSERT INTO edge_observations(seed,person_id,direction,page_key,job_id,observed_at) '
+                 'SELECT seed,?,direction,page_key,job_id,observed_at FROM edge_observations WHERE person_id=? '
+                 'ON CONFLICT(seed,person_id,direction,page_key) DO UPDATE SET '
+                 'observed_at=min(edge_observations.observed_at,excluded.observed_at)', (keep, drop))
+    conn.execute('DELETE FROM edge_observations WHERE person_id=?', (drop,))
+    for t in ('tags', 'marks', 'verdicts'):
         conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
         conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
     conn.execute('DELETE FROM people WHERE id=?', (drop,))
@@ -188,6 +208,27 @@ def merge_people(conn, keep, drop):
 def add_edge(conn, seed, person_id, direction, ts=None):
     return conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
                         (norm_handle(seed), person_id, direction, ts or now())).rowcount == 1
+
+
+def list_page_key(seed, direction, users, cursor, job_id=None):
+    """Replay identity, not proof of a complete snapshot or Instagram event time.
+
+    Unmanaged imports have no collection run identifier. Deduplicate the same member
+    batch conservatively, ignoring order and mutable profile fields. A genuine new
+    observation of an identical batch requires a new managed collection job.
+    """
+    if job_id is not None:
+        return f'job:{job_id}:{cursor or ""}'
+    members = sorted({('id:' + str(u['ig_id'])) if u.get('ig_id') is not None
+                      else ('handle:' + norm_handle(u['handle'])) for u in users})
+    payload = json.dumps([norm_handle(seed), direction, cursor or '', members], separators=(',', ':'))
+    return 'import:' + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def observe_edge(conn, seed, person_id, direction, page_key, job_id, ts):
+    return conn.execute('INSERT OR IGNORE INTO edge_observations'
+                        '(seed,person_id,direction,page_key,job_id,observed_at) VALUES(?,?,?,?,?,?)',
+                        (norm_handle(seed), person_id, direction, page_key, job_id, ts)).rowcount == 1
 
 
 def get_setting(conn, key, default=None):

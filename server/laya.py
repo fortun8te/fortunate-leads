@@ -39,7 +39,7 @@ def _open(req, timeout):
 def available(now=None):
     now = time.monotonic() if now is None else now
     with _lock:
-        if now - _health['at'] < HEALTH_TTL:
+        if _health['at'] > 0 and now - _health['at'] < HEALTH_TTL:
             return _health['ok']
     ok = False
     try:

@@ -915,3 +915,37 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
 .fl-ctl-msg { color: var(--fg3, #707070); }
 @media (max-width: 640px) { .fl-ctl { padding: 8px 12px; } .fl-ctl-now { order: 3; flex-basis: 100%; } }
 /* ==== control strip — END ==== */
+
+/* Focused pair comparison; the overview canvas remains independent. */
+.connections-panel { flex: 1; max-height: none; min-height: 0; overflow: auto; padding: 18px 24px; border-bottom: 1px solid var(--line2); background: var(--bg1); }
+#pane-map.comparing #stage, #pane-map.comparing .mbar > :not(#connections-toggle) { display: none; }
+.connections-panel h2 { margin: 0 0 6px; font-size: 17px; }
+.connections-panel h3 { margin: 0 0 8px; font-size: 14px; }
+.connections-note { color: var(--fg2); margin: 8px 0; line-height: 1.55; }
+.connections-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 14px 0; }
+.connections-form label { display: flex; flex: 1 1 150px; flex-direction: column; gap: 5px; max-width: 280px; }
+.connections-form input { width: 100%; }
+.connections-layout { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(0, 2fr); gap: 16px; margin: 12px 0; }
+.connections-choices { display: flex; flex-direction: column; gap: 6px; max-height: 330px; overflow: auto; }
+.connections-choice { padding: 10px; text-align: left; color: var(--fg); background: var(--bg); border: 1px solid var(--line2); border-radius: var(--r2); cursor: pointer; overflow-wrap: anywhere; }
+.connections-choice strong, .connections-choice span { display: block; }
+.connections-choice span { margin-top: 4px; font-size: 12px; color: var(--fg2); }
+.connections-choice[aria-pressed="true"] { border-color: var(--fg2); background: var(--bg3); }
+.connections-choice:focus-visible, .connections-panel summary:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.connections-detail { min-width: 0; padding: 14px; border: 1px solid var(--line2); border-radius: var(--r2); overflow-wrap: anywhere; }
+.connections-diagram { display: block; width: 100%; color: var(--fg2); min-height: 85px; }
+.connections-diagram text { fill: var(--fg); font-family: var(--sans); font-size: 15px; }
+.connections-node { fill: var(--bg2); stroke: var(--fg2); }
+.connections-diagram .connections-node-initial { font-size: 17px; }
+.connections-evidence { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line2); overflow-wrap: anywhere; }
+.connections-evidence summary { cursor: pointer; font-weight: 500; }
+.connections-panel ul { padding-left: 20px; }
+.connections-panel li { margin: 8px 0; }
+.connections-evidence p { color: var(--fg2); margin: 6px 0; }
+.connections-empty { padding: 12px; border: 1px solid var(--line2); }
+@media (max-width: 700px) {
+  .connections-panel { padding: 14px; }
+  .connections-layout { grid-template-columns: 1fr; }
+  .connections-choices { max-height: 190px; }
+  #pane-map .mbar { flex-wrap: wrap; }
+}

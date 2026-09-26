@@ -123,7 +123,7 @@
     const mine = es.filter((e) => e.seed === ME);
     const total = others.length + (mine.length ? 1 : 0);
     if (total >= 2) add(`in ${total} lists`, 'source');
-    if (mine.length) add('knows you', 'source');
+    if (mine.length) add('Instagram link', 'source');
     if (mine.some((e) => e.direction === 'followers')) add('follows you', 'source');
     if (mine.some((e) => e.direction === 'following')) add('you follow', 'source');
     return t;
@@ -185,7 +185,7 @@
     const has = (x) => t.some((y) => y.tag === x);
     const [role, base] = ROLE_BASE[p._role];
     const n = lists(p.id);
-    const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('knows you') + rnd() * 16 - 6)));
+    const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('Instagram link') + rnd() * 16 - 6)));
     if (!p.bio) { verdicts.set(p.id, { score: Math.min(60, 20 + 8 * n), tier: 'unread', role: null, reason: n > 1 ? `In ${n} lists, bio not read yet` : 'Bio not read yet', model: null, evidence: [] }); return; }
     const llm = chance(0.6);
     const tier = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
