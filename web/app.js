@@ -2212,7 +2212,7 @@ $('#seed-add').onclick = async () => {
 const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
 const ST_DOT = { running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
 const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
-const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false };
+const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false, starting: false };
 
 async function copyText(text, btn) {
   let ok = false;
@@ -2231,44 +2231,54 @@ function jobText(a) {
   if (a.status === 'offline') return 'Last seen ' + ago(a.last_seen) + ' ago';
   return ucf(a.activity || a.text || 'Idle');
 }
-function stateText(a) {
-  const base = ST_LABEL[a.status] || ucf(a.status);
-  return a.status === 'cooldown' && a.cooldown_until ? `${base} ${left(a.cooldown_until)}` : base;
+function accountAccess(a) {
+  if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
+  if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
+  if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
+  if (a.cooldown_until && Date.parse(a.cooldown_until) > Date.now()) return { label: `Instagram cooldown · ${left(a.cooldown_until)}`, detail: 'This profile waits before its next request.', kind: 'wait' };
+  if (a.status === 'cooldown') return { label: 'Instagram cooldown', detail: 'This profile waits before its next request.', kind: 'wait' };
+  if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
+  return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }
 function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
-  const conf = A.confirm === a.lane_id, warn = a.status === 'needs_login' || a.status === 'challenge';
+  const conf = A.confirm === a.lane_id, access = accountAccess(a);
+  const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
+  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No workspace list cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No workspace bio cap'}`;
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
-    : `<b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}<button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
-  return `<section class="acc${warn ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
+    : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div><button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
+  return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
     <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
-      <span class="grow"></span><span class="acc-state${warn ? ' bad' : ''}">${esc(stateText(a))}</span></div>
-    <div class="acc-now"><span class="muted">Now</span><span title="${esc(jobText(a))}">${esc(jobText(a))}</span></div>
-    <div class="acc-today"><span class="muted">Today</span><span class="num">${int(t.list)}${b.list ? ' of ' + int(b.list) : ' (no limit)'} list pages · ${int(t.profile)}${b.profile ? ' of ' + int(b.profile) : ''} bios · ${int(h.people)} people this hour</span>
-      <div class="bar-p run"><i style="width:${b.list ? Math.min(100, (t.list || 0) / b.list * 100) : 0}%"></i></div></div>
-    <div class="acc-simple"><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
-    <details class="adv acc-more"><summary>Settings</summary>
+      <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
+    <div class="acc-overview">
+      <div class="acc-fact"><span class="acc-key">Instagram access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b><small>${esc(access.detail)}</small></div>
+      <div class="acc-fact"><span class="acc-key">Assigned work</span><b>${esc(role)}</b><small title="${esc(jobText(a))}">${esc(jobText(a))}</small></div>
+      <div class="acc-fact acc-usage"><span class="acc-key">Today</span><b class="num">${int(t.list)} list pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+    </div>
+    <div class="acc-bottom"><span class="muted">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</span><details class="adv acc-more"><summary>Advanced settings</summary>
     <div class="acc-ctl">
       <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
-        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no daily limit"><span class="muted">list pages/day</span></label>
-        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric" title="0 = no daily limit"><span class="muted">bios/day</span></label>
+        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">list pages/day</span></label>
+        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">bios/day</span></label>
         <button class="btn">Save</button>
       </form>
     </div>
-    <div class="acc-foot"><span class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_limit ? ' · last Instagram limit ' + ago(a.last_limit) + ' ago' : ''}${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 100)) : ''}</span>
+    <div class="acc-foot"><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · Last error: ' + esc(a.last_error.slice(0, 100)) : ''}</span>
       <span class="grow"></span>
       <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
-    </details>
+    </details></div>
   </section>`;
 }
 
 function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
+  $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all · lists, bios & AI';
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
@@ -2350,6 +2360,23 @@ $('#acc-list').addEventListener('submit', async (e) => {
 });
 $('#acc-list').addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && e.target.id === 'acc-label') { e.stopPropagation(); A.renaming = null; renderAccounts(); }
+});
+$('#acc-start').addEventListener('click', async () => {
+  if (A.starting) return;
+  A.starting = true;
+  renderAccounts();
+  try {
+    const result = await api.post('/api/control', { action: 'start_all' });
+    if (result?.ok === false) throw new Error(result.error || 'Could not start');
+    window.dispatchEvent(new Event('fl:control-changed'));
+    toast('Started lists, bios and AI. Cooldowns still apply.');
+    await loadScraper();
+  } catch (e) {
+    toast(e.message || 'Could not start all');
+  } finally {
+    A.starting = false;
+    renderAccounts();
+  }
 });
 
 // Add-account wizard: three steps, ticked as the new profile's extension checks in and reports its account.

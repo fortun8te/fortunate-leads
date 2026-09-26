@@ -573,6 +573,18 @@
     }
     if (path === '/api/control') {
       if (method === 'POST') {
+        if (body?.action === 'start_all' && body?.stage == null) {
+          scraper.paused = false;
+          scraper.qualify = true;
+          scraper.qualify_auto = true;
+          stagePaused.lists = false;
+          stagePaused.bios = false;
+          for (const a of accounts) {
+            a.paused = false;
+            a.status = statusOf(a);
+          }
+          return controlView();
+        }
         if (!['pause', 'resume'].includes(body?.action)) return { ok: false, error: 'Choose a stage and action' };
         const pause = body.action === 'pause';
         if (body.stage == null && typeof body.account === 'string') {   // one account (lane) only

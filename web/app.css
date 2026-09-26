@@ -615,25 +615,34 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .dot.need { background: var(--bad); }
 .st-lanes { display: flex; align-items: center; gap: 4px; flex: none; }
 .st-lanes .dot { width: 7px; height: 7px; }
-.acc { display: grid; gap: 12px; padding: 16px; }
+.acc-start-note { margin-top: calc(-1 * var(--s4)); color: var(--fg3); font-size: var(--fs-sm); }
+.acc-explain { padding: 11px 16px; border-top: 1px solid var(--line); color: var(--fg3); font-size: var(--fs-sm); line-height: 1.55; }
+.acc { display: grid; gap: 16px; padding: 20px 16px; }
 .acc + .acc { border-top: 1px solid var(--line); }
 .acc.warn { box-shadow: inset 2px 0 0 var(--bad); }
 .acc-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.acc-identity { display: grid; gap: 1px; min-width: 0; }
 .acc-name { font-size: var(--fs-md); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acc-edit { height: 24px; padding: 0 6px; font-size: var(--fs-sm); color: var(--fg3); }
-.acc-state { flex: none; font-weight: 500; color: var(--fg2); }
-.acc-state.bad { color: var(--bad); }
 .acc-ren { display: flex; gap: 6px; min-width: 0; }
 .acc-ren .input { width: 200px; min-width: 0; }
-.acc-now { display: flex; gap: 10px; min-width: 0; white-space: nowrap; }
-.acc-now > span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.acc-stats { display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
-.acc-stats > div { min-width: 0; padding: 8px 12px; }
-.acc-stats > div + div { border-left: 1px solid var(--line); }
-.acc-stats span, .acc-stats small { display: block; color: var(--fg3); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.acc-stats b { display: block; font-size: var(--fs-md); font-weight: 600; }
+.acc-overview { display: grid; grid-template-columns: 1fr 1fr 1.25fr; border: 1px solid var(--line2); border-radius: var(--r2); background: var(--bg); }
+.acc-fact { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 12px 16px; }
+.acc-fact + .acc-fact { border-left: 1px solid var(--line); }
+.acc-fact b { font-size: var(--fs-md); font-weight: 600; line-height: 1.35; }
+.acc-fact small { color: var(--fg3); font-size: var(--fs-sm); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.acc-key { color: var(--fg3); font-size: var(--fs-xs); font-weight: 500; text-transform: uppercase; letter-spacing: .06em; }
+.acc-access.bad, .acc-access.wait { color: var(--fg); }
+.acc-access.quiet { color: var(--fg2); }
+.acc-usage .bar-p { width: 100%; margin-top: 7px; }
+.acc-bottom { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 6px 16px; }
+.acc-bottom > .muted { font-size: var(--fs-sm); align-self: center; }
+.acc-more { justify-self: end; }
+.acc-more[open] { grid-column: 1 / -1; width: 100%; }
+.acc-more[open] > summary { margin-left: auto; }
 .acc-ctl, .acc-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.acc-ctl { padding: 14px 0; border-top: 1px solid var(--line); }
 .acc-foot > .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
 .acc-bud { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .acc-bud label { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
@@ -1097,10 +1106,18 @@ button:disabled { cursor:default; opacity:.5; }
 }
 
 /* Simple account card: status, today's progress and Pause up front; the rest folds away. */
-.acc-today { display: grid; gap: 6px; margin: 10px 0; }
-.acc-today > span { display: flex; gap: 12px; }
-.acc-simple { display: flex; justify-content: flex-end; }
-.acc-more > summary { margin-top: 8px; }
+.acc-more > summary { margin-top: 0; }
+@media (max-width: 700px) {
+  #view-accounts .ph-a { flex-wrap: wrap; }
+  #view-accounts .ph-a .btn { flex-basis: 100%; }
+  #view-accounts #acc-kpis { order: 1; }
+  .acc-start-note { margin-top: calc(-1 * var(--s2)); }
+  .acc-overview { grid-template-columns: 1fr; }
+  .acc-fact + .acc-fact { border-left: 0; border-top: 1px solid var(--line); }
+  .acc-bottom { grid-template-columns: 1fr; }
+  .acc-more { justify-self: start; }
+  .acc-more[open] > summary { margin-left: 0; }
+}
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
