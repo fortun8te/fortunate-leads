@@ -464,7 +464,7 @@ function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || t.tag)}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || t.tag)}</span><b>${fmt(n)}</b></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -858,7 +858,7 @@ const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
 //   min   faint           how they were found, audience size
 const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
 const PLUS_TAGS = new Set(['Scout: Possible', 'AI: Decision maker', 'AI: Runs ads', 'AI: US market', 'Founder', 'Brand', 'Store', 'Shopify',
-  'Shop Link', 'US', 'US market', 'DTC', 'Already know them', 'follows you', 'mutual', 'you follow']);
+  'Shop Link', 'US', 'US market', 'DTC', 'Already know them']);
 const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
 const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
@@ -867,7 +867,7 @@ function tagTier(t) {
   if (HERO_TAGS.has(name)) return 'hero';
   if (SOFT_TAGS.has(name)) return 'soft';
   if (PLUS_TAGS.has(name)) return 'plus';
-  if (t.source === 'manual') return 'own';
+  if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
@@ -1793,29 +1793,32 @@ const T = {
   // Overview: the tags that make a lead first, then every other automatic tag grouped in plain words. Click = filter Leads.
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
-    const top = auto.filter((t) => tagTier(t)).filter((t) => tagTier(t) !== 'min');
-    const rest = auto.filter((t) => !top.includes(t));
+    const priority = auto.filter((t) => ['hero', 'plus', 'niche'].includes(tagTier(t)));
+    const caution = auto.filter((t) => ['flag', 'soft'].includes(tagTier(t)));
+    const highlighted = new Set([...priority, ...caution]);
+    const rest = auto.filter((t) => !highlighted.has(t));
     const G = [
-      ['role', 'What they are', 'Brand, store, agency, creator and so on.'],
+      ['role', 'Other roles', 'Role labels outside the highlighted signals.'],
       ['signal', 'Other hints in their profile', 'Hiring, shop link, country and similar.'],
       ['size', 'Audience size', 'Follower count bands.'],
       ['via', 'Where we found them', 'The account whose list they came from.'],
-      ['source', 'Link to you', 'In several lists, follows you, you follow them.'],
+      ['source', 'Collection and follows', 'In several lists, follows you, you follow them.'],
     ];
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['role', 'signal', 'size', 'source']);
     const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
     const sec = (key, title, desc, list, cls = '') => {
-      if (!list.length && key !== 'top') return '';
-      list = [...list].sort((a, b) => (key === 'top' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : key === 'top' ? 40 : 12;
+      if (!list.length && key !== 'priority') return '';
+      list = [...list].sort((a, b) => (key === 'priority' || key === 'caution' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : key === 'priority' ? 8 : 12;
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
         <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
           : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    $('#tg-groups').innerHTML = sec('top', 'Most useful', 'What makes a lead: the AI verdict, top fit, product category, decision maker, US market.', top, 'tg-top')
+    $('#tg-groups').innerHTML = sec('priority', 'Promising signals', 'Fit, role and product clues worth checking first.', priority, 'tg-top')
+      + sec('caution', 'Caution', 'Signals to check before reaching out.', caution, 'tg-caution')
       + sec('role', G[0][1], G[0][2], pick('role'))
       // Everything else stays one click away so the page opens with just the useful tags.
       + `<details class="adv tg-more"${q ? ' open' : ''}><summary>More tags</summary><div class="tg-rest">${G.slice(1).map(([k, t, d]) => sec(k, t, d, pick(k))).join('')
@@ -2098,6 +2101,7 @@ function renderScraper() {
     + tile('Scraped today', int(sc.people_today ?? 0), 'new people')
     + tile('Scraped in total', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
+  const minuteRate = (value, noun) => value == null ? `measuring ${noun}` : `${int(value)} ${noun} in the last minute`;
   const recv = ls.reduce((a, l) => a + (l.received || 0), 0), tot = recv + (L.left || 0);
   const stage = (title, line, pct, when) => `<div class="stg"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
     <div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div><div class="muted">${line}</div></div>`;
@@ -2105,13 +2109,13 @@ function renderScraper() {
   const listsDone = ls.length > 0 && ls.every(l => l.state === 'done');
   const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
     : eta(L.eta_h) ? `${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
-  const bioLine = `${int(B.left)} bios to read${B.per_hour ? ` · ${int(B.per_hour)} per hour` : ''} · limit ${int(B.per_day)} a day`;
+  const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')} · limit ${int(B.per_day)} a day`;
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
   // Speed scales with accounts: each extra Instagram account adds roughly one account's measured pace.
   const lanes = Math.max(1, (sc.accounts || []).filter((a) => a.online && !a.paused).length);
   const faster = L.eta_h > 72 && L.per_hour ? `<p class="muted">Each extra Instagram account adds about ${int(Math.round(L.per_hour / lanes))} people an hour. Add one under Accounts.</p>` : '';
   $('#stages').innerHTML = [
-    stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go${L.per_hour ? ` · ${int(Math.round(L.per_hour))} per hour` : ''}`,
+    stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go · ${minuteRate(L.per_minute, 'list entries')}`,
       listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
     stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
