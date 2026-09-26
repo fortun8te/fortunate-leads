@@ -34,14 +34,59 @@ MODELS = {
 }
 STATE_DB = Path.home() / '.hermes-me/profiles/leadscout/state.db'
 
+PROFILE_FIELDS = ('ig_id', 'handle', 'name', 'bio', 'website', 'followers', 'is_private')
+SNAPSHOT = {field: field + '_at_check' for field in PROFILE_FIELDS}
+FOLLOWER_BANDS = (1000, 10000, 50000, 300000, 1000000)
+
+
+def _value(p, field):
+    value = p.get(field) if isinstance(p, dict) else p[field]
+    if field == 'followers' and isinstance(value, int):
+        return next((cap for cap in FOLLOWER_BANDS if value < cap), FOLLOWER_BANDS[-1] + 1)
+    return value
+
+
+def _sql_value(alias, field):
+    if field != 'followers':
+        return f'{alias}.{field}'
+    checks = ' '.join(f'WHEN {alias}.followers < {cap} THEN {cap}' for cap in FOLLOWER_BANDS)
+    return f'(CASE WHEN {alias}.followers IS NULL THEN NULL {checks} ELSE {FOLLOWER_BANDS[-1] + 1} END)'
+
+
+MATCH = ' AND '.join(f'd.{column} IS {_sql_value("p", field)}' for field, column in SNAPSHOT.items())
+CHANGED = ' OR '.join(f'NOT (d.{column} IS {_sql_value("NEW", field)})' for field, column in SNAPSHOT.items())
 SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research(person_id INTEGER PRIMARY KEY, verdict TEXT, reachable INT,
-  summary TEXT, tags TEXT, sources TEXT, raw TEXT, at TEXT NOT NULL)"""
+  summary TEXT, tags TEXT, sources TEXT, raw TEXT, at TEXT NOT NULL, ig_id_at_check TEXT,
+  handle_at_check TEXT, name_at_check TEXT, bio_at_check TEXT, website_at_check TEXT,
+  followers_at_check INTEGER, is_private_at_check INTEGER)"""
 
 VERDICT_TAG = {'strong': 'Scout: Strong', 'possible': 'Scout: Possible', 'no': 'Scout: No'}
 
 
 def ensure(conn):
     conn.execute(SCHEMA)
+    columns = {r[1] for r in conn.execute('PRAGMA table_info(deep_research)')}
+    missing = [column for column in SNAPSHOT.values() if column not in columns]
+    for column in missing:
+        kind = 'INTEGER' if column in ('followers_at_check', 'is_private_at_check') else 'TEXT'
+        conn.execute(f'ALTER TABLE deep_research ADD COLUMN {column} {kind}')
+    if missing:
+        # Older rows have no proof of which profile Hermes saw. Retain the research
+        # record, but stop showing its verdict/tags until this profile is checked again.
+        conn.execute("UPDATE verdicts SET model='rules',score=NULL,tier='unread',role=NULL,reason=NULL,"
+                     "content_fit=NULL,input_hash=NULL,prompt=NULL,evidence=NULL,updated_at='' "
+                     "WHERE model='leadscout' AND person_id IN (SELECT person_id FROM deep_research)")
+        conn.execute("DELETE FROM tags WHERE source='auto' AND grp='scout' "
+                     "AND person_id IN (SELECT person_id FROM deep_research)")
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS leadscout_profile_changed
+        AFTER UPDATE OF {','.join(PROFILE_FIELDS)} ON people
+        WHEN EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=NEW.id AND ({CHANGED}))
+        BEGIN
+          UPDATE verdicts SET model='rules',score=NULL,tier='unread',role=NULL,reason=NULL,
+            content_fit=NULL,input_hash=NULL,prompt=NULL,evidence=NULL,updated_at=''
+            WHERE person_id=NEW.id AND model='leadscout';
+          DELETE FROM tags WHERE person_id=NEW.id AND grp='scout' AND source='auto';
+        END""")
 
 
 def available():
@@ -95,17 +140,19 @@ def tags_of(row):
 
 def retag(conn, pid):
     """Put the scout tags back after a rule or model pass rewrote the automatic tags."""
-    row = conn.execute('SELECT * FROM deep_research WHERE person_id=?', (pid,)).fetchone() if _has_table(conn) else None
-    if row:
+    row = _row(conn, pid)
+    if row and _fresh(conn, row):
         conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,'scout','auto')", [(pid, t) for t in tags_of(row)])
+    elif row:
+        conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout' AND source='auto'", (pid,))
 
 
 def result(conn, pid):
-    """The agent's verdict for the detail panel, or None."""
-    row = conn.execute('SELECT * FROM deep_research WHERE person_id=?', (pid,)).fetchone() if _has_table(conn) else None
+    """Current verdict or visibly unverified historical read for the detail panel."""
+    row = _row(conn, pid)
     if not row:
         return None
-    return {'verdict': row['verdict'], 'reachable': bool(row['reachable']), 'summary': row['summary'],
+    return {'stale': not _fresh(conn, row), 'verdict': row['verdict'], 'reachable': bool(row['reachable']), 'summary': row['summary'],
             'tags': json.loads(row['tags'] or '[]'), 'sources': json.loads(row['sources'] or '[]'), 'at': row['at']}
 
 
@@ -113,14 +160,31 @@ def _has_table(conn):
     return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='deep_research'").fetchone())
 
 
+def _row(conn, pid):
+    return conn.execute('SELECT * FROM deep_research WHERE person_id=?', (pid,)).fetchone() if _has_table(conn) else None
+
+
+def _fresh(conn, row, p=None):
+    if p is None:
+        p = conn.execute('SELECT * FROM people WHERE id=?', (row['person_id'],)).fetchone()
+    return bool(p and all(SNAPSHOT[field] in row.keys() and row[SNAPSHOT[field]] == _value(p, field)
+                          for field in PROFILE_FIELDS))
+
+
+def fresh(conn, p):
+    row = _row(conn, p['id'])
+    return bool(row and _fresh(conn, row, p))
+
+
 def apply(conn, p, data):
     """Store the result, give it the final say on fit, and tag the person."""
     reachable = data.get('reachable') is not False
     summary = re.sub(r'\s+', ' ', str(data.get('summary') or '')).strip()[:400]
     sources = [s for s in data.get('sources') or [] if isinstance(s, str) and s.startswith('http')][:8]
-    conn.execute('INSERT OR REPLACE INTO deep_research VALUES(?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT OR REPLACE INTO deep_research VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                  (p['id'], data['verdict'], int(reachable), summary, json.dumps(_clean_tags(data.get('tags'))),
-                  json.dumps(sources), json.dumps(data, ensure_ascii=False)[:8000], db.now()))
+                  json.dumps(sources), json.dumps(data, ensure_ascii=False)[:8000], db.now(),
+                  *(_value(p, field) for field in PROFILE_FIELDS)))
     reapply(conn, p)
     conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout'", (p['id'],))
     retag(conn, p['id'])
@@ -128,9 +192,8 @@ def apply(conn, p, data):
 
 def reapply(conn, p, net=None):
     """Restore the saved scout's final verdict after a later rule pass on this person."""
-    row = conn.execute('SELECT verdict, reachable, summary FROM deep_research WHERE person_id=?',
-                       (p['id'],)).fetchone() if _has_table(conn) else None
-    if not row:
+    row = _row(conn, p['id'])
+    if not row or not _fresh(conn, row, p):
         return False
     v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     if not v:
@@ -141,7 +204,8 @@ def reapply(conn, p, net=None):
         import server   # the server owns network context and blending
         net = server.network_context(conn, [p['id']]).get(p['id'])
     score = qualify.blend(fit, net)
-    conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=? WHERE person_id=?",
+    conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=?, "
+                 "role=NULL, prompt=NULL, evidence=NULL WHERE person_id=?",
                  (fit, score, qualify._tier(score, bool((p.get('bio') or '').strip())), row['summary'] or None, p['id']))
     return True
 
@@ -151,7 +215,7 @@ def candidates(conn, limit, exclude):
     return [dict(r) for r in conn.execute(
         "SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id "
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
-        "AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id) "
+        f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH}) "
         f"AND p.id NOT IN ({','.join('?' * len(held))}) ORDER BY v.score DESC, p.id LIMIT ?",
         (SCOUT_MIN, *held, limit))]
 
@@ -178,7 +242,7 @@ def status(conn):
     waiting = conn.execute(
         "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id "
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
-        "AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id)",
+        f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH})",
         (SCOUT_MIN,)).fetchone()[0]
     return {'on': db.get_setting(conn, 'scout') is not False, 'available': available(),
             'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
@@ -232,7 +296,7 @@ class ScoutPool:
                 # under the same short write transaction that saves its answer.
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
-                if not current or prompt(dict(current)) != prompt(p):
+                if not current or any(_value(current, field) != _value(p, field) for field in PROFILE_FIELDS):
                     return
                 apply(conn, p, data)
                 conn.commit()

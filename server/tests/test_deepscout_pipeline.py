@@ -39,7 +39,7 @@ class LeadscoutPipelineTest(unittest.TestCase):
                                         'sources': ['https://example.com/about']})
         self.conn.commit()
 
-    def test_profile_refresh_keeps_scout_as_final_verdict(self):
+    def test_changed_profile_expires_scout_and_can_be_researched_again(self):
         pid = self.lead()
         self.scout_lead(pid)
         before = self.conn.execute('SELECT model, content_fit FROM verdicts WHERE person_id=?', (pid,)).fetchone()
@@ -47,11 +47,88 @@ class LeadscoutPipelineTest(unittest.TestCase):
         self.conn.execute("UPDATE people SET bio='Founder of a skincare brand. Ships worldwide', "
                           "updated_at='9999-01-01' WHERE id=?", (pid,))
         self.conn.commit()
+        with patch.object(server.qualify, 'input_hash', side_effect=lambda p, *args: p.get('bio')):
+            server.qualify_batch(self.conn)
+        after = self.conn.execute('SELECT model, reason FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual(after['model'], 'rules')
+        self.assertNotEqual(after['reason'], 'A skincare brand.')
+        self.assertTrue(scout.result(self.conn, pid)['stale'])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE person_id=? AND grp='scout'", (pid,)).fetchone()[0], 0)
+        self.conn.execute("UPDATE verdicts SET model='offline-llm', content_fit=80, score=80 WHERE person_id=?", (pid,))
+        self.conn.commit()
+        self.assertEqual([p['id'] for p in scout.candidates(self.conn, 3, set())], [pid])
+
+    def test_unrelated_timestamp_refresh_keeps_current_scout(self):
+        pid = self.lead()
+        self.scout_lead(pid)
+        self.conn.execute("UPDATE people SET updated_at='9999-01-01' WHERE id=?", (pid,))
+        self.conn.commit()
         server.qualify_batch(self.conn)
-        after = self.conn.execute('SELECT model, content_fit, reason FROM verdicts WHERE person_id=?', (pid,)).fetchone()
-        self.assertEqual(after['model'], 'leadscout')
-        self.assertGreaterEqual(after['content_fit'], 85)
-        self.assertEqual(after['reason'], 'A skincare brand.')
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'leadscout')
+        self.assertIsNotNone(scout.result(self.conn, pid))
+
+    def test_material_edit_invalidates_current_scout_even_while_ai_paused(self):
+        pid = self.lead()
+        self.scout_lead(pid)
+        self.conn.execute("INSERT INTO marks(person_id,status,note,updated_at) VALUES(?,'interested','Keep this',?)",
+                          (pid, db.now()))
+        db.set_setting(self.conn, 'qualify', False)
+        self.conn.commit()
+        self.conn.execute("UPDATE people SET website='https://changed.example',updated_at='9999-01-01' WHERE id=?", (pid,))
+        self.conn.commit()
+        row = self.conn.execute('SELECT model,score,reason FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual(tuple(row), ('rules', None, None))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE person_id=? AND grp='scout'", (pid,)).fetchone()[0], 0)
+        self.assertTrue(scout.result(self.conn, pid)['stale'])
+        self.assertEqual(tuple(self.conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()),
+                         ('interested', 'Keep this'))
+
+    def test_minor_follower_change_does_not_spend_another_scout_run(self):
+        pid = self.lead()
+        self.conn.execute('UPDATE people SET followers=12000 WHERE id=?', (pid,))
+        self.conn.commit()
+        self.scout_lead(pid)
+        self.conn.execute('UPDATE people SET followers=12001 WHERE id=?', (pid,))
+        self.conn.commit()
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'leadscout')
+        self.assertFalse(scout.result(self.conn, pid)['stale'])
+        self.conn.execute('UPDATE people SET followers=310000 WHERE id=?', (pid,))
+        self.conn.commit()
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')
+        self.assertTrue(scout.result(self.conn, pid)['stale'])
+
+    def test_scout_verdict_clears_prior_model_claims(self):
+        pid = self.lead()
+        self.conn.execute("UPDATE verdicts SET role='buyer', prompt='old prompt', evidence='[\"old quote\"]' WHERE person_id=?", (pid,))
+        self.scout_lead(pid)
+        row = self.conn.execute('SELECT model, role, prompt, evidence FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual(row['model'], 'leadscout')
+        self.assertEqual((row['role'], row['prompt'], row['evidence']), (None, None, None))
+
+    def test_legacy_scout_rows_become_unverified_on_schema_upgrade(self):
+        pid = self.lead()
+        self.conn.execute('DROP TABLE deep_research')
+        self.conn.execute("""CREATE TABLE deep_research(person_id INTEGER PRIMARY KEY, verdict TEXT, reachable INT,
+            summary TEXT, tags TEXT, sources TEXT, raw TEXT, at TEXT NOT NULL)""")
+        self.conn.execute("INSERT INTO deep_research VALUES(?, 'strong', 1, 'Old read', '[]', '[]', '{}', ?)", (pid, db.now()))
+        self.conn.execute("UPDATE verdicts SET model='leadscout',score=90,content_fit=85,reason='Old read' WHERE person_id=?", (pid,))
+        self.conn.execute("INSERT INTO tags VALUES(?,'Scout: Strong','scout','auto')", (pid,))
+        self.conn.execute("INSERT INTO marks(person_id,status,note,updated_at) VALUES(?,'interested','Owner note',?)", (pid, db.now()))
+        self.conn.commit()
+        scout.ensure(self.conn)
+        row = self.conn.execute('SELECT model,score,reason FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual((row['model'], row['score'], row['reason']), ('rules', None, None))
+        history = scout.result(self.conn, pid)
+        self.assertTrue(history['stale'])
+        self.assertEqual(history['summary'], 'Old read')
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE person_id=? AND grp='scout'", (pid,)).fetchone()[0], 0)
+        mark = self.conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
+        self.assertEqual(tuple(mark), ('interested', 'Owner note'))
+        db.set_setting(self.conn, 'qualify', False)
+        self.conn.commit()
+        self.assertEqual(server.qualify_batch(self.conn), 1)  # local rules still run while AI is paused
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')
+        self.assertTrue(scout.result(self.conn, pid)['stale'])
 
     def test_inflight_llm_result_cannot_replace_scout(self):
         pid = self.lead()

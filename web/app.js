@@ -1187,9 +1187,10 @@ const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).sp
 // The Hermes leadscout's final read: verdict, two sentences and the pages it used.
 function scoutHTML(sc) {
   if (!sc) return '';
-  const label = { strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict;
-  const cls = sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
-  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+  const label = sc.stale ? 'Older read · unverified' : ({ strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict);
+  const cls = sc.stale || sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
+  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${sc.stale || sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+    ${sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : ''}
     <p class="d-reason">${esc(sc.summary || '')}</p>
     ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
 }

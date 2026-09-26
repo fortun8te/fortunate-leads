@@ -1915,7 +1915,9 @@ def requalify(conn, p, me, net=None):
     _, lfit = laya_row(conn, p['id'])
     pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
     old = conn.execute('SELECT model, input_hash FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
-    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net)
+    scout_current = bool(old and old['model'] == 'leadscout' and deepscout.fresh(conn, p))
+    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net) and (
+        old['model'] != 'leadscout' or scout_current)
     if not keep_llm:  # the LLM's extra auto tags stay as long as its verdict does
         conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
     auto = qualify.rule_tags(p, edges, me)
@@ -1934,7 +1936,7 @@ def requalify(conn, p, me, net=None):
     v = qualify.rule_verdict(p, tags, net)
     conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at, content_fit) "
                  "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
-    if old and old['model'] == 'leadscout':
+    if scout_current:
         deepscout.reapply(conn, p, net)
 
 
@@ -2466,6 +2468,8 @@ def main():
     CFG.update(db=str(Path(a.db).resolve()), port=a.port)
     Path(CFG['db']).parent.mkdir(parents=True, exist_ok=True)
     conn = db.init(CFG['db'])
+    deepscout.ensure(conn)
+    conn.commit()
     retag_if_changed(conn)
     refresh_laya_prefilter_if_changed(conn)
     conn.close()
