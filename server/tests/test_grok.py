@@ -51,5 +51,17 @@ class GrokEngine(unittest.TestCase):
             self.assertEqual(qualify.llm_verdicts([item('a'), item('b')], engine='grok'), [None, None])
 
 
+class Caps(unittest.TestCase):
+    def test_agency_cannot_outrank_a_buyer(self):
+        net = {'lists': 12, 'seeds': [('a', 'following')] * 3}
+        self.assertLessEqual(qualify.blend(80, net, 'connector'), qualify.SCORE_CAP['connector'])
+        self.assertGreater(qualify.blend(80, net, 'buyer'), qualify.SCORE_CAP['connector'])
+
+    def test_following_a_celebrity_is_no_way_in(self):
+        self.assertTrue(qualify.too_big(900000, {'me': 'followed'}))
+        self.assertFalse(qualify.too_big(900000, {'me': 'follows'}))
+        self.assertLessEqual(qualify.blend(90, {'lists': 14}, 'buyer', blocked=True), qualify.BLOCKED_CAP)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -27,7 +27,7 @@ stub.rule_verdict = lambda p, tags, net=None: {'score': 80 if ('founder', 'role'
 stub.llm_verdict = lambda p, tags, edges: None
 stub.input_hash = lambda p, edges, net=None: 'h' if p.get('bio') else 'h0'   # a new bio changes the input
 stub.legacy_input_hash = lambda p, edges, net=None: 'h'
-stub.blend = lambda content, net: content or 0   # network reblend is a no-op in these tests
+stub.blend = lambda content, net, *_: content or 0   # network reblend is a no-op in these tests
 stub._tier = lambda score, has_bio: 'unread' if not has_bio else 'hot' if score >= 70 else 'cold'
 
 import db  # noqa: E402
@@ -399,7 +399,7 @@ class TagsViewsMapTest(Base):
         self.conn.commit()
         blend, tier = stub.blend, stub._tier
         stub.NET_WEIGHT = 0.6
-        stub.blend = lambda content, net: round(.6 * stub.network_strength(net) + .4 * content)
+        stub.blend = lambda content, net, *_: round(.6 * stub.network_strength(net) + .4 * content)
         stub._tier = lambda score, has_bio: 'hot' if score >= 70 else 'warm' if score >= 45 else 'cold'
         try:
             self.call(f"/api/person/{ids['ann']}/mark", {'status': 'client'})

@@ -18,7 +18,7 @@ TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only 
 PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+TAGS_VERSION = 't7-caps'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -215,8 +215,9 @@ OTHER_MARKET_RX = re.compile(r'🇮🇳|🇵🇰|🇧🇩|🇳🇬|🇮🇩|🇵
 def too_big(followers, net=None) -> bool:
     """A public figure with no direct line to Michael: no entree, whatever the lists say."""
     net = net or {}
+    # 'follows' = they follow Michael. Michael following a public figure ('followed') is no way in.
     return (isinstance(followers, int) and followers >= REACH_FOLLOWERS
-            and net.get('me') not in ('mutual', 'followed') and not net.get('client_seeds'))
+            and net.get('me') not in ('mutual', 'follows') and not net.get('client_seeds'))
 
 
 def other_market(person) -> bool:
@@ -251,8 +252,16 @@ def net_from_tags(tags) -> dict:
     return {'lists': max(_seed_count({'source': src}), 1 if src else 0), 'me': me}
 
 
-def blend(content, net) -> int:
-    return _clamp(NET_WEIGHT * network_strength(net) + (1 - NET_WEIGHT) * content)
+# Final-score ceiling per role: a well-connected agency must never outrank a real buyer.
+SCORE_CAP = {'buyer': 100, 'unclear': 70, 'connector': 68, 'collaborator': 60, 'supplier': 55, 'peer': 45, 'unrelated': 35}
+BLOCKED_CAP = 25   # Too big / Other market: the network cannot lift them back up
+
+
+def blend(content, net, role=None, blocked=False) -> int:
+    s = _clamp(NET_WEIGHT * network_strength(net) + (1 - NET_WEIGHT) * content)
+    if role:
+        s = min(s, SCORE_CAP.get(role, 100))
+    return min(s, BLOCKED_CAP) if blocked else s
 
 
 def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
@@ -514,7 +523,7 @@ def rule_verdict(person: dict, tags, net=None) -> dict:
     if 'Too big' in sig or 'Other market' in sig:
         score = min(score, 20)
     profile_signal = _clamp(score)
-    score = blend(profile_signal, net if net is not None else net_from_tags(tags))
+    score = blend(profile_signal, net if net is not None else net_from_tags(tags), role, 'Too big' in sig or 'Other market' in sig)
     return {'score': score, 'content_fit': profile_signal if has_bio else None, 'role': role,
             'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)}
 
@@ -849,7 +858,8 @@ def _verdict(v, person, tags, used, version, net=None):
         v['niche'] = None
     fit = int(max(0, min(ROLE_CAP[v['role']], v['fit'])))
     content_fit = min(ROLE_CAP[v['role']], fit)
-    score = blend(content_fit, net if net is not None else net_from_tags(tags))
+    have_tags = {t for t, _ in tags or []}
+    score = blend(content_fit, net if net is not None else net_from_tags(tags), v['role'], bool(have_tags & {'Too big', 'Other market'}))
     # Showing the verified quote avoids laundering unsupported generated prose into facts.
     reason = 'Profile says: "' + evidence[0] + '".'
     extra = [t for t in (v.get('extra_tags') or []) if t in allowed]

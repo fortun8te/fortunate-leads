@@ -1862,7 +1862,8 @@ def refresh_network(conn, pids, prior=None, me=None, nets=None):
                     previous, before['edges'], before['net']))
         if not valid:
             continue
-        score = qualify.blend(old['content_fit'], nets[pid])
+        blocked = bool(conn.execute("SELECT 1 FROM tags WHERE person_id=? AND tag IN ('Too big','Other market')", (pid,)).fetchone())
+        score = qualify.blend(old['content_fit'], nets[pid], old['role'], blocked)
         _, lfit = laya_row(conn, pid)
         pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), nets[pid], lfit)
         if (score, pre, hashed, p['updated_at']) != (old['score'], old['prefilter'], old['input_hash'], old['updated_at']):

@@ -119,12 +119,12 @@ def apply(conn, p, data):
     conn.execute('INSERT OR REPLACE INTO deep_research VALUES(?,?,?,?,?,?,?,?)',
                  (p['id'], data['verdict'], int(reachable), summary, json.dumps(_clean_tags(data.get('tags'))),
                   json.dumps(sources), json.dumps(data, ensure_ascii=False)[:8000], db.now()))
-    v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
+    v = conn.execute('SELECT content_fit, role FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     fit = v['content_fit'] if v and v['content_fit'] is not None else 50
     fit = 10 if data['verdict'] == 'no' or not reachable else max(fit, 85) if data['verdict'] == 'strong' else min(max(fit, 50), 75)
     import server   # the server owns network context and blending
     net = server.network_context(conn, [p['id']]).get(p['id'])
-    score = qualify.blend(fit, net)
+    score = qualify.blend(fit, net, 'buyer' if data['verdict'] == 'strong' else v['role'] if v else None)
     conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=? WHERE person_id=?",
                  (fit, score, qualify._tier(score, True), summary or None, p['id']))
     conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout'", (p['id'],))
