@@ -84,10 +84,17 @@ cached-weight download, run:
 `install` writes `~/Library/LaunchAgents/com.fortunate.laya.plist` with absolute checkout paths,
 offline mode, a 30-second restart throttle, and logs at `~/Library/Logs/FortunateLeads/laya.log`.
 It does not launch the model. Once started, the LaunchAgent is configured to run at login.
+To force CPU, run `LAYA_DEVICE=cpu python3 sidecar/laya_service.py install`; the device choice is
+saved in the plist and checked by `health`. Without `LAYA_DEVICE`, the sidecar selects a device
+automatically.
 `start` stops a failing service after the health deadline so it cannot keep restarting with a
 bad cache. An existing plist is preserved unless you explicitly run `install --replace` while
 the service is stopped. If the model or deployment version changes, update both the main server
 and sidecar environment before starting; otherwise the client rejects the response.
+
+For an older two-argument `com.fortunate.laya.plist` from this checkout, use `stop`, then
+`install --replace`, then `start`. The manager checks the plist label and executable paths before
+stopping or replacing it, and refuses to manage a service from another checkout.
 
 ## Caveats
 

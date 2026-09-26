@@ -60,6 +60,19 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(spec['ProgramArguments'][3], '18742')
         self.assertNotIn('--allow-download', spec['ProgramArguments'])
 
+    def test_explicit_cpu_device_is_saved_and_verified(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(service.os.environ, {'LAYA_DEVICE': 'cpu'}), \
+                patch.object(service, 'PLIST', Path(directory) / 'laya.plist'), \
+                patch.object(service, 'LOG', Path(directory) / 'laya.log'), patch.object(service, 'preflight'):
+            self.assertEqual(service.install(), 'installed (not started)')
+            spec = plistlib.loads(service.PLIST.read_bytes())
+            self.assertEqual(spec['EnvironmentVariables']['LAYA_DEVICE'], 'cpu')
+            cfg = service.installed_config()
+            self.assertEqual(cfg['device'], 'cpu')
+            healthy = {'ok': True, 'model': cfg['model'], 'deployment_version': cfg['deployment_version']}
+            self.assertTrue(service.matches(cfg, dict(healthy, device='cpu')))
+            self.assertFalse(service.matches(cfg, dict(healthy, device='mps')))
+
     def test_install_writes_plist_without_starting(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -77,6 +90,35 @@ class ServiceTest(unittest.TestCase):
                 service.PLIST.write_bytes(plistlib.dumps(spec))
                 with self.assertRaisesRegex(RuntimeError, 'offline service'):
                     service.installed_config()
+
+    def test_legacy_plist_can_be_stopped_then_replaced(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(service, 'PLIST', Path(directory) / 'laya.plist'), \
+                patch.object(service, 'LOG', Path(directory) / 'laya.log'), patch.object(service, 'preflight'), \
+                patch.object(service, 'loaded', side_effect=[True, False]), \
+                patch.object(service, 'launch') as launch:
+            legacy = {'Label': service.LABEL, 'ProgramArguments': [
+                str(service.HERE / '.venv' / 'bin' / 'python'), str(service.HERE / 'laya_server.py')]}
+            service.PLIST.write_bytes(plistlib.dumps(legacy))
+            self.assertEqual(service.stop(), 'stopped')
+            launch.assert_called_once_with('bootout', service.target())
+            self.assertEqual(service.install(replace=True), 'installed (not started)')
+            self.assertEqual(service.installed_config()['model'], service.laya_server.DEFAULT_MODEL)
+
+    def test_unrelated_plist_cannot_be_stopped_or_replaced(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(service, 'PLIST', Path(directory) / 'laya.plist'), \
+                patch.object(service, 'LOG', Path(directory) / 'laya.log'), patch.object(service, 'preflight'), \
+                patch.object(service, 'loaded', return_value=True), patch.object(service, 'launch') as launch:
+            unrelated = {'Label': service.LABEL, 'ProgramArguments': ['/other/python', '/other/laya_server.py']}
+            original = plistlib.dumps(unrelated)
+            service.PLIST.write_bytes(original)
+            with self.assertRaises(RuntimeError):
+                service.stop()
+            with self.assertRaises(RuntimeError):
+                service.install(replace=True)
+            self.assertEqual(service.PLIST.read_bytes(), original)
+            launch.assert_not_called()
 
     def test_health_requires_matching_model_and_deployment(self):
         cfg = {'port': 18742, 'model': 'repo:multilingual', 'deployment_version': 'v1'}
@@ -108,6 +150,18 @@ class ServiceTest(unittest.TestCase):
                                                                        'deployment_version': 'v1'}), \
                 patch.object(service, 'launch') as launch:
             with self.assertRaisesRegex(RuntimeError, 'different model'):
+                service.start(timeout=1)
+            launch.assert_not_called()
+
+    def test_start_rejects_wrong_device_without_launching(self):
+        cfg = {'port': 18742, 'model': 'repo:multilingual', 'deployment_version': 'v1',
+               'cache': Path('/tmp'), 'device': 'cpu'}
+        status = {'ok': True, 'model': 'repo:multilingual', 'deployment_version': 'v1', 'device': 'mps'}
+        with patch.object(service, 'installed_config', return_value=cfg), patch.object(service, 'preflight'), \
+                patch.object(service, 'loaded', return_value=False), \
+                patch.object(service, 'health_response', return_value=status), \
+                patch.object(service, 'launch') as launch:
+            with self.assertRaisesRegex(RuntimeError, 'device'):
                 service.start(timeout=1)
             launch.assert_not_called()
 

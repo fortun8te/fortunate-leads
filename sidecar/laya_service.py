@@ -32,21 +32,27 @@ def config():
         raise ValueError('LAYA_PORT must be between 1 and 65535')
     if laya_server.BATCH_SIZE <= 0:
         raise ValueError('LAYA_BATCH_SIZE must be positive')
+    device = os.environ.get('LAYA_DEVICE') or None
+    if device is not None and device not in ('cpu', 'mps', 'cuda'):
+        raise ValueError('LAYA_DEVICE must be cpu, mps or cuda')
     cache = Path(os.environ.get('HF_HOME', str(HERE / '.cache' / 'huggingface'))).expanduser().resolve()
     return {'port': port, 'model': laya_server.DEFAULT_MODEL,
             'deployment_version': laya_server.DEPLOYMENT_VERSION,
-            'batch_size': laya_server.BATCH_SIZE, 'cache': cache}
+            'batch_size': laya_server.BATCH_SIZE, 'cache': cache, 'device': device}
 
 
 def service_spec(cfg=None):
     cfg = config() if cfg is None else cfg
+    env = {'HF_HOME': str(cfg['cache']), 'HF_HUB_OFFLINE': '1',
+           'LAYA_MODEL': cfg['model'], 'LAYA_DEPLOYMENT_VERSION': cfg['deployment_version'],
+           'LAYA_PORT': str(cfg['port']), 'LAYA_BATCH_SIZE': str(cfg['batch_size'])}
+    if cfg.get('device'):
+        env['LAYA_DEVICE'] = cfg['device']
     return {'Label': LABEL,
             'ProgramArguments': [str(HERE / '.venv' / 'bin' / 'python'), str(HERE / 'laya_server.py'),
                                  '--port', str(cfg['port']), '--model', cfg['model']],
             'WorkingDirectory': str(HERE.parent),
-            'EnvironmentVariables': {'HF_HOME': str(cfg['cache']), 'HF_HUB_OFFLINE': '1',
-                                     'LAYA_MODEL': cfg['model'], 'LAYA_DEPLOYMENT_VERSION': cfg['deployment_version'],
-                                     'LAYA_PORT': str(cfg['port']), 'LAYA_BATCH_SIZE': str(cfg['batch_size'])},
+            'EnvironmentVariables': env,
             'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 30,
             'StandardOutPath': str(LOG), 'StandardErrorPath': str(LOG)}
 
@@ -81,6 +87,7 @@ def install(replace=False):
             return 'already installed'
         if not replace:
             raise RuntimeError('%s already exists; use install --replace after reviewing it' % PLIST)
+        owned_spec()
         if loaded():
             raise RuntimeError('stop the current Laya service before replacing its plist')
     PLIST.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +117,7 @@ def launch(*args):
         raise RuntimeError(run.stderr.strip() or run.stdout.strip() or 'launchctl failed')
 
 
-def installed_config():
+def owned_spec():
     if not PLIST.exists():
         raise RuntimeError('Laya service is not installed; run install first')
     spec = plistlib.loads(PLIST.read_bytes())
@@ -119,12 +126,21 @@ def installed_config():
     args = spec.get('ProgramArguments') or []
     if len(args) < 2 or args[0] != str(HERE / '.venv' / 'bin' / 'python') or args[1] != str(HERE / 'laya_server.py'):
         raise RuntimeError('installed Laya service belongs to a different checkout')
+    return spec
+
+
+def installed_config():
+    spec = owned_spec()
+    args = spec['ProgramArguments']
     env = spec.get('EnvironmentVariables') or {}
     try:
         cfg = {'port': int(env['LAYA_PORT']), 'model': env['LAYA_MODEL'],
-               'deployment_version': env['LAYA_DEPLOYMENT_VERSION'], 'cache': Path(env['HF_HOME'])}
+               'deployment_version': env['LAYA_DEPLOYMENT_VERSION'], 'cache': Path(env['HF_HOME']),
+               'device': env.get('LAYA_DEVICE')}
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError('installed Laya plist is missing required configuration') from error
+    if cfg['device'] not in (None, 'cpu', 'mps', 'cuda'):
+        raise RuntimeError('installed Laya plist has an unsupported device')
     if env.get('HF_HUB_OFFLINE') != '1' or args != [str(HERE / '.venv' / 'bin' / 'python'),
             str(HERE / 'laya_server.py'), '--port', str(cfg['port']), '--model', cfg['model']]:
         raise RuntimeError('installed Laya plist differs from the supported offline service')
@@ -145,7 +161,8 @@ def health_response(cfg, timeout=3):
 
 def matches(cfg, data):
     return (isinstance(data, dict) and data.get('ok') is True and data.get('model') == cfg['model']
-            and data.get('deployment_version') == cfg['deployment_version'])
+            and data.get('deployment_version') == cfg['deployment_version']
+            and (not cfg.get('device') or str(data.get('device', '')).split(':')[0] == cfg['device']))
 
 
 def probe(cfg, timeout=3):
@@ -162,7 +179,7 @@ def start(timeout=180):
             return 'already healthy'
         raise RuntimeError('a compatible sidecar already occupies the port outside this service')
     if status is not None:
-        raise RuntimeError('port %d serves a different model or deployment version' % cfg['port'])
+        raise RuntimeError('port %d serves a different model, deployment version or device' % cfg['port'])
     if is_loaded:
         launch('kickstart', '-k', target())
     else:
@@ -178,7 +195,7 @@ def start(timeout=180):
 
 
 def stop():
-    installed_config()
+    owned_spec()  # also permits the old two-argument plist, but only for this checkout
     if not loaded():
         return 'already stopped'
     launch('bootout', target())
