@@ -244,7 +244,7 @@ function setURL(push) {
   syncTabs();
 }
 function syncTabs() {
-  $$('.tabs a').forEach((a) => { a.href = hashFor(a.dataset.view); a.classList.toggle('on', a.dataset.view === S.view); });
+  $$('.tabs a').forEach((a) => { a.href = hashFor(a.dataset.view); a.classList.toggle('on', a.dataset.view === S.view); if (a.dataset.view === S.view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
 }
 function route() {
   const { view, qs } = parseHash();
@@ -259,12 +259,17 @@ function route() {
 }
 window.addEventListener('popstate', route);
 window.addEventListener('hashchange', route);
+$('.skip-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  $('#main-content')?.focus({ preventScroll: true });
+});
 
 const WORK_SUB = { leads: 'Everyone the scraper found, best fit first.', map: 'Who is connected to whom. Click a dot to open that person.' };
 function setView(v) {
   const prev = S.view;
   S.view = v;
   const work = v === 'leads' || v === 'map';
+  if ($('#work-count')) $('#work-count').hidden = v !== 'leads';
   $('#view-work').classList.toggle('on', work);
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-qual').classList.toggle('on', v === 'qual');
@@ -322,8 +327,8 @@ function applyDensity(d) {
 }
 function syncLook() {
   const r = document.documentElement.dataset;
-  $$('#set-theme button').forEach((b) => b.classList.toggle('on', b.dataset.v === r.theme));
-  $$('#set-density button').forEach((b) => b.classList.toggle('on', b.dataset.v === (r.density || 'comfortable')));
+  $$('#set-theme button').forEach((b) => { const on = b.dataset.v === r.theme; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  $$('#set-density button').forEach((b) => { const on = b.dataset.v === (r.density || 'comfortable'); b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
 }
 $('#set-theme').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyTheme(b.dataset.v); };
 $('#set-density').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyDensity(b.dataset.v); };
@@ -333,7 +338,10 @@ function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
   S.side = !S.side; store.set('side', S.side);
   $('#view-work').classList.toggle('work-noside', !S.side);
-  renderRows(); M.resize();
+  syncFilterToggle(); renderRows(); M.resize();
+}
+function syncFilterToggle() {
+  $('#filters-btn').setAttribute('aria-expanded', String(narrow() ? $('#filters').classList.contains('show') : S.side));
 }
 
 // ---------- tags & counts ----------
@@ -512,13 +520,15 @@ function startSaveView() {
   S.saving = true; renderFilters();
 }
 $('#save-view').onclick = startSaveView;
-function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; }
+function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; syncFilterToggle(); }
 $('#filters-btn').onclick = (e) => { e.stopPropagation(); toggleSide(); };
 $('#scrim').onclick = () => setDrawer(false);
 
 // ---------- query bar ----------
 function renderTokens() {
-  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove">&times;</button></span>`).join('');
+  const clear = $('#clear-filters');
+  if (clear) { clear.hidden = !filterCount(); clear.onclick = clearFilters; }
+  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove" aria-label="Remove ${esc(t.text)} filter">&times;</button></span>`).join('');
   if (document.activeElement !== $('#q') && $('#q').value.trim() !== S.f.q) $('#q').value = S.f.q;
 }
 function removeToken(t) {
@@ -679,7 +689,11 @@ async function loadMore(gen = S.gen, n = PAGE, replace = false) {
     const d = await fetchLeads(replace ? 0 : S.rows.length, Math.min(500, n));
     if (gen !== S.gen) return;
     S.total = d.total;
-    if (replace) S.rows = d.rows; else S.rows.push(...d.rows);
+    if (replace) {
+      const currentId = S.rows[S.cur]?.id;
+      S.rows = d.rows;
+      S.cur = currentId == null ? -1 : S.rows.findIndex((r) => r.id === currentId);
+    } else S.rows.push(...d.rows);
     S.done = S.rows.length >= d.total || !d.rows.length;
   } catch (e) {
     if (gen === S.gen) S.error = true;
@@ -728,9 +742,9 @@ function rowHTML(r, i, h) {
   const picked = S.pick.has(r.id);
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', picked ? 'picked' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
   const tags = rowTags(r);
-  return `<div class="${cls}" data-i="${i}" style="top:${i * h}px">
-    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><b>@${esc(r.handle)}</b>${igLink(r.handle)}${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
+  return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
+    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
     <div class="c-fit">${fitBadge(r)}</div>
     <div class="conn c-conn">${connHTML(r)}</div>
     <div class="tags c-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div>
@@ -740,21 +754,29 @@ function rowHTML(r, i, h) {
   </div>`;
 }
 function renderRows() {
+  const active = document.activeElement;
+  const activeRow = active?.closest('#rows .row');
+  const focusId = activeRow?.dataset.personId;
+  const focusKey = active?.matches('[data-ck]') ? '[data-ck]' : active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
   const box = $('#rows'), sc = $('#scroll'), h = rowH();
+  if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
   $('#count').textContent = S.total == null ? '' : plural(S.total, 'person', 'people') + (S.pick.size ? ` · ${int(S.pick.size)} selected` : '');
   $('#pane-leads').classList.toggle('selecting', S.pick.size > 0);
   renderBulk();
   const loadedPicked = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
+  $('#sel-page').setAttribute('role', 'checkbox');
+  $('#sel-page').setAttribute('aria-label', 'Select all loaded leads');
+  $('#sel-page').setAttribute('aria-checked', loadedPicked ? 'true' : S.pick.size ? 'mixed' : 'false');
   $('#sel-page').className = 'ck' + (loadedPicked ? ' on' : S.pick.size ? ' part' : '');
   if (!S.rows.length) {
     box.style.height = '100%';
     if (S.loading || (S.total == null && !S.error)) {
       box.innerHTML = Array.from({ length: 14 }, (_, i) => `<div class="skel" style="top:${i * h}px"><i></i><i style="width:${120 + (i * 37) % 80}px"></i><i style="width:${200 + (i * 53) % 160}px"></i></div>`).join('');
     } else if (S.error) {
-      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><button class="btn" id="retry">Retry</button></div>`;
+      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
+      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
     }
     return;
   }
@@ -764,10 +786,15 @@ function renderRows() {
   let out = '';
   for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i, h);
   box.innerHTML = out;
+  if (focusId && focusKey) {
+    const target = box.querySelector(`[data-person-id="${CSS.escape(focusId)}"] ${focusKey}`);
+    if (target) target.focus({ preventScroll: true });
+    else { sc.tabIndex = -1; sc.focus({ preventScroll: true }); }
+  }
   if (!S.done && to >= S.rows.length - 20) loadMore();
 }
 $('#scroll').addEventListener('scroll', () => requestAnimationFrame(renderRows), { passive: true });
-window.addEventListener('resize', debounce(() => { renderRows(); M.resize(); }, 60));
+window.addEventListener('resize', debounce(() => { syncFilterToggle(); renderRows(); M.resize(); }, 60));
 $('#rows').addEventListener('click', (e) => {
   if (e.target.id === 'retry') return resetLeads();
   if (e.target.closest('#clear-all')) return clearFilters();
@@ -780,7 +807,7 @@ $('#rows').addEventListener('click', (e) => {
   if (e.target.closest('[data-ck]') || e.target.closest('.c-sel') || e.metaKey || e.ctrlKey) { e.preventDefault(); return togglePick(i, e.shiftKey); }
   if (e.shiftKey) { e.preventDefault(); window.getSelection()?.removeAllRanges(); return rangePick(i); }
   select(i);
-  openDetail(S.rows[i].id);
+  openDetail(S.rows[i].id, { keyboard: e.detail === 0 });
 });
 $('#sel-page').onclick = () => {
   const all = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
@@ -790,6 +817,7 @@ $('#sel-page').onclick = () => {
 
 function select(i, scroll) {
   if (!S.rows.length) return;
+  const moveFocus = scroll && document.activeElement?.closest('#rows .row');
   S.cur = Math.max(0, Math.min(S.rows.length - 1, i));
   if (scroll) {
     const sc = $('#scroll'), h = rowH(), top = S.cur * h;
@@ -797,6 +825,7 @@ function select(i, scroll) {
     else if (top + h > sc.scrollTop + sc.clientHeight) sc.scrollTop = top + h - sc.clientHeight;
   }
   renderRows();
+  if (moveFocus) $(`#rows [data-person-id="${S.rows[S.cur].id}"] .lead-open`)?.focus({ preventScroll: true });
 }
 function togglePick(i, range) {
   const r = S.rows[i];
@@ -922,13 +951,17 @@ function patchRow(id, patch) {
 function current() { return S.open ? S.person || S.rows.find((r) => r.id === S.open) : S.rows[S.cur]; }
 
 // ---------- detail ----------
-async function openDetail(id) {
+let detailReturnId = null;
+async function openDetail(id, { keyboard = false } = {}) {
+  if (keyboard || (detailReturnId != null && $('#detail').contains(document.activeElement))) detailReturnId = id;
+  else if (!$('#detail').contains(document.activeElement)) detailReturnId = null;
   S.open = id; S.seedCard = null;
   const base = S.rows.find((r) => r.id === id);
   const node = M.byId.get('p:' + id);
   S.person = base ? { ...base, loading: true } : node ? { id, handle: node.handle, name: node.name, followers: node.followers, lists: node.lists, status: node.status, tags: [], loading: true } : { id, loading: true, handle: '', tags: [] };
   $('#detail').hidden = false;
   renderDetail(); renderRows(); M.draw();
+  if (keyboard) $('#d-close')?.focus({ preventScroll: true });
   await refreshPerson(id);
 }
 async function refreshPerson(id) {
@@ -945,10 +978,20 @@ async function refreshPerson(id) {
   renderDetail(); renderRows();
 }
 function closeDetail() {
+  const returnId = detailReturnId;
+  const restore = returnId != null && $('#detail').contains(document.activeElement);
+  detailReturnId = null;
   S.open = null; S.person = null; S.seedCard = null;
   $('#detail').hidden = true;
   M.focus = null;
   renderRows(); M.resize();
+  if (restore) {
+    const i = S.rows.findIndex((r) => r.id === returnId);
+    if (i >= 0 && S.view === 'leads') {
+      select(i, true);
+      $(`#rows [data-person-id="${returnId}"] .lead-open`)?.focus({ preventScroll: true });
+    } else if (S.view === 'leads') $('#q').focus({ preventScroll: true });
+  }
 }
 // One row per seed; both directions read as mutual.
 function seedEdges(edges) {
@@ -981,7 +1024,7 @@ function renderDetail() {
   $('#detail').innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
       <div class="who"><b>${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
-      <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
+      <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
     <div class="d-sec d-fit">
       <div class="d-fit-h">${p.loading ? '' : fitBadge({ ...p, tier: p.tier || v.tier, score: p.score ?? v.score }, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
       <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
@@ -999,10 +1042,11 @@ function renderDetail() {
     <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
       <form class="tag-add" id="tag-form"><input class="input" id="tag-in" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
       ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
+    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button data-s="${s}" class="${s}${p.status === s ? ' on' : ''}" aria-pressed="${p.status === s}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
     <div class="d-sec"><h4>Note<span class="grow"></span><span class="d-note" id="note-st">${p.note ? 'Saved' : 'Saves as you type'}</span></h4><textarea class="input" id="note" data-id="${p.id}" placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
+  if (focused === 'd-close') $('#d-close')?.focus({ preventScroll: true });
   if (focused === 'tag-in') $('#tag-in').focus();
   if (focused === 'note') { const t = $('#note'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
 }
@@ -1066,6 +1110,8 @@ document.addEventListener('keydown', (e) => {
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key;
+  // Let native controls handle activation instead of also opening the current lead.
+  if ((k === 'Enter' || k === ' ') && e.target.closest('button, a')) return;
   if (gPending && Date.now() - gPending < 900) {
     gPending = 0;
     const to = { l: 'leads', m: 'map', q: 'qual', t: 'tags', s: 'scraper', a: 'accounts', ',': 'settings' }[k];
@@ -1096,6 +1142,9 @@ document.addEventListener('keydown', (e) => {
     if (p && k === 't') { e.preventDefault(); $('#tag-in')?.focus(); }
     return;
   }
+  // Tab can focus a different lead without using the j/k navigation cursor.
+  const focusedRow = e.target.closest('#rows .row');
+  if (focusedRow) S.cur = +focusedRow.dataset.i;
   if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp' || k === 'J' || k === 'K') {
     e.preventDefault();
     const down = k === 'j' || k === 'J' || k === 'ArrowDown';
@@ -1109,8 +1158,8 @@ document.addEventListener('keydown', (e) => {
   }
   if (k === 'x') { if (S.cur < 0) select(0); togglePick(S.cur); return; }
   if (k === 'A') { pickAllInFilter(); return; }
-  const r = current();
-  if (k === 'Enter' && S.rows[S.cur]) { openDetail(S.rows[S.cur].id); return; }
+  const r = focusedRow ? S.rows[S.cur] : current();
+  if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id, { keyboard: true }); return; }
   if (S.pick.size && /^[0-5]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
   if (S.pick.size && k === 't') { e.preventDefault(); $('#bk-add')?.focus(); return; }
   if (!r) return;
@@ -2529,6 +2578,7 @@ function reconnected() {
 applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
 applyDensity(store.get('density', 'comfortable'));
 $('#view-work').classList.toggle('work-noside', !S.side);
+syncFilterToggle();
 (function boot() {
   const { view, qs } = parseHash();
   const p = fromQuery(qs);

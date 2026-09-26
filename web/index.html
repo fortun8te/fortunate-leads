@@ -16,22 +16,23 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <div class="shell">
   <aside class="side">
     <a class="brand" href="#/leads"><i>F</i><span>Fortunate</span></a>
-    <nav class="tabs">
-      <a href="#/leads" data-view="leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads"></span></a>
-      <a href="#/map" data-view="map"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Map</span></a>
-      <a href="#/qual" data-view="qual"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Qualification</span><span class="num" id="n-qual"></span></a>
-      <a href="#/tags" data-view="tags"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg><span>Tags</span></a>
-      <a href="#/scraper" data-view="scraper"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/></svg><span>Scraper</span><span class="num" id="n-queue"></span></a>
-      <a href="#/accounts" data-view="accounts"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.6"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7M10 6.5h2.5M10 9h2.5"/></svg><span>Accounts</span><span class="num" id="n-acc"></span></a>
-      <a href="#/settings" data-view="settings"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg><span>Settings</span></a>
+    <nav class="tabs" aria-label="Main navigation">
+      <a href="#/leads" data-view="leads" aria-label="Leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads"></span></a>
+      <a href="#/map" data-view="map" aria-label="Map"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Map</span></a>
+      <a href="#/qual" data-view="qual" aria-label="Qualification"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Qualification</span><span class="num" id="n-qual"></span></a>
+      <a href="#/tags" data-view="tags" aria-label="Tags"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg><span>Tags</span></a>
+      <a href="#/scraper" data-view="scraper" aria-label="Scraper"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/></svg><span>Scraper</span><span class="num" id="n-queue"></span></a>
+      <a href="#/accounts" data-view="accounts" aria-label="Accounts"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.6"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7M10 6.5h2.5M10 9h2.5"/></svg><span>Accounts</span><span class="num" id="n-acc"></span></a>
+      <a href="#/settings" data-view="settings" aria-label="Settings"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg><span>Settings</span></a>
     </nav>
     <div class="side-foot">
-      <button class="btn ghost hide-sm" id="density-btn" title="Density (d)" hidden>Compact</button>
+      <button class="btn ghost hide-sm" id="density-btn" title="Switch row density (d)">Compact</button>
       <button class="btn ghost" id="theme-btn">Light</button>
-      <button class="btn ghost hide-sm" id="help-btn" title="Keyboard shortcuts"><kbd>?</kbd></button>
+      <button class="btn ghost hide-sm" id="help-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><kbd>?</kbd></button>
     </div>
   </aside>
 
@@ -55,36 +56,38 @@
     </div>
   </div>
 
-  <main>
+  <main id="main-content" tabindex="-1">
     <section class="view" id="view-work">
-      <aside class="filters" id="filters"></aside>
+      <aside class="filters" id="filters" aria-label="Lead filters"></aside>
       <div class="scrim" id="scrim" hidden></div>
       <div class="pane">
         <header class="ph ph-work">
-          <div class="ph-t"><h1 id="work-h">Leads</h1><p id="work-p">Everyone the scraper found, best fit first.</p></div>
+          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div><p id="work-p">Everyone the scraper found, best fit first.</p></div>
           <div class="ph-a"><button class="btn" id="save-view" title="Save these filters as a view (v)">Save view</button></div>
         </header>
         <div class="qbar">
-          <button class="btn fbtn" id="filters-btn" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
+          <button class="btn fbtn" id="filters-btn" aria-controls="filters" aria-expanded="true" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
           <div class="qbox" id="qbox">
+            <svg class="search-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
             <div class="tokens" id="tokens"></div>
-            <input id="q" type="text" placeholder="Search, #tag, -#tag, fit:strong, lists:2+" autocomplete="off" spellcheck="false">
+            <input id="q" type="text" aria-label="Search leads or add filters" placeholder="Search leads or #tags" title="Try #tag, -#tag, fit:strong or lists:2+" autocomplete="off" spellcheck="false">
             <kbd class="hide-sm">/</kbd>
             <div class="suggest" id="suggest" hidden></div>
           </div>
-          <select class="select" id="sort" title="Sort">
+          <select class="select" id="sort" title="Sort" aria-label="Sort leads">
             <option value="fit">Best fit</option>
             <option value="connected">Most connected</option>
             <option value="followers">Followers</option>
             <option value="recent">Newest</option>
             <option value="score">Score</option>
           </select>
+          <button class="btn ghost" id="clear-filters" title="Clear all filters (c)" hidden>Clear</button>
         </div>
 
         <div class="lpane" id="pane-leads">
           <div class="bulk" id="bulk" hidden></div>
           <div class="thead">
-            <span class="c-sel"><button class="ck" id="sel-page" title="Select all loaded"></button></span>
+            <span class="c-sel"><button class="ck" id="sel-page" role="checkbox" aria-checked="false" aria-label="Select all loaded leads" title="Select all loaded"></button></span>
             <span>Lead</span><span>Fit</span><span class="c-conn">Connections</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-st">Status</span>
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
@@ -95,7 +98,7 @@
         <div class="mpane" id="pane-map">
           <div class="mbar">
             <div class="seg" id="map-scope"><button data-v="leads" class="on" title="People in 2+ lists and likely brands">Connected</button><button data-v="all">All</button></div>
-            <label class="search"><input class="input" id="map-q" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
+            <label class="search"><input class="input" id="map-q" aria-label="Find a person on the map" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
             <button class="btn" id="map-labels" title="Labels (l)">Labels</button>
@@ -119,7 +122,7 @@
           </div>
         </div>
       </div>
-      <aside class="detail" id="detail" hidden></aside>
+      <aside class="detail" id="detail" aria-label="Lead details" hidden></aside>
     </section>
 
     <section class="view" id="view-qual">
@@ -131,9 +134,9 @@
         <div class="ql-prog" id="ql-prog"></div>
         <div class="ql-bar">
           <div class="seg" id="ql-view"><button data-v="ai" class="on">Checked by AI</button><button data-v="rules">Keywords only</button><button data-v="all">Everyone</button></div>
-          <input class="input" id="ql-q" type="search" placeholder="Find a person" autocomplete="off" spellcheck="false">
+          <input class="input" id="ql-q" aria-label="Find a person in qualification" type="search" placeholder="Find a person" autocomplete="off" spellcheck="false">
           <div class="grow"></div>
-          <select class="select" id="ql-sort"><option value="score">Best first</option><option value="recent">Newest first</option></select>
+          <select class="select" id="ql-sort" aria-label="Sort qualification results"><option value="score">Best first</option><option value="recent">Newest first</option></select>
           <span class="num muted" id="ql-n"></span>
         </div>
         <div class="ql-list" id="ql-list"></div>
@@ -145,25 +148,25 @@
       <div class="tg">
         <header class="ph">
           <div class="ph-t"><h1>Tags</h1><p>Short labels on people. Click one to see those people in Leads.</p></div>
-          <div class="ph-a"><input class="input" id="tg-q" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
+          <div class="ph-a"><input class="input" id="tg-q" aria-label="Find a tag" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
         </header>
         <div class="tg-groups" id="tg-groups"></div>
         <div class="panel">
           <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person, tidy them up here</span></div>
           <div class="tg-merge" id="tg-merge" hidden></div>
           <div class="tbl-wrap"><table class="tbl tg-tbl">
-            <thead><tr><th class="c-ck"><button class="ck" id="tg-all"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
+            <thead><tr><th class="c-ck"><button class="ck" id="tg-all" aria-label="Select all tags"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
             <tbody id="tg-body"></tbody>
           </table></div>
         </div>
         <div class="panel">
           <div class="p-head"><h3>Keyword rules</h3><span class="num muted" id="rl-n"></span><div class="grow"></div><span class="muted hide-sm">Tag everyone whose bio, name or link has a word</span></div>
           <form class="rule-form" id="rule-form">
-            <div class="rl-row"><span class="muted">Tag</span><input class="input" id="rl-tag" placeholder="Tag name, e.g. Candles" list="tag-dl" autocomplete="off" required>
+            <div class="rl-row"><span class="muted">Tag</span><input class="input" id="rl-tag" aria-label="New rule tag" placeholder="Tag name, e.g. Candles" list="tag-dl" autocomplete="off" required>
             <span class="muted">when</span>
-            <select class="select" id="rl-field"><option value="bio">Bio</option><option value="name">Name</option><option value="handle">Handle</option><option value="category">Category</option><option value="website">Website</option><option value="any">Any field</option></select>
+            <select class="select" id="rl-field" aria-label="Rule search field"><option value="bio">Bio</option><option value="name">Name</option><option value="handle">Handle</option><option value="category">Category</option><option value="website">Website</option><option value="any">Any field</option></select>
             <span class="muted">contains</span></div>
-            <div class="rl-row"><span class="muted">Words</span><input class="input" id="rl-match" placeholder="candle, soy wax, wick" autocomplete="off" spellcheck="false" required>
+            <div class="rl-row"><span class="muted">Words</span><input class="input" id="rl-match" aria-label="Rule keywords" placeholder="candle, soy wax, wick" autocomplete="off" spellcheck="false" required>
             <span class="num rl-prev" id="rl-prev"></span>
             <button class="btn solid" id="rl-add" disabled>Add rule</button></div>
           </form>
@@ -187,7 +190,7 @@
         <div class="panel" id="seed-panel">
           <div class="p-head"><h3>Add accounts to scrape</h3><div class="grow"></div><span class="muted hide-sm">We read the people in their lists</span></div>
           <div class="p-body">
-            <textarea class="input" id="seed-in" spellcheck="false" placeholder="@handle, one per line"></textarea>
+            <textarea class="input" id="seed-in" aria-label="Instagram accounts to scrape" spellcheck="false" placeholder="@handle, one per line"></textarea>
             <div class="row-flex">
               <div class="seg" id="seed-dir"><button data-v="followers" class="on">Their followers</button><button data-v="following" class="on">Who they follow</button></div>
               <div class="grow"></div>
@@ -258,8 +261,8 @@
         <section class="sg">
           <div class="sg-h"><h2>AI qualification</h2><p>The AI reads bios and judges who fits your agency.</p></div>
           <div class="card">
-            <div class="set-row"><div><b>Check people with AI</b><span class="muted">Reads bios and scores fit</span></div><button class="toggle" id="set-q-on"><i></i></button></div>
-            <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switches on by itself once every list is collected</span></div><button class="toggle" id="set-q-auto"><i></i></button></div>
+            <div class="set-row"><div><b>Check people with AI</b><span class="muted">Reads bios and scores fit</span></div><button class="toggle" id="set-q-on" aria-label="Check people with AI"><i></i></button></div>
+            <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switches on by itself once every list is collected</span></div><button class="toggle" id="set-q-auto" aria-label="Start AI after the lists"><i></i></button></div>
             <details class="adv">
               <summary>Advanced</summary>
               <form class="budget" id="set-q" novalidate>
@@ -270,7 +273,7 @@
               </form>
               <div class="sub-h"><b>Models</b><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
               <ol class="models" id="set-models"></ol>
-              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
+              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model name" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
               <div class="sub-h"><b>Local helpers</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
               <div id="set-svc"></div>
             </details>
@@ -299,7 +302,7 @@
           <div class="sg-h"><h2>Appearance</h2><p>Only changes how things look.</p></div>
           <div class="card">
             <div class="set-row"><div><b>Theme</b></div><div class="seg" id="set-theme"><button data-v="dark">Dark</button><button data-v="light">Light</button></div></div>
-              <div class="set-row"><div><b>Bios via Meta API</b><span class="muted" id="bf-info">Business and creator accounts only, via your own Meta app. Off by default.</span><input class="input" id="bf-uid" placeholder="IG user id" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on"><i></i></button></div>
+              <div class="set-row"><div><b>Bios via Meta API</b><span class="muted" id="bf-info">Business and creator accounts only, via your own Meta app. Off by default.</span><input class="input" id="bf-uid" placeholder="IG user id" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on" aria-label="Enable Meta bio reads"><i></i></button></div>
             <div class="set-row"><div><b>Rows in Leads</b></div><div class="seg" id="set-density"><button data-v="comfortable">Roomy</button><button data-v="compact">Compact</button></div></div>
           </div>
         </section>

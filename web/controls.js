@@ -47,6 +47,8 @@
 
   function render() {
     mount();
+    const active = el.contains(document.activeElement) ? document.activeElement : null;
+    const focusStage = active?.dataset.stage;
     if (!data) { el.innerHTML = `<span class="fl-ctl-msg">${offline ? 'Server offline, controls unavailable.' : 'Loading controls…'}</span>`; return; }
     const pills = data.stages.map((s) => {
       const on = s.state === 'running' || s.state === 'waiting';
@@ -54,7 +56,7 @@
       const what = s.paused ? `Resume ${s.label.toLowerCase()}` : `Pause ${s.label.toLowerCase()}`;
       return `<div class="fl-ctl-pill ${s.state}" title="${esc(tip(s))}">
         <i class="fl-ctl-dot${on ? ' on' : ''}"></i><b>${SHORT[s.id]}</b><span class="fl-ctl-word">${esc(word(s))}</span>
-        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" title="${esc(what + '. ' + s.help)}" ${busy ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
+        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" aria-label="${esc(what)}" title="${esc(what + '. ' + s.help)}" ${busy ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
       </div>`;
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
@@ -67,6 +69,7 @@
       : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy ? 'disabled' : ''}>Stop all</button>`;
     el.innerHTML = `<div class="fl-ctl-pills">${pills}</div><span class="fl-ctl-now" title="${esc(sentence)}">${esc(sentence)}</span>${all}`;
     el.dataset.running = String(running);
+    if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
   }
 
   function countdown() {   // only the words change between polls, so a button under the pointer is never replaced
@@ -85,6 +88,8 @@
     render();
   }
   async function send(body) {
+    // Disabled buttons cannot retain focus while the request is in flight.
+    const focusStage = el.contains(document.activeElement) ? document.activeElement.dataset.stage : null;
     busy = true; render();
     try {
       const r = await fetch('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -93,6 +98,11 @@
     } catch {}
     busy = false;
     await load();
+    // An unchanged response can take load's countdown-only path; always unlock.
+    render();
+    if (focusStage && document.activeElement === document.body) {
+      el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
+    }
   }
 
   el.addEventListener('click', (e) => {
