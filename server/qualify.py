@@ -18,7 +18,7 @@ TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only 
 PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't7-caps'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+TAGS_VERSION = 't8-markets'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -207,9 +207,11 @@ def _clamp(v):
 
 
 REACH_FOLLOWERS = 300_000   # above this an account is a public figure: lists following them says nothing about access
-OTHER_MARKET_RX = re.compile(r'🇮🇳|🇵🇰|🇧🇩|🇳🇬|🇮🇩|🇵🇭|🇪🇬|🇰🇪|\b(?:india|indian|mumbai|delhi|bangalore|bengaluru|hyderabad|chennai|'
+OTHER_MARKET_RX = re.compile(r'🇮🇳|🇵🇰|🇧🇩|🇳🇬|🇮🇩|🇵🇭|🇪🇬|🇰🇪|🇮🇷|🇩🇿|\.com\.pk\b|\.pk\b|\+ ?9[12][ -]?\d|\bCOD available\b|'
+                             r'\b(?:india|indian|mumbai|delhi|bangalore|bengaluru|hyderabad|chennai|'
                              r'kolkata|pune|ahmedabad|jaipur|pakistan|karachi|lahore|islamabad|bangladesh|dhaka|nigeria|lagos|abuja|'
-                             r'indonesia|jakarta|philippines|manila|egypt|cairo|kenya|nairobi|ghana|accra)\b', re.I)
+                             r'indonesia|jakarta|philippines|manila|egypt|cairo|kenya|nairobi|ghana|accra|iran|tehran|algeria|algiers)\b', re.I)
+# South Africa is deliberately absent: Michael has an SA-first client (Heroic).
 
 
 def too_big(followers, net=None) -> bool:
@@ -222,7 +224,7 @@ def too_big(followers, net=None) -> bool:
 
 def other_market(person) -> bool:
     """Clearly based outside the markets Fortunate sells to, with nothing saying they sell into them."""
-    text = _text(person) + ' ' + str(person.get('website') or '')
+    text = _text(person) + ' ' + str(person.get('website') or '') + ' @' + str(person.get('handle') or '')
     return bool(OTHER_MARKET_RX.search(text)) and not any(rx.search(text) for rx in US_RX + NL_RX + UK_RX)
 
 
