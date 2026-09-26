@@ -1101,21 +1101,41 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
-/* Tag hierarchy (see tagTier in app.js): warm = promising, red = caution, solid neutral = your own. */
-:root { --t-orange: #ff9b42; --t-orange-ink: #241000; --t-red: #f5787b; --t-red-ink: #28090b; --t-own: #343434; --t-own-ink: #ffffff; --t-own-ring: #646464; }
-:root[data-theme="light"] { --t-orange: #a94400; --t-orange-ink: #ffffff; --t-red: #a91f2b; --t-red-ink: #ffffff; --t-own: #242424; --t-own-ring: #242424; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --t-orange: #a94400; --t-orange-ink: #ffffff; --t-red: #a91f2b; --t-red-ink: #ffffff; --t-own: #242424; --t-own-ring: #242424; } }
-.tag.t-hero, .tchip.t-hero { background: var(--t-orange); color: var(--t-orange-ink); font-weight: 700; box-shadow: none; }
-.tag.t-plus, .tchip.t-plus { background: transparent; color: var(--t-orange); box-shadow: inset 0 0 0 1.5px var(--t-orange); font-weight: 600; }
+/* Tag hierarchy (see tagTier in app.js). Filled verdicts, tinted possibility, outlined evidence. */
+:root {
+  --t-orange: #d39460; --t-orange-fill: #c1783a; --t-orange-ink: #1b1008;
+  --t-orange-wash: rgba(193, 120, 58, .18); --t-orange-wash-ink: #f0b583;
+  --t-red: #cb7380; --t-red-fill: #a43d50; --t-red-ink: #fff;
+  --t-red-wash: rgba(164, 61, 80, .17);
+  --t-own: #343434; --t-own-ink: #fff; --t-own-ring: #646464;
+}
+:root[data-theme="light"] {
+  --t-orange: #a9511d; --t-orange-fill: #9f4b17; --t-orange-ink: #fff;
+  --t-orange-wash: #f8eadc; --t-orange-wash-ink: #86400e;
+  --t-red: #9e3445; --t-red-fill: #922d3e; --t-red-ink: #fff;
+  --t-red-wash: #f9e9ec;
+  --t-own: #242424; --t-own-ring: #242424;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --t-orange: #a9511d; --t-orange-fill: #9f4b17; --t-orange-ink: #fff;
+  --t-orange-wash: #f8eadc; --t-orange-wash-ink: #86400e;
+  --t-red: #9e3445; --t-red-fill: #922d3e; --t-red-ink: #fff;
+  --t-red-wash: #f9e9ec; --t-own: #242424; --t-own-ring: #242424;
+} }
+.tag.t-hero, .tchip.t-hero { background: var(--t-orange-fill); color: var(--t-orange-ink); font-weight: 700; box-shadow: none; }
+.tag.t-maybe, .tchip.t-maybe { background: var(--t-orange-wash); color: var(--t-orange-wash-ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--t-orange); }
+.tag.t-plus, .tchip.t-plus { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--t-orange); font-weight: 600; }
 .tag.t-own, .tchip.t-own { background: var(--t-own); color: var(--t-own-ink); box-shadow: inset 0 0 0 1px var(--t-own-ring); font-weight: 600; }
 .tag.t-niche, .tchip.t-niche { background: var(--bg3); color: var(--fg); font-weight: 600; box-shadow: none; }
 .tag.t-ctx, .tchip.t-ctx { background: var(--bg2); color: var(--fg2); font-weight: 400; box-shadow: none; }
-.tag.t-soft, .tchip.t-soft { background: transparent; color: var(--t-red); box-shadow: inset 0 0 0 1.5px var(--t-red); font-weight: 500; }
-.tag.t-flag, .tchip.t-flag { background: var(--t-red); color: var(--t-red-ink); font-weight: 700; box-shadow: none; }
-.fi.t-hero .sw, .fi.t-plus .sw { --fg-c: var(--t-orange); opacity: 1; }
+.tag.t-soft, .tchip.t-soft { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--t-red); font-weight: 500; }
+.tag.t-flag, .tchip.t-flag { background: var(--t-red-fill); color: var(--t-red-ink); font-weight: 700; box-shadow: none; }
+.fi.t-hero .sw, .fi.t-maybe .sw, .fi.t-plus .sw { --fg-c: var(--t-orange); opacity: 1; }
 .fi.t-flag .sw, .fi.t-soft .sw { --fg-c: var(--t-red); opacity: 1; }
 .fi.t-own .sw { --fg-c: var(--fg); opacity: 1; }
-.tag.t-hero:focus-visible, .tag.t-plus:focus-visible, .tag.t-soft:focus-visible, .tag.t-flag:focus-visible,
+.fi.t-hero.inc, .fi.t-maybe.inc, .fi.t-plus.inc { background: var(--t-orange-wash); border-color: var(--t-orange); }
+.fi.t-flag.inc, .fi.t-soft.inc { background: var(--t-red-wash); border-color: var(--t-red); }
+.tag.t-hero:focus-visible, .tag.t-maybe:focus-visible, .tag.t-plus:focus-visible, .tag.t-soft:focus-visible, .tag.t-flag:focus-visible,
 .tchip:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 @media (max-width: 640px) {
   .tg-top, .tg-caution { padding: var(--s4); }
