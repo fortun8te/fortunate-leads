@@ -156,6 +156,7 @@
           <div class="ph-a"><input class="input" id="tg-q" aria-label="Find a tag" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
         </header>
         <div class="tg-groups" id="tg-groups"></div>
+        <details class="adv tg-manage"><summary>Your own tags and keyword rules</summary>
         <div class="panel">
           <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person, tidy them up here</span></div>
           <div class="tg-merge" id="tg-merge" hidden></div>
@@ -180,6 +181,7 @@
             <tbody id="rl-body"></tbody>
           </table></div>
         </div>
+        </details>
       </div>
     </section>
 
@@ -279,6 +281,8 @@
               </form>
               <div class="sub-h"><b>Models</b><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
               <ol class="models" id="set-models"></ol>
+              <div class="sub-h"><b>Free on OpenRouter</b><span class="muted" id="set-free-at"></span><div class="grow"></div><button class="btn" id="set-free-refresh">Check now</button></div>
+              <ul class="models" id="set-free"></ul>
               <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model identifier" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
               <div class="sub-h"><b>Local helpers</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
               <div id="set-svc"></div>

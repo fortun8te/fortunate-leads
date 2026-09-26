@@ -87,7 +87,7 @@ def lane_wait(conn, row, kind, now):
     budget = accounts.budget_of(conn, row).get(kind, 0)
     today = accounts.jload(row['today'], {}) or {}
     used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
-    if (kind == 'list' or budget) and used >= budget:
+    if budget and used >= budget:   # 0 = no daily limit
         return 'Daily request budget reached', int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
     cool = row['list_cool_until'] if kind == 'list' else None
     for until in (cool, row['cooldown_until']):

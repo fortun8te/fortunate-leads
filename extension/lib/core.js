@@ -317,7 +317,8 @@
   function budgetLeft(st, budget, now) {
     rollDay(st, now);
     const b = budgetOf(budget);
-    return { list: Math.max(0, b.list - st.today.list), profile: b.profile ? Math.max(0, b.profile - st.today.profile) : Infinity };
+    // 0 = no daily limit (request pacing and Instagram cooldowns still apply).
+    return { list: b.list ? Math.max(0, b.list - st.today.list) : Infinity, profile: b.profile ? Math.max(0, b.profile - st.today.profile) : Infinity };
   }
 
   // ---- Instagram tab choice ------------------------------------------------

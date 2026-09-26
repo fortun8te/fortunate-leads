@@ -21,7 +21,7 @@ ROLES = ('lists', 'bios', 'both')
 HOLDS = ('login', 'challenge')
 RELEASE_AFTER = timedelta(minutes=10)   # offline this long: its list moves on
 ONLINE_FOR = timedelta(seconds=90)      # heartbeats come every <= 30 s
-BUDGET_MAX = {'list': 3000, 'profile': 5000}   # per day; profile 0 = no daily number
+BUDGET_MAX = {'list': 3000, 'profile': 5000}   # per day; 0 = no daily limit
 HANDOFFS_KEEP = 30
 
 
