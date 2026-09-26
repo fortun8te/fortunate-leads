@@ -1,3 +1,4 @@
-# Laya pulls in torch>=2.0, transformers>=4.48, safetensors, huggingface_hub, numpy.
-# On Apple Silicon the default PyPI torch wheel includes MPS support.
+# Broad stage sidecar: Laya encoder + a head trained on the Bulk stage (Grok) verdicts.
 laya==0.3.20
+scikit-learn>=1.5
+scipy>=1.11

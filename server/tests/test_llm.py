@@ -144,8 +144,7 @@ class LayaStub(BaseHTTPRequestHandler):
 
     def do_GET(self):
         LayaStub.calls.append('health')
-        data = json.dumps({'ok': True, 'model': laya.MODEL,
-                           'deployment_version': laya.DEPLOYMENT_VERSION}).encode()
+        data = json.dumps({'ok': True, 'model': laya.MODEL, 'deployment_version': 'broad-test'}).encode()
         self.send_response(200 if self.mode != 'down' else 500)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -153,13 +152,11 @@ class LayaStub(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        LayaStub.calls.append(('decide', len(body['items']), [q['key'] for q in body['questions']]))
+        LayaStub.calls.append(('decide', len(body['items']), sorted(body['items'][0]['person'])))
         if self.mode == 'slow':
             time.sleep(1.5)
-        res = [{'id': it['id'], 'answers': {'dtc_founder': {'p': 0.95}, 'brand_account': {'p': 0.92}, 'creator': {'p': 0.05},
-                                             'service_provider': {'p': 0.1}, 'netherlands': {'p': 0.1}}} for it in body['items']]
-        data = json.dumps({'results': res, 'model': laya.MODEL,
-                           'deployment_version': laya.DEPLOYMENT_VERSION}).encode()
+        res = [{'id': it['id'], 'p': 0.83} for it in body['items']]
+        data = json.dumps({'results': res, 'model': laya.MODEL, 'deployment_version': 'broad-test'}).encode()
         self.send_response(200)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -184,21 +181,21 @@ class LayaTest(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def test_batches_and_five_questions(self):
+    def test_batches_and_one_score(self):
         # macOS monotonic clocks can begin near zero in a new process.
         with patch.object(laya.time, 'monotonic', return_value=0.05):
             self.assertTrue(laya.available())
         with patch.object(laya.time, 'monotonic', return_value=0.1):
             self.assertTrue(laya.available())
         self.assertEqual(LayaStub.calls.count('health'), 1)   # cached for 60 s
-        people = [{'id': i, 'handle': f'h{i}', 'bio': 'x'} for i in range(130)]
+        self.assertEqual(laya.cache_signature(), 'broad:broad-test')
+        people = [{'id': i, 'handle': f'h{i}', 'bio': 'x', 'rules': 40} for i in range(300)]
         out = laya.decide(people)
-        self.assertEqual(len(out), 130)
-        self.assertEqual([c[1] for c in LayaStub.calls if c != 'health'], [64, 64, 2])
-        self.assertEqual(LayaStub.calls[1][2], ['dtc_founder', 'brand_account', 'creator', 'service_provider', 'netherlands'])
-        self.assertEqual(out[0], {'dtc_founder': 0.95, 'brand_account': 0.92, 'creator': 0.05,
-                                  'service_provider': 0.1, 'netherlands': 0.1})
-        self.assertGreater(laya.fit(out[0]), 70)
+        self.assertEqual(len(out), 300)
+        self.assertEqual([c[1] for c in LayaStub.calls if c != 'health'], [256, 44])
+        self.assertEqual(LayaStub.calls[1][2], ['bio', 'category', 'followers', 'handle', 'name'])
+        self.assertEqual(out[0], {'broad': 0.83})
+        self.assertEqual(laya.fit(out[0]), 83)
 
     def test_empty_cache_probes_even_near_clock_origin(self):
         self.assertTrue(laya.available(now=1))
@@ -215,10 +212,11 @@ class LayaTest(unittest.TestCase):
         self.assertEqual(laya.decide([{'id': 1, 'handle': 'x'}]), {})
         self.assertFalse(laya.available())   # a timeout marks it down for the cache period
 
-    def test_tags_only_when_very_sure(self):
-        self.assertEqual(laya.tags({'dtc_founder': 0.99, 'creator': 0.85, 'brand_account': 0.93}, set()), [])
-        self.assertEqual(laya.tags({'brand_account': 0.93}, {'Brand'}), [])
+    def test_no_tags_and_strict_answers(self):
+        self.assertEqual(laya.tags({'broad': 0.99}, set()), [])
         self.assertIsNone(laya.fit({}))
+        self.assertIsNone(laya.fit({'broad': 1.5}))
+        self.assertIsNone(laya.fit({'broad': True}))
 
 
 if __name__ == '__main__':

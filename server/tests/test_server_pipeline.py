@@ -17,14 +17,12 @@ class LayaStub(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self._send({'ok': True, 'model': laya.MODEL, 'deployment_version': laya.DEPLOYMENT_VERSION})
+        self._send({'ok': True, 'model': laya.MODEL, 'deployment_version': 'broad-test'})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        self._send({'results': [{'id': it['id'], 'answers': {q['key']: {'p': (0.95 if q['key'] == 'brand_account' else 0.9)}
-                                                            for q in body['questions']}}
-                                for it in body['items']], 'model': laya.MODEL,
-                    'deployment_version': laya.DEPLOYMENT_VERSION})
+        self._send({'results': [{'id': it['id'], 'p': 0.9} for it in body['items']], 'model': laya.MODEL,
+                    'deployment_version': 'broad-test'})
 
     def _send(self, obj):
         data = json.dumps(obj).encode()
@@ -150,7 +148,7 @@ class PipelineTest(Base):
         finally:
             del server.qualify.prompt_version
 
-    def test_laya_prequalifies_without_bio_and_is_soft(self):
+    def test_broad_scores_bios_and_is_soft(self):
         db.set_setting(self.conn, 'qualify', True)
         self.conn.commit()
         httpd = ThreadingHTTPServer(('127.0.0.1', 0), LayaStub)
@@ -163,19 +161,19 @@ class PipelineTest(Base):
         try:
             ids = self.people({'nobio': (None, [('s1', 'followers')]), 'withbio': ('we make candles', [('s1', 'followers')])})
             server.qualify_batch(self.conn)
-            before = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['nobio'],)).fetchone()[0]
+            before = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['withbio'],)).fetchone()[0]
             self.assertTrue(server.laya_step(self.conn))
-            self.assertEqual(self.conn.execute('SELECT count(*) FROM laya').fetchone()[0], 2)   # list-only people too
+            self.assertEqual(self.conn.execute('SELECT count(*) FROM laya').fetchone()[0], 1)   # bios only
             self.assertFalse(server.laya_step(self.conn))   # nothing new to score
             self.conn.execute("UPDATE people SET bio='we make kandles' WHERE id=?", (ids['withbio'],))   # same length, new text
             self.conn.commit()
             self.assertTrue(server.laya_step(self.conn))
             server.qualify_batch(self.conn)
-            after = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['nobio'],)).fetchone()[0]
+            after = self.conn.execute('SELECT prefilter FROM verdicts WHERE person_id=?', (ids['withbio'],)).fetchone()[0]
             self.assertNotEqual(before, after)
             self.assertNotIn('Brand', {r[0] for r in self.conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='auto'",
-                                                                       (ids['nobio'],))})  # Laya is advisory only
-            self.assertNotIn('Founder', {r[0] for r in self.conn.execute('SELECT tag FROM tags WHERE person_id=?', (ids['nobio'],))})
+                                                                       (ids['withbio'],))})  # Broad is advisory only
+            self.assertNotIn('Founder', {r[0] for r in self.conn.execute('SELECT tag FROM tags WHERE person_id=?', (ids['withbio'],))})
         finally:
             server.qualify.prefilter = stub_pre
             laya.URL = old

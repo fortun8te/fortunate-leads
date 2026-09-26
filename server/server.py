@@ -1962,9 +1962,9 @@ def qualify_batch(conn, limit=1000):
     return len(rows)
 
 
-# ---------- Laya (optional soft signal) ----------
+# ---------- Broad stage (Laya encoder + head trained on Grok verdicts; optional sidecar) ----------
 
-LAYA_BATCH = 64
+LAYA_BATCH = 256   # one sidecar call; ~1 s of embedding on an M1 Max
 
 
 def laya_hash(*fields):
@@ -1974,15 +1974,16 @@ def laya_hash(*fields):
 
 
 def laya_step(conn):
-    """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
+    """Broad stage: score people with a bio and no current Broad answer, best rules first. Silently idle when the sidecar is down."""
     if control.stage_paused(conn, 'ai') or not laya.available():
         return False
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
-    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
+    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh,
+               coalesce(v.content_fit, v.score) AS rules
         FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
-        WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
+        WHERE coalesce(p.bio,'')!='' AND instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
           AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
-        ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+        ORDER BY v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     if not rows:
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call

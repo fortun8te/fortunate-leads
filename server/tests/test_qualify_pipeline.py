@@ -63,7 +63,8 @@ class Pipeline(unittest.TestCase):
         low = dict(net, lists=1, seed_yield=0.05, me=None, client_seeds=0, seeds=[('a', 'followers')])
         self.assertLess(q.prefilter(person, ['a'], low), plain)       # a low-yield seed drags down
         self.assertLessEqual(q.prefilter(dict(person, is_private=1), ['a'], net), 35)
-        self.assertEqual(q.prefilter(person, ['a'], None, 100), round(0.75 * plain + 25))   # Laya: one soft weighted signal
+        self.assertEqual(q.prefilter(person, ['a'], None, 100), round(0.4 * plain + 60))   # Broad weighs in
+        self.assertLessEqual(q.prefilter(dict(person, followers=900000), ['a'], None, 100), 15)   # but never lifts past the caps
 
     def test_batched_verdicts_with_rubric_fewshot_and_evidence(self):
         items = [{'person': P(f'glow{i}', 'Founder of Glow skincare brand @glowco, ships to the USA'), 'tags': [('Founder', 'signal')], 'edges': [],

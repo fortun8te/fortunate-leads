@@ -265,16 +265,16 @@ def blend(content, net, role=None, blocked=False) -> int:
 
 
 def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
-    """0-100 before any bio: the network blended with handle/name signals; Laya (optional) is one soft weighted signal."""
+    """0-100 before any bio: the network blended with handle/name signals; Broad (optional sidecar) weighs in before the caps."""
     if net is None:
         net = {'lists': len({s.lower().lstrip('@') for s in seeds or [] if s})}
     base = blend(_profile_signals(person), net)
+    if laya_fit is not None:   # Broad: finds ~1.5x the good leads the rules do in the same top 30% (Grok-labelled check)
+        base = round(0.4 * base + 0.6 * laya_fit)
     if person.get('is_private'):
         base = min(base, 35)
     if too_big(person.get('followers'), net) or other_market(person):
         base = min(base, 15)   # no bio read or model call for people there is no way in with
-    if laya_fit is not None:
-        base = round(0.75 * base + 0.25 * laya_fit)
     return _clamp(base)
 
 
