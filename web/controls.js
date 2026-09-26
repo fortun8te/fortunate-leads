@@ -149,6 +149,7 @@
   function start() {
     render();
     load();
+    window.addEventListener('fl:control-changed', () => load());
     clearInterval(timer);
     timer = setInterval(() => {
       if (document.visibilityState !== 'visible') return;

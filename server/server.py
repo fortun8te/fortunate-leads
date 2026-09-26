@@ -123,6 +123,7 @@ def ext_next(conn, q, b):
     # asking for work means no login wall holds it any more
     row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
     accounts.release(conn, now)
+    accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
     version = b.get('version') or (q.get('version') or [None])[0] or (row and row['version'])
     if version:
@@ -149,8 +150,8 @@ def ext_next(conn, q, b):
         conn.commit()
         return dict(st, job=None)
     token = secrets.token_hex(16)
-    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=? WHERE id=?",
-                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, job['id']))
+    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=?, viewer_ig_id=? WHERE id=?",
+                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, row['ig_id'], job['id']))
     accounts.took(conn, lane, job)
     if job['kind'] == 'list':
         db.start_list_run(conn, job['id'], job['seed'], job['direction'])
@@ -281,7 +282,10 @@ def _ext_list_page(conn, q, b):
                     'SELECT DISTINCT person_id FROM current_edges WHERE seed IN (?,?)', (found['handle'], handle)))
     old_active = {r[0] for r in conn.execute(
         'SELECT person_id FROM current_edges WHERE seed=? AND direction=?', (seed, direction))} if job and b.get('done') else set()
-    run_members = {r[0] for r in conn.execute('SELECT person_id FROM list_members WHERE job_id=?', (job['id'],))} if job else set()
+    # A normal page only adds positive observations. The full prefix is needed
+    # once, when a claimed completed run can establish negative evidence.
+    run_members = {r[0] for r in conn.execute('SELECT person_id FROM list_members WHERE job_id=?',
+                                              (job['id'],))} if old_active else set()
     maybe_removed = old_active - run_members - existing
     marked = set()
     for chunk in chunks(list(existing | maybe_removed)):
@@ -333,10 +337,13 @@ def _ext_list_page(conn, q, b):
             db.observe_edge(conn, seed, pid, direction, page_key, job['id'] if job else None, ts)
             pids.append(pid)
             if job:
-                conn.execute('INSERT OR REPLACE INTO list_members VALUES(?,?,?)', (job['id'], pid, ts))
+                conn.execute('INSERT INTO list_members VALUES(?,?,?) '
+                             'ON CONFLICT(job_id,person_id) DO UPDATE SET observed_at=excluded.observed_at',
+                             (job['id'], pid, ts))
     db.dirty_seed_members(conn, *flipped)   # once per seed, not once per new member
     rules.sync(conn, pids)
-    received = conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job['id'],)).fetchone()[0] if job else len(set(pids))
+    received = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?',
+                            (job['id'],)).fetchone()[0] if job else len(set(pids))
     limited = bool(b.get('limited'))
     missing_end = not next_cursor and not b.get('done') and not limited
     done = bool(b.get('done')) or limited or stalled or missing_end
@@ -452,6 +459,12 @@ def ext_error(conn, q, b):
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
     was_list = bool(job and job['kind'] == 'list')
+    if code == 'private' and was_list and not stale:
+        viewer_id = job['viewer_ig_id']
+        if not viewer_id or b.get('reason') != 'profile_private_wall':
+            # Only a matching profile-page wall can rule out this viewer. A JSON
+            # error alone may be a temporary Instagram restriction.
+            code = 'soft_block'
     if stale:
         job = None  # account-level waits still apply, but the old callback cannot change a released job
         if code not in ('rate_limit', 'soft_block'):
@@ -468,22 +481,36 @@ def ext_error(conn, q, b):
         fields['hold'] = code
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
-    if job and code not in ('other', 'private', 'not_found'):
+    if job and code not in ('other', 'not_found'):
         # rate limits, soft blocks, login walls say nothing about this job: give the lease back to its attempt count,
         # so attempts = leases that ended in 'other' or expired (the ones that may mean the job itself is broken)
         conn.execute('UPDATE jobs SET attempts=max(attempts-1, 0) WHERE id=?', (job['id'],))
         job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if job:  # a late error for a job that already finished must not requeue it
-        final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
+        if code == 'private' and was_list:
+            conn.execute('INSERT OR IGNORE INTO list_private_denials(seed,direction,viewer_ig_id,denied_at) VALUES(?,?,?,?)',
+                         (job['seed'], job['direction'], viewer_id, ts))
+            candidates = conn.execute('SELECT * FROM accounts').fetchall()
+            remaining = any(accounts.eligible_for_list(conn, a, job['seed'], job['direction'], datetime.now(timezone.utc))
+                            for a in candidates)
+            final = not remaining
+        else:
+            final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
-                     ('done' if code in ('private', 'not_found') else 'error' if final else 'queued', job['id']))
+                     ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
         if job['kind'] == 'list':
             collected = conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
                                      (job['seed'], job['direction'])).fetchone()
             state = ('partial' if final and collected and collected['received'] else
-                     'private' if code == 'private' else 'error' if final else 'queued')
-            conn.execute('UPDATE lists SET state=?, error=?, updated_at=? WHERE seed=? AND direction=?',
-                         (state, b.get('message') or code, ts, job['seed'], job['direction']))
+                     'private' if code == 'private' and final else 'error' if final else 'queued')
+            if code == 'private':
+                conn.execute('UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why=?, updated_at=? WHERE seed=? AND direction=?',
+                             (state, b.get('message') or code, lane, ts, 'private', ts, job['seed'], job['direction']))
+            else:
+                # Keep ownership until release_all/release records the actual
+                # handoff cause and source lane. Clearing it here lost that proof.
+                conn.execute('UPDATE lists SET state=?, error=?, updated_at=? WHERE seed=? AND direction=?',
+                             (state, b.get('message') or code, ts, job['seed'], job['direction']))
         elif code == 'private':
             conn.execute('UPDATE people SET is_private=1, updated_at=? WHERE handle=?', (ts, job['handle']))
     if code in accounts.HOLDS:
@@ -1797,9 +1824,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'ok': False, 'error': str(e)})
         except (Bad, ValueError, KeyError, TypeError, OverflowError) as e:
             return self.send(400, {'ok': False, 'error': str(e)})
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
-            return self.send(500, {'ok': False, 'error': str(e)})
+            return self.send(500, {'ok': False, 'error': 'Internal server error'})
         if isinstance(out, workflows.CsvResponse):
             return self.send(200, out.data, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="fortunate-leads.csv"', 'Cache-Control': 'no-store'})
         self.send(200, dict(out, ok=True) if with_ok else out)
@@ -1836,11 +1863,6 @@ def network_context(conn, pids, me=None):
     if not pids:
         return {}
     me = me if me is not None else me_handle(conn)
-    yields = {r[0]: (r[1], r[2]) for r in conn.execute(
-        f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), count(DISTINCT e.person_id) "
-        "FROM current_edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
-    good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
-                                               "WHERE m.status IN " + POSITIVE_SQL)}
     out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0, 'followers': None}
            for p in pids}
     for chunk in chunks(pids):
@@ -1849,6 +1871,23 @@ def network_context(conn, pids, me=None):
         for e in conn.execute(f"SELECT person_id, seed, direction FROM current_edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
                               'ORDER BY seed, direction', chunk):
             out[e['person_id']]['seeds'].append((e['seed'], e['direction']))
+    # The old aggregation read every observed edge for every list page, even
+    # though the page usually touches only a few seeds. Limit the aggregate to
+    # the seeds of these people; a marked person outside them cannot affect the
+    # result. Chunking also stays within SQLite's variable limit.
+    relevant = sorted({seed for n in out.values() for seed, _ in n['seeds']})
+    yields = {}
+    good_handles = set()
+    for chunk in chunks(relevant):
+        slots = ','.join('?' * len(chunk))
+        for r in conn.execute(
+                f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
+                f"count(DISTINCT e.person_id) FROM current_edges e JOIN marks m ON m.person_id=e.person_id "
+                f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
+            yields[r[0]] = (r[1], r[2])
+        good_handles.update(r[0] for r in conn.execute(
+            f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
+            f"WHERE m.status IN {POSITIVE_SQL} AND p.handle IN ({slots})", chunk))
     for pid, n in out.items():
         seeds = {s for s, _ in n['seeds']}
         mine = {d for s, d in n['seeds'] if me and s == me}
@@ -2034,6 +2073,7 @@ def qualify_batch(conn, limit=1000):
 # ---------- Laya (optional soft signal) ----------
 
 LAYA_BATCH = 64
+LAYA_REBUILD_BATCH = 5000
 
 
 def laya_hash(*fields):
@@ -2042,17 +2082,89 @@ def laya_hash(*fields):
     return 'profile:' + __import__('hashlib').sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
+def rebuild_laya_queue(conn, signature):
+    """Reconcile one ID range and publish the queue only after the final range.
+
+    Profile and Laya triggers maintain ranges already visited. A durable cursor
+    lets a restart resume without holding the SQLite write lock for a full scan.
+    """
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if db.get_setting(conn, 'laya_queue_signature') == signature:
+            conn.commit()
+            return True
+        state = db.get_setting(conn, 'laya_queue_rebuild')
+        cursor = state['cursor'] if isinstance(state, dict) and state.get('signature') == signature else None
+        if cursor is None:
+            ids = [r[0] for r in conn.execute('SELECT id FROM people ORDER BY id LIMIT ?', (LAYA_REBUILD_BATCH,))]
+        else:
+            ids = [r[0] for r in conn.execute('SELECT id FROM people WHERE id>? ORDER BY id LIMIT ?',
+                                               (cursor, LAYA_REBUILD_BATCH))]
+        if ids:
+            end = ids[-1]
+            bound = ('person_id<=?' if cursor is None else 'person_id>? AND person_id<=?')
+            args = (end,) if cursor is None else (cursor, end)
+            conn.execute('DELETE FROM laya_queue WHERE ' + bound, args)
+            person_bound = ('p.id<=?' if cursor is None else 'p.id>? AND p.id<=?')
+            conn.execute(f"""INSERT INTO laya_queue(person_id,bio_blank,prefilter)
+                SELECT p.id,coalesce(p.bio,'')='',v.prefilter
+                FROM people p LEFT JOIN laya l ON l.person_id=p.id
+                LEFT JOIN verdicts v ON v.person_id=p.id
+                WHERE {person_bound} AND instr(p.handle,'~')=0 AND NOT EXISTS
+                  (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+                  AND (l.person_id IS NULL OR l.input_hash IS NOT
+                    laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))""", args)
+            cursor = end
+        if len(ids) < LAYA_REBUILD_BATCH:
+            db.set_setting(conn, 'laya_queue_signature', signature)
+            conn.execute("DELETE FROM settings WHERE key='laya_queue_rebuild'")
+            complete = True
+        else:
+            db.set_setting(conn, 'laya_queue_rebuild', {'signature': signature, 'cursor': cursor})
+            complete = False
+        conn.commit()
+        return complete
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
     if control.stage_paused(conn, 'ai') or not laya.available():
         return False
+    caller_transaction = conn.in_transaction
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
-    rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
-        FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
-        WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
-          AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
-        ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    signature = laya.cache_signature()
+    if not caller_transaction and db.get_setting(conn, 'laya_queue_signature') != signature:
+        if not rebuild_laya_queue(conn, signature):
+            return True  # next worker pass continues the bounded rebuild
+    if caller_transaction:
+        # A caller's uncommitted profile edits must be visible, but its transaction
+        # must not be committed or held behind a queue rebuild during a model call.
+        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+            FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
+            WHERE instr(p.handle,'~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
+              AND (l.person_id IS NULL OR l.input_hash IS NOT
+                laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
+            ORDER BY coalesce(p.bio,'')='',v.prefilter DESC,p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    else:
+        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+            FROM laya_queue q JOIN people p ON p.id=q.person_id
+            LEFT JOIN laya l ON l.person_id=p.id
+            ORDER BY q.bio_blank,q.prefilter DESC,q.person_id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    # A profile can change back to an already cached hash. Drop that one queue
+    # entry rather than sending the same profile to the sidecar again.
+    current = [r['id'] for r in rows if r['lh'] == laya_hash(*(r[k] for k in
+               ('handle','name','bio','category','website','followers')))]
+    if current and not caller_transaction:
+        conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(pid,) for pid in current])
+        conn.commit()
+        current_ids = set(current)
+        rows = [r for r in rows if r['id'] not in current_ids]
     if not rows:
+        return False
+    if control.stage_paused(conn, 'ai'):
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
     if not answers:
@@ -2072,9 +2184,11 @@ def laya_step(conn):
     conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
                      [(r['id'], laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))), json.dumps(answers[r['id']]),
                        laya.fit(answers[r['id']]), ts) for r in done])
+    conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(r['id'],) for r in done])
     # The qualify batch folds the new ranking signal into prefilter on its next pass.
     conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
-    conn.commit()
+    if not caller_transaction:
+        conn.commit()
     return True
 
 
@@ -2483,14 +2597,30 @@ def pfp_step(conn):
 
 
 def worker(stop, step, busy_wait, idle_wait):
-    conn = db.connect(CFG['db'])
-    while not stop.is_set():
-        try:
-            busy = step(conn)
-        except Exception:
-            traceback.print_exc()
-            busy = False
-        stop.wait(busy_wait if busy else idle_wait)
+    conn = None
+    try:
+        while not stop.is_set():
+            try:
+                if conn is None:
+                    conn = db.connect(CFG['db'])
+                busy = step(conn)
+            except Exception:
+                traceback.print_exc()
+                busy = False
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        traceback.print_exc()
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = None
+            stop.wait(busy_wait if busy else idle_wait)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 POOL = [None]

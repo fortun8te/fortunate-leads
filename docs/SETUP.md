@@ -51,6 +51,12 @@ It stops any other server on :8777 (and the old :8766 one) first. Log: `~/Librar
 After a `git pull` that changes `extension/`, click the reload icon on the extension card in each profile.
 The popup shows the version, the state and the next request; Resume there clears a login or security-check hold.
 
+For this Mac, after the server and Laya LaunchAgents and the three Chrome profiles are set up once,
+double-click `ops/start-all.command` to bring them up and explicitly start lists, bios, and AI together.
+AI may use provider quota. The launcher leaves existing Instagram cooldowns and access holds intact;
+the Accounts page shows what is actually ready. The in-app **Start all** button resumes stages and
+accounts when the services and Chrome profiles are already open.
+
 ## 5. Add accounts
 
 Open **Accounts** in the sidebar and click **Add account**. The wizard walks through the three steps (new

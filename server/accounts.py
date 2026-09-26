@@ -143,6 +143,37 @@ def keeps_lists(row, now, share=0.0):
     return healthy(row, now) and (row['role'] or 'both') in ('lists', 'both') and (not row['is_main'] or share > 0)
 
 
+def eligible_for_list(conn, row, seed, direction, now):
+    """A viewer can take a private list only if this Instagram identity has not been denied."""
+    if not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+        return False
+    if not row['ig_id']:
+        return not conn.execute('SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? LIMIT 1',
+                                (seed, direction)).fetchone()
+    return not conn.execute(
+        'SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? AND viewer_ig_id=?',
+        (seed, direction, row['ig_id'])).fetchone()
+
+
+def reopen_private_for_viewer(conn, row, now):
+    """A newly usable identity reopens only lists stopped after access denials; keep the saved prefix."""
+    if not row['ig_id'] or not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+        return
+    for lst in conn.execute("SELECT DISTINCT l.seed,l.direction FROM list_private_denials seen "
+                            "JOIN lists l ON l.seed=seen.seed AND l.direction=seen.direction WHERE "
+                            "(l.state='private' OR (l.state='partial' AND l.released_why='private')) "
+                            "AND NOT EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction AND d.viewer_ig_id=?)",
+                            (row['ig_id'],)).fetchall():
+        if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
+                        (lst['seed'], lst['direction'])).fetchone():
+            continue
+        job_id = conn.execute('INSERT INTO jobs(kind,seed,direction,priority,created_at) VALUES(?,?,?,?,?)',
+                              ('list', lst['seed'], lst['direction'], 0, db.now())).lastrowid
+        db.start_list_run(conn, job_id, lst['seed'], lst['direction'])
+        conn.execute("UPDATE lists SET state='queued',error=NULL,updated_at=? WHERE seed=? AND direction=?",
+                     (db.now(), lst['seed'], lst['direction']))
+
+
 def why_released(row, now):
     if row is None:
         return 'removed'
@@ -217,17 +248,9 @@ def note_handoff(conn, seed, direction, frm, to, why):
 def kinds_for(conn, row, kinds, now):
     role = row['role'] if row['role'] in ROLES else 'both'
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
-    kinds = [k for k in kinds if k in allowed]
-    if 'list' in kinds and row['is_main']:
-        share = list_share(conn, conn.execute('SELECT * FROM accounts').fetchall(), now)
-        if share >= 1.0:
-            return kinds
-        since = iso(now - timedelta(hours=1))
-        own, total = conn.execute('SELECT count(CASE WHEN lane=? THEN 1 END), count(*) FROM pages WHERE at>=?',
-                                  (row['lane_id'], since)).fetchone()
-        if share <= 0 or (total and own >= share * total):
-            kinds.remove('list')
-    return kinds
+    # The main lane may still take a particular list that every alt cannot view.
+    # Its normal share is checked in pick_job, after that list is known.
+    return [k for k in kinds if k in allowed]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -239,14 +262,57 @@ def pick_job(conn, lane, kinds, now):
     ok = [r['lane_id'] for r in accts if keeps_lists(r, now, share)]
     marks = ','.join('?' * len(kinds))
     okm = ','.join('?' * len(ok)) or "''"
+    row = next((r for r in accts if r['lane_id'] == lane), None)
+    if not row:
+        return None
+    regular_main = True
+    if row['is_main'] and 'list' in kinds and share < 1:
+        since = iso(now - timedelta(hours=1))
+        own, total = conn.execute('SELECT count(CASE WHEN lane=? THEN 1 END), count(*) FROM pages WHERE at>=?',
+                                  (lane, since)).fetchone()
+        regular_main = share > 0 and (not total or own < share * total)
+    # The denial condition belongs in SQL, before LIMIT, so a long backlog of
+    # inaccessible lists cannot starve later work or create a Python full scan.
+    viewer_filter = ("NOT EXISTS(SELECT 1 FROM list_private_denials d "
+                     "WHERE d.seed=j.seed AND d.direction=j.direction AND d.viewer_ig_id=?)" if row['ig_id']
+                     else "NOT EXISTS(SELECT 1 FROM list_private_denials d "
+                          "WHERE d.seed=j.seed AND d.direction=j.direction)")
+    viewer_args = (row['ig_id'],) if row['ig_id'] else ()
+    if row['is_main'] and not regular_main:
+        # Drive this exceptional lookup from the small set of denied lists,
+        # rather than scanning every ordinary queued list on each poll.
+        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now)
+                   and (r['role'] or 'both') in ('lists', 'both') and r['ig_id']]
+        denied_alts = ''.join(" AND EXISTS(SELECT 1 FROM list_private_denials a "
+                              "WHERE a.seed=j.seed AND a.direction=j.direction AND a.viewer_ig_id=?)"
+                              for _ in alt_ids)
+        fallback = conn.execute(
+            f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM
+            (SELECT DISTINCT seed,direction FROM list_private_denials) d
+            JOIN jobs j ON j.kind='list' AND j.seed=d.seed AND j.direction=d.direction
+            LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
+            WHERE (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
+              AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
+              AND {viewer_filter}{denied_alts}
+            ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
+              l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
+              coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
+            (ts, lane, *ok, *viewer_args, *alt_ids, lane)).fetchone()
+        if fallback:
+            return fallback
+        if 'profile' not in kinds:
+            return None
+        kinds = ['profile']
+        marks = '?'
     return conn.execute(
         f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
+          AND (j.kind='profile' OR {viewer_filter})
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, lane, *ok, lane)).fetchone()
+        (*kinds, ts, lane, *ok, *viewer_args, lane)).fetchone()
 
 
 def took(conn, lane, job):

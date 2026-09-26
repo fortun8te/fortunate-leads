@@ -135,6 +135,137 @@ class StoredAnswerTest(unittest.TestCase):
                 conn.close()
 
 
+class LayaQueueTest(unittest.TestCase):
+    def test_rebuild_commits_small_ranges_and_resumes_without_early_scoring(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'leads.sqlite')
+            conn = db.init(path)
+            try:
+                ids = [db.upsert_person(conn, {'handle': f'person{i}', 'bio': 'bio'}) for i in range(5)]
+                conn.execute("INSERT INTO seeds(handle,is_me) VALUES('person1',1)")
+                row = conn.execute('SELECT handle,name,bio,category,website,followers FROM people WHERE id=?',
+                                   (ids[2],)).fetchone()
+                conn.execute('INSERT INTO laya VALUES(?,?,?,?,?)',
+                             (ids[2], server.laya_hash(*row), '{}', 50, db.now()))
+                conn.commit()
+                with patch.object(server.control, 'stage_paused', return_value=False), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', return_value={}) as decide, \
+                        patch.object(server, 'LAYA_REBUILD_BATCH', 2):
+                    self.assertTrue(server.laya_step(conn))
+                    self.assertFalse(conn.in_transaction)
+                    self.assertIsNone(db.get_setting(conn, 'laya_queue_signature'))
+                    decide.assert_not_called()
+                    # A profile already swept remains current through its trigger.
+                    conn.execute("UPDATE people SET bio=NULL WHERE id=?", (ids[0],))
+                    conn.commit()
+                    conn.close()
+                    conn = db.connect(path)
+                    self.assertTrue(server.laya_step(conn))
+                    decide.assert_not_called()
+                    self.assertFalse(server.laya_step(conn))
+                    self.assertEqual(db.get_setting(conn, 'laya_queue_signature'), laya.cache_signature())
+                    self.assertEqual([r[0] for r in conn.execute('SELECT person_id FROM laya_queue ORDER BY person_id')],
+                                     [ids[0], ids[3], ids[4]])
+                    self.assertEqual(conn.execute('SELECT bio_blank FROM laya_queue WHERE person_id=?',
+                                                  (ids[0],)).fetchone()[0], 1)
+            finally:
+                conn.close()
+
+    def test_caller_transaction_is_not_committed_by_failed_or_successful_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'leads.sqlite')
+            conn = db.init(path)
+            reader = db.connect(path)
+            try:
+                pid = db.upsert_person(conn, {'handle': 'pending', 'bio': 'A brand'})
+                self.assertTrue(conn.in_transaction)
+                with patch.object(server.control, 'stage_paused', return_value=False), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', return_value={}):
+                    self.assertFalse(server.laya_step(conn))
+                self.assertTrue(conn.in_transaction)
+                self.assertIsNone(db.get_setting(conn, 'laya_queue_signature'))
+                self.assertEqual(reader.execute('SELECT count(*) FROM people').fetchone()[0], 0)
+
+                answers = {pid: {q['key']: 0.5 for q in laya.QUESTIONS}}
+                with patch.object(server.control, 'stage_paused', return_value=False), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', return_value=answers):
+                    self.assertTrue(server.laya_step(conn))
+                self.assertTrue(conn.in_transaction)
+                self.assertEqual(reader.execute('SELECT count(*) FROM laya').fetchone()[0], 0)
+                conn.rollback()
+                self.assertEqual(conn.execute('SELECT count(*) FROM people').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM laya').fetchone()[0], 0)
+            finally:
+                reader.close()
+                conn.close()
+
+    def test_order_changes_rebuild_and_profile_freshness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            try:
+                ids = [db.upsert_person(conn, {'handle': f'person{i}', 'bio': bio})
+                       for i, bio in enumerate(('bio', 'bio', 'bio', None))]
+                conn.executemany('INSERT INTO verdicts(person_id,prefilter) VALUES(?,?)',
+                                 [(ids[0], 40), (ids[1], 80), (ids[2], 60), (ids[3], 100)])
+                conn.commit()
+                batches = []
+                def decide(people):
+                    batches.append([p['id'] for p in people])
+                    return {p['id']: {q['key']: 0.5 for q in laya.QUESTIONS} for p in people}
+                with patch.object(server.control, 'stage_paused', return_value=False), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', side_effect=decide), \
+                        patch.object(server, 'LAYA_BATCH', 2):
+                    self.assertTrue(server.laya_step(conn))
+                    self.assertEqual(batches.pop(), [ids[1], ids[2]])
+                    self.assertTrue(server.laya_step(conn))
+                    self.assertEqual(batches.pop(), [ids[0], ids[3]])
+                    self.assertFalse(server.laya_step(conn))
+                    # Rank and profile changes put an already scored person back
+                    # into exactly the same ordered queue.
+                    conn.execute("UPDATE people SET bio='new bio' WHERE id=?", (ids[0],))
+                    conn.execute('UPDATE verdicts SET prefilter=95 WHERE person_id=?', (ids[0],))
+                    conn.commit()
+                    self.assertTrue(server.laya_step(conn))
+                    self.assertEqual(batches.pop(), [ids[0]])
+                    # A model deployment change invalidates every cached hash.
+                    with patch.object(laya, 'DEPLOYMENT_VERSION', 'next-checkpoint'):
+                        self.assertTrue(server.laya_step(conn))
+                        self.assertEqual(batches.pop(), [ids[0], ids[1]])
+            finally:
+                conn.close()
+
+    def test_excluded_and_reverted_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            try:
+                a = db.upsert_person(conn, {'handle': 'person', 'bio': 'original'})
+                db.upsert_person(conn, {'handle': 'parked~old', 'bio': 'original'})
+                conn.execute("INSERT INTO seeds(handle,is_me) VALUES('self',1)")
+                db.upsert_person(conn, {'handle': 'self', 'bio': 'original'})
+                conn.commit()
+                seen = []
+                def decide(people):
+                    seen.extend(p['id'] for p in people)
+                    return {p['id']: {q['key']: 0.5 for q in laya.QUESTIONS} for p in people}
+                with patch.object(server.control, 'stage_paused', return_value=False), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', side_effect=decide):
+                    self.assertTrue(server.laya_step(conn))
+                    self.assertEqual(seen, [a])
+                    conn.execute("UPDATE people SET bio='temporary' WHERE id=?", (a,))
+                    conn.execute("UPDATE people SET bio='original' WHERE id=?", (a,))
+                    conn.commit()
+                    self.assertFalse(server.laya_step(conn))
+                    self.assertEqual(seen, [a])
+                    self.assertEqual(conn.execute('SELECT count(*) FROM laya_queue').fetchone()[0], 0)
+            finally:
+                conn.close()
+
+
     def test_malformed_cached_probability_is_not_used(self):
         with tempfile.TemporaryDirectory() as directory:
             conn = db.init(os.path.join(directory, 'leads.sqlite'))
@@ -173,10 +304,24 @@ class StoredAnswerTest(unittest.TestCase):
                 pid = db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 conn.commit()
                 answers = {pid: {q['key']: 0.5 for q in laya.QUESTIONS}}
-                with patch.object(server.control, 'stage_paused', side_effect=[False, True]), \
+                with patch.object(server.control, 'stage_paused', side_effect=[False, False, True]), \
                         patch.object(laya, 'available', return_value=True), patch.object(laya, 'decide', return_value=answers):
                     self.assertFalse(server.laya_step(conn))
                 self.assertEqual(conn.execute('SELECT count(*) FROM laya').fetchone()[0], 0)
+            finally:
+                conn.close()
+
+    def test_pause_during_rebuild_prevents_sidecar_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            try:
+                db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
+                conn.commit()
+                with patch.object(server.control, 'stage_paused', side_effect=[False, True]), \
+                        patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide') as decide:
+                    self.assertFalse(server.laya_step(conn))
+                    decide.assert_not_called()
             finally:
                 conn.close()
 

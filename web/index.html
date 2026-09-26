@@ -227,14 +227,16 @@
     <section class="view" id="view-accounts">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Accounts</h1><p>The Instagram accounts that do the scraping, one per Chrome profile.</p></div>
-          <div class="ph-a"><button class="btn solid" id="acc-add">Add account</button></div>
+          <div class="ph-t"><h1>Accounts</h1><p>See which Instagram profiles are ready, waiting, or need your help.</p></div>
+          <div class="ph-a"><button class="btn solid" id="acc-start">Start all · lists, bios &amp; AI</button><button class="btn" id="acc-add">Add account</button></div>
         </header>
+        <div class="acc-start-note" id="acc-start-note" role="status">Starts collection and AI scoring. AI may use paid provider calls. Instagram cooldowns and access restrictions still apply.</div>
         <div class="alerts" id="acc-alerts"></div>
         <div class="tiles" id="acc-kpis"></div>
         <div class="panel wiz" id="wiz" hidden></div>
         <div class="panel">
-          <div class="p-head"><h3>Accounts</h3><span class="num muted" id="acc-n"></span></div>
+          <div class="p-head"><h3>Instagram profiles</h3><span class="num muted" id="acc-n"></span></div>
+          <div class="acc-explain">Daily budgets are your workspace safety settings, not Instagram limits. A private or unavailable source list needs its own access check; account status alone cannot show whether that list is readable.</div>
           <div id="acc-list"></div>
         </div>
       </div>

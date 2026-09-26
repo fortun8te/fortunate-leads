@@ -153,13 +153,13 @@ class _PageText(HTMLParser):
                 self.main.append(data)
 
 
-def page_text(doc):
+def page_text(doc, limit=3500, prefer_main=True):
     parsed = _PageText()
     parsed.feed(doc)
     clean = lambda parts: re.sub(r'\s+', ' ', html.unescape(' '.join(parts))).strip()  # noqa: E731
     # Main/article text avoids menus and cookie banners crowding out the product evidence.
-    chosen = parsed.main if len(clean(parsed.main)) >= 100 else parsed.body
-    return clean(parsed.title)[:200], clean([parsed.description])[:400], clean(chosen)[:3500]
+    chosen = parsed.main if prefer_main and len(clean(parsed.main)) >= 100 else parsed.body
+    return clean(parsed.title)[:200], clean([parsed.description])[:400], clean(chosen)[:limit]
 
 
 def links_out(doc, base):

@@ -74,6 +74,14 @@ def resume_all(conn):
         set_stage(conn, s, False)
 
 
+def start_all(conn):
+    """Explicit one-click opt-in to collection and AI, including paused accounts."""
+    db.set_setting(conn, 'paused', False)
+    for stage in STAGES:
+        set_stage(conn, stage, False)
+    conn.execute('UPDATE accounts SET paused=0 WHERE paused=1')
+
+
 def mins(sec):
     sec = max(0, int(sec))
     return f'{sec} s' if sec < 60 else f'{round(sec / 60)} min' if sec < 3600 else f'{sec / 3600:.1f} h'
@@ -198,10 +206,21 @@ def snapshot(conn, ai_left=None):
 
 
 def apply(conn, b):
-    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane_id, "action": ...}."""
+    """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
+    if action == 'start_all':
+        if b.get('stage') is not None or isinstance(b.get('account'), str):
+            raise ValueError('start_all applies to the whole workspace')
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            start_all(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return
     if action not in ('pause', 'resume'):
-        raise ValueError('action must be pause or resume')
+        raise ValueError('action must be pause, resume or start_all')
     pause = action == 'pause'
     # the extension tags every POST with its own `account` object, so only a lane id string means "this account"
     if b.get('stage') is None and isinstance(b.get('account'), str):

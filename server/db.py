@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_i
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
 -- Per-run proof is separate from display totals and transient error messages.
 CREATE TABLE IF NOT EXISTS list_runs(job_id INTEGER PRIMARY KEY, first_page_seen INT NOT NULL DEFAULT 0,
-  total INT, total_source TEXT NOT NULL DEFAULT 'unknown');
+  total INT, total_source TEXT NOT NULL DEFAULT 'unknown', member_count INT NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS list_page_requests(job_id INT, requested_cursor TEXT NOT NULL, next_cursor TEXT,
   PRIMARY KEY(job_id,requested_cursor));
 CREATE TABLE IF NOT EXISTS list_members(job_id INT, person_id INT, observed_at TEXT, PRIMARY KEY(job_id,person_id));
@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
   list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS list_private_denials(seed TEXT NOT NULL COLLATE NOCASE, direction TEXT NOT NULL,
+  viewer_ig_id TEXT NOT NULL, denied_at TEXT NOT NULL,
+  PRIMARY KEY(seed,direction,viewer_ig_id));
 CREATE INDEX IF NOT EXISTS list_members_person ON list_members(person_id);
 CREATE INDEX IF NOT EXISTS edges_person_seed ON edges(person_id, seed);   -- covering: lists count, seeds per person
 CREATE INDEX IF NOT EXISTS edge_evidence_person ON edge_evidence(person_id,seed);
@@ -83,7 +86,75 @@ CREATE INDEX IF NOT EXISTS people_first_seen ON people(first_seen);
 CREATE INDEX IF NOT EXISTS people_bio_at ON people(bio_at);
 CREATE INDEX IF NOT EXISTS marks_status ON marks(status);
 CREATE INDEX IF NOT EXISTS jobs_next ON jobs(state, kind, priority);
+CREATE INDEX IF NOT EXISTS jobs_list_seed_state ON jobs(kind,seed,direction,state);
 CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
+-- Only pending Laya work is ranked. The signature-specific population is rebuilt
+-- once by laya_step; these triggers keep subsequent profile/rank changes current.
+CREATE TABLE IF NOT EXISTS laya_queue(person_id INTEGER PRIMARY KEY, bio_blank INTEGER NOT NULL,
+  prefilter INTEGER);
+CREATE INDEX IF NOT EXISTS laya_queue_rank ON laya_queue(bio_blank,prefilter DESC,person_id);
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_insert AFTER INSERT ON people BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT NEW.id,coalesce(NEW.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=NEW.id)
+  WHERE instr(NEW.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_update AFTER UPDATE OF handle,name,bio,category,website,followers ON people
+WHEN OLD.handle IS NOT NEW.handle OR OLD.name IS NOT NEW.name OR OLD.bio IS NOT NEW.bio
+  OR OLD.category IS NOT NEW.category OR OLD.website IS NOT NEW.website OR OLD.followers IS NOT NEW.followers
+BEGIN
+  DELETE FROM laya_queue WHERE person_id=NEW.id;
+  INSERT INTO laya_queue
+  SELECT NEW.id,coalesce(NEW.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=NEW.id)
+  WHERE instr(NEW.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_person_delete AFTER DELETE ON people BEGIN
+  DELETE FROM laya_queue WHERE person_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_insert AFTER INSERT ON verdicts BEGIN
+  UPDATE laya_queue SET prefilter=NEW.prefilter WHERE person_id=NEW.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_update AFTER UPDATE OF prefilter ON verdicts
+WHEN OLD.prefilter IS NOT NEW.prefilter BEGIN
+  UPDATE laya_queue SET prefilter=NEW.prefilter WHERE person_id=NEW.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_verdict_delete AFTER DELETE ON verdicts BEGIN
+  UPDATE laya_queue SET prefilter=NULL WHERE person_id=OLD.person_id;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_delete AFTER DELETE ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=OLD.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_insert AFTER INSERT ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=NEW.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_laya_update AFTER UPDATE ON laya BEGIN
+  INSERT OR REPLACE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',(SELECT prefilter FROM verdicts WHERE person_id=p.id)
+  FROM people p WHERE p.id=NEW.person_id AND instr(p.handle,'~')=0 AND NOT EXISTS
+    (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_insert AFTER INSERT ON seeds WHEN NEW.is_me=1 BEGIN
+  DELETE FROM laya_queue WHERE person_id IN (SELECT id FROM people WHERE handle=NEW.handle);
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_delete AFTER DELETE ON seeds WHEN OLD.is_me=1 BEGIN
+  INSERT OR IGNORE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',v.prefilter FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
+  WHERE p.handle=OLD.handle AND instr(p.handle,'~')=0;
+END;
+CREATE TRIGGER IF NOT EXISTS laya_queue_seed_update AFTER UPDATE OF handle,is_me ON seeds
+WHEN OLD.handle IS NOT NEW.handle OR OLD.is_me IS NOT NEW.is_me BEGIN
+  INSERT OR IGNORE INTO laya_queue
+  SELECT p.id,coalesce(p.bio,'')='',v.prefilter FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
+  WHERE p.handle=OLD.handle AND OLD.is_me=1 AND instr(p.handle,'~')=0;
+  DELETE FROM laya_queue WHERE NEW.is_me=1 AND person_id IN (SELECT id FROM people WHERE handle=NEW.handle);
+END;
 """
 
 BIO_FIELDS = {'bio', 'bio_at', 'bio_src', 'website', 'category', 'followers', 'following', 'posts', 'is_business'}
@@ -165,11 +236,27 @@ def init(path):
     # columns added after the first release: ALTER only when missing, so any older DB opens as is
     for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
-                             ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
+                             ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                              ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
+            if table == 'list_runs' and col == 'member_count':
+                # Existing tracked prefixes already have members. Backfill once
+                # before triggers start maintaining the exact count.
+                conn.execute('UPDATE list_runs SET member_count=(SELECT count(*) FROM list_members WHERE job_id=list_runs.job_id)')
+    for name in ('list_members_count_insert', 'list_members_count_delete', 'list_members_count_reassign'):
+        conn.execute(f'DROP TRIGGER IF EXISTS {name}')
+    conn.execute('CREATE TRIGGER list_members_count_insert AFTER INSERT ON list_members BEGIN '
+                 'UPDATE list_runs SET member_count=member_count+1 WHERE job_id=NEW.job_id; END')
+    conn.execute('CREATE TRIGGER list_members_count_delete AFTER DELETE ON list_members BEGIN '
+                 'UPDATE list_runs SET member_count=member_count-1 WHERE job_id=OLD.job_id; END')
+    conn.execute('CREATE TRIGGER list_members_count_reassign AFTER UPDATE OF job_id ON list_members '
+                 'WHEN OLD.job_id!=NEW.job_id BEGIN '
+                 'UPDATE list_runs SET member_count=member_count-1 WHERE job_id=OLD.job_id; '
+                 'UPDATE list_runs SET member_count=member_count+1 WHERE job_id=NEW.job_id; END')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
@@ -827,8 +914,7 @@ def list_run_complete(conn, job_id):
             return False
         seen.add(cursor)
         cursor = pages[cursor]
-    return (len(seen) == len(pages) and
-            conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0] >= run['total'])
+    return len(seen) == len(pages) and run['member_count'] >= run['total']
 
 
 def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
@@ -841,9 +927,10 @@ def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
     row = conn.execute('SELECT state,run_job_id,cursor,received,total FROM lists WHERE seed=? AND direction=?',
                        (seed, direction)).fetchone()
     job = conn.execute('SELECT kind,seed,direction,state FROM jobs WHERE id=?', (job_id,)).fetchone()
-    if (not row or row['state'] != 'done' or row['run_job_id'] != job_id or row['cursor'] is not None
+    run = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?', (job_id,)).fetchone()
+    if (not row or not run or row['state'] != 'done' or row['run_job_id'] != job_id or row['cursor'] is not None
             or not job or job['kind'] != 'list' or job['state'] != 'done' or job['seed'] != seed or job['direction'] != direction
-            or row['received'] != conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0]):
+            or row['received'] != run['member_count']):
         return set()
     ts = completed_at or now()
     before = {r[0] for r in conn.execute('SELECT person_id FROM current_edges WHERE seed=? AND direction=?',
@@ -914,13 +1001,15 @@ def start_list_run(conn, job_id, seed, direction):
                        (seed, direction)).fetchone()
     if old and old['cursor'] and old['run_job_id'] is not None and old['run_job_id'] != job_id:
         prior = old['run_job_id']
-        conn.execute('INSERT OR IGNORE INTO list_runs SELECT ?,first_page_seen,total,total_source FROM list_runs WHERE job_id=?',
+        conn.execute('INSERT OR IGNORE INTO list_runs(job_id,first_page_seen,total,total_source) '
+                     'SELECT ?,first_page_seen,total,total_source FROM list_runs WHERE job_id=?',
                      (job_id, prior))
         conn.execute('INSERT OR IGNORE INTO list_members SELECT ?,person_id,observed_at FROM list_members WHERE job_id=?',
                      (job_id, prior))
         conn.execute('INSERT OR IGNORE INTO list_page_requests SELECT ?,requested_cursor,next_cursor FROM list_page_requests WHERE job_id=?',
                      (job_id, prior))
-    conn.execute('INSERT OR IGNORE INTO list_runs(job_id) VALUES(?)', (job_id,))
+    conn.execute('INSERT OR IGNORE INTO list_runs(job_id,member_count) VALUES(?, '
+                 '(SELECT count(*) FROM list_members WHERE job_id=?))', (job_id, job_id))
     # Do not count historical edges as a tracked prefix. Legacy received remains visible
     # until a page arrives, but can never certify completion.
     if old and old['cursor']:
@@ -939,6 +1028,8 @@ def queue_list(conn, seed, direction, priority=0, refresh=False):
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                     (seed, direction)).fetchone():
         return False  # duplicate requests never rewind or relabel work already in progress
+    if refresh:
+        conn.execute('DELETE FROM list_private_denials WHERE seed=? AND direction=?', (seed, direction))
     if row and row['state'] in ('done', 'private') and not refresh:
         return False
     if row and (refresh or row['state'] == 'partial'):
