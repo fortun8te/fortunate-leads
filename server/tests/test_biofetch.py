@@ -11,7 +11,7 @@ import db  # noqa: E402
 
 # Shape from Meta's docs (IG User > business_discovery).
 OK = {'business_discovery': {'username': 'acme', 'name': 'Acme', 'biography': 'We make things', 'website': 'https://acme.co',
-                             'followers_count': 1200, 'follows_count': 80, 'media_count': 40, 'id': '1784'}, 'id': '999'}
+                             'followers_count': 1200, 'follows_count': 80, 'media_count': 40, 'profile_picture_url': 'https://example.com/pfp.jpg', 'id': '1784'}, 'id': '999'}
 NOT_BIZ = {'error': {'code': 110, 'error_subcode': 2207013, 'message': 'Cannot find User'}}
 LIMIT = {'error': {'code': 4, 'message': 'Application request limit reached'}}
 
@@ -41,6 +41,14 @@ class T(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertFalse(biofetch.public(self.conn)['on'])
 
+    def test_paused_stage_or_workspace_makes_no_request(self):
+        biofetch.save(self.conn, {'on': True, 'token': 'tok', 'ig_user_id': '999'})
+        for setting in ('paused', 'paused_bios'):
+            db.set_setting(self.conn, setting, True)
+            self.assertFalse(biofetch.step(self.conn, self.t))
+            db.set_setting(self.conn, setting, False)
+        self.assertEqual(self.calls, [])
+
     def test_hit_miss_gap_and_limit(self):
         biofetch.save(self.conn, {'on': True, 'token': 'tok', 'ig_user_id': '999', 'gap': 2})
         self.replies = [(200, OK, {}), (400, NOT_BIZ, {})]
@@ -48,6 +56,7 @@ class T(unittest.TestCase):
         self.assertTrue(biofetch.step(self.conn, self.t))
         r = self.row('acme')
         self.assertEqual((r['bio'], r['website'], r['followers'], r['bio_src']), ('We make things', 'https://acme.co', 1200, 'meta_bd'))
+        self.assertEqual(r['pic_url'], 'https://example.com/pfp.jpg')
         self.assertIn('business_discovery.username%28acme%29', self.calls[0])
         self.assertFalse(biofetch.step(self.conn, self.t + timedelta(seconds=1)))  # gap
         self.assertTrue(biofetch.step(self.conn, self.t + timedelta(seconds=3)))

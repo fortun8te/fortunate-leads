@@ -38,7 +38,7 @@
 
   <div class="app">
   <div class="strip">
-    <div class="offline" id="offline" hidden>Server offline <span class="num" id="offline-t"></span></div>
+    <div class="offline" id="offline" role="status" aria-live="polite" hidden>Server offline <span class="num" id="offline-t"></span></div>
     <div class="status" id="status">
       <div class="st-l">
         <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">Connecting</span></a>
@@ -50,7 +50,7 @@
         <span class="st hide-md" hidden><span>Last limit</span><b class="num" id="st-hit">–</b></span>
       </div>
       <div class="st-r">
-        <button class="toggle" id="qualify-btn" title="Qualification"><i></i><span>Qualify</span></button>
+        <button class="toggle" id="qualify-btn" role="switch" aria-checked="false" title="Qualification"><i></i><span>Qualify</span></button>
         <button class="btn" id="pause-btn" hidden>Pause</button>
       </div>
     </div>
@@ -62,7 +62,7 @@
       <div class="scrim" id="scrim" hidden></div>
       <div class="pane">
         <header class="ph ph-work">
-          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div><p id="work-p">Everyone the scraper found, best fit first.</p></div>
+          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div><p id="work-p">Everyone the scraper found, business fit first.</p></div>
           <div class="ph-a"><button class="btn" id="save-view" title="Save these filters as a view (v)">Save view</button></div>
         </header>
         <div class="qbar">
@@ -75,11 +75,11 @@
             <div class="suggest" id="suggest" hidden></div>
           </div>
           <select class="select" id="sort" title="Sort" aria-label="Sort leads">
-            <option value="follow_up">Follow-up date</option><option value="fit">Best fit</option>
+            <option value="follow_up">Follow-up date</option><option value="fit">Best business fit</option>
             <option value="connected">Most connected</option>
             <option value="followers">Followers</option>
             <option value="recent">Newest</option>
-            <option value="score">Score</option>
+            <option value="score">Priority</option>
           </select>
           <button class="btn ghost" id="clear-filters" title="Clear all filters (c)" hidden>Clear</button>
         </div>
@@ -89,7 +89,7 @@
           <div class="bulk" id="bulk" hidden></div>
           <div class="thead">
             <span class="c-sel"><button class="ck" id="sel-page" role="checkbox" aria-checked="false" aria-label="Select all loaded leads" title="Select all loaded"></button></span>
-            <span>Lead</span><span>Fit</span><span class="c-conn">Connections</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-st">Status</span>
+            <span>Lead</span><span>Fit / priority</span><span class="c-conn">Connections</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-st">Status</span>
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
           <div class="foot"><span class="num" id="count"></span><span class="grow"></span>
@@ -100,7 +100,7 @@
           <div class="mbar">
             <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
             <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People in 2+ lists and likely brands">Connected</button><button data-v="all" aria-pressed="false">All</button></div>
-            <label class="search"><input class="input" id="map-q" aria-label="Find a person on the map" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
+            <label class="search"><input class="input" id="map-q" type="search" aria-label="Find in displayed map" placeholder="Find in displayed map" title="Searches only displayed accounts, up to 3,000 matching people." autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
             <button class="btn" id="map-labels" aria-pressed="true" title="Labels (l)">Labels</button>
@@ -108,9 +108,9 @@
           </div>
           <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
           <div class="stage" id="stage">
-            <canvas id="canvas"></canvas>
+            <canvas id="canvas" role="img" aria-label="Connection map. Open Leads to review people and connections using the same filters."></canvas>
             <div class="hover" id="hover" hidden></div>
-            <div class="zoom"><button id="zoom-in" title="Zoom in (+)">+</button><button id="zoom-out" title="Zoom out (-)">&minus;</button></div>
+            <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
             <div class="legend" id="legend">
               <span><i class="lg-seed"></i>Seed</span>
               <span><i class="fdot f-strong"></i>Strong</span>
@@ -118,9 +118,11 @@
               <span><i class="fdot f-weak"></i>Weak</span>
               <span><i class="fdot f-unread"></i>Unread</span>
               <span><i class="lg-mk"></i>Has a status</span>
-              <span title="They are in the seed's followers list"><i class="lg-ln"></i>Follows the seed</span>
-              <span title="They are in the seed's following list"><i class="lg-ln dash"></i>Seed follows them</span>
-              <span><i class="lg-ss"></i>Shared people</span>
+              <span title="Observed in a collected list"><i class="lg-ln"></i>Observed: follows seed</span>
+              <span title="Observed in a collected list"><i class="lg-ln dash"></i>Observed: seed follows</span>
+              <span title="Seen before, but not checked again"><i class="lg-ln dash"></i>Earlier: unverified</span>
+              <span title="Not found in a completed later check"><i class="lg-ln dotted"></i>Earlier: absent</span>
+              <span><i class="lg-ss"></i>Shared currently observed people</span>
             </div>
           </div>
         </div>
@@ -131,7 +133,7 @@
     <section class="view" id="view-qual">
       <div class="ql">
         <header class="ph">
-          <div class="ph-t"><h1>Qualification</h1><p>Why each person got their score, and what it was based on.</p></div>
+          <div class="ph-t"><h1>Qualification</h1><p>Business fit, connections and blended priority, with the evidence behind each.</p></div>
           <div class="ph-a"><button class="btn solid" id="ql-toggle">Start AI checks</button></div>
         </header>
         <div class="ql-prog" id="ql-prog"></div>
@@ -139,7 +141,7 @@
           <div class="seg" id="ql-view"><button data-v="ai" class="on">Checked by AI</button><button data-v="rules">Keywords only</button><button data-v="all">Everyone</button></div>
           <input class="input" id="ql-q" aria-label="Find a person in qualification" type="search" placeholder="Find a person" autocomplete="off" spellcheck="false">
           <div class="grow"></div>
-          <select class="select" id="ql-sort" aria-label="Sort qualification results"><option value="score">Best first</option><option value="recent">Newest first</option></select>
+          <select class="select" id="ql-sort" aria-label="Sort qualification results"><option value="score">Highest priority</option><option value="recent">Newest first</option></select>
           <span class="num muted" id="ql-n"></span>
         </div>
         <div class="ql-list" id="ql-list"></div>
@@ -165,11 +167,11 @@
         <div class="panel">
           <div class="p-head"><h3>Keyword rules</h3><span class="num muted" id="rl-n"></span><div class="grow"></div><span class="muted hide-sm">Tag everyone whose bio, name or link has a word</span></div>
           <form class="rule-form" id="rule-form">
-            <div class="rl-row"><span class="muted">Tag</span><input class="input" id="rl-tag" aria-label="New rule tag" placeholder="Tag name, e.g. Candles" list="tag-dl" autocomplete="off" required>
+            <div class="rl-row"><span class="muted">Tag</span><input class="input" id="rl-tag" aria-label="Tag name for rule" placeholder="Tag name, e.g. Candles" list="tag-dl" autocomplete="off" required>
             <span class="muted">when</span>
-            <select class="select" id="rl-field" aria-label="Rule search field"><option value="bio">Bio</option><option value="name">Name</option><option value="handle">Handle</option><option value="category">Category</option><option value="website">Website</option><option value="any">Any field</option></select>
+            <select class="select" id="rl-field" aria-label="Field to match"><option value="bio">Bio</option><option value="name">Name</option><option value="handle">Handle</option><option value="category">Category</option><option value="website">Website</option><option value="any">Any field</option></select>
             <span class="muted">contains</span></div>
-            <div class="rl-row"><span class="muted">Words</span><input class="input" id="rl-match" aria-label="Rule keywords" placeholder="candle, soy wax, wick" autocomplete="off" spellcheck="false" required>
+            <div class="rl-row"><span class="muted">Words</span><input class="input" id="rl-match" aria-label="Words to match for rule" placeholder="candle, soy wax, wick" autocomplete="off" spellcheck="false" required>
             <span class="num rl-prev" id="rl-prev"></span>
             <button class="btn solid" id="rl-add" disabled>Add rule</button></div>
           </form>
@@ -184,7 +186,7 @@
     <section class="view" id="view-scraper">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Scraper</h1><p>Collects people from Instagram lists at a safe pace.</p></div>
+          <div class="ph-t"><h1>Scraper</h1><p>Collects people from Instagram lists. Progress shows what has been collected so far.</p></div>
           <div class="ph-a"><button class="btn solid" id="scr-add">Add accounts</button></div>
         </header>
         <div class="now" id="now"></div>
@@ -193,7 +195,7 @@
         <div class="panel" id="seed-panel">
           <div class="p-head"><h3>Add accounts to scrape</h3><div class="grow"></div><span class="muted hide-sm">We read the people in their lists</span></div>
           <div class="p-body">
-            <textarea class="input" id="seed-in" aria-label="Instagram accounts to scrape" spellcheck="false" placeholder="@handle, one per line"></textarea>
+            <textarea class="input" id="seed-in" aria-label="Accounts to scrape, one handle per line" spellcheck="false" placeholder="@handle, one per line"></textarea>
             <div class="row-flex">
               <div class="seg" id="seed-dir"><button data-v="followers" class="on">Their followers</button><button data-v="following" class="on">Who they follow</button></div>
               <div class="grow"></div>
@@ -261,11 +263,12 @@
           </div>
         </section>
 
+
         <section class="sg">
           <div class="sg-h"><h2>AI qualification</h2><p>The AI reads bios and judges who fits your agency.</p></div>
           <div class="card">
-            <div class="set-row"><div><b>Check people with AI</b><span class="muted">Reads bios and scores fit</span></div><button class="toggle" id="set-q-on" aria-label="Check people with AI"><i></i></button></div>
-            <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switches on by itself once every list is collected</span></div><button class="toggle" id="set-q-auto" aria-label="Start AI after the lists"><i></i></button></div>
+            <div class="set-row"><div><b>Check people with AI</b><span class="muted">Reads bios and scores fit</span></div><button class="toggle" id="set-q-on" role="switch" aria-checked="false" aria-label="Check people with AI"><i></i></button></div>
+            <div class="set-row"><div><b>Start after the lists</b><span class="muted">Switches on by itself once every list is collected</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div>
             <details class="adv">
               <summary>Advanced</summary>
               <form class="budget" id="set-q" novalidate>
@@ -276,7 +279,7 @@
               </form>
               <div class="sub-h"><b>Models</b><span class="muted">Tried in this order; free models go first</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
               <ol class="models" id="set-models"></ol>
-              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model name" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
+              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model identifier" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
               <div class="sub-h"><b>Local helpers</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
               <div id="set-svc"></div>
             </details>
@@ -291,10 +294,10 @@
               <tbody id="set-keys"></tbody>
             </table></div>
             <div class="set-forms">
-              <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
+              <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" aria-label="OpenRouter key" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
               <details class="adv">
                 <summary>Advanced</summary>
-                <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric"><button class="btn">Save</button></form>
+                <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric" aria-label="Requests per key and model per day"><button class="btn">Save</button></form>
                 <span class="muted num" id="set-file"></span>
               </details>
             </div>
@@ -305,7 +308,7 @@
           <div class="sg-h"><h2>Appearance</h2><p>Only changes how things look.</p></div>
           <div class="card">
             <div class="set-row"><div><b>Theme</b></div><div class="seg" id="set-theme"><button data-v="dark">Dark</button><button data-v="light">Light</button></div></div>
-              <div class="set-row"><div><b>Bios via Meta API</b><span class="muted" id="bf-info">Business and creator accounts only, via your own Meta app. Off by default.</span><input class="input" id="bf-uid" placeholder="IG user id" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on" aria-label="Enable Meta bio reads"><i></i></button></div>
+              <div class="set-row"><div><b>Bios via Meta API</b><span class="muted" id="bf-info">Business and creator accounts only, via your own Meta app. Off by default.</span><input class="input" id="bf-uid" aria-label="Instagram user ID for Meta API" placeholder="IG user id" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" aria-label="Meta API access token" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on" role="switch" aria-checked="false" aria-label="Bios via Meta API"><i></i></button></div>
             <div class="set-row"><div><b>Rows in Leads</b></div><div class="seg" id="set-density"><button data-v="comfortable">Roomy</button><button data-v="compact">Compact</button></div></div>
           </div>
         </section>
@@ -315,9 +318,10 @@
   </div>
 </div>
 <datalist id="tag-dl"></datalist>
-<div class="toast" id="toast" hidden></div>
-<div class="help" id="help" hidden><div>
-  <h3>Keyboard shortcuts</h3>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<div class="help" id="help" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden><div>
+  <button class="help-close" id="help-close" type="button" aria-label="Close keyboard shortcuts">&times;</button>
+  <h3 id="help-title">Keyboard shortcuts</h3>
   <h4>List</h4>
   <span><kbd>j</kbd> <kbd>k</kbd></span><span>Next / previous</span>
   <span><kbd>enter</kbd></span><span>Open detail</span>
@@ -330,7 +334,7 @@
   <span><kbd>o</kbd></span><span>Open on Instagram</span>
   <h4>Filter</h4>
   <span><kbd>/</kbd></span><span>Search</span>
-  <span>fit:strong</span><span>Strong, good, weak or unread fit</span>
+  <span>priority:strong</span><span>Strong, good, weak or unread priority tier</span>
   <span><kbd>#</kbd></span><span>Filter by tag</span>
   <span>Click</span><span>Tag: all of, any of, none of, off</span>
   <span><kbd>shift</kbd> click</span><span>Any of</span>

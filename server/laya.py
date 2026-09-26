@@ -1,18 +1,23 @@
 """Optional client for the local Laya decision sidecar (sidecar/laya_server.py on 127.0.0.1:18742). Stdlib only.
 
-Laya's score influences the prefilter used to select profile reads and LLM reviews. It can also add
-creator / brand_account / netherlands tags at p >= 0.9. Base checkpoint probabilities need domain calibration.
-Down, slow or malformed service response -> skipped (health uses a 3 s timeout, cached for 60 s).
+Laya is ONE soft ranking signal: it never gates anyone and never gives a verdict. Its scores are uncalibrated ranking hints and never create factual tags.
+Down or slow -> skipped silently (health is checked with a 3 s timeout and cached for 60 s).
 """
 from __future__ import annotations
 
 import json
+import hashlib
 from http.client import HTTPException
+import math
+import os
 import threading
 import time
 import urllib.request
 
 URL = 'http://127.0.0.1:18742'
+MODEL = os.environ.get('LAYA_MODEL', 'convaiinnovations/laya-multilingual')
+DEPLOYMENT_VERSION = os.environ.get('LAYA_DEPLOYMENT_VERSION', 'laya-0.3.20-checkpoint-1')
+PIPELINE_VERSION = 'laya-soft-signal-v2'
 HEALTH_TIMEOUT = 3
 HEALTH_TTL = 60
 DECIDE_TIMEOUT = 60
@@ -29,7 +34,7 @@ TAG_OF = {'dtc_founder': 'Founder', 'brand_account': 'Brand', 'creator': 'Creato
 SURE = {'creator': 0.9, 'brand_account': 0.9, 'netherlands': 0.9}
 FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -30, 'service_provider': -25}
 
-_health = {'at': None, 'ok': False}
+_health = {'at': None, 'ok': False, 'model': None, 'deployment_version': None}
 _lock = threading.Lock()
 
 
@@ -43,26 +48,41 @@ def available(now=None):
         if _health['at'] is not None and 0 <= now - _health['at'] < HEALTH_TTL:
             return _health['ok']
     ok = False
+    data = {}
     try:
         with _open(urllib.request.Request(URL + '/health'), HEALTH_TIMEOUT) as r:
             data = json.loads(r.read(100_000))
-            ok = isinstance(data, dict) and data.get('ok') is True
+            ok = (isinstance(data, dict) and data.get('ok') is True and data.get('model') == MODEL
+                  and data.get('deployment_version') == DEPLOYMENT_VERSION)
     except (OSError, ValueError, HTTPException):
         ok = False
     with _lock:
-        _health.update(at=now, ok=ok)
+        _health.update(at=now, ok=ok, model=data.get('model') if ok else None,
+                       deployment_version=data.get('deployment_version') if ok else None)
     return ok
 
 
 def last_known():
     """Last health result without probing (status endpoints must never wait on the sidecar)."""
     with _lock:
-        return _health['ok'] if _health['at'] is not None else None
+        return _health['ok'] if _health['at'] is not None and 0 <= time.monotonic() - _health['at'] < HEALTH_TTL else None
 
 
 def reset():
     with _lock:
-        _health.update(at=None, ok=False)
+        _health.update(at=None, ok=False, model=None, deployment_version=None)
+
+
+def cache_signature():
+    """Version the answers by checkpoint deployment, question text, and local scoring policy."""
+    raw = json.dumps([PIPELINE_VERSION, MODEL, DEPLOYMENT_VERSION, QUESTIONS, FIT_W], ensure_ascii=False,
+                     sort_keys=True, separators=(',', ':'))
+    return 'laya:' + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def _failed():
+    with _lock:
+        _health.update(at=time.monotonic(), ok=False, model=None, deployment_version=None)
 
 
 def person_text(p):
@@ -75,48 +95,66 @@ def person_text(p):
     return '\n'.join(rows)
 
 
+def valid_answers(answers):
+    return (isinstance(answers, dict) and set(answers) == {q['key'] for q in QUESTIONS}
+            and all(isinstance(p, (int, float)) and not isinstance(p, bool)
+                    and math.isfinite(p) and 0 <= p <= 1 for p in answers.values()))
+
+
 def decide(people):
-    """people: [dict with id + profile fields] -> {id: {key: p}}. Missing ids = no answer. Raises nothing."""
+    """Return complete validated batches, or no answers if any batch is invalid."""
     out = {}
+    try:
+        ids = [str(p['id']) for p in people]
+        if any(isinstance(p['id'], bool) or str(int(p['id'])) != str(p['id']) for p in people):
+            return {}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return {}
+    if len(set(ids)) != len(ids):
+        return {}
     for i in range(0, len(people), BATCH):
         chunk = people[i:i + BATCH]
+        expected = set(ids[i:i + BATCH])
         body = {'items': [{'id': str(p['id']), 'text': person_text(p)} for p in chunk], 'questions': list(QUESTIONS)}
         req = urllib.request.Request(URL + '/decide', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'},
                                      method='POST')
         try:
             with _open(req, DECIDE_TIMEOUT) as r:
                 data = json.loads(r.read(5_000_000))
-            results = data.get('results') if isinstance(data, dict) else None
-            if not isinstance(results, list):
-                raise ValueError('Laya response must contain a results list')
         except (OSError, ValueError, HTTPException):
-            with _lock:
-                _health.update(at=time.monotonic(), ok=False)   # failed response: back off like a failed health check
-            return out
-        for res in results:
-            if not isinstance(res, dict) or not isinstance(res.get('answers'), dict):
-                continue
-            ans = {}
-            for q in QUESTIONS:
-                a = res['answers'].get(q['key'])
-                p = a.get('p') if isinstance(a, dict) else None
-                if isinstance(p, (int, float)) and not isinstance(p, bool) and 0 <= p <= 1:
-                    ans[q['key']] = float(p)
-            try:
-                out[int(res.get('id'))] = ans
-            except (TypeError, ValueError, OverflowError):
-                continue
+            _failed()
+            return {}
+        if (not isinstance(data, dict) or data.get('model') != MODEL
+                or data.get('deployment_version') != DEPLOYMENT_VERSION
+                or not isinstance(data.get('results'), list) or len(data['results']) != len(chunk)):
+            _failed()
+            return {}
+        parsed = {}
+        for res in data['results']:
+            if (not isinstance(res, dict) or not isinstance(res.get('answers'), dict)
+                    or str(res.get('id')) not in expected or str(res.get('id')) in parsed):
+                _failed()
+                return {}
+            ans = {k: a.get('p') if isinstance(a, dict) else None for k, a in res['answers'].items()}
+            if not valid_answers(ans):
+                _failed()
+                return {}
+            parsed[str(res['id'])] = {k: float(p) for k, p in ans.items()}
+        if set(parsed) != expected:
+            _failed()
+            return {}
+        out.update({int(pid): ans for pid, ans in parsed.items()})
     return out
 
 
 def fit(ans):
     """0-100 soft signal (50 = no information)."""
-    if not ans:
+    if not valid_answers(ans):
         return None
     s = 50 + sum(w * (ans[k] - 0.5) * 2 for k, w in FIT_W.items() if k in ans) / 2
     return int(max(0, min(100, round(s))))
 
 
 def tags(ans, have):
-    """Tags Laya may add: only when a rule/LLM tag agrees (then it is already there) or when it is very sure on its own."""
-    return [TAG_OF[k] for k, t in SURE.items() if ans.get(k, 0) >= t and TAG_OF[k] not in have]
+    """Uncalibrated model scores are not independent evidence for factual tags."""
+    return []

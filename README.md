@@ -1,9 +1,9 @@
 # Fortunate Leads
 
 Finds and ranks Instagram leads for Fortunate from the follower and following lists of chosen accounts.
-A local server keeps the database and the web app; a Chrome extension, one per Instagram account, reads the
-lists and bios at human pace. Ranking weighs the network first (how many of your lists someone is in, who follows
-them, links to you and your clients), then the profile read by rules or a free LLM.
+A local server keeps the database and the web app. A Chrome extension, one per Instagram account, reads
+lists and can read bios. Ranking uses network links and profile evidence, with rules and optional free-model
+AI qualification.
 
 - Setup, first run, backups and troubleshooting: [docs/SETUP.md](docs/SETUP.md)
 - API and database: [docs/CONTRACT.md](docs/CONTRACT.md)

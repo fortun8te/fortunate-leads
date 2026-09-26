@@ -2,7 +2,7 @@
 
 Fortunate Leads runs on one Mac: a local Python server (the database and the web app on
 http://127.0.0.1:8777) and a Chrome extension in one Chrome profile per Instagram account. The extension
-does the Instagram requests from a logged-in tab, at human pace; the server decides what to fetch next.
+reads lists and can read bios from a logged-in tab; the server decides what to fetch next.
 
 ## 1. Prerequisites
 
@@ -10,7 +10,8 @@ does the Instagram requests from a logged-in tab, at human pace; the server deci
 - Python 3.9 or later with SQLite 3.35 or later. The macOS `/usr/bin/python3` is fine. Check with
   `python3 -c "import sqlite3, sys; print(sys.version.split()[0], sqlite3.sqlite_version)"`.
 - git. Node 18+ only if you want to run the extension and end-to-end tests.
-- No pip packages: the server uses the standard library only. The optional Laya sidecar (section 7) has its own venv.
+- No pip packages for the server: it uses the standard library. The optional Laya sidecar has its own
+  Python environment.
 
 ## 2. Clone
 
@@ -73,7 +74,8 @@ Qualification works without any key (rule verdicts). With keys, a free model als
 
 Open **Settings**, paste a key from https://openrouter.ai/keys and click **Add key**. Test checks the key with one
 small request. Keys are saved in `data/openrouter.json` (mode 600, gitignored) and are never shown again in full.
-The models list is tried in order; free models go first. A key refused with 401 stays off until a Test passes.
+Only `:free` models are eligible for qualification. Available free models are tried in the configured order;
+a refused key stays off until a Test passes.
 
 Keys can also come from the environment (`OPENROUTER_API_KEYS=sk-or-...,sk-or-...`); those show as
 Environment in Settings and can only be removed where they are set.
@@ -120,7 +122,9 @@ Where things live:
 | server log | `~/Library/Logs/fortunate-leads.log` |
 | extension state | inside each Chrome profile (chrome.storage) |
 
-`data/` is gitignored; nothing in it leaves the Mac.
+`data/` is gitignored. Profile requests contact Instagram through the configured route; optional LLM
+qualification sends selected profile evidence to the configured model provider. Do not put API keys or
+proxy credentials in tracked files.
 
 ## 10. Quitting and resuming
 
@@ -141,7 +145,7 @@ To stop scraping on purpose use **Pause** in the top strip (all accounts) or on 
 | Page does not load | `ops/doctor.sh --fix`, then check the log. By hand: `python3 server/server.py` shows errors directly. |
 | Port 8777 in use | `ops/doctor.sh --fix` stops stray servers and restarts the agent. |
 | A key shows Refused | The key is wrong or revoked. Replace it in Settings. |
-| Bios are not being read | Check that the account's role is Bios or Both, its bios budget is not used up, and the bio floor in Settings is not too high. |
+| Bios are not being read | For the extension, check its Bios/Both role, daily budget and bio floor. |
 
 ## 12. Tests (for development)
 

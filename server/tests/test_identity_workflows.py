@@ -54,6 +54,8 @@ class IdentityWorkflows(unittest.TestCase):
                       title='The shop', summary='Makes small-batch candles.', signals='{"shop":"Shopify"}',
                       error=None, model='fixture-model', at='2026-09-20T10:00:00+00:00')
         record.update(overrides)
+        # A site read only counts for the website currently on the profile.
+        self.conn.execute('UPDATE people SET website=? WHERE id=? AND website IS NULL', (record['url'], pid))
         return self.insert('site_reads', record)
 
     def research(self, pid, suffix):
@@ -119,7 +121,7 @@ class IdentityWorkflows(unittest.TestCase):
                                             updated_at='2026-09-24T11:00:00+00:00'))
         db.merge_people(self.conn, keep, drop)
         self.assertEqual(self.row('marks', keep)['note'], kept_text)
-        self.assertEqual(self.row('marks', keep)['status'], 'contacted')
+        self.assertEqual(self.row('marks', keep)['status'], 'talking')   # the newer explicit status wins
         # Once the editable note changes, both originals must still be recoverable in history.
         self.conn.execute('UPDATE marks SET note=? WHERE person_id=?', ('Current follow-up notes', keep))
         self.conn.commit()
@@ -128,7 +130,7 @@ class IdentityWorkflows(unittest.TestCase):
         merge = self.events(keep, 'identity_merged')
         self.assertEqual(len(merge), 1)
         self.assertEqual(merge[0]['before_value'], dropped)
-        self.assertEqual(merge[0]['after_value'], {'status': 'contacted', 'note': kept_text})
+        self.assertEqual(merge[0]['after_value'], {'status': 'talking', 'note': kept_text})
         self.assertIsNone(self.row('marks', drop))
 
     def test_duplicate_only_site_read_moves_without_an_orphan(self):

@@ -32,6 +32,12 @@ class IdentityIntegrityTests(unittest.TestCase):
     def seed_id(self, handle):
         return self.c.execute('SELECT ig_id FROM seeds WHERE handle=?', (handle,)).fetchone()[0]
 
+    def seed_of(self, ig_id):
+        """A seed follows its account's Instagram ID through renames and handle reuse."""
+        rows = self.c.execute('SELECT handle FROM seeds WHERE ig_id=?', (ig_id,)).fetchall()
+        self.assertEqual(len(rows), 1, ig_id)
+        return rows[0][0]
+
     def test_blank_ids_never_erase_identity_and_reused_handle_keeps_old_history(self):
         old = self.person('connector', '300')
         for blank in ('', ' ', '\t\n', None):
@@ -65,10 +71,12 @@ class IdentityIntegrityTests(unittest.TestCase):
             self.seed(handle, missing)
             db.add_edge(self.c, handle, bob, 'following')
             self.person(handle, 'new' + str(index))
-            self.assertEqual(self.seed_id(handle), 'old' + str(index))
+            # The old account keeps its seed and list history under a parked handle.
+            self.assertEqual(self.seed_of('old' + str(index)), handle + '~' + str(old))
             self.assertEqual(self.profile(handle + '~' + str(old))['ig_id'], 'old' + str(index))
-            with self.assertRaises(ValueError):
-                compare(self.c, handle, 'bob')
+            self.assertEqual(self.c.execute('SELECT count(*) FROM edges WHERE seed=?', (handle + '~' + str(old),)).fetchone()[0], 1)
+            # The new holder of the handle inherits none of that history.
+            self.assertEqual(self.c.execute('SELECT count(*) FROM edges WHERE seed=?', (handle,)).fetchone()[0], 0)
 
     def test_rename_preserves_departing_seed_and_both_sides_of_handle_collision(self):
         moving = self.person('oldname', '100')
@@ -76,19 +84,20 @@ class IdentityIntegrityTests(unittest.TestCase):
         self.seed('oldname')
         self.seed('newname', '')
         self.assertEqual(self.person('newname', '100'), moving)
-        self.assertEqual(self.seed_id('oldname'), '100')
-        self.assertEqual(self.seed_id('newname'), '200')
+        self.assertEqual(self.seed_of('100'), 'newname')   # the seed moved with its account
+        self.assertEqual(self.seed_of('200'), 'newname~' + str(displaced))   # the displaced holder keeps its own
         self.assertEqual(self.profile('newname~' + str(displaced))['ig_id'], '200')
         self.seed('thirdname')
         self.assertEqual(self.person('thirdname', '100'), moving)
+        self.assertEqual(self.seed_of('100'), 'thirdname')
         # A previously established conflicting seed identity is never overwritten.
-        self.assertEqual(self.seed_id('newname'), '200')
+        self.assertEqual(self.seed_of('200'), 'newname~' + str(displaced))
 
     def test_rename_to_unused_handle_preserves_seed(self):
         old = self.person('before', '100')
         self.seed('before')
         self.assertEqual(self.person('after', '100'), old)
-        self.assertEqual(self.seed_id('before'), '100')
+        self.assertEqual(self.seed_of('100'), 'after')
 
     def test_provisional_person_cannot_override_contradictory_seed_evidence(self):
         old = self.person('alias')
@@ -113,10 +122,11 @@ class IdentityIntegrityTests(unittest.TestCase):
         self.c.commit()
         server.ext_list_page(self.c, {}, dict(seed='collector', direction='followers',
                                              users=[dict(handle='alice', ig_id='999')]))
-        self.assertEqual(self.seed_id('alice'), '100')
+        parked = self.seed_of('100')
+        self.assertNotEqual(parked, 'alice')   # the old account took its seed and history along
         self.assertEqual(self.profile('alice')['ig_id'], '999')
-        with self.assertRaises(ValueError):
-            compare(self.c, 'alice', 'bob')
+        self.assertEqual(self.c.execute("SELECT count(*) FROM edges WHERE seed='alice'").fetchone()[0], 0)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM edges WHERE seed=?', (parked,)).fetchone()[0], 1)
 
     def test_list_member_blank_id_preserves_known_identity(self):
         import server

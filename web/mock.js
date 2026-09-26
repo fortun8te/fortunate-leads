@@ -51,7 +51,8 @@
   const size = (f) => f < 1000 ? '<1k' : f < 10000 ? '1k-10k' : f < 100000 ? '10k-100k' : f < 1000000 ? '100k-1M' : '1M+';
 
   const people = [];
-  const lists = (id) => new Set(edges.get(id).map((e) => e.seed)).size;
+  const currentEdges = (id) => edges.get(id).filter(e => e.state === 'observed');
+  const lists = (id) => new Set(currentEdges(id).map((e) => e.seed)).size;
   const edges = new Map(); // id -> [{seed, direction}]
   const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
@@ -165,6 +166,8 @@
       if (after) map.set(id, after); else map.delete(id);
     }
   }
+  const markRevs = new Map();
+  const readQueue = new Set();
   const handles = new Set();
   const N = 3200;
 
@@ -208,7 +211,12 @@
     for (const nb of SEEDS[primary].nb) if (chance(0.16)) ss.add(nb);
     if (chance(0.05)) ss.add(pickSeed());
     if (ss.size >= 2 && chance(0.2)) ss.add(pickSeed());
-    edges.set(i, [...ss].map((s) => ({ seed: s, direction: s === ME ? (chance(0.6) ? 'followers' : 'following') : chance(0.75) ? 'followers' : 'following' })));
+    edges.set(i, [...ss].map((s) => ({ seed: s, state: i % 11 === 0 ? 'unverified' : i % 7 === 0 ? 'absent' : 'observed', first_seen: people[i - 1].first_seen, observed_at: i % 11 === 0 ? null : now(), checked_at: i % 11 === 0 ? null : now(), direction: s === ME ? (chance(0.6) ? 'followers' : 'following') : chance(0.75) ? 'followers' : 'following' })));
+  }
+
+  for (const p of people.filter(p => p.id % 5 === 0 && lists(p.id))) {
+    const seed = SEED_LIST.find(s => !edges.get(p.id).some(e => e.seed === s));
+    edges.get(p.id).push({seed, direction:'following', state: p.id % 10 ? 'absent' : 'unverified', first_seen:p.first_seen, observed_at:null, checked_at:p.id % 10 ? now() : null});
   }
 
   function autoTags(p) {
@@ -228,7 +236,7 @@
     if (p.is_verified) add('Verified', 'signal');
     if (p.is_business) add('Business', 'signal');
     add(size(p.followers), 'size');
-    const es = edges.get(p.id);
+    const es = currentEdges(p.id);
     const others = [...new Set(es.map((e) => e.seed))].filter((s) => s !== ME).sort();
     others.forEach((s) => add('via @' + s, 'source'));
     const mine = es.filter((e) => e.seed === ME);
@@ -256,6 +264,9 @@
   const rejectedDue = new Date(); rejectedDue.setDate(rejectedDue.getDate() - 2);
   setFollowUp(13, { action: 'schedule', due_on: localDay(rejectedDue), note: 'Review the reminder kept on this not-a-fit lead' });
   ['queued', 'reading', 'failed', 'done'].forEach((state, i) => reads.set(14 + i, state));
+
+  marks.set(1, 'client'); notes.set(1, 'Met at the sample design meetup. Follow up on packaging.');
+  marks.forEach((_, id) => markRevs.set(id, now()));
 
   // Tag rules.
   let ruleId = 3;
@@ -329,12 +340,17 @@
   const row = (p) => ({
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
-    tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
-    note: notes.get(p.id) || null, follow_up: followups.get(p.id) || null, bio_at: p.bio_at, bio_src: p.bio_src,
+    tags: tags.get(p.id), via: [...new Set(currentEdges(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+    history_via: [...new Set(edges.get(p.id).map((e) => e.seed))], history_lists: new Set(edges.get(p.id).map((e) => e.seed)).size,
+    note: notes.get(p.id) || null, mark_rev: markRevs.get(p.id) || '', follow_up: followups.get(p.id) || null, bio_at: p.bio_at, bio_src: p.bio_src,
     profile_read_pending: ['queued', 'reading'].includes(reads.get(p.id)),
     profile_read: reads.has(p.id) ? { state: reads.get(p.id) } : null,
   });
-  const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
+  const verdictFields = (id) => { const v = verdicts.get(id); const es = currentEdges(id), mine = new Set(es.filter(e => e.seed === ME).map(e => e.direction));
+    const relationship = mine.size === 2 ? 'mutual' : mine.has('followers') ? 'follows' : mine.has('following') ? 'followed' : null;
+    const n = lists(id), connection_strength = Math.min(100, 30 + [0, 0, 25, 38, 46][Math.min(n, 4)] + Math.max(0, n - 4) * 3 + Math.min(10, es.filter(e => e.direction === 'following').length * 5) + ({mutual:16, follows:10, followed:8}[relationship] || 0));
+    const business_fit = v.tier === 'unread' ? null : v.score;
+    return { tier: v.tier, score: business_fit == null ? v.score : Math.round(.6 * connection_strength + .4 * business_fit), business_fit, connection_strength, relationship, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
@@ -396,15 +412,14 @@
   function seedLinks() {
     const m = new Map();
     edges.forEach((es) => {
-      const ss = [...new Set(es.map((e) => e.seed))].sort();
+      const ss = [...new Set(es.filter(e => e.state === 'observed').map((e) => e.seed))].sort();
       for (let a = 0; a < ss.length; a++) for (let b = a + 1; b < ss.length; b++) { const k = ss[a] + '|' + ss[b]; m.set(k, (m.get(k) || 0) + 1); }
     });
     return [...m].map(([k, shared]) => { const [a, b] = k.split('|'); return { source: 's:' + a, target: 's:' + b, shared }; });
   }
 
   let mapRev = 1;
-  let extraMap = 0;
-  setInterval(() => { mapRev++; extraMap += 5; }, 25000);
+  const bump = () => ++mapRev;
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
@@ -434,7 +449,7 @@
   const ago_ = (ms) => new Date(Date.now() - ms).toISOString();
   const H = 3600000;
   const acct = (o) => ({ label: null, role: 'both', is_main: false, paused: false, budget_custom: false, budget: { list: 3000, profile: 300 },
-    version: '3.5.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
+    version: '3.9.0', state: 'running', hold: null, status: 'running', online: true, healthy: true, cooldown_until: null, last_error: null,
     rate: null, last_limit: null, today: { list: 0, profile: 0 }, hour: { pages: 0, people: 0 }, activity: null, text: null, job: null, lists: [],
     last_seen: ago_(3000), first_seen: ago_(9 * 24 * H), ...o, name: '@' + o.handle });
   const accounts = [
@@ -457,6 +472,7 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
+  const demoScenario = new URLSearchParams(location.search || '').get('mock_scenario') || 'cooldown';
   const settings = { main_list_share: 0 };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
@@ -495,7 +511,7 @@
     const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
     const w = (k) => ({ pages: Math.round(342 / k), people: Math.round(11280 / k), new_people: Math.round(6400 / k), profiles: 0 });
     return {
-      ext: { online: true, version: '3.5.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
+      ext: { online: true, version: '3.9.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
         last_seen: now(), last_error: null,
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
@@ -508,20 +524,26 @@
         bios: { left: people.filter((p) => !p.bio).length, per_day: scraper.budget.profile, eta_h: 8.2 },
         qualify: { on: scraper.qualify, left: 1100, per_hour: scraper.qualify ? 120 : 0, eta_h: scraper.qualify ? 9.2 : null, workers: 4, keys: 2 },
       },
-      queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
+      queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: readQueue.size },
     };
   }
 
+  function validateTags(add, remove) {
+    for (const list of [add, remove]) if (list != null && !Array.isArray(list)) throw {status:400, message:'tags must be arrays'};
+    for (const t of add || []) if (typeof t !== 'string' || !t.trim() || t.trim().length > 64 || t.includes(',')) throw {status:400, message:'tag must be 1-64 characters without commas'};
+  }
   function editTags(id, add, remove) {
-    const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source === 'auto');
+    validateTags(add, remove);
+    const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source !== 'manual');
     (add || []).forEach((a) => {
-      a = String(a).trim();
+      a = a.replace(/\s+/g, ' ').trim();
       if (!a) return;
       const i = t.findIndex((x) => x.tag === a);
       if (i >= 0 && t[i].source !== 'manual') t.splice(i, 1);
       if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'custom', source: 'manual' });
     });
     tags.set(id, t);
+    applyRules(); bump();
   }
 
   function route(method, url, body) {
@@ -529,6 +551,12 @@
     const q = u.searchParams;
     const path = u.pathname;
     let m;
+    const fail = (message, status = 400, detail = {}) => { throw {status, message, detail}; };
+    const integer = (key, fallback, lo, hi) => {
+      const raw = q.get(key); if (raw == null || !raw.trim()) return fallback;
+      if (!/^[+-]?\d+$/.test(raw.trim())) fail(key + ' must be a whole number');
+      return Math.min(hi, Math.max(lo, Number(raw) || fallback));
+    };
     if (path === '/api/leads/export' && method === 'POST') {
       if (('ids' in body) === ('query' in body)) invalid('provide either ids or query');
       if ('ids' in body) {
@@ -553,11 +581,21 @@
     }
     if (path === '/api/control') {
       if (method === 'POST') {
-        if (!['pause', 'resume'].includes(body?.action) || !['all', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
+        if (!['pause', 'resume'].includes(body?.action)) return { ok: false, error: 'Choose a stage and action' };
         const pause = body.action === 'pause';
+        if (body.stage == null && typeof body.account === 'string') {   // one account (lane) only
+          const a = accounts.find((x) => x.lane_id === body.account);
+          if (!a) fail('no such account', 404);
+          a.paused = pause; if (pause) a.job = null;
+          a.status = statusOf(a);
+          return controlView();
+        }
+        if (!['all', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
         if (scraper.paused) { stagePaused.lists = true; stagePaused.bios = true; scraper.paused = false; }
-        for (const id of body.stage === 'all' ? ['lists', 'bios', 'ai'] : [body.stage]) {
-          if (id === 'ai') { scraper.qualify = !pause; scraper.qualify_auto = false; }
+        // Resume all restarts collection; AI keeps its own explicit switch.
+        const ids = body.stage === 'all' ? (pause ? ['lists', 'bios', 'ai'] : ['lists', 'bios']) : [body.stage];
+        for (const id of ids) {
+          if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; }
           else stagePaused[id] = pause;
         }
       }
@@ -581,8 +619,8 @@
     }
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');
-      const off = +q.get('offset') || 0, lim = Math.min(500, +q.get('limit') || 50);
-      return { total: list.length, rows: list.slice(off, off + lim).map(row) };
+      const off = integer('offset', 0, 0, Number.MAX_SAFE_INTEGER), lim = integer('limit', 50, 1, 500);
+      return { total: list.length, rows: list.slice(off, off + lim).map(row), rev: mapRev };
     }
     if (path === '/api/tags') {
       const inSet = new Set(filtered(q).map((p) => p.id));
@@ -606,19 +644,21 @@
         const grp = (t.find((x) => x.tag === to) || {}).grp || 'custom';
         tags.set(id, [...t.filter((x) => !(x.tag === from && x.source === 'manual') && x.tag !== to), { tag: to, grp, source: 'manual' }]);
       });
-      return { renamed };
+      bump(); return { renamed };
     }
     if (path === '/api/tags/delete') {
       let deleted = 0;
       tags.forEach((t, id) => { const n = t.filter((x) => !(x.tag === body.tag && x.source === 'manual')); if (n.length !== t.length) { deleted++; tags.set(id, n); } });
-      return { deleted };
+      bump(); return { deleted };
     }
     if (path === '/api/people/bulk') {
+      if (!Array.isArray(body.ids) || body.ids.length > 500) fail('ids must contain at most 500 people');
       if ('status' in body) body = { ...body, status: validStatus(body.status) };
-      const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
+      validateTags(body.add, body.remove);
+      const ids = [...new Set(body.ids.map(Number).filter((id) => tags.has(id)))];
       ids.forEach((id) => {
         if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) setMark(id, { status: body.status });
+        if ('status' in body) { setMark(id, { status: body.status }); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + bump()).toISOString() : ''); }
       });
       return { ok: true, changed: ids.length };
     }
@@ -660,45 +700,56 @@
     if ((m = path.match(/^\/api\/person\/(\d+)(\/([\w-]+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3] && method === 'GET') return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, activity: history(id) };
-      if (m[3] === 'mark' && method === 'POST') { setMark(id, markInput(body)); return { ok: true }; }
+      if (!m[3] && method === 'GET') return { ...row(p), edges: currentEdges(id).map(({seed, direction, observed_at}) => ({seed, direction, observed_at})), edge_history: edges.get(id).map(e => ({...e})), verdict: { ...verdicts.get(id), content_fit: verdictFields(id).business_fit }, note: notes.get(id) || null, activity: history(id) };
       if (m[3] === 'activity') {
         if (method === 'GET') return history(id, q.get('cursor'), q.has('limit') ? +q.get('limit') : 50);
         if (method === 'POST') return saveInteraction(id, body);
       }
-      if (m[3] === 'follow-up' && method === 'POST') {
+      if (method !== 'POST') return null;
+      if (m[3] === 'mark') {
+        const current = () => ({status: marks.get(id) || null, note: notes.get(id) || null, mark_rev: markRevs.get(id) || ''});
+        for (const key of ['if_match', 'mark_rev']) if (key in body && typeof body[key] !== 'string') fail(key + ' must be text');
+        if ('if_match' in body && 'mark_rev' in body && body.if_match !== body.mark_rev) fail('conflicting revisions');
+        const expected = body.if_match ?? body.mark_rev;
+        if (expected !== undefined && expected !== current().mark_rev) fail('This record changed. Review the latest note before retrying.', 409, {...current(), current: current()});
+        setMark(id, markInput(body));
+        if ('status' in body || 'note' in body) { bump(); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + mapRev).toISOString() : ''); }
+        return {ok: true, ...current()};
+      }
+      if (m[3] === 'follow-up') {
         setFollowUp(id, followUpInput(body));
         return { ok: true, follow_up: followups.get(id) || null };
       }
-      if (m[3] === 'tags' && method === 'POST') { editTags(id, body.add, body.remove); return { ok: true }; }
-      if (m[3] === 'read' && method === 'POST') {
+      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
+      if (m[3] === 'read') {
         if (!['queued', 'reading'].includes(reads.get(id))) reads.set(id, 'queued');
+        readQueue.add(id);
         return { ok: true };
       }
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
-      const limit = Math.min(5000, +q.get('limit') || 400);
-      let list = filtered(q);
-      if (scope === 'leads') list = list.filter((p) => lists(p.id) >= 2 || (tags.get(p.id).some((x) => x.tag === 'Brand' || x.tag === 'Founder') && p.followers > 3000));
-      list = sorted(list, 'connected').slice(0, limit + (scope === 'leads' ? extraMap : 0));
+      const limit = integer('limit', 400, 10, 3000);
+      let list = filtered(q).filter(p => lists(p.id) > 0 && !SEED_LIST.includes(p.handle) && (!q.get('seed') || currentEdges(p.id).some(e => e.seed === q.get('seed'))));
+      const total = list.length;
+      list = sorted(list, scope === 'all' ? 'score' : 'connected').slice(0, limit);
       const set = new Set(list.map((p) => p.id));
       const deg = new Map();
-      edges.forEach((es) => new Set(es.map((e) => e.seed)).forEach((s) => deg.set(s, (deg.get(s) || 0) + 1)));
+      edges.forEach((es) => new Set(es.filter(e => e.state === 'observed').map((e) => e.seed)).forEach((s) => deg.set(s, (deg.get(s) || 0) + 1)));
       const nodes = SEED_LIST.map((s) => ({ id: 's:' + s, kind: 'seed', label: s, handle: s, pic: null, degree: deg.get(s) || 0, is_me: s === ME }));
       const links = [];
       list.forEach((p) => {
-        const ss = [...new Set(edges.get(p.id).map((e) => e.seed))];
+        const ss = [...new Set(currentEdges(p.id).map((e) => e.seed))];
         nodes.push({ id: 'p:' + p.id, kind: 'lead', label: p.handle, handle: p.handle, name: p.name, pic: p.pic, degree: ss.length, lists: ss.length,
           status: marks.get(p.id) || null, followers: p.followers, tags: tags.get(p.id).map((x) => x.tag).slice(0, 4), seeds: ss, ...verdictFields(p.id),
-          fit: FIT[verdicts.get(p.id).tier] });
-        edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction }); });
+          note: notes.get(p.id) || null, fit: FIT[verdicts.get(p.id).tier] });
+        edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction, state: e.state, observed_at: e.observed_at, checked_at: e.checked_at }); });
       });
-      return { nodes, links, seed_links: seedLinks(), rev: mapRev * 1000 + list.length };
+      return { nodes, links, seed_links: seedLinks(), total, limit, rev: mapRev };
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
-    if (path === '/api/settings/accounts') { settings.main_list_share = +body.main_list_share; return { ok: true, main_list_share: settings.main_list_share }; }
+    if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
     if (path === '/api/llm') return llmView();
     if (path === '/api/llm/health') return { proxy: { url: 'http://127.0.0.1:18741', up: false }, laya: { url: 'http://127.0.0.1:18742', up: true } };
     if (path === '/api/llm/keys') {
@@ -721,9 +772,9 @@
       return { ok: true, models: llm.models, daily_limit: llm.daily_limit };
     }
     if (path === '/api/setup') {
-      startWizardLane();
+      // Setup reads do not create accounts.
       return { repo: '/Users/michael/fortunate-leads', extension_path: '/Users/michael/fortunate-leads/extension', extension_id: 'fgdbghllamedgihmdcolaggnbhnakjnf',
-        extension_version: '3.5.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
+        extension_version: '3.9.0', server: 'http://127.0.0.1:8777', lanes: accounts.length };
     }
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/remove$/))) {
       const i = accounts.findIndex((a) => a.lane_id === m[1]);
@@ -733,25 +784,32 @@
     if ((m = path.match(/^\/api\/accounts\/([\w-]+)$/)) && method === 'POST') {
       const a = accounts.find((x) => x.lane_id === m[1]);
       if (!a) return null;
+      if ('role' in body && !['lists','bios','both'].includes(body.role)) fail('role must be lists, bios or both');
+      for (const k of ['paused','is_main']) if (k in body && typeof body[k] !== 'boolean') fail(k + ' must be true or false');
+      if ('label' in body && body.label !== null && (typeof body.label !== 'string' || body.label.trim().length > 40)) fail('label must be up to 40 characters');
+      if ('budget' in body && body.budget !== null) {
+        if (typeof body.budget !== 'object' || Array.isArray(body.budget)) fail('budget must be {list, profile} or null');
+        for (const k of ['list','profile']) if (k in body.budget && body.budget[k] !== null && (typeof body.budget[k] !== 'number' || !Number.isFinite(body.budget[k]))) fail('budget.' + k + ' must be a number');
+      }
       if (body.role) a.role = body.role;
-      if ('paused' in body) a.paused = !!body.paused;
+      if ('paused' in body) { a.paused = body.paused; if (a.paused) a.job = null; }
       if ('is_main' in body) a.is_main = !!body.is_main;
       if ('label' in body) { a.label = body.label; a.name = a.handle ? '@' + a.handle : a.label || 'lane ' + a.lane_id.slice(0, 8); }
       if ('budget' in body) {
         a.budget_custom = !!body.budget;
         a.budget = { list: body.budget?.list ?? 3000, profile: body.budget?.profile ?? 300 };
       }
-      if (a.status === 'running' || a.status === 'paused') a.status = statusOf(a);
+      a.status = statusOf(a);
       return { ok: true, account: { ...a } };
     }
-    if (path === '/api/scraper/pause') { scraper.paused = !!body.paused; return { ok: true }; }
+    if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; setStage('lists', body.paused); setStage('bios', body.paused); return { ok: true }; }
     if (path === '/api/settings/qualify') {
-      if ('on' in body) scraper.qualify = !!body.on;
+      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); setStage('ai', !body.on); }
       if ('auto' in body) scraper.qualify_auto = !!body.auto;
       for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
       return { ok: true, qualify: scraper.qualify };
     }
-    if (path === '/api/scraper/budget') { scraper.budget = { list: +body.list, profile: +body.profile }; return { ok: true }; }
+    if (path === '/api/scraper/budget') { for (const [k, cap] of [['list',10000],['profile',2000]]) if (k in body && (!Number.isInteger(body[k]) || body[k] < 0 || body[k] > cap)) fail(k + ' budget must be a whole number within its limit'); scraper.budget = {...scraper.budget, ...body}; return { ok: true }; }
     if (path === '/api/scraper/snowball') {
       const want = body.min_status === 'client' ? ['client'] : ['interested', 'talking', 'client'];
       const seeds = people.filter((p) => want.includes(marks.get(p.id)) && !scraper.lists.some((l) => l.seed === p.handle && l.direction === 'following'))
@@ -780,9 +838,9 @@
       if (!isObject(body)) invalid('body must be a JSON object');
       res = route((opts.method || 'GET').toUpperCase(), s, body);
     } catch (e) {
-      failure = e.mockStatus || 500;
+      failure = e.mockStatus || e.status || 500;
       if (failure === 500) console.warn('mock', s, e);
-      res = { ok: false, error: e.message };
+      res = { ok: false, error: e.message || 'mock error', ...e.detail };
     }
     if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;

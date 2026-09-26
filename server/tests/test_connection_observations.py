@@ -35,6 +35,9 @@ class ObservationTest(unittest.TestCase):
     def page(self, users, job_id=None, cursor=None, ts='2026-09-01T00:00:00+00:00', **extra):
         body = dict(seed='brand', direction='followers', users=users, job_id=job_id, next_cursor=cursor)
         body.update(extra)
+        if job_id:   # the extension re-leases its list before sending the next page
+            self.conn.execute("UPDATE jobs SET state='leased' WHERE id=? AND state='queued'", (job_id,))
+            self.conn.commit()
         with patch.object(db, 'now', return_value=ts):
             return server.ext_list_page(self.conn, {}, body)
 
@@ -58,7 +61,7 @@ class ObservationTest(unittest.TestCase):
                                        'JOIN edge_observations o ON o.person_id=p.id GROUP BY p.id'))
         self.assertEqual(dates, {'alice': '2026-09-20T00:00:00+00:00', 'bob': '2026-09-01T00:00:00+00:00'})
         self.assertEqual(len(self.rows('edges')), 2)
-        self.assertEqual(self.conn.execute('SELECT received FROM lists').fetchone()[0], 2)
+        self.assertEqual(self.conn.execute('SELECT received FROM lists').fetchone()[0], 1)   # members seen this run
         self.assertEqual(len(self.rows('edge_observations')), 3)
 
     def test_terminal_jobs_cannot_introduce_new_pages(self):
@@ -66,7 +69,7 @@ class ObservationTest(unittest.TestCase):
             jid = self.job()
             self.conn.execute('UPDATE jobs SET state=? WHERE id=?', (state, jid))
             self.conn.commit()
-            self.assertTrue(self.page([{'handle': state}], jid, state)['duplicate'])
+            self.assertTrue(self.page([{'handle': state}], jid, state)['stale'])   # finished work takes no pages
         self.assertEqual(self.rows('people'), [])
         self.assertEqual(self.rows('pages'), [])
         self.assertEqual(self.rows('edge_observations'), [])
@@ -84,6 +87,8 @@ class ObservationTest(unittest.TestCase):
     def test_seed_handle_reuse_does_not_reassign_history(self):
         jid = self.job()
         self.page([{'handle': 'alice'}], jid, 'p1', ig_id='original-id')
+        self.conn.execute("UPDATE jobs SET state='leased' WHERE id=?", (jid,))   # handed out again
+        self.conn.commit()
         tables = ('people', 'edges', 'pages', 'edge_observations', 'seeds', 'lists', 'jobs')
         before = {t: self.rows(t) for t in tables}
         with self.assertRaises(server.Bad):

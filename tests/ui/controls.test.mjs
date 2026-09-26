@@ -109,10 +109,11 @@ for (const failure of ['HTTP', 'network']) {
   });
 }
 
-test('failed refresh unlocks controls and preserves the confirmed action state', async () => {
+test('failed refresh leaves no request in flight and preserves the confirmed action state', async () => {
   const h = await ready(); h.click(); h.respond(1, state(true)); await settle();
   h.fail(2); await settle();
-  assert.equal(h.button('lists').disabled, false);
+  // Offline: the buttons wait for the server instead of sending actions that cannot arrive.
+  assert.equal(h.button('lists').disabled, true);
   assert.equal(h.button('lists').dataset.action, 'resume');
   assert.match(h.el.innerHTML, /Server offline: showing the last known state/);
 });

@@ -62,7 +62,7 @@ class TagMigrationTest(unittest.TestCase):
                     'INSERT INTO people(handle,bio,first_seen,updated_at) VALUES(?,?,?,?)',
                     (handle, bio, '2026-01-01', '2026-01-01')).lastrowid
                 if handle == 'follow':
-                    conn.execute("INSERT INTO edges VALUES('owner',?,'followers','2026-01-01')", (pid,))
+                    db.add_edge(conn, 'owner', pid, 'followers', '2026-01-01')   # an observed edge, with evidence
                 conn.executemany('INSERT INTO tags VALUES(?,?,?,?)', [
                     (pid, 'knows you', 'source', 'manual' if handle == 'manual' else 'auto'),
                     (pid, 'Already know them', 'signal', 'manual'),
@@ -71,8 +71,8 @@ class TagMigrationTest(unittest.TestCase):
                 person = server.with_owner(conn, dict(conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
                 input_hash = real_qualify.input_hash(person, server.edges_of(conn, pid)) if cached else None
                 model = 'cached-model' if cached else 'rules'
-                conn.execute('INSERT INTO verdicts(person_id,model,input_hash,score,updated_at) VALUES(?,?,?,?,?)',
-                             (pid, model, input_hash, 91, person['updated_at']))
+                conn.execute('INSERT INTO verdicts(person_id,model,input_hash,score,content_fit,updated_at) VALUES(?,?,?,?,?,?)',
+                             (pid, model, input_hash, 91, 91, person['updated_at']))
                 rows[handle] = (pid, input_hash, model)
             db.set_setting(conn, 'tags_version', 't2')
             conn.commit()
@@ -99,7 +99,8 @@ class TagMigrationTest(unittest.TestCase):
                         self.assertIn(('knows you', 'manual'), tags)
                     if input_hash:
                         self.assertIn(('AI: Has online shop', 'auto'), tags)
-                        verdict = conn.execute('SELECT model,input_hash,score FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+                        # The model's business fit is kept; the displayed score reblends it with the network.
+                        verdict = conn.execute('SELECT model,input_hash,content_fit FROM verdicts WHERE person_id=?', (pid,)).fetchone()
                         self.assertEqual(tuple(verdict), (model, input_hash, 91))
 
 

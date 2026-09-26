@@ -9,14 +9,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import laya
 
 
+HEALTHY = ('{"ok": true, "model": "%s", "deployment_version": "%s"}' % (laya.MODEL, laya.DEPLOYMENT_VERSION)).encode()
+
+
 class HealthCacheTest(unittest.TestCase):
+    def setUp(self):
+        clock = patch.object(laya.time, 'monotonic', return_value=0.5)   # last_known() reads the clock
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def tearDown(self):
         laya.reset()
 
     def test_initial_probe_at_zero_and_cached_success(self):
         laya.reset()
         self.assertIsNone(laya.last_known())
-        with patch.object(laya, '_open', side_effect=lambda *a: io.BytesIO(b'{"ok": true}')) as request:
+        with patch.object(laya, '_open', side_effect=lambda *a: io.BytesIO(HEALTHY)) as request:
             self.assertTrue(laya.available(now=0))
             self.assertTrue(laya.last_known())
             self.assertTrue(laya.available(now=59))

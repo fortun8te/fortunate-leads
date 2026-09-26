@@ -6,14 +6,16 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.request
-import zlib
 from collections import Counter, OrderedDict
+from contextlib import contextmanager
 from itertools import chain, combinations
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,6 +64,12 @@ class NotFound(Bad):
     pass
 
 
+class Conflict(Exception):
+    def __init__(self, current):
+        super().__init__("This record changed. Review the latest note before retrying.")
+        self.current = current
+
+
 def text_or_none(v):
     return v if isinstance(v, str) else None
 
@@ -85,14 +93,23 @@ def me_handle(conn):
 
 
 def edges_of(conn, pid):
-    return [dict(r) for r in conn.execute('SELECT seed, direction FROM edges WHERE person_id=? ORDER BY seed, direction', (pid,))]
+    return [dict(r) for r in conn.execute('SELECT seed, direction, observed_at FROM current_edges WHERE person_id=? ORDER BY seed, direction', (pid,))]
+
+
+def edge_history_of(conn, pid):
+    """All discovered links with their latest evidence; never use this for scoring."""
+    return [dict(r) for r in conn.execute('SELECT e.seed,e.direction,e.first_seen,v.observed_at,v.checked_at,'
+            "CASE WHEN v.active=1 THEN 'observed' WHEN v.active=0 THEN 'absent' ELSE 'unverified' END AS state "
+            'FROM edges e LEFT JOIN edge_evidence v ON v.seed=e.seed AND v.person_id=e.person_id '
+            'AND v.direction=e.direction WHERE e.person_id=? ORDER BY e.seed,e.direction', (pid,))]
 
 
 # ---------- extension endpoints ----------
 
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
-    return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row)}
+    return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
+            'stages': {k: k not in control.paused_kinds(conn) for k in ('list', 'profile')}}
 
 
 def ext_next(conn, q, b):
@@ -104,6 +121,14 @@ def ext_next(conn, q, b):
     row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
     accounts.release(conn, now)
     st = ext_state(conn, row)
+    version = b.get('version') or (q.get('version') or [None])[0] or (row and row['version'])
+    if version:
+        parts = str(version).split('.')
+        supported = all(p.isdigit() for p in parts) and tuple(int(p) for p in (parts + ['0', '0'])[:2]) >= (3, 8)
+        if not supported:
+            conn.commit()
+            return dict(st, job=None, upgrade_required=True, minimum_version='3.8.0')
+
     if st['paused']:  # cooldowns are the extension's job; the server only records them for display
         conn.commit()
         return dict(st, job=None, cooldown_until=None)
@@ -120,10 +145,12 @@ def ext_next(conn, q, b):
     if not job:
         conn.commit()
         return dict(st, job=None)
-    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=? WHERE id=?",
-                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, job['id']))
+    token = secrets.token_hex(16)
+    conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=? WHERE id=?",
+                 (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, job['id']))
     accounts.took(conn, lane, job)
     if job['kind'] == 'list':
+        db.start_list_run(conn, job['id'], job['seed'], job['direction'])
         conn.execute("UPDATE lists SET state='running', updated_at=? WHERE seed=? AND direction=?",
                      (ts, job['seed'], job['direction']))
         seed = conn.execute('SELECT coalesce(s.ig_id, p.ig_id) AS ig_id FROM seeds s LEFT JOIN people p ON p.handle=s.handle '
@@ -135,90 +162,215 @@ def ext_next(conn, q, b):
         p = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
     conn.commit()
+    out['lease_token'] = token
     return dict(st, job=out)
 
 
+def stale_lease(conn, job, q, b):
+    """Old outbox messages cannot alter a job after another lane/lease has taken it."""
+    if not job:
+        return bool(b.get('job_id'))
+    if job['state'] != 'leased':
+        return True
+    lane = accounts.lane_of(q, b)
+    if job['lane'] and job['lane'] != lane:
+        return True
+    return bool(job['lease_token'] and b.get('lease_token') != job['lease_token'])
+
+
+
 def ext_list_page(conn, q, b):
+    """Import one list page atomically: any rejection or failure leaves no partial writes behind."""
+    try:
+        return _ext_list_page(conn, q, b)
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def _ext_list_page(conn, q, b):
+    # Hold the write transaction from lease validation to import: handoff cannot race this result.
     job_id = b.get('job_id')
     if job_id is not None and (isinstance(job_id, bool) or not isinstance(job_id, (int, str))):
         raise Bad('invalid job_id')
-    job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
-    if job_id is not None and (not job or job['kind'] != 'list'):
-        raise Bad('unknown list job')
-    raw_seed = b.get('seed') or (job and job['seed'])
-    seed = db.norm_handle(raw_seed) if isinstance(raw_seed, str) else ''
-    direction = b.get('direction') or (job and job['direction'])
-    if not seed or direction not in ('followers', 'following'):
-        raise Bad('seed and direction required')
-    if job and (seed != db.norm_handle(job['seed']) or direction != job['direction']):
-        raise Bad('page seed and direction must match list job')
     seed_ig_id = b.get('ig_id')
     if seed_ig_id is not None:
         if isinstance(seed_ig_id, bool) or not isinstance(seed_ig_id, (str, int)) or not str(seed_ig_id).strip():
             raise Bad('invalid seed ig_id')
         seed_ig_id = str(seed_ig_id)
-    cursor = b.get('next_cursor')
-    if cursor is not None and not isinstance(cursor, str):
-        raise Bad('next_cursor must be text or null')
-    users = []
-    for u in b.get('users') if isinstance(b.get('users'), list) else []:
-        if isinstance(u, dict) and isinstance(u.get('handle'), str) and db.norm_handle(u['handle']):
-            users.append(dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
-                              ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int))
-                              and not isinstance(u.get('ig_id'), bool) else None))
-    page_key = db.list_page_key(seed, direction, users, cursor, job['id'] if job else None)
+    conn.execute('BEGIN IMMEDIATE')
+    job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+    seed = db.norm_handle(b.get('seed') or (job and job['seed']))
+    direction = b.get('direction') or (job and job['direction'])
+    if not seed or direction not in ('followers', 'following'):
+        raise Bad('seed and direction required')
+    old = conn.execute('SELECT * FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+    received = (old and old['received']) or 0
+    if job_id is not None and not job:
+        raise Bad('unknown list job')
+    if job and (job['kind'] != 'list' or seed != job['seed'] or direction != job['direction']):
+        raise Bad('page does not match its list job')
+    if seed_ig_id is not None:
+        known_ids = {str(r[0]) for r in conn.execute(
+            'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
+            'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (seed, seed)) if r[0]}
+        if known_ids - {seed_ig_id}:
+            raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
+    for field in ('requested_cursor', 'next_cursor'):
+        if b.get(field) is not None and not isinstance(b[field], str):
+            raise Bad(f'{field} must be a string or null')
+    for field in ('done', 'limited'):
+        if field in b and not isinstance(b[field], bool):
+            raise Bad(f'{field} must be a boolean')
+    if not isinstance(b.get('users', []), list):
+        raise Bad('users must be a list')
+    requested = b.get('requested_cursor') if 'requested_cursor' in b else (old and old['cursor'])
+    request_key = requested or ''
+    if 'requested_cursor' in b and job and conn.execute(
+            'SELECT 1 FROM list_page_requests WHERE job_id=? AND requested_cursor=?',
+            (job['id'], request_key)).fetchone():
+        conn.commit()
+        return {'received': received, 'duplicate': True}
+    if stale_lease(conn, job, q, b) or ('requested_cursor' in b and
+            request_key != ((old and old['cursor']) or '')):
+        conn.commit()
+        return {'received': received, 'stale': True}
+    valid = [u for u in (b.get('users') or []) if isinstance(u, dict) and isinstance(u.get('handle'), str)
+             and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])]
+    page_key = db.list_page_key(seed, direction, [dict(u, ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int))
+                                                        and not isinstance(u.get('ig_id'), bool) else None) for u in valid],
+                                b.get('next_cursor') or None, job['id'] if job else None)
+    if job and 'requested_cursor' not in b and not conn.execute(
+            'INSERT OR IGNORE INTO pages(job_id,cursor,at,lane,users) VALUES(?,?,?,?,?)',
+            (job['id'], 'next:' + (b.get('next_cursor') or ''), db.now(), accounts.lane_of(q, b),
+             len(b.get('users') or []))).rowcount:
+        conn.commit()   # an older client replayed the same page
+        return {'received': received, 'duplicate': True}
+    if not job and not conn.execute('INSERT OR IGNORE INTO ingested_list_pages(page_key,seed,direction,observed_at) '
+                                    'VALUES(?,?,?,?)', (page_key, seed, direction, db.now())).rowcount:
+        conn.commit()   # an unmanaged import replayed: nothing new to record
+        return {'received': received, 'duplicate': True}
+    # Capture prior evidence before page imports can add edges or rename a seed.
+    # Snapshot seed peers only when a marked member may enter/leave; their seed
+    # yield affects their score even though their own edge does not change.
+    incoming = [u for u in (b.get('users') or []) if isinstance(u, dict)]
+    existing = set()
+    rename_members = set()
+    for u in incoming:
+        handle = db.norm_handle(u.get('handle'))
+        if not handle:
+            continue
+        identity = str(u['ig_id']) if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None
+        found = (conn.execute('SELECT id,handle FROM people WHERE ig_id=?', (identity,)).fetchone()
+                 if identity else None)
+        if not found:
+            found = conn.execute('SELECT id,handle FROM people WHERE handle=?', (handle,)).fetchone()
+        if found:
+            existing.add(found['id'])
+            if identity and found['handle'] != handle:
+                rename_members.update(r[0] for r in conn.execute(
+                    'SELECT DISTINCT person_id FROM current_edges WHERE seed IN (?,?)', (found['handle'], handle)))
+    old_active = {r[0] for r in conn.execute(
+        'SELECT person_id FROM current_edges WHERE seed=? AND direction=?', (seed, direction))} if job and b.get('done') else set()
+    run_members = {r[0] for r in conn.execute('SELECT person_id FROM list_members WHERE job_id=?', (job['id'],))} if job else set()
+    maybe_removed = old_active - run_members - existing
+    marked = set()
+    for chunk in chunks(list(existing | maybe_removed)):
+        marked.update(r[0] for r in conn.execute(
+            f"SELECT person_id FROM marks WHERE status IS NOT NULL AND person_id IN ({','.join('?' * len(chunk))})", chunk))
+    marked_added = any(pid in marked and not conn.execute(
+        'SELECT 1 FROM current_edges WHERE seed=? AND direction=? AND person_id=?', (seed, direction, pid)).fetchone()
+        for pid in existing)
+    prior_ids = existing | maybe_removed | rename_members
+    if marked_added or bool(maybe_removed & marked):
+        prior_ids.update(r[0] for r in conn.execute('SELECT DISTINCT person_id FROM current_edges WHERE seed=?', (seed,)))
+    prior_network = network_snapshot(conn, prior_ids)
     ts = db.now()
     lane = accounts.lane_of(q, b)
-    # All page effects commit together. Retries return before writing people or edges:
-    # a delayed terminal-job payload must not introduce unverified new relationships.
-    with conn:
-        if not conn.in_transaction:
-            conn.execute('BEGIN IMMEDIATE')
-        if seed_ig_id is not None:
-            known_ids = {str(r[0]) for r in conn.execute(
-                'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
-                'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (seed, seed)) if r[0]}
-            if known_ids - {seed_ig_id}:
-                raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
-        if job:
-            job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
-            if not job:
-                raise Bad('unknown list job')
-            fresh = job['state'] in ('queued', 'leased') and conn.execute(
-                'INSERT OR IGNORE INTO pages(job_id, cursor, at, lane, users) VALUES(?,?,?,?,?)',
-                (job['id'], cursor or '', ts, lane, len(users))).rowcount
-        else:
-            fresh = conn.execute('INSERT OR IGNORE INTO ingested_list_pages'
-                                 '(page_key,seed,direction,observed_at) VALUES(?,?,?,?)',
-                                 (page_key, seed, direction, ts)).rowcount
-        if not fresh:
-            received = conn.execute('SELECT count(*) FROM edges WHERE seed=? AND direction=?',
-                                    (seed, direction)).fetchone()[0]
-            return {'received': received, 'duplicate': True}
-        conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
-        if seed_ig_id is not None:
-            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (seed_ig_id, seed))
-        pids = []
-        for u in users:
+    next_cursor = b.get('next_cursor') or None
+    # A repeated output cursor is a pagination failure, not a duplicate page.
+    # Import the returned people before parking the run and retain the request cursor.
+    stalled = bool(next_cursor and (next_cursor == requested or (job and conn.execute(
+        'SELECT 1 FROM list_page_requests WHERE job_id=? AND requested_cursor=?',
+        (job['id'], next_cursor)).fetchone())))
+    if job:
+        db.start_list_run(conn, job['id'], seed, direction)
+        valid_users = all(isinstance(u, dict) and isinstance(u.get('handle'), str)
+                          and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])
+                          for u in b.get('users', []))
+        if 'requested_cursor' in b and valid_users:
+            conn.execute('INSERT OR IGNORE INTO list_page_requests VALUES(?,?,?)', (job['id'], request_key, next_cursor))
+        conn.execute('INSERT OR IGNORE INTO pages(job_id,cursor,at,lane,users) VALUES(?,?,?,?,?)',
+                     (job['id'], 'request:' + request_key, ts, lane, len(b.get('users') or [])))
+        if 'requested_cursor' in b and not requested:
+            conn.execute('UPDATE list_runs SET first_page_seen=1 WHERE job_id=?', (job['id'],))
+        fresh_total = count_or_none(b.get('total'))
+        if isinstance(b.get('total'), float) and not b['total'].is_integer():
+            fresh_total = None
+        if b.get('total_source') == 'current_run' and fresh_total is not None:
+            conn.execute("UPDATE list_runs SET total=?,total_source='current_run' WHERE job_id=?", (fresh_total, job['id']))
+    conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
+    if seed_ig_id is not None:
+        conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (seed_ig_id, seed))
+    pids = []
+    users = b.get('users') if isinstance(b.get('users'), list) else []
+    for u in users:
+        if (isinstance(u, dict) and isinstance(u.get('handle'), str) and db.norm_handle(u['handle'])
+                and '~' not in db.norm_handle(u['handle'])):
+            u = dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
+                     ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None)
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
             db.add_edge(conn, seed, pid, direction, ts)
             db.observe_edge(conn, seed, pid, direction, page_key, job['id'] if job else None, ts)
             pids.append(pid)
-        rules.sync(conn, pids)
-        # received is the lifetime union, NOT coverage of a fresh snapshot.
-        received = conn.execute('SELECT count(*) FROM edges WHERE seed=? AND direction=?', (seed, direction)).fetchone()[0]
-        done = bool(b.get('done'))
-        total = b.get('total')
-        if total is None:
-            row = conn.execute(f"SELECT {'followers' if direction == 'followers' else 'following'} FROM people WHERE handle=?", (seed,)).fetchone()
-            total = row[0] if row else None
-        conn.execute('INSERT INTO lists(seed, direction, state, cursor, received, total, updated_at) VALUES(?,?,?,?,?,?,?) '
-                     'ON CONFLICT DO UPDATE SET state=excluded.state, cursor=excluded.cursor, received=excluded.received, '
-                     'total=coalesce(excluded.total, total), error=NULL, updated_at=excluded.updated_at',
-                     (seed, direction, 'done' if done else 'running', cursor, received, total, ts))
-        conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL WHERE kind='list' AND seed=? AND direction=? "
-                     "AND state IN ('queued','leased')", ('done' if done else 'queued', seed, direction))
-    return {'received': received}
+            if job:
+                conn.execute('INSERT OR REPLACE INTO list_members VALUES(?,?,?)', (job['id'], pid, ts))
+    rules.sync(conn, pids)
+    received = conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job['id'],)).fetchone()[0] if job else len(set(pids))
+    limited = bool(b.get('limited'))
+    missing_end = not next_cursor and not b.get('done') and not limited
+    done = bool(b.get('done')) or limited or stalled or missing_end
+    total = count_or_none(b.get('total'))
+    if total is None:
+        row = conn.execute(f"SELECT {'followers' if direction == 'followers' else 'following'} FROM people WHERE handle=?", (seed,)).fetchone()
+        total = row[0] if row else (old and old['total'])
+    error = 'Instagram limited this list; coverage is partial.' if limited else None
+    if stalled:
+        error = 'Instagram repeated its page cursor. Collected profiles were saved; retry this partial list to continue.'
+    run = conn.execute('SELECT * FROM list_runs WHERE job_id=?', (job['id'],)).fetchone() if job else None
+    if missing_end:
+        error = error or 'Instagram returned no next page without confirming the end; coverage is partial.'
+    if not run or not run['first_page_seen']:
+        error = error or 'Earlier pages lack first-page tracking; retry this list from the start to verify coverage.'
+    verified_total = run['total'] if run and run['total_source'] == 'current_run' else None
+    if verified_total is not None:
+        total = verified_total
+    elif done:
+        error = error or 'No current collection count was available; coverage is partial.'
+    if done and next_cursor and not stalled:
+        error = error or 'Instagram reported an end with a remaining cursor; coverage is partial.'
+    if done and verified_total is not None and received < verified_total:
+        error = error or f'Instagram ended the list after {received} of {verified_total} profiles; coverage is partial.'
+    if done and job and not error and not db.list_run_complete(conn, job['id']):
+        error = 'The page history does not prove complete coverage; retry this list from the start.'
+    state = 'partial' if done and error else ('done' if done else 'running')
+    conn.execute('INSERT INTO lists(seed,direction,state,cursor,received,total,error,updated_at,run_job_id) VALUES(?,?,?,?,?,?,?,?,?) '
+                 'ON CONFLICT DO UPDATE SET state=excluded.state,cursor=excluded.cursor,received=excluded.received, '
+                 'total=coalesce(excluded.total,total),error=excluded.error,updated_at=excluded.updated_at,run_job_id=excluded.run_job_id',
+                 (seed,direction,state,requested if stalled else next_cursor,received,total,error,ts,job['id'] if job else None))
+    if job:
+        conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL, lease_token=NULL WHERE id=?",
+                     ('error' if stalled else 'done' if done else 'queued', job['id']))
+    changed = db.complete_list_snapshot(conn, seed, direction, job['id'], ts) if job and state == 'done' else set()
+    if changed:
+        rules.sync(conn, changed)
+    refresh_network(conn, set(pids) | changed | prior_ids, prior_network)
+    # A positive observation can restore a previous relationship without adding a new edge row.
+    if pids or changed:
+        clear_caches()
+    conn.commit()
+    return {'received': received, 'stalled': True, 'partial': True} if stalled else {'received': received}
 
 
 def count_or_none(v):
@@ -232,9 +384,22 @@ def count_or_none(v):
 
 
 def ext_profile(conn, q, b):
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    job = conn.execute('SELECT * FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
+    if b.get('job_id') and stale_lease(conn, job, q, b):
+        conn.commit()
+        return {'stale': True}
     p = dict(b.get('profile') or {}) if isinstance(b.get('profile'), dict) else {}
     if not p.get('handle') or not isinstance(p['handle'], str):
         raise Bad('profile.handle required')
+    p['handle'] = db.norm_handle(p['handle'])
+    if not p['handle'] or '~' in p['handle']:
+        raise Bad('invalid profile.handle')
+    if job and db.norm_handle(p['handle']) != db.norm_handle(job['handle']):
+        identity = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
+        if not (identity and identity['ig_id'] and str(p.get('ig_id')) == identity['ig_id']):
+            raise Bad('profile does not match its leased identity')
     if not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
         p.pop('website', None)  # javascript:, data:, bare text: never stored, never rendered as a link
     else:
@@ -248,42 +413,51 @@ def ext_profile(conn, q, b):
     if not isinstance(p.get('ig_id'), (str, int)) or isinstance(p.get('ig_id'), bool):
         p.pop('ig_id', None)
     ts = db.now()
-    p['bio'] = p.get('bio') or ''
-    p['bio_at'] = ts
-    p['bio_src'] = 'extension'
+    complete = isinstance(p.get('bio'), str)
+    if complete:
+        p['bio_at'] = ts
+        p['bio_src'] = 'extension'
+    else:
+        p.pop('bio_at', None)
     handle = db.norm_handle(p['handle'])
-    with conn:
-        if not conn.in_transaction:
-            conn.execute('BEGIN IMMEDIATE')
-        if p.get('ig_id'):
-            seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (handle,)).fetchone()
-            if seed:
-                known_ids = {str(r[0]) for r in conn.execute(
-                    'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
-                    'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (handle, handle)) if r[0]}
-                if known_ids - {str(p['ig_id'])}:
-                    raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
-        pid = db.upsert_person(conn, p, ts)
-        rules.sync(conn, [pid])
-        if p.get('ig_id'):
-            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(p['ig_id']), handle))
-        conn.execute("UPDATE jobs SET state='done', leased_until=NULL WHERE kind='profile' AND (id=? OR handle=?) "
-                     "AND state IN ('queued','leased')", (b.get('job_id'), handle))
+    if p.get('ig_id') and conn.execute('SELECT 1 FROM seeds WHERE handle=?', (handle,)).fetchone():
+        known_ids = {str(r[0]) for r in conn.execute(
+            'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
+            'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (handle, handle)) if r[0]}
+        if known_ids - {str(p['ig_id'])}:
+            raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
+    pid = db.upsert_person(conn, p, ts)
+    rules.sync(conn, [pid])
+    if p.get('ig_id'):
+        conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(p['ig_id']), handle))
+    if complete:
+        conn.execute("UPDATE jobs SET state='done', leased_until=NULL WHERE kind='profile' AND handle=? "
+                     "AND (state='queued' OR (state='leased' AND id=?))", (handle, b.get('job_id')))
+    conn.commit()
     return {'id': pid}
 
 
 def ext_error(conn, q, b):
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
     code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
     # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
     # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
     # Per lane: a login wall hands that account's lists to the other lanes now; a list limit hands its list on.
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
+    stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
+    was_list = bool(job and job['kind'] == 'list')
+    if stale:
+        job = None  # account-level waits still apply, but the old callback cannot change a released job
+        if code not in ('rate_limit', 'soft_block'):
+            conn.commit()
+            return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
     if code in ('rate_limit', 'soft_block'):
         until = clean_iso(b.get('retry_at')) or iso(datetime.now(timezone.utc) + timedelta(minutes=15))
         db.set_setting(conn, 'cooldown', until)
         fields['cooldown_until'] = until
-        if job and job['kind'] == 'list':
+        if was_list:
             fields['list_cool_until'] = until
     if code in accounts.HOLDS:
         fields['hold'] = code
@@ -296,10 +470,13 @@ def ext_error(conn, q, b):
         job = conn.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if job:  # a late error for a job that already finished must not requeue it
         final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
-        conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL WHERE id=?',
+        conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') else 'error' if final else 'queued', job['id']))
         if job['kind'] == 'list':
-            state = 'private' if code == 'private' else 'error' if final else 'queued'
+            collected = conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
+                                     (job['seed'], job['direction'])).fetchone()
+            state = ('partial' if final and collected and collected['received'] else
+                     'private' if code == 'private' else 'error' if final else 'queued')
             conn.execute('UPDATE lists SET state=?, error=?, updated_at=? WHERE seed=? AND direction=?',
                          (state, b.get('message') or code, ts, job['seed'], job['direction']))
         elif code == 'private':
@@ -309,7 +486,7 @@ def ext_error(conn, q, b):
     elif 'list_cool_until' in fields:
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
-    return {}
+    return {'stale': True} if stale else {}
 
 
 def clean_iso(v):
@@ -363,9 +540,9 @@ def ext_heartbeat(conn, q, b):
 
 # ---------- UI endpoints ----------
 
-LISTS = '(SELECT count(DISTINCT e.seed) FROM edges e WHERE e.person_id=p.id)'  # distinct seeds a person is linked to
+LISTS = '(SELECT count(DISTINCT e.seed) FROM current_edges e WHERE e.person_id=p.id)'  # observed links only
 PEOPLE_FROM = 'FROM people p LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id'
-LEAD_SQL = f'SELECT p.*, v.tier, v.score, v.role, v.reason, m.status, m.note, {LISTS} AS lists {PEOPLE_FROM}'
+LEAD_SQL = f"SELECT p.*, v.tier, v.score, v.content_fit, v.role, v.reason, m.status, m.note, coalesce(m.updated_at, '') AS mark_rev, {LISTS} AS lists {PEOPLE_FROM}"
 NOT_ME = 'p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)'
 # manual first, then rule tags, then auto; inside a source: role, niche, signal, size, source
 TAG_ORDER = ("CASE t.source WHEN 'manual' THEN 0 WHEN 'rule' THEN 1 ELSE 2 END, "
@@ -384,16 +561,25 @@ def lead_rows(conn, rows):
     if not ids:
         return []
     marks = ','.join('?' * len(ids))
-    tags, via = {}, {}
+    nets = network_context(conn, ids)
+    tags, via, history_via = {}, {}, {}
     followups = {r['person_id']: {k: r[k] for k in ('due_on', 'note', 'completed_at', 'updated_at')} for r in conn.execute(f'SELECT * FROM followups WHERE person_id IN ({marks})', ids)}
     for t in conn.execute(f'SELECT * FROM tags t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
         tags.setdefault(t['person_id'], []).append({'tag': t['tag'], 'grp': t['grp'], 'source': t['source']})
-    for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
+    for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM current_edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         via.setdefault(e['person_id'], []).append(e['seed'])
+    for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
+        history_via.setdefault(e['person_id'], []).append(e['seed'])
     return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
-             'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'], 'role': r['role'], 'reason': r['reason'],
-             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'], 'status': r['status'],
+             'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'],
+             'business_fit': round(r['content_fit']) if r['content_fit'] is not None else None,
+             'connection_strength': qualify.network_strength(nets[r['id']]),
+             'relationship': nets[r['id']]['me'],
+             'role': r['role'], 'reason': r['reason'],
+             'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'],
+             'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
+             'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
 
 
@@ -406,9 +592,12 @@ def qint(q, key):
     if not v:
         return None
     try:
-        return int(v)
+        n = int(v)
     except ValueError:
         raise Bad(f'{key} must be a whole number') from None
+    if not -(2 ** 63) <= n < 2 ** 63:
+        raise Bad(f'{key} is too large')
+    return n
 
 
 def lead_filter(q, status_default=True):
@@ -422,6 +611,8 @@ def lead_filter(q, status_default=True):
 
     tiers = csv(q, 'tier')
     if tiers:
+        if any(t not in ('hot', 'warm', 'cold', 'unread') for t in tiers):
+            raise Bad('bad tier')
         within("coalesce(v.tier,'unread') IN ({})", tiers)
     for t in dict.fromkeys(csv(q, 'tags')):  # all of
         within('p.id IN (SELECT person_id FROM tags WHERE tag={})', [t])
@@ -430,6 +621,8 @@ def lead_filter(q, status_default=True):
     if csv(q, 'not'):  # none of
         within('p.id NOT IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'not'))
     statuses = csv(q, 'status')
+    if any(status_in(s) not in (*STATUSES, 'none', 'all') for s in statuses):
+        raise Bad('bad status')
     if not statuses:
         if status_default:
             where.append("coalesce(m.status,'')!='no'")
@@ -445,6 +638,8 @@ def lead_filter(q, status_default=True):
         like = re.sub(r'([\\%_])', r'\\\1', text)
         args += [f'%{like}%'] * 4
     min_lists = qint(q, 'min_lists') or 0
+    if min_lists < 0:
+        raise Bad('min_lists must be nonnegative')
     if min_lists > 0:
         where.append(f'{LISTS}>=?')
         args.append(min_lists)
@@ -455,12 +650,14 @@ def lead_filter(q, status_default=True):
         where.append("coalesce(p.bio,'')=''")
     elif has_bio:
         raise Bad('has_bio must be 1 or 0')
-    for s in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):  # linked to every listed seed
+    for s in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):  # discovered through every listed seed, including history
         where.append('p.id IN (SELECT person_id FROM edges WHERE seed=?)')
         args.append(s)
     for key, op in (('followers_min', '>='), ('followers_max', '<=')):
         n = qint(q, key)
         if n is not None:
+            if n < 0:
+                raise Bad(f'{key} must be nonnegative')
             where.append(f'p.followers {op} ?')
             args.append(n)
     workflows.filters(q, where, args)
@@ -471,8 +668,21 @@ TIER_RANK = "CASE coalesce(v.tier,'unread') WHEN 'hot' THEN 0 WHEN 'warm' THEN 1
 FIT = {'hot': 'strong', 'warm': 'good', 'cold': 'weak'}   # the UI's name for a tier; anything else is 'unread'
 SORTS = {'follow_up': '(SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL) IS NULL, (SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL)', 'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
          'connected': 'lists DESC, p.followers IS NULL, p.followers DESC',
-         'fit': f'{TIER_RANK}, lists DESC, v.score IS NULL, v.score DESC, p.followers IS NULL, p.followers DESC',
+         'fit': "CASE WHEN v.tier='unread' THEN 1 ELSE 0 END, v.content_fit IS NULL, v.content_fit DESC, lists DESC, v.score IS NULL, v.score DESC",
          'score': 'v.score IS NULL, v.score DESC, p.followers DESC'}
+
+
+@contextmanager
+def read_snapshot(conn):
+    """Keep the revision, totals and related records in one SQLite read snapshot.
+
+    SAVEPOINT also preserves a caller's existing transaction, including test fixtures.
+    """
+    conn.execute('SAVEPOINT lead_read')
+    try:
+        yield
+    finally:
+        conn.execute('RELEASE SAVEPOINT lead_read')
 
 
 def api_leads(conn, q, b):
@@ -484,9 +694,13 @@ def api_leads(conn, q, b):
     offset = max(0, qint(q, 'offset') or 0)
     limit = min(500, max(1, qint(q, 'limit') or 50))
     sql_where = ' WHERE ' + ' AND '.join([NOT_ME] + where)
-    total = conn.execute(f'SELECT count(*) {PEOPLE_FROM}{sql_where}', args).fetchone()[0]
-    rows = conn.execute(f'{LEAD_SQL}{sql_where} ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
-    return {'total': total, 'rows': lead_rows(conn, rows)}
+    with read_snapshot(conn):
+        rev = data_rev(conn)
+        total = conn.execute(f'SELECT count(*) {PEOPLE_FROM}{sql_where}', args).fetchone()[0]
+        rows = conn.execute(f'{LEAD_SQL}{sql_where} ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+        next_offset = offset + len(rows)
+        return {'total': total, 'rows': lead_rows(conn, rows), 'rev': rev,
+                'next_offset': next_offset, 'has_more': next_offset < total}
 
 
 def api_tags(conn, q, b):
@@ -541,11 +755,12 @@ def api_person(conn, q, b, pid):
             ev = []
         verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
     # Active work takes precedence over history; otherwise show the latest request for this profile.
-    job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? "
+    job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? AND state!='cancelled' "
                        "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
     pending = bool(job and job['state'] in ('queued', 'leased'))
     profile_read = {'state': {'leased': 'reading', 'error': 'failed'}.get(job['state'], job['state'])} if job else None
-    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), verdict=verdict, note=row['note'],
+    return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), edge_history=edge_history_of(conn, pid),
+                verdict=verdict, note=row['note'], site=qual_api.site_row(conn, pid),
                 activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read)
 
 
@@ -556,6 +771,17 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
     """Upsert marks. KEEP leaves a field alone; None / '' clears it. A row with neither status nor note is removed."""
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
+    pids = list(dict.fromkeys(pids))
+    affected = set()
+    if status is not KEEP:
+        for chunk in chunks(pids):
+            placeholders = ','.join('?' * len(chunk))
+            affected.update(r[0] for r in conn.execute(
+                f'SELECT DISTINCT person_id FROM current_edges WHERE seed IN (SELECT seed FROM current_edges WHERE person_id IN ({placeholders}) '
+                f'UNION SELECT handle FROM people WHERE id IN ({placeholders}))', (*chunk, *chunk)))
+    affected.difference_update(pids)
+    me = me_handle(conn)
+    prior = network_snapshot(conn, affected, me) if affected else {}
     ts = db.now()
     for pid in dict.fromkeys(pids):
         old = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
@@ -572,20 +798,39 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
         conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
     if sets:
         touch(conn, pids)   # status and note feed the qualifier: the person is re-qualified on the next batch
+    # A mark changes the yield of shared seeds, and a client's own seed becomes a
+    # stronger link. Refresh those rankings locally without buying new classifications.
+    refresh_network(conn, affected, prior, me)
 
 
 def api_mark(conn, q, b, pid):
-    """{"status"?: null|STATUS, "note"?: str|null}: an absent key is left alone, null clears (note '' clears too)."""
-    person_row(conn, pid)
+    """Optional if_match/mark_rev compares the last read mark before applying a partial edit."""
     status, note = b.get('status', KEEP), b.get('note', KEEP)
     status = status_in(status) if isinstance(status, str) else status
     if status is not KEEP and status is not None and status not in STATUSES:
         raise Bad('bad status')
     if note is not KEEP and note is not None and (not isinstance(note, str) or len(note) > 5000):
         raise Bad('note must be text')
-    set_status(conn, [pid], status, note)
-    conn.commit()
-    return {}
+    expected = b.get('if_match', b.get('mark_rev', KEEP))
+    if expected is not KEEP and not isinstance(expected, str):
+        raise Bad('mark revision must be text')
+    if 'if_match' in b and 'mark_rev' in b and b['if_match'] != b['mark_rev']:
+        raise Bad('mark revisions disagree')
+    # Acquire the writer lock before reading: two tabs cannot both pass the same comparison.
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        row = person_row(conn, pid)
+        current = {key: row[key] for key in ('status', 'note', 'mark_rev')}
+        if expected is not KEEP and expected != current['mark_rev']:
+            raise Conflict(current)
+        set_status(conn, [pid], status, note)
+        row = person_row(conn, pid)
+        result = {key: row[key] for key in ('status', 'note', 'mark_rev')}
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def clean_tag(t):
@@ -616,10 +861,14 @@ def add_manual(conn, pids, tags):
 
 def api_tag_edit(conn, q, b, pid):
     person_row(conn, pid)
+    for key in ('add', 'remove'):
+        if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
+            raise Bad(f'{key} must be a list of tags')
     add_manual(conn, [pid], [clean_tag(t) for t in b.get('add') or []])
     for t in b.get('remove') or []:
         if isinstance(t, str):
-            conn.execute('DELETE FROM tags WHERE person_id=? AND tag=?', (pid, t))
+            conn.execute("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", (pid, t))
+    rules.sync(conn, [pid])
     touch(conn, [pid])
     conn.commit()
     return {}
@@ -653,21 +902,32 @@ def api_bulk(conn, q, b):
     ids = b.get('ids')
     if not isinstance(ids, list) or len(ids) > BULK_MAX or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
         raise Bad(f'ids must be a list of up to {BULK_MAX} ids')
+    for key in ('add', 'remove'):
+        if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
+            raise Bad(f'{key} must be a list of tags')
     add = [clean_tag(t) for t in b.get('add') or []]
     remove = [t for t in b.get('remove') or [] if isinstance(t, str)]
     status = b.get('status')
     status = status_in(status) if isinstance(status, str) else status
     if 'status' in b and status is not None and status not in STATUSES:
         raise Bad('bad status')
-    pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
-            for r in conn.execute(f"SELECT id FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
-    add_manual(conn, pids, add)
-    conn.executemany('DELETE FROM tags WHERE person_id=? AND tag=?', [(p, t) for p in pids for t in remove])
-    if 'status' in b:  # absent = leave marks alone; null = clear the status (a note is kept)
-        set_status(conn, pids, status=status)
-    touch(conn, pids)
-    conn.commit()
-    return {'updated': len(pids)}
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
+                for r in conn.execute(f"SELECT id FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
+        add_manual(conn, pids, add)
+        conn.executemany("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", [(p, t) for p in pids for t in remove])
+        rules.sync(conn, pids)
+        if 'status' in b:  # absent = leave marks alone; null = clear the status (a note is kept)
+            set_status(conn, pids, status=status)
+        touch(conn, pids)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    found = set(pids)
+    return {'updated': len(pids), 'updated_ids': pids,
+            'missing_ids': [pid for pid in dict.fromkeys(ids) if pid not in found]}
 
 
 # ---------- tag rules and saved views ----------
@@ -746,6 +1006,15 @@ def api_view_save(conn, q, b):
     if not isinstance(query, str) or len(query) > 4000:
         raise Bad('query must be a URL query string')
     name, query = name.strip(), query.strip().lstrip('?')
+    try:
+        parsed = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=50)
+    except ValueError:
+        raise Bad('query must be a URL query string') from None
+    if any(len(values) != 1 for values in parsed.values()):
+        raise Bad('query fields must not repeat')
+    lead_filter(parsed)
+    if parsed.get('sort', ['score'])[0] not in SORTS:
+        raise Bad('bad sort')
     conn.execute('INSERT INTO saved_views(name, query, created_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET query=excluded.query',
                  (name, query, db.now()))
     conn.commit()
@@ -772,12 +1041,8 @@ def api_read(conn, q, b, pid):
 # ---------- map ----------
 
 def data_rev(conn):
-    """Changes whenever anything the lead list, tag facets or map show changes (llm_rev: LLM verdicts keep updated_at)."""
-    r = conn.execute("SELECT (SELECT max(updated_at) FROM people), (SELECT max(updated_at) FROM verdicts), "
-                     "(SELECT count(*) FROM edges), (SELECT count(*) FROM seeds), (SELECT max(updated_at) FROM marks), "
-                     "(SELECT count(*) FROM marks), (SELECT count(*) FROM tags), (SELECT count(*) FROM tag_rules), "
-                     "(SELECT value FROM settings WHERE key='llm_rev'), (SELECT max(updated_at) FROM followups), (SELECT count(*) FROM followups), (SELECT max(id) FROM activity)").fetchone()
-    return zlib.crc32('|'.join(map(str, r)).encode())
+    """Durable revision advances on every edit affecting leads, facets or the map (triggers in db.init)."""
+    return db.get_setting(conn, 'lead_data_rev', 0)
 
 
 CACHE = OrderedDict()   # (endpoint, db, query, data_rev) -> response; small LRU for /api/tags and /api/map
@@ -786,17 +1051,24 @@ CACHE_LOCK = threading.Lock()
 
 
 def cached(conn, name, q, compute):
-    key = (name, CFG['db'], datetime.now().date().isoformat(), tuple(sorted((k, tuple(v)) for k, v in q.items())), data_rev(conn))
-    with CACHE_LOCK:
-        if key in CACHE:
-            CACHE.move_to_end(key)
-            return CACHE[key]
-    out = compute()
-    with CACHE_LOCK:
-        CACHE[key] = out
-        while len(CACHE) > CACHE_MAX:
-            CACHE.popitem(last=False)
-    return out
+    # Uncommitted revisions may be reused after rollback; never publish those results.
+    if conn.in_transaction:
+        return compute()
+    # CFG is process-wide; the actual connection can point to another workspace.
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    database = path or ('memory', id(conn))
+    with read_snapshot(conn):
+        key = (name, database, datetime.now().date().isoformat(), tuple(sorted((k, tuple(v)) for k, v in q.items())), data_rev(conn))
+        with CACHE_LOCK:
+            if key in CACHE:
+                CACHE.move_to_end(key)
+                return CACHE[key]
+        out = compute()
+        with CACHE_LOCK:
+            CACHE[key] = out
+            while len(CACHE) > CACHE_MAX:
+                CACHE.popitem(last=False)
+        return out
 
 
 def clear_caches():
@@ -811,13 +1083,13 @@ SEED_LINKS_MIN_AGE = 30   # s: while a list is streaming in, recompute the overl
 
 
 def seed_links(conn):
-    key = (CFG['db'], *conn.execute('SELECT count(*), max(rowid) FROM edges').fetchone())
+    key = (CFG['db'], *conn.execute('SELECT count(*),max(checked_at) FROM edge_evidence').fetchone())
     cached, now = SEED_LINKS[0], datetime.now().timestamp()
     if cached and (cached[0] == key or (cached[0][0] == key[0] and now - cached[1] < SEED_LINKS_MIN_AGE)):
         return cached[2]
-    # one pass over the covering index; people linked to a single seed (most of them) never reach Python
-    rows = conn.execute('SELECT group_concat(seed, char(10)) FROM edges GROUP BY person_id HAVING min(seed)<max(seed)')
-    pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split('\n'))), 2) for r in rows))
+    # Overlap means people currently observed in both seed lists, not historical discoveries.
+    rows = conn.execute('SELECT group_concat(DISTINCT seed) FROM current_edges GROUP BY person_id HAVING count(DISTINCT seed)>1')
+    pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split(','))), 2) for r in rows))
     top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
     links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
     SEED_LINKS[0] = (key, now, links)
@@ -842,21 +1114,29 @@ def api_connections(conn, q, b):
 
 def map_graph(conn, q):
     limit = min(3000, max(10, qint(q, 'limit') or 400))
-    where, args = lead_filter(q)
-    cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds)'] + where)
+    # The general lead seed filter intentionally includes discovery history. On the map,
+    # a seed filter must mean an observed connection to that seed.
+    where, args = lead_filter({k: v for k, v in q.items() if k != 'seed'})
+    for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
+        where.append('p.id IN (SELECT person_id FROM current_edges WHERE seed=?)')
+        args.append(seed)
+    cond = ' AND '.join(['p.handle NOT IN (SELECT handle FROM seeds UNION SELECT seed FROM edges)'] + where)
     # one materialized pass over the filtered people; both picks below sort that set (cost follows the filter's size)
-    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.reason, m.status, m.note, '
-            'count(DISTINCT e.seed) AS degree FROM people p JOIN edges e ON e.person_id=p.id '
+    base = ('SELECT p.id, p.handle, p.name, p.pic_file, p.followers, v.tier, v.score, v.content_fit, v.reason, m.status, m.note, '
+            'count(DISTINCT e.seed) AS degree FROM people p JOIN current_edges e ON e.person_id=p.id '
             f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
     by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
     multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
     rows = conn.execute(f"""WITH b AS MATERIALIZED ({base})
-        SELECT * FROM (SELECT 0 AS part, * FROM b WHERE degree>=2 ORDER BY degree DESC, score DESC, id LIMIT ?)
-        UNION ALL SELECT * FROM (SELECT 1 AS part, * FROM b {by_score})""", (*args, multi_n, limit)).fetchall()
+        SELECT (SELECT count(*) FROM b) AS total, picked.* FROM (
+          SELECT * FROM (SELECT 0 AS part, * FROM b WHERE degree>=2 ORDER BY degree DESC, score DESC, id LIMIT ?)
+          UNION ALL SELECT * FROM (SELECT 1 AS part, * FROM b {by_score})
+        ) picked""", (*args, multi_n, limit)).fetchall()
+    total = rows[0]['total'] if rows else 0
     multi = [r for r in rows if r['part'] == 0]
     seen = {r['id'] for r in multi}
     people = multi + [r for r in rows if r['part'] == 1 and r['id'] not in seen][:limit - len(multi)]
-    seeds = conn.execute('SELECT s.handle, (SELECT count(*) FROM edges e WHERE e.seed=s.handle) AS degree, p.id AS pid, '
+    seeds = conn.execute('SELECT s.handle, (SELECT count(DISTINCT e.person_id) FROM current_edges e WHERE e.seed=s.handle) AS degree, p.id AS pid, '
                          'p.pic_file, p.followers, v.tier, v.score, m.status, m.note, coalesce(sd.is_me, 0) AS is_me '
                          'FROM (SELECT handle FROM seeds UNION SELECT seed FROM edges) s LEFT JOIN seeds sd ON sd.handle=s.handle '
                          'LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
@@ -866,9 +1146,13 @@ def map_graph(conn, q):
     links, seeds_of, tags = [], {}, {}
     for chunk in chunks(node_of):
         marks = ','.join('?' * len(chunk))
-        for e in conn.execute(f'SELECT * FROM edges WHERE person_id IN ({marks}) ORDER BY seed, direction', chunk):
-            links.append({'source': f"s:{e['seed']}", 'target': node_of[e['person_id']], 'direction': e['direction']})
-            if e['seed'] not in seeds_of.setdefault(e['person_id'], []):
+        for e in conn.execute(f'SELECT e.*,v.active,v.observed_at,v.checked_at FROM edges e '
+                              'LEFT JOIN edge_evidence v ON v.seed=e.seed AND v.person_id=e.person_id AND v.direction=e.direction '
+                              f'WHERE e.person_id IN ({marks}) ORDER BY e.seed,e.direction', chunk):
+            links.append({'source': f"s:{e['seed']}", 'target': node_of[e['person_id']], 'direction': e['direction'],
+                          'state': 'observed' if e['active'] == 1 else 'absent' if e['active'] == 0 else 'unverified',
+                          'observed_at': e['observed_at'], 'checked_at': e['checked_at']})
+            if e['active'] == 1 and e['seed'] not in seeds_of.setdefault(e['person_id'], []):
                 seeds_of[e['person_id']].append(e['seed'])
         for t in conn.execute(f'SELECT t.person_id, t.tag FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
             if len(tags.setdefault(t['person_id'], [])) < MAP_TAGS:
@@ -877,12 +1161,16 @@ def map_graph(conn, q):
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
               'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me']), 'pid': s['pid'], 'note': s['note'] or None} for s in seeds]
+    nets = network_context(conn, [r['id'] for r in people]) if people else {}
     nodes += [{'id': f"p:{r['id']}", 'kind': 'lead', 'label': r['handle'], 'handle': r['handle'], 'name': r['name'],
-               'tier': r['tier'] or 'unread', 'fit': FIT.get(r['tier'], 'unread'), 'score': r['score'], 'reason': r['reason'],
+               'tier': r['tier'] or 'unread', 'fit': ('strong' if r['content_fit'] >= 70 else 'good' if r['content_fit'] >= 45 else 'weak') if r['content_fit'] is not None else 'unread',
+               'score': r['score'], 'business_fit': round(r['content_fit']) if r['content_fit'] is not None else None,
+               'connection_strength': qualify.network_strength(nets[r['id']]), 'reason': r['reason'],
+               'relationship': nets[r['id']]['me'],
                'tags': tags.get(r['id'], []),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
-    return {'nodes': nodes, 'links': links, 'rev': data_rev(conn)}
+    return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
 
 
 def ext_aggregate(conn, accts, now):
@@ -985,13 +1273,17 @@ def api_qualify(conn, q, b):
     """{"on"?, "auto"?, "workers"?, "llm_min"?, "bio_min"?}: an absent key is left alone."""
     if 'on' in b and not isinstance(b['on'], bool):
         raise Bad('on must be true or false')
+    if 'auto' in b and not isinstance(b['auto'], bool):
+        raise Bad('auto must be true or false')
     for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
     if 'on' in b:
-        db.set_setting(conn, 'qualify', b['on'])
+        # All AI switches share the control strip's durable off behavior.
+        control.set_stage(conn, 'ai', pause=not b['on'])
     if 'auto' in b:
-        db.set_setting(conn, 'qualify_auto', bool(b['auto']))
+        # An explicit request to schedule later activation is separate from switching off now.
+        db.set_setting(conn, 'qualify_auto', b['auto'])
     if 'workers' in b:
         db.set_setting(conn, 'llm_workers', b['workers'])
     for key in ('llm_min', 'bio_min'):
@@ -1091,14 +1383,26 @@ def api_snowball(conn, q, b):
 
 
 def api_seeds(conn, q, b):
-    dirs = [d for d in b.get('directions') or ['followers', 'following'] if d in ('followers', 'following')]
-    added = [(h, d) for h in map(db.norm_handle, b.get('handles') or []) if h for d in dirs if db.queue_list(conn, h, d)]
+    raw_handles = b.get('handles')
+    raw_dirs = b.get('directions', ['followers', 'following'])
+    if 'refresh' in b and not isinstance(b['refresh'], bool):
+        raise Bad('refresh must be true or false')
+    if (not isinstance(raw_handles, list) or not isinstance(raw_dirs, list)
+            or not raw_dirs or any(d not in ('followers', 'following') for d in raw_dirs)):
+        raise Bad('handles and directions must be lists of Instagram accounts and list directions')
+    handles = [db.norm_handle(h) for h in raw_handles]
+    if any(not h or '~' in h for h in handles):
+        raise Bad('invalid Instagram handle or profile URL')
+    added = [(h, d) for h in dict.fromkeys(handles) for d in dict.fromkeys(raw_dirs)
+             if db.queue_list(conn, h, d, refresh=b.get('refresh', False))]
     conn.commit()
     return {'queued': len(added)}
 
 
 def api_pause(conn, q, b):
-    db.set_setting(conn, 'paused', bool(b.get('paused')))
+    if not isinstance(b.get('paused'), bool):
+        raise Bad('paused must be an explicit boolean')
+    db.set_setting(conn, 'paused', b['paused'])
     conn.commit()
     return {}
 
@@ -1125,7 +1429,15 @@ def api_control_set(conn, q, b):
 
 def api_budget(conn, q, b):
     budget = db.get_setting(conn, 'budget')
-    budget.update({k: max(0, min(cap, int(b[k]))) for k, cap in accounts.BUDGET_MAX.items() if b.get(k) is not None})
+    changes = {}
+    for key, cap in accounts.BUDGET_MAX.items():
+        if key not in b:
+            continue
+        value = b[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= cap:
+            raise Bad(f'{key} budget must be an integer from 0 to {cap}')
+        changes[key] = value
+    budget.update(changes)
     db.set_setting(conn, 'budget', budget)
     conn.commit()
     return {}
@@ -1307,6 +1619,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = fn(conn, q, body, *args)
             finally:
                 conn.close()
+        except Conflict as e:
+            return self.send(409, dict(e.current, ok=False, error=str(e), current=e.current))
         except NotFound as e:
             return self.send(404, {'ok': False, 'error': str(e)})
         except (Bad, ValueError, KeyError, TypeError, OverflowError) as e:
@@ -1319,12 +1633,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):
+        if not re.fullmatch(r'[0-9]+', pid):
+            return self.send(404, {'ok': False, 'error': 'no image'})
         f = pfp_dir() / f'{pid}.jpg'
-        if not pid.isdigit() or not f.is_file():
+        if not f.is_file():
             return self.send(404, {'ok': False, 'error': 'no image'})
         data = f.read_bytes()
+        if not valid_pic(data):
+            return self.send(404, {'ok': False, 'error': 'no image'})
         ctype = 'image/png' if data[:4] == b'\x89PNG' else 'image/webp' if data[8:12] == b'WEBP' else 'image/jpeg'
-        self.send(200, data, ctype, {'Cache-Control': 'max-age=86400'})
+        self.send(200, data, ctype, {'Cache-Control': 'no-cache'})
 
     def static(self, path):
         f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
@@ -1348,12 +1666,12 @@ def network_context(conn, pids, me=None):
     me = me if me is not None else me_handle(conn)
     yields = {r[0]: (r[1], r[2]) for r in conn.execute(
         f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), count(DISTINCT e.person_id) "
-        "FROM edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
+        "FROM current_edges e JOIN marks m ON m.person_id=e.person_id WHERE m.status IS NOT NULL GROUP BY e.seed")}
     good_handles = {r[0] for r in conn.execute("SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
                                                "WHERE m.status IN " + POSITIVE_SQL)}
     out = {p: {'seeds': [], 'lists': 0, 'me': None, 'seed_yield': None, 'seed_marked': 0, 'client_seeds': 0} for p in pids}
     for chunk in chunks(pids):
-        for e in conn.execute(f"SELECT person_id, seed, direction FROM edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
+        for e in conn.execute(f"SELECT person_id, seed, direction FROM current_edges WHERE person_id IN ({','.join('?' * len(chunk))}) "
                               'ORDER BY seed, direction', chunk):
             out[e['person_id']]['seeds'].append((e['seed'], e['direction']))
     for pid, n in out.items():
@@ -1375,13 +1693,103 @@ def network_context(conn, pids, me=None):
     return out
 
 
+def network_snapshot(conn, pids, me=None):
+    """Capture the evidence used by an existing verdict before a graph/mark change."""
+    pids = list(dict.fromkeys(pids))
+    nets = network_context(conn, pids, me)
+    out = {}
+    for pid in pids:
+        row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
+        if row:
+            out[pid] = {'person': with_owner(conn, dict(row)), 'edges': edges_of(conn, pid), 'net': nets[pid]}
+    return out
+
+
+def refresh_network(conn, pids, prior=None, me=None):
+    """Refresh connection claims and reblend already known fit without classifying anyone.
+
+    Content hashes allow queued changes to reblend without a prior snapshot.
+    `prior` can validate older graph-dependent verdict hashes before migration.
+    Changed content and unknown content fit remain for an enabled qualification pass.
+    """
+    pids = list(dict.fromkeys(pids))
+    if not pids:
+        return 0
+    me = me if me is not None else me_handle(conn)
+    nets = network_context(conn, pids, me)
+    changed = 0
+    for pid in pids:
+        row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
+        if not row:
+            continue
+        p = with_owner(conn, dict(row))
+        edges = edges_of(conn, pid)
+        # Automatic source tags describe observed connections. Manual knowledge
+        # is independent evidence and is never removed by a list refresh.
+        source = [(tag, grp) for tag, grp in qualify.rule_tags(p, edges, me) if grp == 'source']
+        old_source = {(r['tag'], r['grp']) for r in conn.execute(
+            "SELECT tag, grp FROM tags WHERE person_id=? AND source='auto' AND grp='source'", (pid,))}
+        if old_source != set(source):
+            conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto' AND grp='source'", (pid,))
+            conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(pid, tag, grp) for tag, grp in source])
+            changed += 1
+        old = conn.execute('SELECT * FROM verdicts WHERE person_id=?', (pid,)).fetchone()
+        before = (prior or {}).get(pid)
+        if not old:
+            continue
+        if old['content_fit'] is None:
+            if old['score'] is not None:
+                conn.execute("UPDATE verdicts SET score=NULL,tier='unread',prefilter=NULL WHERE person_id=?", (pid,))
+                changed += 1
+            continue
+        hashed = qualify.input_hash(p, edges, nets[pid])
+        valid = old['input_hash'] == hashed
+        if not valid and before:
+            previous = before['person']
+            same_content = qualify.input_hash(previous, before['edges'], before['net']) == hashed
+            valid = same_content and old['updated_at'] == previous['updated_at'] and (
+                old['model'] == 'rules' or old['input_hash'] == qualify.legacy_input_hash(
+                    previous, before['edges'], before['net']))
+        if not valid:
+            continue
+        score = qualify.blend(old['content_fit'], nets[pid])
+        _, lfit = laya_row(conn, pid)
+        pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), nets[pid], lfit)
+        if (score, pre, hashed, p['updated_at']) != (old['score'], old['prefilter'], old['input_hash'], old['updated_at']):
+            conn.execute('UPDATE verdicts SET score=?, tier=?, prefilter=?, input_hash=?, updated_at=? WHERE person_id=?',
+                         (score, qualify._tier(score, bool((p.get('bio') or '').strip())), pre, hashed, p['updated_at'], pid))
+            changed += 1
+    return changed
+
+
+def drain_network_dirty(conn, limit=200):
+    """Acknowledge only the exact queued revision that was refreshed."""
+    rows = conn.execute('SELECT person_id,change_id FROM network_dirty ORDER BY change_id,person_id LIMIT ?',
+                        (limit,)).fetchall()
+    if not rows:
+        return 0
+    refresh_network(conn, [r['person_id'] for r in rows])
+    conn.executemany('DELETE FROM network_dirty WHERE person_id=? AND change_id=?',
+                     [(r['person_id'], r['change_id']) for r in rows])
+    conn.commit()
+    return len(rows)
+
+
 def laya_row(conn, pid):
-    r = conn.execute('SELECT answers, fit FROM laya WHERE person_id=?', (pid,)).fetchone()
+    r = conn.execute('''SELECT l.answers, l.fit, l.input_hash, p.handle, p.name, p.bio,
+                       p.category, p.website, p.followers
+                       FROM laya l JOIN people p ON p.id=l.person_id WHERE l.person_id=?''', (pid,)).fetchone()
     if not r:
         return None, None
+    fields = (r[k] for k in ('handle', 'name', 'bio', 'category', 'website', 'followers'))
+    if r['input_hash'] != laya_hash(*fields):
+        return None, None
     try:
-        return json.loads(r['answers'] or '{}'), r['fit']
-    except ValueError:
+        answers = json.loads(r['answers'] or '{}')
+        if not laya.valid_answers(answers):
+            return None, None
+        return answers, laya.fit(answers)
+    except (TypeError, ValueError):
         return None, None
 
 
@@ -1395,26 +1803,34 @@ def with_owner(conn, p):
 
 
 def requalify(conn, p, me, net=None):
+    # Same rule as background_qualify: rule scoring is free and only Stop all holds it.
+    if all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
+        return refresh_network(conn, [p['id']], me=me)
     with_owner(conn, p)
+    # Older auto tags treated any follow or @mention as a personal acquaintance.
+    conn.execute("DELETE FROM tags WHERE person_id=? AND tag='knows you' AND source='auto'", (p['id'],))
     edges = edges_of(conn, p['id'])
-    answers, lfit = laya_row(conn, p['id'])
+    _, lfit = laya_row(conn, p['id'])
     pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
     old = conn.execute('SELECT model, input_hash FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
-    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges)
+    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net)
     if not keep_llm:  # the LLM's extra auto tags stay as long as its verdict does
         conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
     auto = qualify.rule_tags(p, edges, me)
-    if answers:  # Laya tags only when it is very sure on its own (a rule tag that agrees is already there)
-        have = {t for t, _ in auto} | {r[0] for r in conn.execute('SELECT tag FROM tags WHERE person_id=?', (p['id'],))}
-        auto = auto + [(t, getattr(qualify, 'TAXONOMY', {}).get(t, 'signal')) for t in laya.tags(answers, have)]
+    # Laya probabilities are uncalibrated and have no separate tag provenance.
+    # Use the fit as a ranking hint only; rule and LLM tags keep their own evidence.
     conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in auto])
     if keep_llm:
-        conn.execute('UPDATE verdicts SET prefilter=?, updated_at=? WHERE person_id=?', (pre, p['updated_at'], p['id']))
+        refresh_network(conn, [p['id']], me=me)
+        # The verdict is current for this profile revision even when the reblend changed nothing;
+        # without this the batch would pick the same person up again on every pass.
+        conn.execute('UPDATE verdicts SET updated_at=? WHERE person_id=? AND updated_at<?',
+                     (p['updated_at'], p['id'], p['updated_at']))
         return
     tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
     v = qualify.rule_verdict(p, tags, net)
-    conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at) "
-                 "VALUES(?,?,?,?,?,?,'rules',NULL,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], p['updated_at']))
+    conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at, content_fit) "
+                 "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
 
 
 def qualify_batch(conn, limit=200):
@@ -1439,32 +1855,43 @@ def qualify_batch(conn, limit=200):
 LAYA_BATCH = 64
 
 
-def laya_hash(bio):
-    """What a Laya answer was computed from: a bio edit of the same length still counts as a change."""
-    return f"bio:{zlib.crc32(bio.encode()):08x}" if bio else 'nobio'
+def laya_hash(*fields):
+    """Invalidate when any field supplied to Laya changes."""
+    payload = [laya.cache_signature(), fields]
+    return 'profile:' + __import__('hashlib').sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
-    if not laya.available():
+    if control.stage_paused(conn, 'ai') or not laya.available():
         return False
-    conn.create_function('laya_hash', 1, laya_hash, deterministic=True)
+    conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
     rows = conn.execute("""SELECT p.id, p.handle, p.name, p.bio, p.category, p.website, p.followers, l.input_hash AS lh
         FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
         WHERE instr(p.handle, '~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
-          AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.bio))
+          AND (l.person_id IS NULL OR l.input_hash IS NOT laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
         ORDER BY coalesce(p.bio,'')='' , v.prefilter DESC, p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     if not rows:
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
     if not answers:
         return False
+    if control.stage_paused(conn, 'ai'):
+        return False
+    if set(answers) != {r['id'] for r in rows} or not all(laya.valid_answers(a) for a in answers.values()):
+        return False
     ts = db.now()
-    done = [r for r in rows if r['id'] in answers]
+    done = []
+    for r in rows:
+        current = conn.execute('SELECT handle,name,bio,category,website,followers FROM people WHERE id=?', (r['id'],)).fetchone()
+        if current and laya_hash(*current) == laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))):
+            done.append(r)
+    if not done:
+        return False
     conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
-                     [(r['id'], laya_hash(r['bio']), json.dumps(answers[r['id']]),
+                     [(r['id'], laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))), json.dumps(answers[r['id']]),
                        laya.fit(answers[r['id']]), ts) for r in done])
-    # the qualify batch folds the new signal into prefilter (and very sure tags) on its next pass
+    # The qualify batch folds the new ranking signal into prefilter on its next pass.
     conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
     conn.commit()
     return True
@@ -1481,13 +1908,24 @@ def fewshot(conn):
     """The few-shot example set, frozen until Michael's marks change a lot; then older LLM verdicts are re-run."""
     n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('interested','talking','client','no')").fetchone()[0]
     cur = db.get_setting(conn, 'fewshot') or {}
-    if cur and abs(n - cur.get('n', 0)) < max(FEWSHOT_CHANGE, cur.get('n', 0) // 5):
-        return cur.get('examples') or []
+    keep_members = cur and abs(n - cur.get('n', 0)) < max(FEWSHOT_CHANGE, cur.get('n', 0) // 5)
     ex = []
-    for label, statuses in (('good', POSITIVE_SQL), ('no', "('no')")):
-        for r in conn.execute(f"SELECT p.handle, p.name, p.bio FROM marks m JOIN people p ON p.id=m.person_id WHERE m.status IN {statuses} "
-                              f"AND coalesce(p.bio,'')!='' ORDER BY m.updated_at DESC LIMIT ?", (FEWSHOT_MAX,)):
-            ex.append({'handle': r['handle'], 'name': r['name'], 'bio': (r['bio'] or '')[:200], 'label': label})
+    if keep_members:
+        # Keep selection stable, but refresh evidence and labels when an existing example changes.
+        for prior in cur.get('examples') or []:
+            r = conn.execute('SELECT p.handle,p.name,p.bio,m.status FROM people p JOIN marks m ON m.person_id=p.id WHERE p.handle=?',
+                             (prior['handle'],)).fetchone()
+            if r and r['bio'] and r['status'] in (*POSITIVE, 'no'):
+                ex.append({'handle':r['handle'],'name':r['name'],'bio':r['bio'][:200],
+                           'label':'no' if r['status']=='no' else 'good'})
+        version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
+        if ex == (cur.get('examples') or []) and version == cur.get('version'):
+            return ex
+    else:
+        for label, statuses in (('good', POSITIVE_SQL), ('no', "('no')")):
+            for r in conn.execute(f"SELECT p.handle,p.name,p.bio FROM marks m JOIN people p ON p.id=m.person_id WHERE m.status IN {statuses} "
+                                  "AND coalesce(p.bio,'')!='' ORDER BY m.updated_at DESC LIMIT ?", (FEWSHOT_MAX,)):
+                ex.append({'handle':r['handle'],'name':r['name'],'bio':(r['bio'] or '')[:200],'label':label})
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if cur and version and version != cur.get('version'):
         conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error') AND prompt IS NOT ? AND coalesce(score,0)>=?",
@@ -1509,11 +1947,18 @@ def llm_candidates(conn, limit, exclude):
 
 def run_llm(conn, rows, skip):
     """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
+    if control.stage_paused(conn, 'ai'):
+        return 0
     rows = [with_owner(conn, dict(r)) for r in rows]
     me = me_handle(conn)
     nets = network_context(conn, [p['id'] for p in rows], me)
-    items = [{'person': p, 'edges': edges_of(conn, p['id']), 'net': nets.get(p['id']),
-              'tags': [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]} for p in rows]
+    items = []
+    for p in rows:
+        edges = edges_of(conn, p['id'])
+        fresh_auto = qualify.rule_tags(p, edges, me)
+        retained = [tuple(r) for r in conn.execute("SELECT tag, grp FROM tags WHERE person_id=? AND source!='auto'", (p['id'],))]
+        items.append({'person': p, 'edges': edges, 'net': nets.get(p['id']),
+                      'tags': retained + fresh_auto, 'fresh_auto': fresh_auto})
     examples = fewshot(conn)
     conn.commit()
     try:
@@ -1528,11 +1973,22 @@ def run_llm(conn, rows, skip):
         if v is None:
             skip[p['id']] = datetime.now().timestamp() + 1800
             continue
-        if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=? '
+        latest = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
+        if latest is None or latest['updated_at'] != p['updated_at']:
+            continue
+        latest_p = with_owner(conn, dict(latest))
+        latest_net = network_context(conn, [p['id']], me).get(p['id'])
+        if qualify.input_hash(latest_p, edges_of(conn, p['id']), latest_net) != qualify.input_hash(p, it['edges'], it['net']):
+            continue
+        if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=?, content_fit=? '
                         'WHERE person_id=? AND updated_at=?',
-                        (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges']),
-                         v.get('prompt'), json.dumps(v.get('evidence') or []), p['id'], p['updated_at'])).rowcount:
-            conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in v.get('tags') or []])
+                        (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges'], it['net']),
+                         v.get('prompt'), json.dumps(v.get('evidence') or []),
+                         v.get('content_fit', min(getattr(qualify, 'ROLE_CAP', {}).get(v['role'], 100), v['fit']) if v.get('fit') is not None else None),
+                         p['id'], p['updated_at'])).rowcount:
+            conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
+            conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')",
+                             [(p['id'], t, g) for t, g in it['fresh_auto'] + (v.get('tags') or [])])
             wrote += 1
     if wrote:
         db.set_setting(conn, 'llm_rev', (db.get_setting(conn, 'llm_rev') or 0) + 1)
@@ -1700,9 +2156,45 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 PIC_OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=SSL))
 
 
+def valid_pic(data):
+    if not data or len(data) > PIC_MAX:
+        return False
+    if data[:3] == b'\xff\xd8\xff':
+        return data.endswith(b'\xff\xd9')
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return len(data) >= 20 and data[-8:-4] == b'IEND'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return len(data) >= 20 and int.from_bytes(data[4:8], 'little') == len(data) - 8
+    return False
+
+
+def valid_pic_file(path):
+    try:
+        size = path.stat().st_size
+        if size < 12 or size > PIC_MAX:
+            return False
+        with path.open('rb') as f:
+            head = f.read(12)
+            f.seek(-12, os.SEEK_END)
+            tail = f.read(12)
+    except OSError:
+        return False
+    return ((head[:3] == b'\xff\xd8\xff' and tail[-2:] == b'\xff\xd9')
+            or (head[:8] == b'\x89PNG\r\n\x1a\n' and tail[4:8] == b'IEND')
+            or (head[:4] == b'RIFF' and head[8:12] == b'WEBP'
+                and int.from_bytes(head[4:8], 'little') == size - 8))
+
+
 def fetch_pic(url):
-    host = urlparse(url).hostname or ''
-    if not url.startswith('https://') or not host.endswith(PIC_HOSTS):
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ''
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme != 'https' or not host.endswith(PIC_HOSTS) or parsed.username or parsed.password or port not in (None, 443):
         return None
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -1712,20 +2204,53 @@ def fetch_pic(url):
             data = r.read(PIC_MAX + 1)
     except (OSError, ValueError):
         return None
-    ok = data[:3] == b'\xff\xd8\xff' or data[:8] == b'\x89PNG\r\n\x1a\n' or (data[:4] == b'RIFF' and data[8:12] == b'WEBP')
-    return data if ok and len(data) <= PIC_MAX else None
+    return data if valid_pic(data) else None
+
+
+_pfp_check_id = 0
+
+
+def repair_pfp_cache(conn):
+    """Check a bounded slice of cached files so deleted files are downloaded again."""
+    global _pfp_check_id
+    rows = conn.execute('SELECT id, pic_file FROM people WHERE pic_file IS NOT NULL AND pic_file != \'\' '
+                        'AND id > ? ORDER BY id LIMIT 32', (_pfp_check_id,)).fetchall()
+    if not rows:
+        _pfp_check_id = 0
+        return False
+    repaired = False
+    for row in rows:
+        _pfp_check_id = row['id']
+        f = pfp_dir() / f"{row['id']}.jpg"
+        if not valid_pic_file(f):
+            conn.execute('UPDATE people SET pic_file=NULL WHERE id=? AND pic_file=?',
+                         (row['id'], row['pic_file']))
+            repaired = True
+    if repaired:
+        conn.commit()
+    return repaired
 
 
 def pfp_step(conn):
+    repaired = repair_pfp_cache(conn)
     r = conn.execute('SELECT p.id, p.pic_url FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                      'WHERE p.pic_url IS NOT NULL AND p.pic_file IS NULL '
                      'ORDER BY p.updated_at DESC LIMIT 1').fetchone()
     if not r:
-        return False
+        return repaired
     data = fetch_pic(r['pic_url'])
     if data:
-        pfp_dir().mkdir(parents=True, exist_ok=True)
-        (pfp_dir() / f"{r['id']}.jpg").write_bytes(data)
+        directory = pfp_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        name = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=f".{r['id']}.", suffix='.tmp', delete=False) as tmp:
+                name = tmp.name
+                tmp.write(data)
+            os.replace(name, directory / f"{r['id']}.jpg")
+        finally:
+            if name and os.path.exists(name):
+                os.unlink(name)
     conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f"{r['id']}.jpg" if data else '', r['id']))
     conn.commit()
     return True
@@ -1766,9 +2291,18 @@ def models_step(conn):
     return False
 
 
+def background_qualify(conn):
+    refreshed = drain_network_dirty(conn)
+    # Rule scoring is local and free, so it runs with the AI switch off (bio planning needs its prefilter);
+    # only Stop all, which pauses every stage, halts it. Model calls stay behind the AI switch.
+    if all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
+        return bool(refreshed)
+    return qualify_batch(conn) or bool(refreshed)
+
+
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
-    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (qualify_batch, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10)]
+    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 
