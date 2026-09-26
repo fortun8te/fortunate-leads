@@ -446,6 +446,20 @@
     sec = Math.max(0, Math.round(sec));
     return sec < 60 ? sec + ' s' : sec < 3600 ? Math.ceil(sec / 60) + ' min' : (sec / 3600).toFixed(1) + ' h';
   }
+  // Why a stage waits and until when, in plain words: "daily limit · back 00:00", "next request 9 s".
+  function waitWord(why, sec, clockFn) {
+    why = why || '';
+    const back = sec == null ? '' : sec > 3600
+      ? ' · back ' + new Date(Date.now() + sec * 1e3).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : ' · ' + clockFn(sec);
+    if (/daily/i.test(why)) return 'daily limit' + back;
+    if (/slow down/i.test(why)) return 'Instagram limit' + back;
+    if (/log in/i.test(why)) return 'needs login';
+    if (/security check/i.test(why)) return 'security check';
+    if (/break/i.test(why)) return 'short pause' + back;
+    if (/between requests/i.test(why)) return 'next request' + (sec == null ? '' : ' in ' + clockFn(sec));
+    return 'waiting' + back;
+  }
   function stagesView(ctl, now) {
     if (!ctl || !Array.isArray(ctl.stages)) return [];
     const age = ctl.got ? Math.max(0, (now - ctl.got) / 1e3) : 0;
@@ -453,8 +467,7 @@
       let word;
       if (s.state === 'paused') word = 'paused';
       else if (s.state === 'waiting' && s.wait) {
-        const kind = /break/i.test(s.wait.why || '') ? 'break' : /slow down/i.test(s.wait.why || '') ? 'resting' : 'waiting';
-        word = kind + (s.wait.seconds != null ? ' ' + stageClock(s.wait.seconds - age) : '');
+        word = waitWord(s.wait.why, s.wait.seconds != null ? Math.max(0, s.wait.seconds - age) : null, stageClock);
       } else if (s.state === 'idle') word = /no instagram account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
       else word = 'running' + (s.hour ? ' · ' + Math.round(s.hour).toLocaleString('en-US') + '/h' : '');
       return { id: s.id, name: STAGE_SHORT[s.id] || s.label, label: s.label, word, on: s.state === 'running' || s.state === 'waiting',

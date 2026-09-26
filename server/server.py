@@ -1,6 +1,8 @@
 import argparse
 import biofetch
+import websearch
 import collections
+from concurrent.futures import ThreadPoolExecutor
 import time
 import json
 import mimetypes
@@ -1327,7 +1329,7 @@ def api_qualify(conn, q, b):
         raise Bad('on must be true or false')
     if 'auto' in b and not isinstance(b['auto'], bool):
         raise Bad('auto must be true or false')
-    for key, lo, hi in (('workers', 1, 16), ('llm_min', 0, 100), ('bio_min', 0, 100)):
+    for key, lo, hi in (('workers', 1, 32), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
     if 'on' in b:
@@ -1998,6 +2000,33 @@ def llm_candidates(conn, limit, exclude):
                         (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
 
 
+def research(conn, items):
+    """Attach web research (SearXNG + their website) to each item's person before the model call.
+    Cached per person; missing lookups run in parallel with no DB transaction open. Search down -> no research."""
+    if not items or not websearch.available():
+        return
+    websearch.ensure(conn)
+    found, todo = {}, []
+    for it in items:
+        hit = websearch.cached(conn, it['person'])
+        if hit is None:
+            todo.append(it['person'])
+        else:
+            found[it['person']['id']] = hit
+    conn.commit()
+    if todo:
+        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+            for p, got in zip(todo, pool.map(websearch.lookup, todo)):
+                found[p['id']] = got
+        for p in todo:
+            websearch.store(conn, p, found[p['id']])
+        conn.commit()
+    for it in items:
+        got = found.get(it['person']['id'])
+        # A copy: the input hash and the stored profile never see the research fields.
+        it['person'] = dict(it['person'], web_lines=websearch.lines(got), web_text=websearch.text(got))
+
+
 def run_llm(conn, rows, skip):
     """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
     if control.stage_paused(conn, 'ai'):
@@ -2014,6 +2043,7 @@ def run_llm(conn, rows, skip):
                       'tags': retained + fresh_auto, 'fresh_auto': fresh_auto})
     examples = fewshot(conn)
     conn.commit()
+    research(conn, items)
     try:
         many = getattr(qualify, 'llm_verdicts', None)
         vs = many(items, examples) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
@@ -2081,7 +2111,7 @@ class LLMPool:
     def step(self, conn):
         if not db.get_setting(conn, 'qualify'):
             return False
-        workers = max(1, min(16, int(db.get_setting(conn, 'llm_workers') or 4)))
+        workers = max(1, min(32, int(db.get_setting(conn, 'llm_workers') or 4)))
         batch = self.batch or getattr(qualify, 'LLM_BATCH', 1)
         with self.lock:
             _expire(self.skip)

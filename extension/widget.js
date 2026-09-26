@@ -13,7 +13,7 @@
 .pill { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 10px; border-radius: 999px; border: 1px solid #333;
   background: #161616; color: #ededed; font: inherit; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
 .pill:hover { background: #1f1f1f; }
-.card { width: 272px; border: 1px solid #333; border-radius: 12px; background: #161616; padding: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+.card { width: 304px; border: 1px solid #333; border-radius: 12px; background: #161616; padding: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }
 .top { display: flex; align-items: center; gap: 8px; }
 .name { flex: 1; font-weight: 600; font-size: 13px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a5a5a; flex: none; }
@@ -26,7 +26,7 @@
 .nums b { display: block; font-size: 14px; font-weight: 600; }
 .nums span { color: #8a8a8a; font-size: 11px; }
 .row { display: flex; gap: 6px; }
-.btn { flex: 1; height: 28px; border-radius: 8px; border: 1px solid #333; background: #1f1f1f; color: #ededed; font: inherit; cursor: pointer; }
+.btn { flex: 1; white-space: nowrap; height: 28px; border-radius: 8px; border: 1px solid #333; background: #1f1f1f; color: #ededed; font: inherit; cursor: pointer; }
 .btn:hover { background: #2a2a2a; }
 .stages { display: grid; gap: 4px; margin-bottom: 10px; }
 .stage { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 0 8px; background: #1f1f1f; border-radius: 8px; }
@@ -45,9 +45,9 @@
     <div class="top"><span class="dot" id="dot"></span><span class="name">Fortunate Leads</span><button class="x" id="min" title="Collapse">&#8211;</button></div>
     <p class="now" id="now">Connecting…</p>
     <div class="nums"><div><b id="people">0</b><span>people</span></div><div><b id="pages">0</b><span>pages</span></div><div><b id="bios">0</b><span>bios</span></div></div>
-    <p class="lbl">Workspace (all accounts)</p>
+    <p class="lbl">All accounts</p>
     <div class="stages" id="stages"><div class="stage"><span class="word">Loading…</span></div></div>
-    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The workspace stages above keep their own switches.">Pause this account</button><button class="btn" id="open">Open workspace</button></div>
+    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The stages above are for all accounts.">Pause this account</button><button class="btn" id="open">Open app</button></div>
   </div>
 </div>`;
   const $ = (id) => root.getElementById(id);

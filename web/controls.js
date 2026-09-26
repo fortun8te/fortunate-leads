@@ -33,12 +33,25 @@
     if (!s.wait || s.wait.seconds == null) return null;
     return s.wait.seconds - (Date.now() - data.got) / 1e3;
   }
+  // Why a stage waits and until when, in plain words: "daily limit · back 00:00", "next request 9 s".
+  function waitWord(why, sec, clockFn) {
+    why = why || '';
+    const back = sec == null ? '' : sec > 3600
+      ? ' · back ' + new Date(Date.now() + sec * 1e3).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : ' · ' + clockFn(sec);
+    if (/daily/i.test(why)) return 'daily limit' + back;
+    if (/slow down/i.test(why)) return 'Instagram limit' + back;
+    if (/log in/i.test(why)) return 'needs login';
+    if (/security check/i.test(why)) return 'security check';
+    if (/break/i.test(why)) return 'short pause' + back;
+    if (/between requests/i.test(why)) return 'next request' + (sec == null ? '' : ' in ' + clockFn(sec));
+    return 'waiting' + back;
+  }
   function word(s) {
     if (offline) return 'last known: ' + s.state;
     if (s.state === 'paused') return 'paused';
     if (s.state === 'waiting') {
-      const l = left(s);
-      return (/break/i.test(s.wait?.why) ? 'break' : /slow down/i.test(s.wait?.why) ? 'resting' : 'waiting') + (l != null ? ' ' + clock(l) : '');
+      return waitWord(s.wait?.why, left(s), clock);
     }
     if (s.state === 'idle') return /no instagram account/i.test(s.now) ? 'no account online' : /paused or offline/i.test(s.now) ? 'no account free' : 'nothing to do';
     if (s.state !== 'running') return ({off: 'off', error: 'needs attention', failed: 'failed', starting: 'starting'})[s.state] || 'status unavailable';
