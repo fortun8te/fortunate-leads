@@ -2055,6 +2055,7 @@ def qualify_batch(conn, limit=1000):
 # ---------- Laya (optional soft signal) ----------
 
 LAYA_BATCH = 64
+LAYA_REBUILD_BATCH = 5000
 
 
 def laya_hash(*fields):
@@ -2063,40 +2064,89 @@ def laya_hash(*fields):
     return 'profile:' + __import__('hashlib').sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
+def rebuild_laya_queue(conn, signature):
+    """Reconcile one ID range and publish the queue only after the final range.
+
+    Profile and Laya triggers maintain ranges already visited. A durable cursor
+    lets a restart resume without holding the SQLite write lock for a full scan.
+    """
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if db.get_setting(conn, 'laya_queue_signature') == signature:
+            conn.commit()
+            return True
+        state = db.get_setting(conn, 'laya_queue_rebuild')
+        cursor = state['cursor'] if isinstance(state, dict) and state.get('signature') == signature else None
+        if cursor is None:
+            ids = [r[0] for r in conn.execute('SELECT id FROM people ORDER BY id LIMIT ?', (LAYA_REBUILD_BATCH,))]
+        else:
+            ids = [r[0] for r in conn.execute('SELECT id FROM people WHERE id>? ORDER BY id LIMIT ?',
+                                               (cursor, LAYA_REBUILD_BATCH))]
+        if ids:
+            end = ids[-1]
+            bound = ('person_id<=?' if cursor is None else 'person_id>? AND person_id<=?')
+            args = (end,) if cursor is None else (cursor, end)
+            conn.execute('DELETE FROM laya_queue WHERE ' + bound, args)
+            person_bound = ('p.id<=?' if cursor is None else 'p.id>? AND p.id<=?')
+            conn.execute(f"""INSERT INTO laya_queue(person_id,bio_blank,prefilter)
+                SELECT p.id,coalesce(p.bio,'')='',v.prefilter
+                FROM people p LEFT JOIN laya l ON l.person_id=p.id
+                LEFT JOIN verdicts v ON v.person_id=p.id
+                WHERE {person_bound} AND instr(p.handle,'~')=0 AND NOT EXISTS
+                  (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+                  AND (l.person_id IS NULL OR l.input_hash IS NOT
+                    laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))""", args)
+            cursor = end
+        if len(ids) < LAYA_REBUILD_BATCH:
+            db.set_setting(conn, 'laya_queue_signature', signature)
+            conn.execute("DELETE FROM settings WHERE key='laya_queue_rebuild'")
+            complete = True
+        else:
+            db.set_setting(conn, 'laya_queue_rebuild', {'signature': signature, 'cursor': cursor})
+            complete = False
+        conn.commit()
+        return complete
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
     if control.stage_paused(conn, 'ai') or not laya.available():
         return False
+    caller_transaction = conn.in_transaction
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
     signature = laya.cache_signature()
-    if db.get_setting(conn, 'laya_queue_signature') != signature:
-        # One full scan is necessary when the model/questions/policy change or
-        # an older database first opens. Subsequent batches read the index.
-        conn.execute('DELETE FROM laya_queue')
-        conn.execute("""INSERT INTO laya_queue(person_id,bio_blank,prefilter)
-            SELECT p.id,coalesce(p.bio,'')='',v.prefilter
-            FROM people p LEFT JOIN laya l ON l.person_id=p.id
-            LEFT JOIN verdicts v ON v.person_id=p.id
-            WHERE instr(p.handle,'~')=0 AND NOT EXISTS
-              (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+    if not caller_transaction and db.get_setting(conn, 'laya_queue_signature') != signature:
+        if not rebuild_laya_queue(conn, signature):
+            return True  # next worker pass continues the bounded rebuild
+    if caller_transaction:
+        # A caller's uncommitted profile edits must be visible, but its transaction
+        # must not be committed or held behind a queue rebuild during a model call.
+        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+            FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
+            WHERE instr(p.handle,'~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
               AND (l.person_id IS NULL OR l.input_hash IS NOT
-                laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))""")
-        db.set_setting(conn, 'laya_queue_signature', signature)
-        conn.commit()
-    rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
-        FROM laya_queue q JOIN people p ON p.id=q.person_id
-        LEFT JOIN laya l ON l.person_id=p.id
-        ORDER BY q.bio_blank,q.prefilter DESC,q.person_id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+                laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
+            ORDER BY coalesce(p.bio,'')='',v.prefilter DESC,p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
+    else:
+        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+            FROM laya_queue q JOIN people p ON p.id=q.person_id
+            LEFT JOIN laya l ON l.person_id=p.id
+            ORDER BY q.bio_blank,q.prefilter DESC,q.person_id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     # A profile can change back to an already cached hash. Drop that one queue
     # entry rather than sending the same profile to the sidecar again.
     current = [r['id'] for r in rows if r['lh'] == laya_hash(*(r[k] for k in
                ('handle','name','bio','category','website','followers')))]
-    if current:
+    if current and not caller_transaction:
         conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(pid,) for pid in current])
         conn.commit()
         current_ids = set(current)
         rows = [r for r in rows if r['id'] not in current_ids]
     if not rows:
+        return False
+    if control.stage_paused(conn, 'ai'):
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
     if not answers:
@@ -2119,7 +2169,8 @@ def laya_step(conn):
     conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(r['id'],) for r in done])
     # The qualify batch folds the new ranking signal into prefilter on its next pass.
     conn.executemany("UPDATE verdicts SET updated_at='' WHERE person_id=?", [(r['id'],) for r in done])
-    conn.commit()
+    if not caller_transaction:
+        conn.commit()
     return True
 
 
