@@ -45,10 +45,10 @@ test('map resolves history endpoints but excludes history from neighbours and di
 });
 test('map reports displayed sample and search scope with same client/server cap', () => {
   const {m,$} = harness();m.scope='all';
-  assert.match(m.url(),/limit=3000/);
-  m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:3000});
+  assert.match(m.url(),/limit=10000/);
+  m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:10000});
   assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
-  assert.match($('#map-count').textContent,/map limit 3000/);
+  assert.match($('#map-count').textContent,/map limit 10000/);
   $('#map-q').value='person';m.search();
   assert.equal($('#map-hits').textContent,'1 displayed');
   $('#map-q').value='not loaded';m.search();

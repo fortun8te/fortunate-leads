@@ -16,8 +16,8 @@ import llm
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q5'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't5-observed-links'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
+TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -144,7 +144,8 @@ SOCIAL = ('instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'twitter.com
 EMAIL_RX = re.compile(r'[\w.+-]+@[\w-]+\.[\w.]{2,}')
 SIZE_BANDS = ((1_000, '<1k'), (10_000, '1k-10k'), (100_000, '10k-100k'), (1_000_000, '100k-1M'))
 TAXONOMY = {**{t: 'role' for t in ROLE_RX}, **{t: 'niche' for t in NICHE_RX}, **{t: 'signal' for t in SIGNAL_RX},
-            **{t: 'signal' for t in ('Shop Link', 'Shopify', 'Ecom', 'Link Hub', 'Email', 'US', 'NL', 'UK', 'Verified', 'Business')}}
+            **{t: 'signal' for t in ('Shop Link', 'Shopify', 'Ecom', 'Link Hub', 'Email', 'US', 'NL', 'UK', 'Verified', 'Business',
+                                      'Too big', 'Other market')}}
 # Instagram category labels the account picked itself; only the unambiguous ones
 CATEGORY_ROLE = (('Brand', re.compile(r'\(brand\)|^brand$', re.I)),
                  ('Store', re.compile(r'^(?:e-?commerce website|shopping & retail|retail company|clothing store|jewelry store|'
@@ -204,6 +205,25 @@ def _clamp(v):
     return max(0, min(100, int(round(v))))
 
 
+REACH_FOLLOWERS = 300_000   # above this an account is a public figure: lists following them says nothing about access
+OTHER_MARKET_RX = re.compile(r'🇮🇳|🇵🇰|🇧🇩|🇳🇬|🇮🇩|🇵🇭|🇪🇬|🇰🇪|\b(?:india|indian|mumbai|delhi|bangalore|bengaluru|hyderabad|chennai|'
+                             r'kolkata|pune|ahmedabad|jaipur|pakistan|karachi|lahore|islamabad|bangladesh|dhaka|nigeria|lagos|abuja|'
+                             r'indonesia|jakarta|philippines|manila|egypt|cairo|kenya|nairobi|ghana|accra)\b', re.I)
+
+
+def too_big(followers, net=None) -> bool:
+    """A public figure with no direct line to Michael: no entree, whatever the lists say."""
+    net = net or {}
+    return (isinstance(followers, int) and followers >= REACH_FOLLOWERS
+            and net.get('me') not in ('mutual', 'followed') and not net.get('client_seeds'))
+
+
+def other_market(person) -> bool:
+    """Clearly based outside the markets Fortunate sells to, with nothing saying they sell into them."""
+    text = _text(person) + ' ' + str(person.get('website') or '')
+    return bool(OTHER_MARKET_RX.search(text)) and not any(rx.search(text) for rx in US_RX + NL_RX + UK_RX)
+
+
 def network_strength(net) -> int:
     """0-100 from the network (net = server.network_context entry): lists count, seeds that follow them, how well their
     seeds' people converted (seed yield), links to Michael's good/client accounts, and a direct link to Michael."""
@@ -217,6 +237,8 @@ def network_strength(net) -> int:
         s += max(-12, min(20, round((y - 0.25) * 60)))
     s += {'mutual': 16, 'follows': 10, 'followed': 8}.get(net.get('me'), 0)
     s += min(18, 6 * int(net.get('client_seeds') or 0))
+    if too_big(net.get('followers'), net):
+        s = min(s, 20)
     return _clamp(s)
 
 
@@ -239,6 +261,8 @@ def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
     base = blend(_profile_signals(person), net)
     if person.get('is_private'):
         base = min(base, 35)
+    if too_big(person.get('followers'), net) or other_market(person):
+        base = min(base, 15)   # no bio read or model call for people there is no way in with
     if laya_fit is not None:
         base = round(0.75 * base + 0.25 * laya_fit)
     return _clamp(base)
@@ -359,6 +383,10 @@ def rule_tags(person: dict, edges: list[dict], me: str | None) -> list[tuple[str
             add(tag, 'signal')
     if person.get('is_verified'):
         add('Verified', 'signal')
+    if isinstance(f, int) and f >= REACH_FOLLOWERS and not {'followers', 'following'} & set(_seeds(edges, me)[1]):
+        add('Too big', 'signal')
+    if other_market(person):
+        add('Other market', 'signal')
     if person.get('is_business'):
         add('Business', 'signal')
     if isinstance(f, int):
@@ -482,6 +510,8 @@ def rule_verdict(person: dict, tags, net=None) -> dict:
     score += {'1M+': -22, '100k-1M': -6, '<1k': -2}.get(size, 0) if role in ('buyer', 'connector') else 0
     if role in ('unrelated', 'peer'):
         score = min(score, 35)
+    if 'Too big' in sig or 'Other market' in sig:
+        score = min(score, 20)
     profile_signal = _clamp(score)
     score = blend(profile_signal, net if net is not None else net_from_tags(tags))
     return {'score': score, 'content_fit': profile_signal if has_bio else None, 'role': role,
@@ -574,6 +604,9 @@ RUBRIC = """Scoring rubric (fit 0-100) for Fortunate's ideal client:
 - 20-39: creators/influencers, agencies for non-product clients, coaches and course sellers, suppliers and tools: usually not a fit,
   but they can know buyers. Score higher when the evidence shows they also run a product brand.
 - 0-19: clearly personal, fan, spam or bot accounts.
+- Reachability matters: public figures and mega-creators (300k+ followers, household names like Alex Hormozi) score 0-15
+  unless the network lines show a direct link to Michael; being followed by many operators does not make them reachable.
+- Markets: US, NL, UK, EU, Canada, Australia. Businesses clearly based elsewhere that do not sell into these score 0-20.
 Your fit judges the profile itself. The network lines (lists, who follows them, links to Michael and his clients) are added to
 the final ranking separately and weigh more than the bio, so do not push a fit to 0 just because the bio is sparse."""
 
