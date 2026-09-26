@@ -6,16 +6,18 @@ Precision over recall everywhere: a wrong tag is worse than a missing one.
 from __future__ import annotations
 import hashlib
 import json
+import math
 import re
 import time
+import unicodedata
 
 import llm
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q2'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't2'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+PROMPT_VERSION = 'q4'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
+TAGS_VERSION = 't4'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -50,7 +52,7 @@ ROLE_RX = {
                  r'sold (?:at|in)', r'stockists?', r'tag us', r'\d+k?\+? (?:happy )?customers', r'(?:family|woman|women|black|veteran|latina?)[- ]owned',
                  r'made in (?:usa|the usa|america|nl|holland|italy|portugal)', r'(?:designed|made|roasted|crafted|poured) in (?:small batches|la|nyc)',
                  r'(?:skincare|skin care|clothing|apparel|fashion|jewelry|jewellery|beauty|supplement|pet|coffee|candle|dtc|d2c|e-?com(?:merce)?|consumer)'
-                 r' (?:brand|company|label|co)(?! owners?| founders?| operators?| marketers?)'),
+                 r' (?:brand|company|label|co)(?! owners?| founders?| operators?| marketers?| deals?)'),
     'Personal': _rx(r'student', r'uni(?:versity)?', r'he/him', r'she/her', r'they/them', r'personal account', r'photo ?dump', r'god first',
                     r'mom of \d', r'dad of \d', r'wife', r'husband', r'\d\d ?y/?o', r'living my best life', r'dog mom', r'cat mom', r'mama to'),
 }
@@ -367,8 +369,8 @@ def rule_tags(person: dict, edges: list[dict], me: str | None) -> list[tuple[str
     total = len(others) + (1 if mine else 0)
     if total >= 2:
         add(f'in {total} lists', 'source')
-    if mine or (me and re.search(r'@' + re.escape(me.lstrip('@')) + r'\b', bio, re.I)):
-        add('knows you', 'source')
+    if me and re.search(r'@' + re.escape(me.lstrip('@')) + r'\b', bio, re.I):
+        add('mentions you', 'source')
     if 'followers' in mine:
         add('follows you', 'source')
     if 'following' in mine:
@@ -410,6 +412,38 @@ def _seed_count(g):
     return len([t for t in g.get('source', []) if t.startswith('via @')]) + (1 if 'knows you' in g.get('source', []) else 0)
 
 
+# Explicit business/service activity is required; interests and audience size are not activity.
+PRODUCT_TERMS = r'(?:skincare|skin care|clothing|apparel|beauty|coffee|candles?|pets?|jewell?ery|supplements?|huidverzorging|kleding|kaarsen|sieraden|hautpflege|kleidung|kerzen|schmuck|cosmétique[s]?|vêtements|bougies|bijoux|ropa|velas|joyas|护肤|服装|蜡烛|مستحضرات التجميل|ملابس)'
+MULTI_BRAND = re.compile(r'(?:marque|marca|merk|marke)\s+(?:de |de\s+soins\s+de\s+la\s+peau|van |für |di )?' + PRODUCT_TERMS +
+                         r'|' + PRODUCT_TERMS + r'[- ]?(?:marke|merk|品牌|brand)|علامة تجارية.{0,24}' + PRODUCT_TERMS, re.I)
+MULTI_FOUNDER = re.compile(r'(?<!\w)(?:oprichter|eigenaar|gründer(?:in)?|inhaber(?:in)?|fondateur|fondatrice|fundador(?:a)?|dueño|dueña|مؤسس(?:ة)?)(?!\w)|创始人|创办人', re.I)
+INTEREST = re.compile(r'\b(?:interested in|learning|aspiring|enthusiast|fan of|love|lover|interesse in|liefhebber|passionné|passionnée|intéressé|intéressée|interessiert|fan von|me encanta|aficionado)\b|爱好|مهتم', re.I)
+
+
+def _connector_support(text):
+    service = ROLE_RX['Agency'].search(text) or ROLE_RX['Freelancer'].search(text)
+    return bool(service and ECOM.search(text) and not re.search(
+        r'\b(?:interested in|learning|aspiring|enthusiast|fan of)\b', text, re.I))
+
+
+def _buyer_support(person):
+    text = PROMO.sub(' ', unicodedata.normalize('NFC', _text(person)))
+    text = ' '.join(part for part in re.split(r'[\n|.!?。]', text) if not INTEREST.search(part))
+    niches = any(rx.search(text) for rx in NICHE_RX.values())
+    explicit_brand = re.search(r'\b(?:physical.product|consumer|dtc|d2c|e-?com(?:merce)?|skincare|clothing|apparel|beauty|coffee|candle|pet|jewel(?:le)?ry|supplement)\s+(?:brand|company|label)\b(?!\s+(?:deals?|owners?|founders?|operators?|marketers?))', text, re.I)
+    store = ROLE_RX['Store'].search(text)
+    commerce = ROLE_RX['Brand'].search(text)
+    # A shop link helps only alongside product evidence, not an affiliate storefront.
+    shop = 'Shop Link' in {t for t, g in rule_tags(person, [], None) if g == 'signal'}
+    selling = bool(store or (niches and (commerce or shop)))
+    service = any(ROLE_RX[r].search(text) for r in ('Agency', 'Freelancer', 'Creative', 'Creator', 'Coach', 'Supplier'))
+    ownership = re.search(r'(?:founder|owner|ceo)\s+(?:of |at )?(?:a |our |the )?(?:\w+\s+){0,3}' + PRODUCT_TERMS + r'\s+brand', text, re.I)
+    direct_sales = store or shop or re.search(r'\b(?:shop (?:now|our|here|online)|handmade|handcrafted|ships?|shipping|our products)\b', text, re.I)
+    if service and not direct_sales and not ownership and not MULTI_FOUNDER.search(text):
+        return False
+    return bool(explicit_brand or MULTI_BRAND.search(text) or selling)
+
+
 def rule_verdict(person: dict, tags, net=None) -> dict:
     """Rules on the bio give the profile read; the network (net, else what the source tags say) the larger share."""
     g = _names(tags)
@@ -420,18 +454,20 @@ def rule_verdict(person: dict, tags, net=None) -> dict:
     first = roles[0] if roles else None
     if first in ('Agency', 'Freelancer') and LOCAL_SERVICE.search(text) and not ECOM.search(text):
         role, score = 'peer', 28
-    elif first in ('Agency', 'Freelancer') and ECOM.search(text):
+    elif first in ('Agency', 'Freelancer') and _connector_support(text):
         score += 8
+    elif first in ('Agency', 'Freelancer'):
+        role, score = 'unclear', 34
     if first == 'Creative' and re.search(r'\bad (?:creatives?|designer)', text, re.I):
         role, score = 'peer', 30
     elif first == 'Creative' and ECOM.search(text) or first == 'Creative' and re.search(r'\bproduct\b', text, re.I):
         score += 8
-    if role == 'unclear' and 'Founder' in sig and (niche or 'Shop Link' in sig or 'Shopify' in sig):
+    if role == 'buyer' and not _buyer_support(person):
+        role, score = 'unclear', 34
+    if role == 'unclear' and 'Founder' in sig and _buyer_support(person):
         role, score = 'buyer', 60
-    elif role == 'unclear' and ('Shop Link' in sig or 'Shopify' in sig) and niche:
+    elif role == 'unclear' and _buyer_support(person):
         role, score = 'buyer', 58
-    elif role == 'unclear' and ECOM.search(text) and ({'Founder', 'Scaling'} & sig):
-        role, score = 'buyer', 54
     elif role == 'unclear' and 'Founder' in sig:
         score = 42
     if SPAM.search(text):
@@ -444,8 +480,10 @@ def rule_verdict(person: dict, tags, net=None) -> dict:
     score += {'1M+': -22, '100k-1M': -6, '<1k': -2}.get(size, 0) if role in ('buyer', 'connector') else 0
     if role in ('unrelated', 'peer'):
         score = min(score, 35)
-    score = blend(_clamp(score), net if net is not None else net_from_tags(tags))
-    return {'score': score, 'role': role, 'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)}
+    profile_signal = _clamp(score)
+    score = blend(profile_signal, net if net is not None else net_from_tags(tags))
+    return {'score': score, 'content_fit': profile_signal if has_bio else None, 'role': role,
+            'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)}
 
 
 NOUN = {'Brand': 'brand', 'Store': 'online store', 'Agency': 'agency', 'Freelancer': 'freelancer', 'Creative': 'creative',
@@ -460,6 +498,8 @@ def _reason(role, first, g, has_bio, text=''):
         return ('No bio read yet, ' + src + '.') if src else 'No bio read yet.'
     sig, niche = set(g.get('signal', [])), [n.lower() for n in g.get('niche', [])][:2]
     noun = NOUN.get(first) or ('brand' if role == 'buyer' else None)
+    if role == 'unclear' and first in ('Brand', 'Store'):
+        noun = None
     if noun:
         what = (' and '.join(niche) + ' ' if niche and role in ('buyer', 'connector', 'supplier') else '') + noun
         what = ('an ' if what[0] in 'aeiou' else 'a ') + what
@@ -498,6 +538,8 @@ Categories:
 - unclear: real signs of a business but not enough to say what it is."""
 
 READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person scrolling, not a keyword matcher):
+- Bios may be in Dutch, German, French, Spanish or another language. Judge their meaning, write the reason in English,
+  and keep evidence quotes exactly as written in the bio or name. Do not turn a translation into an exact quote.
 - Bios are vague on purpose. "CEO @x", "Founder @x", "building @x" means the business is @x: judge @x, and ask to look at it.
 - The Instagram category label is chosen by the user. "Entrepreneur", "Digital creator", "Public figure", "Personal blog" say almost nothing.
 - Link in bio: a shop domain with products is the best evidence there is. Link hubs (linktr.ee etc.) need the real destination.
@@ -508,7 +550,7 @@ READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person s
 - Many good leads are lowkey: e-commerce owners and ads/growth people often keep a personal-looking profile and never say it in the bio.
   Quiet signs: sitting in several e-commerce/ads operators' networks, a brand @mention, "ops", "scaling", "8fig",
   a Shopify link, a second account for the business. Weigh these; do not dismiss a sparse profile that has them.
-- Michael's own account is @fortun8te. Mentions of or connections to @fortun8te mean they know him.
+- Michael's own account is @fortun8te. A mention or follow is evidence of that action only; it does not prove they know him personally.
 - Private or near-empty profiles with no negative signs: category unclear, fit around 40. Michael will judge those himself; do not call them unrelated just for being sparse.
 - Never infer gender, age, ethnicity, nationality or wealth; they are irrelevant to fit. Never invent facts: only use what the evidence shows."""
 
@@ -542,17 +584,9 @@ def _call(model, messages, timeout):
         raise ValueError(str(e)) from None
 
 
-_PROVIDERS = {}
-
-
 def _providers():
-    """The shared provider layer; a PROXY override (tests, other ports) gets its own instance with the same keys."""
-    base = llm.get()
-    if PROXY == base.proxy:
-        return base
-    if PROXY not in _PROVIDERS:
-        _PROVIDERS[PROXY] = llm.Providers(base.keys, base.models, PROXY, base.daily_limit)
-    return _PROVIDERS[PROXY]
+    """Use the exact shared pool so every caller observes the same quotas."""
+    return llm.get()
 
 
 def parse_json(text):
@@ -655,8 +689,10 @@ def fewshot_text(examples):
 
 
 def fewshot_version(examples):
-    key = sorted((str(e.get('handle')), e.get('label')) for e in examples or [])
-    return hashlib.sha256(json.dumps(key).encode()).hexdigest()[:8] if key else '0'
+    # The actual example text changes when a marked person's bio or name changes.
+    key = sorted((str(e.get('handle')), str(e.get('name') or ''), str(e.get('bio') or ''), str(e.get('label') or ''))
+                 for e in examples or [])
+    return hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()[:8] if key else '0'
 
 
 def prompt_version(examples=None):
@@ -664,19 +700,19 @@ def prompt_version(examples=None):
 
 
 SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
-{"id": <the id>, "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
+{"id": <the id>, "handle": "the exact profile handle", "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
  "evidence": ["up to 3 short exact quotes from the bio/name that support the verdict"],
  "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
  "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
-Use true only when the profile clearly shows it (e.g. "as seen on", paid-ads talk, "US shipping", a US city); otherwise null."""
+Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
 
 
 def _system(examples, n):
     allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
     fmt = SCHEMA_ONE % ', '.join(allowed)
     fmt += ('\nOne profile: reply with that one object.' if n == 1 else
-            '\nSeveral profiles: reply {"results": [one object per profile, same ids]}.')
+            '\nSeveral profiles: reply {"results": [one object per profile, same ids and exact handles]}.')
     parts = [BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt]
     return '\n\n'.join(p for p in parts if p)
 
@@ -688,10 +724,16 @@ ROLE_CAP = {'buyer': 100, 'connector': 80, 'collaborator': 65, 'unclear': 65, 's
 
 
 def _evidence(v, person):
-    hay = ' '.join(str(person.get(k) or '') for k in ('bio', 'name', 'category', 'website', 'handle')).lower()
+    # The prompt asks for exact quotes from bio/name. Do not launder an inferred
+    # category, URL or handle into a quote shown as direct profile evidence.
+    fields = [unicodedata.normalize('NFC', str(person.get(k) or '')).casefold() for k in ('bio', 'name')]
+    quotes = v.get('evidence')
+    if not isinstance(quotes, list):
+        return []
     out = []
-    for q in v.get('evidence') or []:
-        if isinstance(q, str) and 2 < len(q.strip()) <= 160 and q.strip().lower().strip('"\'') in hay:   # quotes only, never invented
+    for q in quotes:
+        if isinstance(q, str) and 2 < len(q.strip()) <= 160 and any(
+                unicodedata.normalize('NFC', q.strip()).casefold() in field for field in fields):
             out.append(q.strip())
     return out[:3]
 
@@ -705,7 +747,7 @@ def ai_tags(v, fit):
     role = v.get('role')
     if role == 'buyer' and isinstance(v.get('niche'), str) and TAXONOMY.get(v['niche']) == 'niche':
         out.append('AI: ' + v['niche'])
-    if role == 'buyer' and AI_STAGE.get(v.get('stage')):
+    if role == 'buyer' and isinstance(v.get('stage'), str) and AI_STAGE.get(v.get('stage')):
         out.append(AI_STAGE[v['stage']])
     if v.get('decision_maker') is True and role in ('buyer', 'connector'):
         out.append('AI: Decision maker')
@@ -721,28 +763,65 @@ def ai_tags(v, fit):
 def _verdict(v, person, tags, used, version, net=None):
     if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
         return None
-    allowed = [t for t, g in TAXONOMY.items() if g == 'niche']
-    fit = int(max(0, min(100, v['fit'])))
-    score = blend(min(ROLE_CAP[v['role']], fit), net if net is not None else net_from_tags(tags))
-    reason = re.sub(r'\s+', ' ', str(v.get('reason') or '')).strip()[:220] or rule_verdict(person, tags)['reason']
-    extra = [t for t in (v.get('extra_tags') or []) if isinstance(t, str) and t in allowed]
-    if isinstance(v.get('niche'), str) and v['niche'] in allowed:
+    if isinstance(v['fit'], float) and not math.isfinite(v['fit']):
+        return None
+    for key in ('decision_maker', 'runs_ads', 'us_market'):
+        if v.get(key) is not None and type(v[key]) is not bool:
+            return None
+    for key in ('evidence', 'extra_tags'):
+        if v.get(key) is not None and (not isinstance(v[key], list) or any(not isinstance(x, str) for x in v[key])):
+            return None
+    for key in ('stage', 'niche', 'brand_handle', 'reason'):
+        if v.get(key) is not None and not isinstance(v[key], str):
+            return None
+    evidence = _evidence(v, person)
+    if not evidence:
+        return None
+    source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
+    if not str(person.get('bio') or '').strip() and not _buyer_support({'name': person.get('name')}):
+        return None
+    v = dict(v)
+    if ((v['role'] == 'buyer' and not _buyer_support(person)) or
+            (v['role'] == 'connector' and not _connector_support(source))):
+        fallback = rule_verdict(person, rule_tags(person, [], None))
+        v.update(role=fallback['role'], fit=fallback['content_fit'] or 34, decision_maker=False,
+                 runs_ads=False, us_market=False, stage=None, niche=None, extra_tags=[], brand_handle=None)
+    # Claims shown as badges must have their own support, even when the role is valid.
+    decision = SIGNAL_RX['Founder'].search(source) or MULTI_FOUNDER.search(source) or re.search(r'\b(?:head|director) of (?:purchasing|marketing|e-?commerce)\b', source, re.I)
+    v['decision_maker'] = v.get('decision_maker') is True and bool(decision)
+    v['runs_ads'] = v.get('runs_ads') is True and bool(re.search(r'\b(?:running|we run|our|spend on)\s+(?:paid |meta |facebook )?ads\b|\bad spend\b', source, re.I))
+    v['us_market'] = v.get('us_market') is True and bool(re.search(r'\b(?:ships?|shipping|selling|sells?)\s+(?:to |in |across |within )?(?:the )?(?:us|usa|united states)\b|\bUS market\b', source, re.I))
+    stages = {'pre-launch': r'pre[- ]launch|launching soon', 'early': r'just launched|newly launched',
+              'growing': r'we are growing|growing our|scaling our', 'established': r'established'}
+    if v.get('stage') not in stages or not re.search(stages[v['stage']], source, re.I):
+        v['stage'] = None
+    allowed = [t for t, g in TAXONOMY.items() if g == 'niche' and NICHE_RX[t].search(source)]
+    if v.get('niche') not in allowed:
+        v['niche'] = None
+    fit = int(max(0, min(ROLE_CAP[v['role']], v['fit'])))
+    content_fit = min(ROLE_CAP[v['role']], fit)
+    score = blend(content_fit, net if net is not None else net_from_tags(tags))
+    # Showing the verified quote avoids laundering unsupported generated prose into facts.
+    reason = 'Profile says: "' + evidence[0] + '".'
+    extra = [t for t in (v.get('extra_tags') or []) if t in allowed]
+    if v.get('niche') in allowed:
         extra.insert(0, v['niche'])
     have = {t for t, _ in tags or []}
     rt = ROLE_TAG.get(v['role'])
     if rt and not (have & {'Brand', 'Store'} if rt == 'Brand' else have & {'Agency', 'Freelancer'} if rt == 'Agency' else rt in have):
         extra.append(rt)
     new = [(t, TAXONOMY[t]) for t in dict.fromkeys(extra) if t not in have]
-    if v['role'] == 'buyer' and v.get('decision_maker') is True and 'Founder' not in have:
-        new.append(('Founder', 'signal'))
     fit_tag = 'Fit: strong' if fit >= 75 and v['role'] == 'buyer' else 'Fit: good' if fit >= 55 and v['role'] in ('buyer', 'connector') else None
     if fit_tag:
         new.append((fit_tag, 'signal'))
     new += [(t, 'ai') for t in ai_tags(v, fit) if t not in have]
     brand = v.get('brand_handle')
     brand = brand.strip() if isinstance(brand, str) and re.fullmatch(r'@?[\w.]{2,30}', brand.strip()) else None
-    return {'score': score, 'role': v['role'], 'reason': reason, 'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
-            'model': used, 'fit': fit, 'tags': new, 'evidence': _evidence(v, person), 'brand_handle': brand, 'prompt': version}
+    if brand and not (v['role'] == 'buyer' and decision and re.search(r'(?<![\w.])@' + re.escape(brand.lstrip('@')) + r'(?!\w|\.\w)', source, re.I)):
+        brand = None
+    return {'score': score, 'content_fit': content_fit, 'role': v['role'], 'reason': reason,
+            'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
+            'model': used, 'fit': fit, 'tags': new, 'evidence': evidence, 'brand_handle': brand, 'prompt': version}
 
 
 def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget: float = LLM_BUDGET) -> list:
@@ -766,17 +845,32 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         if not data:
             continue
         results = data.get('results') if isinstance(data.get('results'), list) else [data] if len(chunk) == 1 else []
-        for k, r in enumerate(results):
+        identified = {}
+        duplicates = set()
+        for r in results:
             if not isinstance(r, dict):
                 continue
-            rid = r.get('id', k if len(chunk) > 1 else 0)
-            try:
+            rid = r.get('id')
+            if isinstance(rid, str) and len(rid) <= 9 and re.fullmatch(r'\d+', rid):
                 rid = int(rid)
-            except (TypeError, ValueError):
+            if isinstance(rid, bool) or not isinstance(rid, int) or not 0 <= rid < len(chunk):
                 continue
-            if 0 <= rid < len(chunk) and out[i + rid] is None:
-                it = chunk[rid]
+            if rid in identified:
+                duplicates.add(rid)
+            identified[rid] = r
+        for rid, r in identified.items():
+            if rid in duplicates:
+                continue
+            it = chunk[rid]
+            handle = r.get('handle')
+            expected = str(it['person'].get('handle') or '').lstrip('@').casefold()
+            if not expected or not isinstance(handle, str) or handle.strip().lstrip('@').casefold() != expected:
+                continue
+            try:
                 out[i + rid] = _verdict(r, it['person'], it.get('tags'), used, version, it.get('net'))
+            except (TypeError, ValueError, OverflowError):
+                # One malformed model result must not discard other people's valid replies.
+                continue
     return out
 
 
@@ -785,10 +879,27 @@ def llm_verdict(person: dict, tags, edges, timeout: float = 45, models=None, bud
     return llm_verdicts([{'person': person, 'tags': tags, 'edges': edges, 'net': net}], examples, timeout, models, budget)[0]
 
 
-def input_hash(person: dict, edges) -> str:
+def legacy_input_hash(person: dict, edges, net=None) -> str:
     keys = ('handle', 'name', 'bio', 'website', 'category', 'followers', 'following', 'posts', 'is_private', 'is_verified', 'is_business')
     payload = [PROMPT_VERSION, [person.get(k) for k in keys], sorted({(str(e.get('seed') or '').lower(), str(e.get('direction'))) for e in edges or []})]
+    if net is not None:
+        # These are the network facts used by the score and the model packet.
+        # Ordering and transient database timestamps must not affect the key.
+        payload.append({'lists': net.get('lists'),
+                        'seeds': sorted({(str(s).lower(), str(d)) for s, d in net.get('seeds', [])}),
+                        'seed_yield': net.get('seed_yield'), 'seed_marked': net.get('seed_marked'),
+                        'client_seeds': net.get('client_seeds'), 'me': net.get('me')})
     owner = [person.get('status'), (person.get('note') or '').strip(), sorted(person.get('manual_tags') or [])]
     if any(owner):   # appended only when set, so hashes of people Michael never touched stay as they were
         payload.append(owner)
+    return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def input_hash(person: dict, edges=None, net=None) -> str:
+    """Business-fit evidence identity. Graph changes only reblend the saved fit."""
+    keys = ('handle', 'name', 'bio', 'website', 'category', 'followers', 'following', 'posts',
+            'is_private', 'is_verified', 'is_business')
+    payload = ['content-v1', PROMPT_VERSION, [person.get(k) for k in keys],
+               [person.get('status'), (person.get('note') or '').strip(),
+                sorted(person.get('manual_tags') or [])]]
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]

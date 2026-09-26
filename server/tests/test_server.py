@@ -17,13 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 stub = types.ModuleType('qualify')
 stub.prefilter = lambda p, seeds, net=None, laya_fit=None: 10 * len(seeds)
+stub.network_strength = lambda net: min(100, 10 * (net or {}).get('lists', 0))
 stub.rule_tags = lambda p, edges, me: [(f"via @{e['seed']}", 'source') for e in edges] + (
     [('founder', 'role')] if 'founder' in (p.get('bio') or '') else [])
-stub.rule_verdict = lambda p, tags, net=None: {'score': 80 if ('founder', 'role') in tags else 30, 'role': 'x', 'reason': 'r',
+stub.rule_verdict = lambda p, tags, net=None: {'score': 80 if ('founder', 'role') in tags else 30,
+                                     'content_fit': (80 if ('founder', 'role') in tags else 30) if p.get('bio') else None,
+                                     'role': 'x', 'reason': 'r',
                                      'tier': 'unread' if not p.get('bio') else 'hot' if ('founder', 'role') in tags else 'cold'}
 stub.llm_verdict = lambda p, tags, edges: None
-stub.input_hash = lambda p, edges: 'h'
-sys.modules['qualify'] = stub
+stub.input_hash = lambda p, edges, net=None: 'h' if p.get('bio') else 'h0'   # a new bio changes the input
+stub.legacy_input_hash = lambda p, edges, net=None: 'h'
+stub.blend = lambda content, net: content or 0   # network reblend is a no-op in these tests
+stub._tier = lambda score, has_bio: 'unread' if not has_bio else 'hot' if score >= 70 else 'cold'
 
 import db  # noqa: E402
 import migrate  # noqa: E402
@@ -34,6 +39,9 @@ EXT = server.EXT_ORIGIN
 
 class Base(unittest.TestCase):
     def setUp(self):
+        self.tokens = {}
+        self.old_qualify = server.qualify
+        server.qualify = stub
         self.tmp = tempfile.TemporaryDirectory()
         server.CFG['db'] = str(Path(self.tmp.name) / 'leads.sqlite')
         c = db.init(server.CFG['db'])
@@ -50,9 +58,12 @@ class Base(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.tmp.cleanup()
+        server.qualify = self.old_qualify
 
     def call(self, path, body=None, origin=None, host=None):
         port = server.CFG['port']
+        if isinstance(body, dict) and body.get('job_id') and 'lease_token' not in body:
+            body = dict(body, lease_token=self.tokens.get(body['job_id']))
         req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', method='POST' if body is not None else 'GET',
                                      data=json.dumps(body).encode() if body is not None else None)
         if origin is None and path.startswith('/api/ext/'):
@@ -64,14 +75,21 @@ class Base(unittest.TestCase):
         req.add_header('Host', host or f'127.0.0.1:{port}')
         try:
             with urllib.request.urlopen(req) as r:
-                return r.status, json.loads(r.read())
+                out = json.loads(r.read())
+                if isinstance(out, dict) and out.get('job') and out['job'].get('lease_token'):
+                    self.tokens[out['job']['id']] = out['job']['lease_token']
+                return r.status, out
         except urllib.error.HTTPError as e:
             with e:
                 return e.code, json.loads(e.read())
 
-    def page(self, job, users, cursor=None, done=False):
+    def page(self, job, users, cursor=None, done=False, **extra):
+        if 'requested_cursor' not in extra:   # like the extension: name the cursor this page was fetched from
+            row = self.conn.execute('SELECT cursor FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
+            extra['requested_cursor'] = row[0] if row else None
         return self.call('/api/ext/list-page', {'job_id': job['id'], 'seed': job['seed'], 'ig_id': '99', 'direction': job['direction'],
-                                                'users': users, 'next_cursor': cursor, 'done': done, 'total': 3})
+                                                'users': users, 'next_cursor': cursor, 'done': done, 'total': 3,
+                                                'total_source': 'current_run', **extra})
 
 
 class ServerTest(Base):
@@ -88,11 +106,12 @@ class ServerTest(Base):
         job = self.call('/api/ext/next')[1]['job']
         self.assertEqual((job['kind'], job['seed'], job['direction'], job['cursor']), ('list', 'brand', 'followers', None))
         users = [{'ig_id': '1', 'handle': 'alice', 'name': 'A'}, {'ig_id': '2', 'handle': 'bob'}]
-        self.assertEqual(self.page(job, users, cursor='c1')[1], {'ok': True, 'received': 2})
+        self.assertEqual(self.page(job, users, cursor='c1', requested_cursor=None)[1], {'ok': True, 'received': 2})
         again = self.call('/api/ext/next')[1]['job']
         self.assertEqual((again['id'], again['cursor'], again['ig_id']), (job['id'], 'c1', '99'))
-        self.page(job, [{'ig_id': '4', 'handle': 'dan'}], cursor='c2')
-        self.assertEqual(self.page(job, users, cursor='c1')[1], {'ok': True, 'received': 3, 'duplicate': True})  # outbox retry
+        self.page(job, [{'ig_id': '4', 'handle': 'dan'}], cursor='c2', requested_cursor='c1')
+        # outbox retry: the extension names the cursor each page was fetched from
+        self.assertEqual(self.page(job, users, cursor='c1', requested_cursor=None)[1], {'ok': True, 'received': 3, 'duplicate': True})
         self.assertEqual(self.conn.execute("SELECT cursor, received FROM lists WHERE seed='brand'").fetchone()[:], ('c2', 3))
         self.assertEqual(self.conn.execute("SELECT count(*) FROM edges WHERE seed='brand' AND direction='followers'").fetchone()[0], 3)
         self.call('/api/ext/next')
@@ -106,7 +125,7 @@ class ServerTest(Base):
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
         job = self.call('/api/ext/next')[1]['job']
-        self.assertEqual(job, {'id': job['id'], 'kind': 'profile', 'handle': 'dave', 'ig_id': '7'})
+        self.assertEqual(job, {'id': job['id'], 'kind': 'profile', 'handle': 'dave', 'ig_id': '7', 'lease_token': job['lease_token']})
         self.call('/api/ext/profile', {'job_id': job['id'], 'profile': {'ig_id': '7', 'handle': 'dave', 'bio': 'founder of X',
                                                                          'followers': 1200, 'is_business': True}})
         p = self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
@@ -137,11 +156,12 @@ class ServerTest(Base):
         self.assertIsNone(self.call('/api/ext/next?kinds=list')[1]['job'])
         self.call('/api/scraper/pause', {'paused': True})
         self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 300},
-                                                         'job': None, 'cooldown_until': None})
+                                                         'job': None, 'cooldown_until': None, 'stages': {'list': False, 'profile': False}})
         self.call('/api/scraper/pause', {'paused': False})
-        self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})
+        self.assertEqual(self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})[0], 400)  # out of range: nothing changes
+        self.call('/api/scraper/budget', {'list': 3000, 'profile': 200})
         hb = self.call('/api/ext/heartbeat', {'version': '1', 'state': 'idle', 'today': {'list': 1, 'profile': 2}})[1]
-        self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}})
+        self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}, 'stages': {'list': True, 'profile': True}})
         self.assertTrue(self.call('/api/scraper')[1]['ext']['online'])
         self.call('/api/ext/error', {'job_id': None, 'code': 'challenge', 'retry_at': None, 'message': 'checkpoint'})
         self.assertFalse(self.call('/api/ext/next')[1]['paused'])  # the extension's own hold stops requests, not a global pause
@@ -198,7 +218,8 @@ class ServerTest(Base):
         m = self.call('/api/map?scope=all')[1]
         self.assertNotEqual(m['rev'], rev)
         self.assertEqual({n['id'] for n in m['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2'})
-        self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'}, m['links'])
+        self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'},
+                      [{k: link[k] for k in ('source', 'target', 'direction')} for link in m['links']])
         self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
                                               'tags', 'seeds', 'is_me', 'pid', 'note'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
@@ -225,16 +246,16 @@ class ServerTest(Base):
         self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 1, 'total': 1, 'source': 'manual'}, tags)
 
     def test_heartbeat_rate_and_soak(self):
-        self.call('/api/ext/heartbeat', {'version': '2', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
+        self.call('/api/ext/heartbeat', {'version': '3.9.0', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
                                                                                     'last_hit_at': '2026-09-24T10:00:00Z', 'x': 1}})
         s = self.call('/api/scraper')[1]
         self.assertEqual(s['ext']['rate'], {'pages_hour': 300.0, 'people_hour': 7400.6, 'last_hit_at': '2026-09-24T10:00:00.000000+00:00'})
-        self.call('/api/ext/heartbeat', {'version': '2', 'rate': {'pages_hour': 'fast', 'last_hit_at': 'nope'}})
+        self.call('/api/ext/heartbeat', {'version': '3.9.0', 'rate': {'pages_hour': 'fast', 'last_hit_at': 'nope'}})
         self.assertEqual(self.call('/api/scraper')[1]['ext']['rate'], {'pages_hour': None, 'people_hour': None, 'last_hit_at': None})
         self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
         job = self.call('/api/ext/next')[1]['job']
         self.page(job, [{'ig_id': '1', 'handle': 'a'}, {'ig_id': '2', 'handle': 'b'}], cursor='c1')
-        self.page(job, [{'ig_id': '1', 'handle': 'a'}, {'ig_id': '2', 'handle': 'b'}], cursor='c1')  # retry
+        self.page(job, [{'ig_id': '1', 'handle': 'a'}, {'ig_id': '2', 'handle': 'b'}], cursor='c1', requested_cursor=None)  # retry
         soak = self.call('/api/scraper')[1]['soak']
         self.assertEqual(soak['1h'], {'pages': 1, 'people': 2, 'new_people': 2, 'profiles': 0})
         self.assertEqual(soak['6h']['pages'], 1)
@@ -291,7 +312,7 @@ class ServerTest(Base):
         self.page(job, [], done=True)
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'message': '429'})  # late error
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'done')
-        self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'done')
+        self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'partial')
 
     def test_budget_defaults_not_mutated(self):
         self.call('/api/scraper/budget', {'profile': 7})
@@ -356,6 +377,37 @@ class TagsViewsMapTest(Base):
         self.conn.commit()
         server.qualify_batch(self.conn)
         return ids
+
+    def test_scores_are_separate_and_edges_keep_direction(self):
+        ids = self.people({'ann': ('ordinary profile', 200, ['s1', 's2', 's3', 's4'])})
+        pid = ids['ann']
+        db.add_edge(self.conn, 's1', pid, 'following')
+        self.conn.commit()
+        lead = self.call('/api/leads?status=all')[1]['rows'][0]
+        self.assertEqual((lead['business_fit'], lead['score']), (30, 30))
+        self.assertEqual(lead['connection_strength'], 40)
+        self.assertEqual(self.call(f'/api/person/{pid}')[1]['business_fit'], 30)
+        self.assertEqual({e['direction'] for e in self.call(f'/api/person/{pid}')[1]['edges'] if e['seed'] == 's1'},
+                         {'followers', 'following'})
+        node = next(n for n in self.call('/api/map?scope=all')[1]['nodes'] if n['id'] == f'p:{pid}')
+        self.assertEqual((node['business_fit'], node['connection_strength']), (30, 40))
+
+    def test_legacy_model_fit_stays_unknown(self):
+        ids = self.people({'ann': ('founder', 200, ['s1']), 'ben': ('ordinary profile', 100, ['s1'])})
+        pid = ids['ben']
+        self.conn.execute("UPDATE verdicts SET model='llm', content_fit=NULL, input_hash='h' WHERE person_id=?", (pid,))
+        self.conn.commit()
+        blend, tier = stub.blend, stub._tier
+        stub.NET_WEIGHT = 0.6
+        stub.blend = lambda content, net: round(.6 * stub.network_strength(net) + .4 * content)
+        stub._tier = lambda score, has_bio: 'hot' if score >= 70 else 'warm' if score >= 45 else 'cold'
+        try:
+            self.call(f"/api/person/{ids['ann']}/mark", {'status': 'client'})
+        finally:
+            stub.blend, stub._tier = blend, tier
+            del stub.NET_WEIGHT
+        self.assertIsNone(self.conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0])
+        self.assertIsNone(self.call(f'/api/person/{pid}')[1]['business_fit'])
 
     def rows(self, qs, path='/api/leads?'):
         code, out = self.call(path + qs)
@@ -452,7 +504,7 @@ class TagsViewsMapTest(Base):
         ids = self.people(self.SPEC)
         allids = list(ids.values())
         out = self.call('/api/people/bulk', {'ids': allids + [999999], 'add': ['  batch   one ', 'b2'], 'status': 'contacted'})[1]
-        self.assertEqual(out, {'ok': True, 'updated': 4})
+        self.assertEqual(out, {'ok': True, 'updated': 4, 'updated_ids': sorted(allids), 'missing_ids': [999999]})
         self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='batch one' AND source='manual'").fetchone()[0], 4)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status='contacted'").fetchone()[0], 4)
         self.call(f"/api/person/{ids['ann']}/mark", {'status': 'interested', 'note': 'call'})
@@ -464,7 +516,7 @@ class TagsViewsMapTest(Base):
         self.assertEqual(self.call('/api/people/bulk', {'ids': list(range(5001))})[0], 400)
         self.assertEqual(self.call('/api/people/bulk', {'ids': ['1']})[0], 400)
         self.assertEqual(self.call('/api/people/bulk', {'ids': allids, 'status': 'meh'})[0], 400)
-        self.assertEqual(self.call('/api/people/bulk', {'ids': [], 'add': ['x']})[1], {'ok': True, 'updated': 0})
+        self.assertEqual(self.call('/api/people/bulk', {'ids': [], 'add': ['x']})[1], {'ok': True, 'updated': 0, 'updated_ids': [], 'missing_ids': []})
 
     def test_tag_rules(self):
         ids = self.people(self.SPEC)
@@ -640,7 +692,7 @@ class TagsViewsMapTest(Base):
 
     def test_retag_on_taxonomy_change(self):
         pid = self.people({'eve': ('founder', 10, ['s1'])})['eve']
-        self.conn.execute("UPDATE verdicts SET model='m', score=91, input_hash='h'")  # an LLM verdict (stub hash is 'h')
+        self.conn.execute("UPDATE verdicts SET model='m', score=91, content_fit=91, input_hash='h'")  # an LLM verdict (stub hash is 'h')
         self.conn.execute("DELETE FROM tags WHERE source='auto'")  # stands in for tags from an older taxonomy
         self.conn.commit()
         self.assertFalse(server.retag_if_changed(self.conn))  # stub has no TAGS_VERSION

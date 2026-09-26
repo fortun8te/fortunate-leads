@@ -34,11 +34,21 @@
     const e = edgeOf(json);
     return e && Array.isArray(e.edges) ? e.edges.map((x) => x && x.node) : null;
   }
-  const cursorOf = (json) => {
-    const pi = edgeOf(json)?.page_info;
-    const c = json.next_max_id ?? (pi && pi.has_next_page ? pi.end_cursor : null);
-    return c == null || c === '' ? null : String(c);
+  // Wrapped v1 pages carry their continuation fields beside data.users.
+  const listEnvelope = (json) => Array.isArray(json?.users) ? json : Array.isArray(json?.data?.users) ? json.data : json;
+  const listField = (json, key) => {
+    const page = listEnvelope(json);
+    return page?.[key] !== undefined ? page[key] : json?.[key];
   };
+  const moreOf = (json) => listField(json, 'has_more') ?? edgeOf(json)?.page_info?.has_next_page;
+  const limitedOf = (json) => !!listField(json, 'should_limit_list_of_followers');
+  const rawCursorOf = (json) => listField(json, 'next_max_id') ?? edgeOf(json)?.page_info?.end_cursor;
+  const validCursor = (c) => c == null || typeof c === 'string' || (typeof c === 'number' && Number.isSafeInteger(c) && c >= 0);
+  const cursorOf = (json) => {
+    const c = rawCursorOf(json);
+    return !validCursor(c) || c == null || String(c).trim() === '' ? null : String(c);
+  };
+  const pageTotal = (json) => count(edgeOf(json)?.count);
   // Short, loggable description of an unusable response so the owner sees what Instagram actually sent.
   function sampleOf(res, n = 1500) {
     const e = res.env;
@@ -62,11 +72,17 @@
   function listCheck(json, ctx, out) {
     const users = usersOf(json);
     if (!users) return out('other', 'no_users_field');
-    if (json.should_limit_list_of_followers) return null; // capped: parsePage records done + limited
+    if (moreOf(json) != null && typeof moreOf(json) !== 'boolean') return out('other', 'invalid_has_more');
+    if (!validCursor(rawCursorOf(json))) return out('other', 'invalid_cursor');
+    if (limitedOf(json)) return null; // capped: parsePage records done + limited
+    if (users.length && !users.some((u) => mapUser(u))) return out('other', 'unusable_users');
+    if (users.length && moreOf(json) === true && !cursorOf(json)) return out('other', 'missing_cursor');
     if (users.length) return null;
     const again = ctx.emptyAt != null && ctx.emptyAt === (ctx.cursor || '');
-    const edge = edgeOf(json), total = Number(ctx.total) > 0 ? Number(ctx.total) : Number(edge && edge.count) || 0;
-    const more = json.has_more === true || (json.has_more !== false && cursorOf(json) != null);
+    const edge = edgeOf(json), total = count(ctx.total) ?? count(edge && edge.count) ?? 0;
+    if (!ctx.cursor && ctx.total != null && count(ctx.total) == null && !count(edge && edge.count))
+      return out('other', 'invalid_total');
+    const more = moreOf(json) === true || (moreOf(json) !== false && cursorOf(json) != null);
     if (more) {
       if (ctx.cursor && total && Number(ctx.received) >= total * 0.98) return null; // empty tail of a list we already have
       return again ? out('other', 'empty_page_again') : out('soft_block', 'empty_page_with_more');
@@ -129,12 +145,30 @@
   function parsePage(json) {
     const users = (usersOf(json) || []).map(mapUser).filter(Boolean);
     const cur = cursorOf(json);
-    const next = json.has_more !== false && cur != null && users.length ? cur : null;
-    const limited = !!json.should_limit_list_of_followers;
+    const next = moreOf(json) !== false && cur != null && users.length ? cur : null;
+    const limited = limitedOf(json);
     return { users, next_cursor: limited ? null : next, done: limited || !next, limited };
   }
+  function listProgress(job, prog) {
+    if (prog && prog.jobId != null && prog.jobId !== job.id) return {};
+    if (!job.cursor && prog && prog.next) return {};
+    return prog || {};
+  }
+  function listContext(job, prog, total) {
+    const cursor = job.cursor || null;
+    return { cursor, total, received: cursor ? (Number.isFinite(job.received) ? job.received : prog.received || 0) : 0,
+      emptyAt: (prog.next ?? null) === cursor ? prog.emptyAt ?? null : null };
+  }
 
-  const count = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Math.floor(Number(v)));
+  // Instagram occasionally gives an unavailable or malformed count. Match the
+  // server's accepted range so a bogus total cannot make a list look complete.
+  const count = (v) => {
+    if (typeof v === 'string') {
+      if (!/^\s*\d[\d,]*\s*$/.test(v)) return null;
+      v = Number(v.replaceAll(',', ''));
+    }
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e12 ? Math.floor(v) : null;
+  };
   function mapProfile(u) {
     if (!u || typeof u !== 'object' || !u.username) return null;
     const link = (Array.isArray(u.bio_links) ? u.bio_links : []).map((l) => l && (l.url || l.lynx_url)).find(Boolean);
@@ -317,14 +351,22 @@
   }
 
   // ---- Outbox: every result is queued first, then flushed in order -------
-  // Capped so days offline can't fill storage: passive bios (job_id null) are dropped first, then the oldest items.
+  // Passive bios may be shed during a long outage. Never discard leased job results:
+  // that would acknowledge a request locally while silently losing its saved page.
   function enqueue(box, path, body, max = BOX_MAX) {
-    const out = (box || []).concat({ path, body });
+    const out = (box || []).concat({ path, body, qid: Date.now().toString(36) + Math.random().toString(36).slice(2) });
     while (out.length > max) {
       const i = out.findIndex((x) => x.path === '/api/ext/profile' && x.body && x.body.job_id == null);
-      out.splice(i >= 0 && i < out.length - 1 ? i : 0, 1);
+      if (i < 0) break;
+      out.splice(i, 1);
     }
     return out;
+  }
+  // Permanent rejections need inspection, but must not erase a leased page's only copy.
+  function park(dead, item, maxPassive = 50) {
+    const out = (dead || []).concat(item);
+    let passive = out.filter((x) => x.body?.job_id == null).length;
+    return out.filter((x) => x.body?.job_id != null || passive-- <= maxPassive);
   }
   // send(item) → 'ok' | 'drop' (server rejected; never retry) | 'retry' (offline). Returns remaining items.
   async function flush(box, send) {
@@ -390,9 +432,13 @@
     return { ig_id: m[1], handle: handleFrom(text, m[1]) };
   }
 
-  const api = { PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, sampleOf,
+  function controlAllows(state, kind) {
+    return !state.offline && !state.serverPaused && (!state.stages || state.stages[kind] !== false);
+  }
+
+  const api = { controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
-    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, flush, statusOf };
+    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf };
   // ---- Control strip (widget): the server's three stages as short rows. ctl = GET /api/control, now = ms ----
   const STAGE_SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
   function stageClock(sec) {

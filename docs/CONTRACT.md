@@ -29,7 +29,7 @@ Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy: frame-
 people(id INTEGER PRIMARY KEY, ig_id TEXT UNIQUE, handle TEXT UNIQUE NOT NULL COLLATE NOCASE,
   name TEXT, pic_url TEXT, pic_file TEXT, is_private INT, is_verified INT,
   bio TEXT, website TEXT, category TEXT, followers INT, following INT, posts INT, is_business INT,
-  bio_at TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)
+  bio_at TEXT, bio_src TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)
 seeds(handle TEXT PRIMARY KEY COLLATE NOCASE, ig_id TEXT, is_me INT DEFAULT 0, added_at TEXT)
 lists(seed TEXT, direction TEXT CHECK(direction IN('followers','following')), state TEXT,  -- queued|running|done|paused|error|private
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction))
@@ -48,7 +48,8 @@ verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TE
 laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT)   -- optional Laya sidecar answers (soft signal)
 marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT)  -- interested|contacted|talking|client|no (no = Not a fit). 2026-09 migration: good→interested; maybe/known→status cleared + manual tag 'Maybe' / 'Already know them' (notes kept)
 jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT, handle TEXT,
-  priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT)
+  priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT,
+  lane TEXT, lease_token TEXT, created_at TEXT)
   -- state queued|leased|done|error. attempts = leases that expired or ended in an 'other' error (rate_limit/soft_block/
   -- login/challenge give the lease back). 5 'other' errors park a job ('error'); a profile job whose lease expired 5 times
   -- is parked too. List jobs reset attempts on every page.
@@ -59,6 +60,8 @@ pages(job_id INT, cursor TEXT, at TEXT, lane TEXT, users INT, PRIMARY KEY(job_id
 accounts(lane_id TEXT PRIMARY KEY, ig_id, handle, label, role 'lists'|'bios'|'both', budget JSON|NULL, paused, is_main,
   first_seen, last_seen, version, state, hold 'login'|'challenge'|NULL, cooldown_until, list_cool_until, rate JSON, today JSON,
   last_error, activity, text)   -- one row per extension install (Chrome profile); jobs.lane / lists.lane(+prev_lane, released_*)
+public_bio_results(id INTEGER PRIMARY KEY, job_id, handle, at, outcome, cache_hit, source, observed_at, error)
+public_bio_retries(job_id INTEGER PRIMARY KEY, next_at, failures)
 ```
 Indexes worth knowing: `edges_person_seed(person_id, seed)` covering (lists count, seeds per person), `people_bio_at`,
 `tags_tag_src`, `tags_person_src`, `pages_lane_at`. Connections use WAL, `synchronous=NORMAL`, `mmap_size=256 MB`,
@@ -121,6 +124,8 @@ by the Settings page, mode 600, reloaded at once; state is keyed by a key id = s
 429/402/408/5xx → that key+model cools down (Retry-After, else 30 s doubling to 1 h); 401/403 → key disabled until restart or a passing test;
 transport error → provider cools 10 s doubling to 5 min. Free models first; per key+model daily counter (default 1000/day).
 Headers `HTTP-Referer`, `X-Title: Fortunate Leads`; `response_format: json_object`. Keys are never logged or returned (`sk-…abcd`).
+Only model IDs ending in `:free` are accepted for qualification. A free-model catalog entry is not a
+guarantee that a request will succeed. Rule verdicts remain when all models fail.
 
 ## Extension ↔ server
 

@@ -1,6 +1,8 @@
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, ig_id TEXT UNIQUE, handle TEXT UNIQUE NOT NULL COLLATE NOCASE,
@@ -12,6 +14,15 @@ CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE TABLE IF NOT EXISTS edges(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
   PRIMARY KEY(seed,person_id,direction));
+-- edges is discovery history. This table contains the latest decisive observation.
+-- Existing edges without a row here remain historical/unverified after upgrade.
+CREATE TABLE IF NOT EXISTS edge_evidence(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT,
+  active INT NOT NULL CHECK(active IN (0,1)), observed_at TEXT, checked_at TEXT NOT NULL,
+  PRIMARY KEY(seed,person_id,direction));
+CREATE VIEW IF NOT EXISTS current_edges AS
+  SELECT e.seed,e.person_id,e.direction,e.first_seen,v.observed_at FROM edges e
+  JOIN edge_evidence v ON v.seed=e.seed AND v.person_id=e.person_id AND v.direction=e.direction
+  WHERE v.active=1;
 CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
   PRIMARY KEY(person_id,tag));
 CREATE TABLE IF NOT EXISTS tag_rules(id INTEGER PRIMARY KEY, tag TEXT NOT NULL, grp TEXT NOT NULL DEFAULT 'signal',
@@ -24,13 +35,23 @@ CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answ
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS public_bio_retries(job_id INTEGER PRIMARY KEY, next_at TEXT, failures INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
+-- Per-run proof is separate from display totals and transient error messages.
+CREATE TABLE IF NOT EXISTS list_runs(job_id INTEGER PRIMARY KEY, first_page_seen INT NOT NULL DEFAULT 0,
+  total INT, total_source TEXT NOT NULL DEFAULT 'unknown');
+CREATE TABLE IF NOT EXISTS list_page_requests(job_id INT, requested_cursor TEXT NOT NULL, next_cursor TEXT,
+  PRIMARY KEY(job_id,requested_cursor));
+CREATE TABLE IF NOT EXISTS list_members(job_id INT, person_id INT, observed_at TEXT, PRIMARY KEY(job_id,person_id));
 CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
   list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+CREATE INDEX IF NOT EXISTS list_members_person ON list_members(person_id);
 CREATE INDEX IF NOT EXISTS edges_person_seed ON edges(person_id, seed);   -- covering: lists count, seeds per person
+CREATE INDEX IF NOT EXISTS edge_evidence_person ON edge_evidence(person_id,seed);
 CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp);   -- covering: facets, rule hits, tag filters
 CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag);
 CREATE INDEX IF NOT EXISTS verdicts_tier ON verdicts(tier, score);
@@ -43,6 +64,8 @@ CREATE INDEX IF NOT EXISTS marks_status ON marks(status);
 CREATE INDEX IF NOT EXISTS jobs_next ON jobs(state, kind, priority);
 CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 """
+
+BIO_FIELDS = {'bio', 'bio_at', 'bio_src', 'website', 'category', 'followers', 'following', 'posts', 'is_business'}
 
 PERSON_FIELDS = ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified', 'bio', 'website', 'category',
                  'followers', 'following', 'posts', 'is_business', 'bio_at', 'bio_src')
@@ -120,9 +143,9 @@ def init(path):
     conn.execute('DROP INDEX IF EXISTS edges_person')  # superseded by the covering edges_person_seed
     # columns added after the first release: ALTER only when missing, so any older DB opens as is
     for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
-                             ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'),
-                             ('jobs', 'lane', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
-                             ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
+                             ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
+                             ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                             ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                              ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
@@ -131,15 +154,179 @@ def init(path):
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
     migrate_statuses(conn)
+    # Before per-run evidence, every edge was treated as a current follow. Clear
+    # derived claims once; keep the original edges and all human-entered data.
+    if not conn.execute("SELECT 1 FROM settings WHERE key='edge_evidence_v1'").fetchone():
+        conn.execute("DELETE FROM tags WHERE source='auto' AND grp='source'")
+        conn.execute("UPDATE verdicts SET score=NULL,tier='unread',reason=NULL,updated_at='' "
+                     "WHERE person_id IN (SELECT person_id FROM edges)")
+        mark_network_dirty(conn, (r[0] for r in conn.execute("SELECT DISTINCT person_id FROM edges")))
+        conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_v1','true')")
+    # Revisions catch edits that counts/timestamps cannot distinguish, including
+    # out-of-process imports. Settings is excluded to avoid recursive updates.
+    conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
+    for table in ('people', 'verdicts', 'marks', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules'):
+        for operation in ('INSERT', 'UPDATE', 'DELETE'):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS lead_rev_{table}_{operation.lower()} "
+                         f"AFTER {operation} ON {table} BEGIN "
+                         "INSERT INTO settings(key,value) VALUES('lead_data_rev','1') "
+                         "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END")
     conn.commit()
     return conn
 
 
+_HANDLE = re.compile(r'[A-Za-z0-9._]{1,30}\Z')
+_PARKED = re.compile(r'[A-Za-z0-9._]{1,30}~[A-Za-z0-9~]+\Z')
+_IG_HOSTS = {'instagram.com', 'www.instagram.com', 'm.instagram.com', 'instagr.am', 'www.instagr.am'}
+_RESERVED = {'p', 'reel', 'reels', 'tv', 'stories', 'explore', 'accounts', 'direct',
+             'about', 'developer', '_u'}
+
+
 def norm_handle(h):
-    h = (h or '').strip().lstrip('@').rstrip('/')
-    if 'instagram.com/' in h:
-        h = h.split('instagram.com/')[1].split('/')[0].split('?')[0]
-    return h.lower()
+    """Canonical handle, or empty text for an invalid external identity.
+
+    Parked identities are retained for internal DB maintenance; queue_list
+    applies the narrower external contract before creating work.
+    """
+    if not isinstance(h, str):
+        return ''
+    s = h.strip()
+    if not s:
+        return ''
+    if s.startswith('@'):
+        s = s[1:]
+    if _PARKED.fullmatch(s):
+        return s.lower()
+    if s.lower() in _IG_HOSTS:
+        return ''
+    if '/' in s or '?' in s or '#' in s or ':' in s:
+        url = s if s.lower().startswith(('http://', 'https://')) else 'https://' + s
+        try:
+            parsed = urlsplit(url)
+            host = parsed.hostname
+            if (parsed.scheme.lower() not in ('http', 'https') or host not in _IG_HOSTS
+                    or parsed.username is not None or parsed.password is not None or parsed.port is not None):
+                return ''
+        except ValueError:
+            return ''
+        parts = parsed.path.split('/')
+        if len(parts) not in (2, 3) or (len(parts) == 3 and parts[2]):
+            return ''
+        s = unquote(parts[1])
+    if not _HANDLE.fullmatch(s) or s.lower() in _RESERVED:
+        return ''
+    return s.lower()
+
+
+def mark_network_dirty(conn, person_ids):
+    """Durable local rerank work. Caller commits; consumers acknowledge exact revisions."""
+    ids = sorted(set(person_ids))
+    if not ids:
+        return None
+    # The write takes SQLite's writer lock before reading the shared sequence.
+    conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('network_change_id','0')")
+    conn.execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='network_change_id'")
+    revision = int(conn.execute("SELECT value FROM settings WHERE key='network_change_id'").fetchone()[0])
+    conn.executemany('INSERT INTO network_dirty VALUES(?,?) ON CONFLICT(person_id) DO UPDATE SET change_id=excluded.change_id',
+                     ((pid, revision) for pid in ids))
+    return revision
+
+
+def dirty_seed_members(conn, *handles):
+    ids = set()
+    for handle in handles:
+        ids.update(r[0] for r in conn.execute('SELECT person_id FROM edges WHERE seed=?', (handle,)))
+        ids.update(r[0] for r in conn.execute('SELECT id FROM people WHERE handle=?', (handle,)))
+    mark_network_dirty(conn, ids)
+
+
+def move_seed(conn, old, new):
+    """Move one proven seed identity and retain its list/job history."""
+    dirty_seed_members(conn, old, new)
+    conn.execute('UPDATE seeds SET handle=? WHERE handle=?', (new, old))
+    conn.execute('UPDATE lists SET seed=? WHERE seed=?', (new, old))
+    conn.execute('UPDATE edges SET seed=? WHERE seed=?', (new, old))
+    conn.execute('UPDATE edge_evidence SET seed=? WHERE seed=?', (new, old))
+    conn.execute('UPDATE jobs SET seed=? WHERE lower(seed)=lower(?)', (new, old))
+    conn.execute('UPDATE jobs SET handle=? WHERE lower(handle)=lower(?)', (new, old))
+    # A callback leased under the previous handle must not write to the new holder.
+    conn.execute("UPDATE jobs SET state='queued',leased_until=NULL,lane=NULL,lease_token=NULL "
+                 "WHERE state='leased' AND (seed=? OR handle=?)", (new, new))
+    retries = get_setting(conn, 'lists_reopened') or {}
+    for direction in ('followers', 'following'):
+        key = f'{old}|{direction}'
+        if key in retries:
+            retries[f'{new}|{direction}'] = retries.pop(key)
+    if retries:
+        set_setting(conn, 'lists_reopened', retries)
+
+
+def vacant_handle(conn, handle, suffix):
+    candidate = f'{handle}~{suffix}'
+    while conn.execute('SELECT 1 FROM people WHERE handle=? UNION ALL SELECT 1 FROM seeds WHERE handle=?',
+                       (candidate, candidate)).fetchone():
+        candidate += '~'
+    return candidate
+
+
+def rename_seed(conn, old, new, ig_id):
+    dirty_seed_members(conn, old, new)
+    seed = conn.execute('SELECT * FROM seeds WHERE handle=?', (old,)).fetchone()
+    if not seed or (seed['ig_id'] and seed['ig_id'] != ig_id):
+        # Profile work follows a proven person identity even without a seed.
+        # Revoke any old lease before this handle can belong to someone else.
+        conn.execute("UPDATE jobs SET handle=?,state=CASE WHEN state='leased' THEN 'queued' ELSE state END, "
+                     "leased_until=NULL,lane=NULL,lease_token=NULL WHERE kind='profile' AND lower(handle)=lower(?)",
+                     (new, old))
+        return
+    target = conn.execute('SELECT * FROM seeds WHERE handle=?', (new,)).fetchone()
+    if target and target['ig_id'] == ig_id:
+        # Both seed records have identity proof. Keep the newest list state and
+        # every historical job/edge; retire a duplicate live run if necessary.
+        for source_list in conn.execute('SELECT * FROM lists WHERE seed=?', (old,)).fetchall():
+            dest_list = conn.execute('SELECT * FROM lists WHERE seed=? AND direction=?',
+                                     (new, source_list['direction'])).fetchone()
+            if dest_list:
+                winner = source_list if (source_list['updated_at'] or '') > (dest_list['updated_at'] or '') else dest_list
+                loser = dest_list if winner is source_list else source_list
+                conn.execute('DELETE FROM lists WHERE seed=? AND direction=?', (loser['seed'], loser['direction']))
+                conn.execute("UPDATE jobs SET state='cancelled',leased_until=NULL,lane=NULL,lease_token=NULL "
+                             "WHERE seed=? AND direction=? AND kind='list' AND state IN ('queued','leased')",
+                             (loser['seed'], loser['direction']))
+        for edge in conn.execute('SELECT * FROM edges WHERE seed=?', (old,)).fetchall():
+            conn.execute('INSERT INTO edges VALUES(?,?,?,?) ON CONFLICT(seed,person_id,direction) DO UPDATE '
+                         'SET first_seen=min(edges.first_seen,excluded.first_seen)',
+                         (new, edge['person_id'], edge['direction'], edge['first_seen']))
+        conn.execute('DELETE FROM edges WHERE seed=?', (old,))
+        for ev in conn.execute('SELECT * FROM edge_evidence WHERE seed=?', (old,)).fetchall():
+            conn.execute('INSERT INTO edge_evidence VALUES(?,?,?,?,?,?) ON CONFLICT(seed,person_id,direction) DO UPDATE SET '
+                         'active=CASE WHEN excluded.checked_at>edge_evidence.checked_at THEN excluded.active ELSE edge_evidence.active END, '
+                         'observed_at=nullif(max(coalesce(edge_evidence.observed_at,\'\'),coalesce(excluded.observed_at,\'\')),\'\'), '
+                         'checked_at=max(edge_evidence.checked_at,excluded.checked_at)',
+                         (new, ev['person_id'], ev['direction'], ev['active'], ev['observed_at'], ev['checked_at']))
+        conn.execute('DELETE FROM edge_evidence WHERE seed=?', (old,))
+        conn.execute('UPDATE seeds SET is_me=max(is_me,?),added_at=min(coalesce(added_at,?),coalesce(?,added_at)) WHERE handle=?',
+                     (seed['is_me'], seed['added_at'], seed['added_at'], new))
+        conn.execute('DELETE FROM seeds WHERE handle=?', (old,))
+        move_seed(conn, old, new)
+        return
+    if target:
+        # Even an unverified destination may describe another holder. Keep it separate.
+        parked = vacant_handle(conn, new, target['ig_id'] or 'seed')
+        move_seed(conn, new, parked)
+        conn.execute("UPDATE jobs SET state='cancelled',leased_until=NULL,lane=NULL,lease_token=NULL "
+                     "WHERE (seed=? OR handle=?) AND state IN ('queued','leased')", (parked, parked))
+    move_seed(conn, old, new)
+    conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (ig_id, new))
+
+
+def park_person(conn, row):
+    old = conn.execute('SELECT handle FROM people WHERE id=?', (row['id'],)).fetchone()[0]
+    parked = vacant_handle(conn, old, row['id'])
+    rename_seed(conn, old, parked, row['ig_id'])
+    conn.execute('UPDATE people SET handle=? WHERE id=?', (parked, row['id']))
+    conn.execute("UPDATE jobs SET state='cancelled',leased_until=NULL,lane=NULL,lease_token=NULL "
+                 "WHERE (seed=? OR handle=?) AND state IN ('queued','leased')", (parked, parked))
 
 
 def upsert_person(conn, u, ts=None):
@@ -152,26 +339,47 @@ def upsert_person(conn, u, ts=None):
         vals['ig_id'] = str(vals['ig_id'])
     if 'handle' in vals:
         vals['handle'] = norm_handle(vals['handle'])
-    by_id = vals.get('ig_id') and conn.execute('SELECT id FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
-    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id FROM people WHERE handle=?', (vals['handle'],)).fetchone()
+        if not vals['handle']:
+            raise ValueError('invalid Instagram handle')
+    by_id = vals.get('ig_id') and conn.execute('SELECT id, handle, updated_at FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
+    if by_id and ts <= by_id['updated_at']:
+        vals.pop('handle', None)  # an older observation cannot undo a known rename
+    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id, updated_at FROM people WHERE handle=?', (vals['handle'],)).fetchone()
+    if (by_handle and by_handle['ig_id'] and vals.get('ig_id')
+            and by_handle['ig_id'] != vals['ig_id'] and ts <= by_handle['updated_at']):
+        # A historical or tied claim cannot displace a newer proven owner.
+        # Keep an existing identity at its known handle, or retain a newly
+        # discovered historical identity under a separate parked handle.
+        if by_id:
+            vals.pop('handle', None)
+        else:
+            vals['handle'] = vacant_handle(conn, vals['handle'], vals['ig_id'])
+        by_handle = None
     if not by_id and by_handle and by_handle['ig_id'] and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
         # a different account now holds this handle: the old row keeps its marks/edges/tags under a parked handle
-        conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
+        park_person(conn, by_handle)
         by_handle = None
     if by_id and by_handle and by_id['id'] != by_handle['id']:
         if by_handle['ig_id']:  # the handle now belongs to this ig_id; the old holder renamed
-            conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
+            park_person(conn, by_handle)
         else:  # same account seen before without ig_id: fold it in
             merge_people(conn, keep=by_id['id'], drop=by_handle['id'])
     row = by_id or by_handle
     if row:
         pid = row['id']
-        if 'pic_url' in vals:  # a failed download ('') gets another try once the URL changes
-            conn.execute("UPDATE people SET pic_file=NULL WHERE id=? AND pic_file='' AND pic_url IS NOT ?",
+        current = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
+        if by_id and vals.get('handle') and current['handle'] != vals['handle']:
+            rename_seed(conn, current['handle'], vals['handle'], vals['ig_id'])
+        if current['bio_at'] and (vals.get('bio_at') or ts) < current['bio_at']:
+            vals = {k: v for k, v in vals.items() if k not in BIO_FIELDS}
+        if ts < current['updated_at']:
+            vals = {k: v for k, v in vals.items() if k in BIO_FIELDS or k == 'ig_id' or current[k] is None}
+        if 'pic_url' in vals:  # a changed URL invalidates either a failed or a successful cached download
+            conn.execute("UPDATE people SET pic_file=NULL WHERE id=? AND pic_url IS NOT ?",
                          (pid, vals['pic_url']))
         if vals:
             conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in vals)}, updated_at=? WHERE id=?",
-                         (*vals.values(), ts, pid))
+                         (*vals.values(), max(ts, current['updated_at']), pid))
         return pid
     cols = list(vals) + ['first_seen', 'updated_at']
     return conn.execute(f"INSERT INTO people({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
@@ -179,15 +387,166 @@ def upsert_person(conn, u, ts=None):
 
 
 def merge_people(conn, keep, drop):
-    for t in ('edges', 'tags', 'marks', 'verdicts'):
-        conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
-        conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
+    """Fold a handle-only duplicate into its stable ID without discarding richer data."""
+    if keep == drop:
+        return
+    a = conn.execute('SELECT * FROM people WHERE id=?', (keep,)).fetchone()
+    b = conn.execute('SELECT * FROM people WHERE id=?', (drop,)).fetchone()
+    if not a or not b:
+        return
+    affected_seeds = {r[0] for r in conn.execute('SELECT DISTINCT seed FROM edges WHERE person_id IN (?,?)', (keep, drop))}
+    dirty_seed_members(conn, *affected_seeds)
+    fields = {}
+    bio_fields = BIO_FIELDS
+    newer_bio = b['bio_at'] and (not a['bio_at'] or b['bio_at'] > a['bio_at'])
+    for key in a.keys():
+        if key in ('id', 'ig_id', 'handle', 'first_seen', 'updated_at'):
+            continue
+        take = (newer_bio or not a['bio_at']) if key in bio_fields else (a[key] is None or a[key] == '')
+        if b[key] is not None and take:
+            fields[key] = b[key]
+    fields['first_seen'] = min(a['first_seen'], b['first_seen'])
+    fields['updated_at'] = max(a['updated_at'], b['updated_at'])
+    conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), keep))
+    # Keep earliest evidence when the two records contain the same relationship.
+    for edge in conn.execute('SELECT * FROM edges WHERE person_id=?', (drop,)).fetchall():
+        conn.execute('INSERT INTO edges VALUES(?,?,?,?) ON CONFLICT(seed,person_id,direction) DO UPDATE '
+                     'SET first_seen=min(edges.first_seen,excluded.first_seen)',
+                     (edge['seed'], keep, edge['direction'], edge['first_seen']))
+    conn.execute('DELETE FROM edges WHERE person_id=?', (drop,))
+    for ev in conn.execute('SELECT * FROM edge_evidence WHERE person_id=?', (drop,)).fetchall():
+        conn.execute('INSERT INTO edge_evidence VALUES(?,?,?,?,?,?) ON CONFLICT(seed,person_id,direction) DO UPDATE SET '
+                     'active=CASE WHEN excluded.checked_at>edge_evidence.checked_at THEN excluded.active ELSE edge_evidence.active END, '
+                     'observed_at=nullif(max(coalesce(edge_evidence.observed_at,\'\'),coalesce(excluded.observed_at,\'\')),\'\'), '
+                     'checked_at=max(edge_evidence.checked_at,excluded.checked_at)',
+                     (ev['seed'], keep, ev['direction'], ev['active'], ev['observed_at'], ev['checked_at']))
+    conn.execute('DELETE FROM edge_evidence WHERE person_id=?', (drop,))
+    conn.execute('INSERT INTO list_members SELECT job_id, ?, observed_at FROM list_members WHERE person_id=? '
+                 'ON CONFLICT(job_id,person_id) DO UPDATE SET observed_at=max(list_members.observed_at,excluded.observed_at)', (keep, drop))
+    conn.execute('DELETE FROM list_members WHERE person_id=?', (drop,))
+    for tag in conn.execute('SELECT * FROM tags WHERE person_id=?', (drop,)).fetchall():
+        old = conn.execute('SELECT source FROM tags WHERE person_id=? AND tag=?', (keep, tag['tag'])).fetchone()
+        rank = {'auto': 0, 'rule': 1, 'manual': 2}
+        if not old or rank[tag['source']] > rank[old['source']]:
+            conn.execute('INSERT OR REPLACE INTO tags VALUES(?,?,?,?)', (keep, tag['tag'], tag['grp'], tag['source']))
+    conn.execute('DELETE FROM tags WHERE person_id=?', (drop,))
+    for table in ('marks', 'verdicts', 'laya'):
+        old = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (keep,)).fetchone()
+        incoming = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (drop,)).fetchone()
+        if incoming:
+            if not old:
+                conn.execute(f'UPDATE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+            elif table == 'marks':
+                # A note-only duplicate carries no status decision. Preserve
+                # an existing status independently while combining human notes.
+                notes = list(dict.fromkeys(x for x in (old['note'], incoming['note']) if x))
+                latest = incoming if (incoming['updated_at'] or '') > (old['updated_at'] or '') else old
+                other = old if latest is incoming else incoming
+                status = latest['status'] if latest['status'] is not None else other['status']
+                conn.execute('UPDATE marks SET note=?,status=?,updated_at=? WHERE person_id=?',
+                             ('\n\n'.join(notes) or None, status, latest['updated_at'], keep))
+            elif (incoming['updated_at'] or '') > (old['updated_at'] or ''):
+                conn.execute(f'DELETE FROM {table} WHERE person_id=?', (keep,))
+                conn.execute(f'UPDATE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+        conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
+    # Site reads are optional, created lazily by qual_api. Keep evidence paired
+    # with the selected read so a merge cannot attach an old site's claims.
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'site_reads' in tables:
+        old_site = conn.execute('SELECT * FROM site_reads WHERE person_id=?', (keep,)).fetchone()
+        incoming_site = conn.execute('SELECT * FROM site_reads WHERE person_id=?', (drop,)).fetchone()
+        if incoming_site and (not old_site or (incoming_site['at'] or '') > (old_site['at'] or '')):
+            conn.execute('DELETE FROM site_reads WHERE person_id=?', (keep,))
+            conn.execute('UPDATE site_reads SET person_id=? WHERE person_id=?', (keep, drop))
+            if 'site_evidence' in tables:
+                conn.execute('DELETE FROM site_evidence WHERE person_id=?', (keep,))
+                conn.execute('UPDATE site_evidence SET person_id=? WHERE person_id=?', (keep, drop))
+        conn.execute('DELETE FROM site_reads WHERE person_id=?', (drop,))
+    if 'site_evidence' in tables:
+        conn.execute('DELETE FROM site_evidence WHERE person_id=?', (drop,))
+    conn.execute('DELETE FROM network_dirty WHERE person_id=?', (drop,))
+    mark_network_dirty(conn, [keep])
     conn.execute('DELETE FROM people WHERE id=?', (drop,))
 
 
-def add_edge(conn, seed, person_id, direction, ts=None):
-    return conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
-                        (norm_handle(seed), person_id, direction, ts or now())).rowcount == 1
+def add_edge(conn, seed, person_id, direction, ts=None, observed=True):
+    seed, ts = norm_handle(seed), ts or now()
+    previous = conn.execute('SELECT active FROM edge_evidence WHERE seed=? AND person_id=? AND direction=?',
+                            (seed, person_id, direction)).fetchone()
+    added = conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
+                         (seed, person_id, direction, ts)).rowcount == 1
+    if observed:
+        conn.execute('INSERT INTO edge_evidence VALUES(?,?,?,1,?,?) ON CONFLICT(seed,person_id,direction) DO UPDATE SET '
+                     'active=CASE WHEN excluded.checked_at>=edge_evidence.checked_at THEN 1 ELSE edge_evidence.active END, '
+                     'observed_at=max(coalesce(edge_evidence.observed_at,\'\'),excluded.observed_at), '
+                     'checked_at=max(edge_evidence.checked_at,excluded.checked_at)',
+                     (seed, person_id, direction, ts, ts))
+    current = conn.execute('SELECT active FROM edge_evidence WHERE seed=? AND person_id=? AND direction=?',
+                           (seed, person_id, direction)).fetchone()
+    if bool(previous and previous[0]) != bool(current and current[0]):
+        dirty_seed_members(conn, seed)
+    return added
+
+
+def list_run_complete(conn, job_id):
+    """Require a complete cursor chain and a fresh count for negative evidence."""
+    run = conn.execute('SELECT * FROM list_runs WHERE job_id=?', (job_id,)).fetchone()
+    if (not run or not run['first_page_seen'] or run['total_source'] != 'current_run'
+            or type(run['total']) is not int or run['total'] < 0):
+        return False
+    pages = dict(conn.execute('SELECT requested_cursor,next_cursor FROM list_page_requests WHERE job_id=?', (job_id,)))
+    cursor, seen = '', set()
+    while cursor is not None:
+        if cursor not in pages or cursor in seen:
+            return False
+        seen.add(cursor)
+        cursor = pages[cursor]
+    return (len(seen) == len(pages) and
+            conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0] >= run['total'])
+
+
+def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
+    """Record absence only for a complete, tracked run. Call after updating lists, before commit.
+
+    Historical edges are retained. An open/partial/legacy run cannot disprove them.
+    Returns person IDs whose effective relationship changed.
+    """
+    seed = norm_handle(seed)
+    row = conn.execute('SELECT state,run_job_id,cursor,received,total FROM lists WHERE seed=? AND direction=?',
+                       (seed, direction)).fetchone()
+    job = conn.execute('SELECT kind,seed,direction,state FROM jobs WHERE id=?', (job_id,)).fetchone()
+    if (not row or row['state'] != 'done' or row['run_job_id'] != job_id or row['cursor'] is not None
+            or not job or job['kind'] != 'list' or job['state'] != 'done' or job['seed'] != seed or job['direction'] != direction
+            or row['received'] != conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job_id,)).fetchone()[0]):
+        return set()
+    ts = completed_at or now()
+    before = {r[0] for r in conn.execute('SELECT person_id FROM current_edges WHERE seed=? AND direction=?',
+                                          (seed, direction))}
+    # Every returned member is positive evidence, including pages copied during a cursor resume.
+    conn.execute('INSERT INTO edge_evidence(seed,person_id,direction,active,observed_at,checked_at) '
+                 'SELECT ?,m.person_id,?,1,m.observed_at,m.observed_at FROM list_members m WHERE m.job_id=? '
+                 'ON CONFLICT(seed,person_id,direction) DO UPDATE SET active=1, '
+                 'observed_at=max(coalesce(edge_evidence.observed_at,\'\'),excluded.observed_at),checked_at=excluded.checked_at '
+                 'WHERE excluded.checked_at>=edge_evidence.checked_at',
+                 (seed, direction, job_id))
+    if not list_run_complete(conn, job_id):
+        after = {r[0] for r in conn.execute('SELECT person_id FROM current_edges WHERE seed=? AND direction=?',
+                                             (seed, direction))}
+        if before != after:
+            dirty_seed_members(conn, seed)
+        return before ^ after
+    conn.execute('INSERT INTO edge_evidence(seed,person_id,direction,active,observed_at,checked_at) '
+                 'SELECT e.seed,e.person_id,e.direction,0,NULL,? FROM edges e '
+                 'WHERE e.seed=? AND e.direction=? AND NOT EXISTS '
+                 '(SELECT 1 FROM list_members m WHERE m.job_id=? AND m.person_id=e.person_id) '
+                 'ON CONFLICT(seed,person_id,direction) DO UPDATE SET active=0,checked_at=excluded.checked_at '
+                 'WHERE excluded.checked_at>=edge_evidence.checked_at',
+                 (ts, seed, direction, job_id))
+    after = {r[0] for r in conn.execute('SELECT person_id FROM current_edges WHERE seed=? AND direction=?',
+                                         (seed, direction))}
+    if before != after:
+        dirty_seed_members(conn, seed)
+    return before ^ after
 
 
 def get_setting(conn, key, default=None):
@@ -200,20 +559,51 @@ def set_setting(conn, key, value):
     conn.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, json.dumps(value)))
 
 
-def queue_list(conn, seed, direction, priority=0):
+def start_list_run(conn, job_id, seed, direction):
+    """Attach a run, carrying tracked prefixes only when continuing a saved cursor."""
+    if conn.execute('SELECT 1 FROM list_runs WHERE job_id=?', (job_id,)).fetchone():
+        return
+    old = conn.execute('SELECT cursor,run_job_id FROM lists WHERE seed=? AND direction=?',
+                       (seed, direction)).fetchone()
+    if old and old['cursor'] and old['run_job_id'] is not None and old['run_job_id'] != job_id:
+        prior = old['run_job_id']
+        conn.execute('INSERT OR IGNORE INTO list_runs SELECT ?,first_page_seen,total,total_source FROM list_runs WHERE job_id=?',
+                     (job_id, prior))
+        conn.execute('INSERT OR IGNORE INTO list_members SELECT ?,person_id,observed_at FROM list_members WHERE job_id=?',
+                     (job_id, prior))
+        conn.execute('INSERT OR IGNORE INTO list_page_requests SELECT ?,requested_cursor,next_cursor FROM list_page_requests WHERE job_id=?',
+                     (job_id, prior))
+    conn.execute('INSERT OR IGNORE INTO list_runs(job_id) VALUES(?)', (job_id,))
+    # Do not count historical edges as a tracked prefix. Legacy received remains visible
+    # until a page arrives, but can never certify completion.
+    if old and old['cursor']:
+        conn.execute('UPDATE lists SET run_job_id=? WHERE seed=? AND direction=?', (job_id, seed, direction))
+
+
+def queue_list(conn, seed, direction, priority=0, refresh=False):
     seed = norm_handle(seed)
+    if not seed or '~' in seed:
+        raise ValueError('invalid Instagram seed handle')
+    if direction not in ('followers', 'following'):
+        raise ValueError('invalid list direction')
     ts = now()
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     row = conn.execute('SELECT state FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
-    if row and row['state'] in ('done', 'private'):
+    if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
+                    (seed, direction)).fetchone():
+        return False  # duplicate requests never rewind or relabel work already in progress
+    if row and row['state'] in ('done', 'private') and not refresh:
         return False
+    if row and (refresh or row['state'] == 'partial'):
+        conn.execute('UPDATE lists SET cursor=NULL, run_job_id=NULL, received=0, lane=NULL WHERE seed=? AND direction=?', (seed, direction))
     conn.execute('INSERT INTO lists(seed, direction, state, updated_at) VALUES(?,?,?,?) '
                  "ON CONFLICT DO UPDATE SET state='queued', error=NULL, updated_at=excluded.updated_at",
                  (seed, direction, 'queued', ts))
     if not conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                         (seed, direction)).fetchone():
-        conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)',
-                     ('list', seed, direction, priority, ts))
+        job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)',
+                              ('list', seed, direction, priority, ts)).lastrowid
+        start_list_run(conn, job_id, seed, direction)
     return True
 
 
@@ -226,10 +616,10 @@ def repair_lists(conn, dry=False):
     """Make sure every seed has both lists queued until they are really complete. Returns counts; caller commits.
     - a seed without a followers/following list row gets one (queued);
     - a list in state paused/error/queued/running without a live job gets a job again (cursor kept: it resumes);
-    - a list marked done with received well below its known total is reopened from the start (edges dedupe),
-      at most REOPEN_MAX times per list."""
+    - a list marked done without a complete tracked run is reopened from the start,
+      at most REOPEN_MAX times per list. Cached profile totals never certify coverage."""
     ts = now()
-    out = {'added': 0, 'requeued': 0, 'reopened': 0, 'seed_bios': 0}
+    out = {'added': 0, 'requeued': 0, 'reopened': 0, 'seed_bios': 0, 'partial': 0}
     reopened = get_setting(conn, 'lists_reopened') or {}
     live = {(r[0].lower(), r[1]) for r in conn.execute(
         "SELECT seed, direction FROM jobs WHERE kind='list' AND state IN ('queued','leased')")}
@@ -239,7 +629,7 @@ def repair_lists(conn, dry=False):
                      "FROM people p WHERE p.handle=lists.seed) WHERE total IS NULL")
     rows = {(r['seed'].lower(), r['direction']): r for r in conn.execute('SELECT * FROM lists')}
     # done lists nobody can judge yet: read the seed's profile first (its counts are the list totals)
-    blind = {r['seed'] for r in rows.values() if r['state'] == 'done' and not r['total']}
+    blind = {r['seed'] for r in rows.values() if r['state'] == 'done' and r['total'] is None}
     have = {r[0] for r in conn.execute("SELECT handle FROM jobs WHERE kind='profile' AND state IN ('queued','leased')")}
     have |= {r[0] for r in conn.execute('SELECT handle FROM people WHERE bio_at IS NOT NULL')}   # read once is enough
     out['seed_bios'] = len(blind - have)
@@ -256,22 +646,30 @@ def repair_lists(conn, dry=False):
             elif r['state'] in ('paused', 'error', 'queued', 'running', None) and (s.lower(), d) not in live:
                 out['requeued'] += 1
                 todo.append((r['seed'], d, 'requeue'))
-            elif r['state'] == 'done' and r['total'] and (r['received'] or 0) < SHORT_RATIO * r['total'] \
-                    and r['total'] - (r['received'] or 0) >= SHORT_MIN and reopened.get(f'{s}|{d}', 0) < REOPEN_MAX:
-                out['reopened'] += 1
-                todo.append((r['seed'], d, 'reopen'))
+            elif r['state'] == 'done' and (s.lower(), d) not in live and (
+                    r['cursor'] is not None or not list_run_complete(conn, r['run_job_id'])):
+                if reopened.get(f'{s}|{d}', 0) < REOPEN_MAX:
+                    out['reopened'] += 1
+                    todo.append((r['seed'], d, 'reopen'))
+                else:
+                    out['partial'] += 1
+                    todo.append((r['seed'], d, 'partial'))
     if dry:
         return out
     for s, d, what in todo:
+        if what == 'partial':
+            conn.execute("UPDATE lists SET state='partial', error='Complete list coverage could not be verified after retries', updated_at=? WHERE seed=? AND direction=?", (ts, s, d))
+            continue
         if what == 'add':
             conn.execute('INSERT OR IGNORE INTO lists(seed, direction, state, updated_at) VALUES(?,?,?,?)', (s, d, 'queued', ts))
         else:
             if what == 'reopen':
                 reopened[f'{s}|{d}'] = reopened.get(f'{s}|{d}', 0) + 1
-                conn.execute('UPDATE lists SET cursor=NULL WHERE seed=? AND direction=?', (s, d))
+                conn.execute('UPDATE lists SET cursor=NULL,run_job_id=NULL,received=0 WHERE seed=? AND direction=?', (s, d))
             conn.execute("UPDATE lists SET state='queued', error=NULL, lane=NULL, updated_at=? WHERE seed=? AND direction=?", (ts, s, d))
         if (s.lower(), d) not in live:
-            conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)', ('list', s, d, 0, ts))
+            job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)', ('list', s, d, 0, ts)).lastrowid
+            start_list_run(conn, job_id, s, d)
             live.add((s.lower(), d))
     if out['reopened']:
         set_setting(conn, 'lists_reopened', reopened)

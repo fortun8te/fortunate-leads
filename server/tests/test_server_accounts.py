@@ -59,7 +59,7 @@ class LaneTest(Base):
         self.seeds('s1', direction='followers')
         self.seeds('s2', direction='following')
         self.assertEqual(self.nxt('a')['job']['direction'], 'following')   # following lists are small and dense: first
-        self.post('b', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})
         acct = self.call('/api/accounts/lane-b', {'label': 'Scout 2'})[1]['account']
         self.assertEqual((acct['label'], acct['name']), ('Scout 2', '@acct.b'))
         self.assertEqual(self.call('/api/accounts/lane-b', {'label': 'x' * 41})[0], 400)
@@ -73,7 +73,7 @@ class LaneTest(Base):
         self.call(f'/api/person/{pid}/read', {})
         self.seeds('s1')
         self.nxt('a')   # a takes the list
-        self.post('b', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'idle'})   # b checks in
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})   # b checks in
         self.call('/api/scraper/pause', {'paused': False})
         self.assertEqual(self.call('/api/accounts/lane-b', {'role': 'lists'})[1]['account']['role'], 'lists')
         self.assertIsNone(self.nxt('b', 'profile')['job'])          # a lists-only lane never reads bios
@@ -83,13 +83,14 @@ class LaneTest(Base):
         self.nxt('c')
         self.assertEqual(self.call('/api/accounts/lane-c', {'role': 'x'})[0], 400)
         self.assertEqual(self.call('/api/accounts/lane-c', {'paused': 'yes'})[0], 400)
-        r = self.call('/api/accounts/lane-c', {'paused': True, 'budget': {'list': 99999, 'profile': 20}, 'label': ' spare '})[1]['account']
+        self.assertEqual(self.call('/api/accounts/lane-c', {'budget': {'list': 99999, 'profile': 20}})[0], 400)   # out of range
+        r = self.call('/api/accounts/lane-c', {'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'label': ' spare '})[1]['account']
         self.assertEqual((r['paused'], r['budget'], r['budget_custom'], r['label'], r['status']),
                          (True, {'list': 3000, 'profile': 20}, True, 'spare', 'paused'))
         self.assertEqual(self.nxt('c'), {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'job': None,
-                                         'cooldown_until': None})
-        hb = self.post('c', '/api/ext/heartbeat', {'version': '3.4.0', 'state': 'paused'})[1]
-        self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}})
+                                         'cooldown_until': None, 'stages': {'list': True, 'profile': True}})
+        hb = self.post('c', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'paused'})[1]
+        self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'stages': {'list': True, 'profile': True}})
         self.call('/api/accounts/lane-c', {'budget': None})
         self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})
 
@@ -134,7 +135,7 @@ class LaneTest(Base):
         s = self.call('/api/scraper')[1]
         by = {a['lane_id']: a for a in s['accounts']}
         self.assertEqual(by['lane-a']['status'], 'cooldown')
-        self.assertEqual(by['lane-b']['status'], 'online')
+        self.assertEqual(by['lane-b']['status'], 'running')   # b still holds its own list
         self.assertIsNone(s['ext']['cooldown_until'])   # one lane cooling is not the whole scraper cooling
         self.page('b', jb, 2, None, done=True)
         jb2 = self.nxt('b')['job']                     # b finished its own list and picks up a's where a stopped
