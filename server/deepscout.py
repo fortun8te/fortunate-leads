@@ -27,6 +27,13 @@ SCOUT_MIN = 60          # bulk AI fit needed before an agent looks
 TIMEOUT = 240           # seconds per lead
 CMD = os.environ.get('LEADSCOUT_CMD', f"{Path.home() / '.local/bin/hermesme'} -p leadscout -t web -z")
 
+# Which model the agent runs on (setting scout_model); the profile's fallback chain still applies after it.
+MODELS = {
+    'space-bunny': {'label': 'Space Bunny (OpenRouter stealth, free)', 'args': ['--provider', 'orslot', '-m', 'stealth/space-bunny-alpha']},
+    'grok': {'label': 'Grok 4.6 (your SuperGrok plan)', 'args': ['--provider', 'xai-oauth', '-m', 'grok-4.6']},
+}
+STATE_DB = Path.home() / '.hermes-me/profiles/leadscout/state.db'
+
 SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research(person_id INTEGER PRIMARY KEY, verdict TEXT, reachable INT,
   summary TEXT, tags TEXT, sources TEXT, raw TEXT, at TEXT NOT NULL)"""
 
@@ -52,10 +59,12 @@ def prompt(p):
     return 'Vet ' + ' | '.join(bits)
 
 
-def run(p):
+def run(p, model='space-bunny'):
     """Network only: one agent run. -> parsed dict or None."""
+    base = shlex.split(CMD)
+    args = base[:-1] + MODELS.get(model, MODELS['space-bunny'])['args'] + base[-1:]   # model flags before -z
     try:
-        out = subprocess.run(shlex.split(CMD) + [prompt(p)], capture_output=True, text=True, timeout=TIMEOUT,
+        out = subprocess.run(args + [prompt(p)], capture_output=True, text=True, timeout=TIMEOUT,
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -132,6 +141,33 @@ def candidates(conn, limit, exclude):
         (SCOUT_MIN, *held, limit))]
 
 
+def usage(days=7):
+    """Runs and tokens the agent used per model over the last `days`, from Hermes' own session records."""
+    if not STATE_DB.exists():
+        return []
+    import sqlite3
+    import time
+    try:
+        con = sqlite3.connect(f'file:{STATE_DB}?mode=ro', uri=True, timeout=2)
+        rows = con.execute('SELECT model, billing_provider, count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0), '
+                           'max(started_at) FROM sessions WHERE started_at>=? GROUP BY 1,2 ORDER BY 3 DESC',
+                           (time.time() - days * 86400,)).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [{'model': m, 'provider': prov, 'runs': n, 'tokens_in': ti, 'tokens_out': to, 'last': last} for m, prov, n, ti, to, last in rows]
+
+
+def status(conn):
+    ensure(conn)
+    return {'on': db.get_setting(conn, 'scout') is not False, 'available': available(),
+            'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
+            'models': [{'id': k, 'label': v['label']} for k, v in MODELS.items()],
+            'done_today': conn.execute("SELECT count(*) FROM deep_research WHERE at>=date('now')").fetchone()[0],
+            'done': conn.execute('SELECT count(*) FROM deep_research').fetchone()[0],
+            'waiting': len(candidates(conn, 100000, set())), 'usage': usage()}
+
+
 class ScoutPool:
     """At most scout_workers agents at once, each on its own DB connection; failures back off for an hour."""
 
@@ -162,7 +198,12 @@ class ScoutPool:
 
     def _work(self, p):
         try:
-            data = run(p)
+            conn0 = db.connect(self.db_path)
+            try:
+                model = db.get_setting(conn0, 'scout_model') or 'space-bunny'
+            finally:
+                conn0.close()
+            data = run(p, model)
             conn = db.connect(self.db_path)
             try:
                 if data is None:

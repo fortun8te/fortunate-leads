@@ -68,12 +68,12 @@ class Pipeline(unittest.TestCase):
     def test_batched_verdicts_with_rubric_fewshot_and_evidence(self):
         items = [{'person': P(f'glow{i}', 'Founder of Glow skincare brand @glowco, ships to the USA'), 'tags': [('Founder', 'signal')], 'edges': [],
                   'net': {'seeds': [('seedx', 'following')], 'lists': 1, 'me': 'follows', 'seed_yield': 0.5, 'seed_marked': 6,
-                          'client_seeds': 1}} for i in range(6)]
+                          'client_seeds': 1}} for i in range(q.LLM_BATCH + 2)]
         ex = [{'handle': 'goodbrand', 'bio': 'Founder @goodbrand candles', 'label': 'good'},
               {'handle': 'nope', 'bio': 'UGC creator for brands', 'label': 'no'}]
         Proxy.drop = {1}
         out = q.llm_verdicts(items, ex, models=('m/a:free',))
-        self.assertEqual(len(Proxy.bodies), 2)               # 6 people -> batches of 4 + 2
+        self.assertEqual(len(Proxy.bodies), 2)               # one full batch + 2
         sysmsg, user = Proxy.bodies[0]['messages'][0]['content'], Proxy.bodies[0]['messages'][1]['content']
         self.assertIn('Marked Interested', sysmsg)
         self.assertIn('@goodbrand', sysmsg)

@@ -592,8 +592,8 @@ SCHEMA = """Reply with one compact JSON object only, no prose:
  "extra_tags": ["product niches from this list that the evidence clearly shows: %s"]}"""
 
 
-LLM_BUDGET = 90   # seconds for one verdict across all models; the socket timeout alone does not bound a slow-drip reply
-LLM_BATCH = 4     # profiles per model call (one JSON reply with a result per id); failures fall back per person
+LLM_BUDGET = 150  # seconds for one verdict across all models; the socket timeout alone does not bound a slow-drip reply
+LLM_BATCH = 8     # profiles per model call (1M-context free models; halves requests per person) (one JSON reply with a result per id); failures fall back per person
 FEWSHOT_MAX = 8   # examples per label from Michael's own marks
 
 RUBRIC = """Scoring rubric (fit 0-100) for Fortunate's ideal client:

@@ -1096,12 +1096,18 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
-/* Tags carry the judgement: good signs green, product niche blue, red flags red. Two lines of tags per row. */
-:root { --tag-good: #1f6f3a; --tag-good-fg: #d9f7e3; --tag-bad: #6e2323; --tag-bad-fg: #ffdcdc; --tag-niche: #1f4a78; --tag-niche-fg: #dcecff; }
-:root[data-theme="light"] { --tag-good: #d4f2dd; --tag-good-fg: #11502a; --tag-bad: #fbdcdc; --tag-bad-fg: #7a1c1c; --tag-niche: #d9e8fb; --tag-niche-fg: #173d66; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --tag-good: #d4f2dd; --tag-good-fg: #11502a; --tag-bad: #fbdcdc; --tag-bad-fg: #7a1c1c; --tag-niche: #d9e8fb; --tag-niche-fg: #173d66; } }
-.tag.t-good, .tchip.t-good { background: var(--tag-good); color: var(--tag-good-fg); font-weight: 600; box-shadow: none; }
-.tag.t-bad, .tchip.t-bad { background: var(--tag-bad); color: var(--tag-bad-fg); font-weight: 600; box-shadow: none; }
-.tag.t-niche, .tchip.t-niche { background: var(--tag-niche); color: var(--tag-niche-fg); font-weight: 500; box-shadow: none; }
+/* Tag hierarchy (see tagTier in app.js): orange = reach out, red = do not, black = your own. */
+:root { --t-orange: #ff8a1f; --t-orange-ink: #140800; --t-red: #e5484d; --t-red-ink: #ffffff; --t-own: #000000; --t-own-ink: #ffffff; --t-own-ring: #5c5c5c; }
+:root[data-theme="light"] { --t-orange: #e86a00; --t-orange-ink: #ffffff; --t-red: #d93036; --t-own: #111111; --t-own-ring: #111111; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --t-orange: #e86a00; --t-orange-ink: #ffffff; --t-red: #d93036; --t-own: #111111; --t-own-ring: #111111; } }
+.tag.t-hero, .tchip.t-hero { background: var(--t-orange); color: var(--t-orange-ink); font-weight: 700; box-shadow: none; }
+.tag.t-plus, .tchip.t-plus { background: transparent; color: var(--t-orange); box-shadow: inset 0 0 0 1.5px var(--t-orange); font-weight: 600; }
+.tag.t-own, .tchip.t-own { background: var(--t-own); color: var(--t-own-ink); box-shadow: inset 0 0 0 1px var(--t-own-ring); font-weight: 600; }
+.tag.t-niche, .tchip.t-niche { background: var(--bg3); color: var(--fg); font-weight: 600; box-shadow: none; }
+.tag.t-ctx, .tchip.t-ctx { background: var(--bg2); color: var(--fg2); font-weight: 400; box-shadow: none; }
+.tag.t-soft, .tchip.t-soft { background: transparent; color: var(--t-red); box-shadow: inset 0 0 0 1.5px var(--t-red); font-weight: 500; }
+.tag.t-flag, .tchip.t-flag { background: var(--t-red); color: var(--t-red-ink); font-weight: 700; box-shadow: none; }
 .row .tags { display: flex; flex-wrap: wrap; align-content: center; gap: 4px; max-height: calc(var(--row) - 8px); overflow: hidden; }
 .d-tag-edit { margin-top: var(--s2); display: grid; gap: var(--s2); }
+.kv-list { display: grid; gap: 6px; }
+.kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); }
