@@ -1975,10 +1975,8 @@ function renderStatus() {
   $('#st-peh').textContent = x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–';
   $('#st-hit').textContent = x.rate?.last_hit_at ? ago(x.rate.last_hit_at) + ' ago' : 'None';
   $('#pause-btn').disabled = !sc || !!S.scStale;
-  $('#qualify-btn').disabled = !sc || !!S.scStale;
   $('#pause-btn').textContent = sc?.paused ? 'Resume' : 'Pause';
   $('#pause-btn').classList.toggle('solid', !!sc?.paused);
-  $('#qualify-btn').classList.toggle('on', !!sc?.qualify);
   const q = sc ? (sc.queue?.list || 0) + (sc.queue?.profile || 0) : 0;
   $('#n-queue').textContent = q ? fmt(q) : '';
   // one dot per account; the label counts the ones working
@@ -2014,13 +2012,14 @@ $('#pause-btn').onclick = async () => {
   try { await api.post('/api/scraper/pause', { paused }); } catch (e) { S.sc.paused = !paused; renderStatus(); toast('Could not reach server'); }
   loadScraper();
 };
-$('#qualify-btn').onclick = async () => {
+// The AI pill in the control strip is the main switch; the Qualification page keeps a shortcut to the same setting.
+async function toggleQualify() {
   if (!S.sc) return;
   const on = !S.sc.qualify;
   S.sc.qualify = on; renderStatus();
   try { await api.post('/api/settings/qualify', { on }); toast(on ? 'Qualify on' : 'Qualify off'); }
   catch (e) { S.sc.qualify = !on; renderStatus(); toast('Could not save'); }
-};
+}
 
 let listFilter = 'all';
 const LIST_STATE = { partial: 'Partial', running: 'Reading now', queued: 'Waiting', paused: 'Paused', error: 'Failed', private: 'Private account', done: 'Done' };
@@ -2089,7 +2088,7 @@ function renderScraper() {
       listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
     stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
-      : `Off. Turn on Qualify at the top to let AI score ${int(Q.left || 0)} people with bios.`,
+      : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
       Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
   ].join('');
   $('#ext-ver').textContent = x.version ? 'Extension v' + x.version : '';
@@ -2592,7 +2591,7 @@ const Q = {
     const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
     const focusId = focusAttr ? focused.getAttribute(focusAttr) : null;
     $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
-      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'Nobody has been checked by AI yet. Press Resume on AI at the top; results appear here.' : 'Nobody matches.'}</div>`;
     if (focusAttr) $(`#ql-list [${focusAttr}="${focusId}"]`)?.focus({ preventScroll: true });
     $('#ql-more').hidden = this.rows.length >= this.total;
   },
@@ -2615,7 +2614,7 @@ $('#ql-view').addEventListener('click', (e) => { const b = e.target.closest('[da
 $('#ql-q').addEventListener('input', debounce((e) => { Q.q = e.target.value.trim(); Q.load(); }, 250));
 $('#ql-sort').addEventListener('change', (e) => { Q.sort = e.target.value; Q.load(); });
 $('#ql-more').onclick = () => Q.load(true);
-$('#ql-toggle').onclick = async () => { await $('#qualify-btn').onclick(); Q.renderProg(); };
+$('#ql-toggle').onclick = async () => { await toggleQualify(); Q.renderProg(); };
 $('#ql-list').addEventListener('click', (e) => {
   const d = e.target.closest('[data-deep]'); if (d) return Q.deeper(+d.dataset.deep);
   const o = e.target.closest('[data-open]');

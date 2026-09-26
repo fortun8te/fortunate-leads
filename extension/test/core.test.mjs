@@ -198,7 +198,7 @@ test('stagesView: the widget rows for the three workspace stages', () => {
     { id: 'bios', label: 'Read bios', state: 'running', paused: false, hour: 1700, now: 'x' },
     { id: 'ai', label: 'AI scoring', state: 'paused', paused: true, hour: 0, now: 'Paused by you.' }] };
   const v = FL.stagesView(ctl, T0 + 60e3);
-  assert.deepEqual(v.map((r) => r.word), ['break 2 min', 'running · 1,700/h', 'paused']);
+  assert.deepEqual(v.map((r) => r.word), ['short pause · 2 min', 'running · 1,700/h', 'paused']);
   assert.deepEqual(v.map((r) => r.action), ['pause', 'pause', 'resume']);
   assert.deepEqual(v.map((r) => r.on), [true, true, false]);
   assert.deepEqual(FL.stagesView(null, T0), []);

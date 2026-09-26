@@ -50,7 +50,6 @@
         <span class="st hide-md" hidden><span>Last limit</span><b class="num" id="st-hit">–</b></span>
       </div>
       <div class="st-r">
-        <button class="toggle" id="qualify-btn" role="switch" aria-checked="false" title="Qualification"><i></i><span>Qualify</span></button>
         <button class="btn" id="pause-btn" hidden>Pause</button>
       </div>
     </div>
@@ -274,7 +273,7 @@
             <details class="adv">
               <summary>Advanced</summary>
               <form class="budget" id="set-q" novalidate>
-                <label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="16" inputmode="numeric"></label>
+                <label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="32" inputmode="numeric"></label>
                 <label title="Combined network and profile score a person needs before the AI reads them"><span>Score needed for an AI check</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label>
                 <label title="Planned bio reads skip people below this first score; Read now still works"><span>Score needed for a bio read</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label>
                 <button class="btn">Save</button>

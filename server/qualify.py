@@ -16,7 +16,7 @@ import llm
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q4'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
+PROMPT_VERSION = 'q5'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't5-observed-links'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
@@ -669,6 +669,7 @@ def _packet(person, tags, edges, net=None):
         if mine:
             rows.append('Connected to Michael (@fortun8te): ' + ', '.join(sorted({'followers': 'follows him', 'following': 'he follows them'}.get(d, d) for d in mine)))
     rows += owner_lines(person)
+    rows += person.get('web_lines') or []   # set by the server's web research step
     rt = [t for t, gr in tags or [] if gr in ('role', 'niche', 'signal')]
     if rt:
         rows.append('Keyword rules matched (hint, may be wrong): ' + ', '.join(rt))
@@ -704,7 +705,7 @@ def prompt_version(examples=None):
 SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 {"id": <the id>, "handle": "the exact profile handle", "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
- "evidence": ["up to 3 short exact quotes from the bio/name that support the verdict"],
+ "evidence": ["up to 3 short exact quotes from the bio, name or WEB RESEARCH lines that support the verdict"],
  "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
  "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
 Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
@@ -763,6 +764,10 @@ def ai_tags(v, fit):
 
 
 def _verdict(v, person, tags, used, version, net=None):
+    # Web research (search results, their website) counts as evidence alongside the bio and name.
+    web = str(person.get('web_text') or '').strip()
+    if web:
+        person = dict(person, bio=f"{person.get('bio') or ''}\n{web}")
     if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
         return None
     if isinstance(v['fit'], float) and not math.isfinite(v['fit']):
@@ -840,7 +845,7 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=420 * len(chunk) + 100)
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
         except llm.Unavailable:
             continue
         data = parse_json(text)
