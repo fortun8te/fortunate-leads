@@ -1789,7 +1789,10 @@ const T = {
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
     $('#tg-groups').innerHTML = sec('top', 'Most useful', 'What makes a lead: the AI verdict, top fit, product category, decision maker, US market.', top, 'tg-top')
-      + `<div class="tg-rest">${G.map(([k, t, d]) => sec(k, t, d, pick(k))).join('') + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div>`;
+      + sec('role', G[0][1], G[0][2], pick('role'))
+      // Everything else stays one click away so the page opens with just the useful tags.
+      + `<details class="adv tg-more"${q ? ' open' : ''}><summary>More tags</summary><div class="tg-rest">${G.slice(1).map(([k, t, d]) => sec(k, t, d, pick(k))).join('')
+        + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>`;
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
@@ -2203,7 +2206,6 @@ function stateText(a) {
 function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, warn = a.status === 'needs_login' || a.status === 'challenge';
-  const stat = (label, val, sub) => `<div><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}<button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
@@ -2211,27 +2213,24 @@ function accountRow(a) {
     <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
       <span class="grow"></span><span class="acc-state${warn ? ' bad' : ''}">${esc(stateText(a))}</span></div>
     <div class="acc-now"><span class="muted">Now</span><span title="${esc(jobText(a))}">${esc(jobText(a))}</span></div>
-    <div class="acc-stats">
-      ${stat('Pages/hour', int(h.pages))}
-      ${stat('People/hour', int(h.people))}
-      ${stat('Pages today', int(t.list), 'of ' + int(b.list))}
-      ${stat('Bios today', int(t.profile), b.profile ? 'of ' + int(b.profile) : 'no daily cap')}
-      ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'None')}
-    </div>
+    <div class="acc-today"><span class="muted">Today</span><span class="num">${int(t.list)}${b.list ? ' of ' + int(b.list) : ' (no limit)'} list pages · ${int(t.profile)}${b.profile ? ' of ' + int(b.profile) : ''} bios · ${int(h.people)} people this hour</span>
+      <div class="bar-p run"><i style="width:${b.list ? Math.min(100, (t.list || 0) / b.list * 100) : 0}%"></i></div></div>
+    <div class="acc-simple"><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
+    <details class="adv acc-more"><summary>Settings</summary>
     <div class="acc-ctl">
       <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
-        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric"><span class="muted">pages/day</span></label>
-        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric"><span class="muted">bios/day</span></label>
+        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no daily limit"><span class="muted">list pages/day</span></label>
+        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric" title="0 = no daily limit"><span class="muted">bios/day</span></label>
         <button class="btn">Save</button>
       </form>
     </div>
-    <div class="acc-foot"><span class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 100)) : ''}</span>
+    <div class="acc-foot"><span class="muted num">${a.version ? 'v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_limit ? ' · last Instagram limit ' + ago(a.last_limit) + ' ago' : ''}${a.last_error && a.status !== 'running' ? ' · ' + esc(a.last_error.slice(0, 100)) : ''}</span>
       <span class="grow"></span>
-      <button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button>
       <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
+    </details>
   </section>`;
 }
 
@@ -2244,10 +2243,9 @@ function renderAccounts() {
   const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
   const kpi = (label, val, sub) => `<div class="tile"><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   $('#acc-kpis').innerHTML = [
-    kpi('Online', `${online}/${accs.length}`, accs.length ? plural(accs.filter((a) => a.status === 'running').length, 'working', 'working') : 'No accounts yet'),
-    kpi('Pages/hour', int(r.pages_last_hour), 'All accounts'),
-    kpi('People/hour', int(r.people_last_hour), r.last_hit_at ? 'Limit ' + ago(r.last_hit_at) + ' ago' : 'No limit hits'),
-    kpi('Today', int(pages), plural(bios, 'bio') + ' read'),
+    kpi('Accounts online', `${online} of ${accs.length}`, accs.length < 3 ? 'More accounts = faster scraping' : ''),
+    kpi('People per hour', int(r.people_last_hour), 'All accounts together'),
+    kpi('Today', int(pages) + ' pages', plural(bios, 'bio') + ' read'),
   ].join('');
   $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
@@ -2432,7 +2430,25 @@ function renderModels() {
     <button class="btn ghost" data-mup="${i}" title="Try earlier"${i ? '' : ' disabled'}>Up</button><button class="btn ghost" data-mdown="${i}" title="Try later"${i < ms.length - 1 ? '' : ' disabled'}>Down</button><button class="btn ghost" data-mdel="${i}">Remove</button></li>`).join('')
     : '<li class="muted">No models</li>';
   $('#set-models-save').disabled = !SET.dirty;
+  // OpenRouter's current free catalogue (checked daily by the server); one click adds a model to the list above.
+  const auto = SET.llm?.auto_models || {};
+  const free = [...new Set([...(auto.stealth || []), ...(auto.free || [])])];
+  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? 'Could not reach OpenRouter' : 'Not checked yet';
+  $('#set-free').innerHTML = free.length ? free.map((m) => `<li><code>${esc(m)}</code>${(auto.new_stealth || []).includes(m) ? '<span class="pill">New</span>' : ''}<span class="grow"></span>
+    ${ms.includes(m) ? '<span class="muted">In use</span>' : `<button class="btn ghost" data-madd="${esc(m)}">Add</button>`}</li>`).join('')
+    : '<li class="muted">None found</li>';
 }
+$('#set-free').addEventListener('click', (e) => {
+  const m = e.target.closest('[data-madd]')?.dataset.madd;
+  if (!m || !SET.models || SET.models.includes(m)) return;
+  SET.models.push(m); SET.dirty = true; renderModels(); toast('Added. Press Save to use it.');
+});
+$('#set-free-refresh').onclick = async (e) => {
+  e.target.disabled = true;
+  try { const r = await api.post('/api/llm/models/refresh', {}); if (SET.llm) SET.llm.auto_models = r.auto; renderModels(); toast('Model list updated'); }
+  catch { toast('Could not reach OpenRouter'); }
+  finally { e.target.disabled = false; }
+};
 $('#set-q-on').onclick = async () => {
   const on = !S.sc?.qualify;
   try { await api.post('/api/settings/qualify', { on }); toast(on ? 'Qualify on' : 'Qualify off'); await loadScraper(); renderSettings(); } catch (e) { toast('Could not save'); }

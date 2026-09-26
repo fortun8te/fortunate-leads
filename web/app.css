@@ -889,8 +889,9 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
 .d-fit { padding-bottom: var(--s5); border-bottom: 1px solid var(--line); margin-bottom: var(--s2); }
 .edges { border: 0; border-radius: 0; margin: 0 calc(-1 * var(--s2)); }
 .edges button { min-height: 32px; height: auto; padding: var(--s1) var(--s2); border-radius: var(--r2); }
-.edges b { min-width: 0; overflow-wrap: anywhere; }
-.edges span { flex: none; }
+.edges button { flex-wrap: wrap; row-gap: 2px; }
+.edges b { flex: 1 1 9em; min-width: 0; overflow-wrap: anywhere; }
+.edges span { flex: 0 1 auto; text-align: right; }
 .edges button + button { border-top: 0; }
 .d-stats { border: 0; margin-top: var(--s4); }
 .d-stats div { padding: 0; }
@@ -1086,3 +1087,11 @@ button:disabled { cursor:default; opacity:.5; }
   .rl-prev { white-space: normal; }
   .acc { padding: var(--s3); }
 }
+
+/* Simple account card: status, today's progress and Pause up front; the rest folds away. */
+.acc-today { display: grid; gap: 6px; margin: 10px 0; }
+.acc-today > span { display: flex; gap: 12px; }
+.acc-simple { display: flex; justify-content: flex-end; }
+.acc-more > summary { margin-top: 8px; }
+.tg-more, .tg-manage { margin-top: var(--s4); }
+.tg-manage > .panel { margin-top: var(--s3); }
