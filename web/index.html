@@ -97,11 +97,11 @@
 
         <div class="mpane" id="pane-map">
           <div class="mbar">
-            <div class="seg" id="map-scope"><button data-v="leads" class="on" title="People in 2+ lists and likely brands">Connected</button><button data-v="all">All</button></div>
+            <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People in 2+ lists and likely brands">Connected</button><button data-v="all" aria-pressed="false">All</button></div>
             <label class="search"><input class="input" id="map-q" aria-label="Find a person on the map" type="search" placeholder="Find on map" autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
-            <button class="btn" id="map-labels" title="Labels (l)">Labels</button>
+            <button class="btn" id="map-labels" aria-pressed="true" title="Labels (l)">Labels</button>
             <button class="btn" id="map-fit" title="Zoom to fit (f)">Fit</button>
           </div>
           <div class="stage" id="stage">
@@ -155,7 +155,7 @@
           <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person, tidy them up here</span></div>
           <div class="tg-merge" id="tg-merge" hidden></div>
           <div class="tbl-wrap"><table class="tbl tg-tbl">
-            <thead><tr><th class="c-ck"><button class="ck" id="tg-all" aria-label="Select all tags"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
+            <thead><tr><th class="c-ck"><button class="ck" id="tg-all" role="checkbox" aria-checked="false" aria-label="Select all tags"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
             <tbody id="tg-body"></tbody>
           </table></div>
         </div>

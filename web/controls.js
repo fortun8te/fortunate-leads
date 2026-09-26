@@ -10,6 +10,7 @@
   const SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
   const PER = { lists: 'people', bios: 'bios', ai: 'scores' };
   let data = null, busy = false, offline = false, timer = 0, tick = 0;
+  let requestVersion = 0, actionError = '';
 
   const el = document.createElement('div');
   el.className = 'fl-ctl';
@@ -61,13 +62,13 @@
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
     const lead = data.stages.find((s) => s.state === 'running') || data.stages.find((s) => s.state === 'waiting');
-    const sentence = offline ? 'Server offline: showing the last known state.' :
+    const sentence = actionError || (offline ? 'Server offline: showing the last known state.' :
       data.all_paused ? 'Everything is paused. Nothing is sent to Instagram or the AI model.' :
-      lead ? `${lead.label}: ${lead.now}` : 'Nothing is working right now.';
+      lead ? `${lead.label}: ${lead.now}` : 'Nothing is working right now.');
     const all = data.all_paused
       ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Start collecting lists, reading bios and AI scoring again." ${busy ? 'disabled' : ''}>Resume all</button>`
       : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy ? 'disabled' : ''}>Stop all</button>`;
-    el.innerHTML = `<div class="fl-ctl-pills">${pills}</div><span class="fl-ctl-now" title="${esc(sentence)}">${esc(sentence)}</span>${all}`;
+    el.innerHTML = `<div class="fl-ctl-pills">${pills}</div><span class="fl-ctl-now" ${actionError ? 'role="alert" aria-atomic="true"' : ''} title="${esc(sentence)}">${esc(sentence)}</span>${all}`;
     el.dataset.running = String(running);
     if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
   }
@@ -75,29 +76,43 @@
   function countdown() {   // only the words change between polls, so a button under the pointer is never replaced
     el.querySelectorAll('.fl-ctl-word').forEach((w, i) => { const s = data.stages[i]; if (s) w.textContent = word(s); });
   }
-  async function load() {
+  async function load(afterAction = false) {
+    if (busy && !afterAction) return;
+    const version = ++requestVersion;
     try {
       const r = await fetch('/api/control', { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
       const j = await r.json(), key = JSON.stringify(j.stages) + j.all_paused;
+      if (version !== requestVersion) return;
       const same = data && !offline && key === data.key;   // unchanged: keep the buttons, just count down
       data = Object.assign(j, { got: Date.now(), key });
       offline = false;
       if (same) return countdown();
-    } catch { offline = true; }
+    } catch {
+      if (version !== requestVersion) return;
+      offline = true;
+    }
     render();
   }
   async function send(body) {
+    if (busy) return;
+    ++requestVersion; // A response from before this action must never replace its result.
+    actionError = '';
     // Disabled buttons cannot retain focus while the request is in flight.
     const focusStage = el.contains(document.activeElement) ? document.activeElement.dataset.stage : null;
     busy = true; render();
     try {
       const r = await fetch('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json();
-      if (r.ok && j.stages) data = Object.assign(j, { got: Date.now() });
-    } catch {}
+      if (!r.ok || !Array.isArray(j.stages)) throw new Error('Control action failed');
+      data = Object.assign(j, { got: Date.now() });
+    } catch {
+      const target = body.stage === 'all' ? 'all stages' : SHORT[body.stage];
+      actionError = `Couldn’t confirm ${body.action} for ${target}. Try again.`;
+    }
+    // Keep every action locked until the authoritative refresh has settled.
+    await load(true);
     busy = false;
-    await load();
     // An unchanged response can take load's countdown-only path; always unlock.
     render();
     if (focusStage && document.activeElement === document.body) {

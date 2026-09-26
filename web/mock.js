@@ -401,9 +401,9 @@
       return controlView();
     }
     if (path === '/api/qual') {
-      const text = (q.get('q') || '').toLowerCase(), view = q.get('view') || 'ai';
+      const view = q.get('view') || 'ai';
       const ai = (p) => { const model = verdicts.get(p.id).model; return model && model !== 'rules'; };
-      let list = people.filter((p) => (view === 'all' || (view === 'ai' ? ai(p) : !ai(p))) && `${p.handle} ${p.name} ${p.bio || ''}`.toLowerCase().includes(text));
+      let list = filtered(q).filter((p) => view === 'all' || (view === 'ai' ? ai(p) : !ai(p)));
       list = q.get('sort') === 'recent' ? list.slice().sort((a, b) => b.id - a.id) : sorted(list, 'score');
       const off = Math.max(0, +q.get('offset') || 0), lim = Math.min(100, Math.max(1, +q.get('limit') || 30));
       return { total: list.length, rows: list.slice(off, off + lim).map((p) => ({ ...row(p), verdict: { ...verdicts.get(p.id), at: ago_(2 * H) }, bio_at: p.bio ? ago_(3 * H) : null, site: sites.get(p.id) || null })),
@@ -412,7 +412,7 @@
     if ((m = path.match(/^\/api\/qual\/(\d+)\/deeper$/)) && method === 'POST') {
       const p = people.find((p) => p.id === +m[1]);
       if (!p) return { ok: false, error: 'Person not found' };
-      const site = p.website ? { url: p.website, final_url: p.website, title: p.name, summary: 'Sample website result for preview.', signals: { shop: true }, model: 'rules', at: now() } : null;
+      const site = p.website ? { url: p.website, final_url: p.website, title: p.name, summary: 'Sample website result for preview.', signals: { shop: 'Shopify' }, model: 'rules', at: now() } : null;
       if (site) sites.set(p.id, site);
       return { bio_queued: !p.bio, site, note: site ? null : 'No website in the bio yet.' };
     }

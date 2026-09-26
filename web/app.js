@@ -99,9 +99,9 @@ const FIT_TIER = { strong: 'hot', good: 'warm', weak: 'cold', unread: 'unread' }
 const isFitTag = (t) => /^Fit: /.test(t);
 const tagName = (t) => (typeof t === 'string' ? t : t.tag);
 const fitOf = (r) => r.fit || TIER_FIT[r.tier] || 'unread';
-function fitBadge(r, cls = '') {
+function fitBadge(r, cls = '', showScore = true) {
   const f = fitOf(r);
-  const score = f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
+  const score = showScore && f !== 'unread' && r.score != null ? `<b>${esc(r.score)}</b>` : '';
   return `<span class="fit f-${f} ${cls}" title="Fit${r.score != null ? ' score ' + esc(r.score) : ''}"><i></i>${FIT_LABEL[f]}${score}</span>`;
 }
 // Seeds a person was found through, from the "via @seed" tags (these leave out Michael's own account).
@@ -319,10 +319,14 @@ function applyTheme(t) {
 }
 $('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 function applyDensity(d) {
+  const sc = $('#scroll'), position = sc.scrollTop / rowH();
   document.documentElement.dataset.density = d;
   $('#density-btn').textContent = d === 'compact' ? 'Comfortable' : 'Compact';
   store.set('density', d);
   syncLook();
+  // Resize the scrollable canvas before restoring the same lead and row fraction.
+  $('#rows').style.height = S.rows.length * rowH() + 'px';
+  sc.scrollTop = position * rowH();
   renderRows();
 }
 function syncLook() {
@@ -407,12 +411,13 @@ function tagSection(key, title, list, labelFn) {
     ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">Less</button>` : ''}</div>`;
 }
 function renderFilters() {
+  const draft = $('#v-name')?.value || '';
   const c = S.counts || {};
   const qs = toQuery().toString();
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
   let h = `<div class="fsec f-x"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
-    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" placeholder="View name" autocomplete="off"><button class="btn solid">Save</button></form>` : ''}
+    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" value="${esc(draft)}" placeholder="View name" autocomplete="off"><button class="btn solid">Save</button></form>` : ''}
     <button class="fi${!active ? ' on' : ''}" data-view=""><span>Everyone</span><b>${fmt(c.total)}</b></button>
     ${S.views.map((v) => `<button class="fi${v.query === qs && active ? ' on' : ''}" data-view="${esc(v.query)}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}</div>
     <div class="fsec"><h4>Status</h4>
@@ -445,11 +450,19 @@ function renderFilters() {
     ${active ? '<button class="fi" id="f-clear" title="Clear filters (c)"><span>Clear all</span></button>' : ''}</div>`;
   const el = $('#filters');
   el.classList.toggle('xo', open);
-  const st = el.scrollTop, focus = document.activeElement?.id === 'f-find', pos = focus ? document.activeElement.selectionStart : 0;
+  const st = el.scrollTop, focused = el.contains(document.activeElement) ? document.activeElement : null;
+  const start = focused?.selectionStart, end = focused?.selectionEnd;
+  const key = focused && ['data-tag', 'data-view', 'data-status', 'data-tier', 'data-min', 'data-bio', 'data-fol', 'data-more', 'data-less'].find((k) => focused.hasAttribute(k));
+  const selector = focused?.id ? '#' + CSS.escape(focused.id) : key ? `button[${key}="${CSS.escape(focused.getAttribute(key))}"]` : null;
+  const wasSaving = !!$('#v-name');
   el.innerHTML = h;
   el.scrollTop = st;
-  if (focus) { const f = $('#f-find'); f.focus(); f.setSelectionRange(pos, pos); }
-  if (S.saving && document.activeElement?.id !== 'v-name') $('#v-name')?.focus();
+  const target = selector ? el.querySelector(selector) : null;
+  if (target) {
+    target.focus({ preventScroll: true });
+    if (start != null && target.setSelectionRange) target.setSelectionRange(start, end);
+  } else if (focused) $('#f-more')?.focus({ preventScroll: true });
+  if (S.saving && !wasSaving) $('#v-name')?.focus({ preventScroll: true });
 }
 $('#filters').addEventListener('click', async (e) => {
   const t = e.target;
@@ -495,13 +508,13 @@ function applyQuery(qs) {
 async function saveView(name) {
   if (!name) return;
   const query = toQuery().toString();
-  S.saving = false;
   if (S.viewsLocal) {
     S.views = [...S.views, { id: Date.now(), name, query }]; store.set('views', S.views);
   } else {
-    try { await api.post('/api/views', { name, query }); } catch (e) { toast('Could not save view'); }
+    try { await api.post('/api/views', { name, query }); } catch (e) { toast('Could not save view'); return; }
     await loadViews();
   }
+  S.saving = false;
   renderFilters(); toast('View saved');
 }
 async function deleteView(id) {
@@ -671,9 +684,10 @@ $('#sort').onchange = (e) => { S.sort = e.target.value; store.set('sort', S.sort
 const lists = (r) => Math.max(0, Math.round(+(r.lists ?? (Array.isArray(r.via) ? new Set(r.via).size : 0)) || 0));
 async function resetLeads(keep) {
   const gen = ++S.gen;
-  if (!keep) { S.rows = []; S.total = null; S.cur = -1; $('#scroll').scrollTop = 0; }
-  S.done = false; S.error = false; S.loading = false;
+  if (!keep) { S.rows = []; S.total = null; S.cur = -1; S.anchor = -1; $('#scroll').scrollTop = 0; }
+  S.done = false; S.error = false; S.loading = true;
   renderRows();
+  S.loading = false;
   await loadMore(gen, keep ? Math.max(PAGE, S.rows.length) : PAGE, keep);
 }
 // Best fit (sort=fit): strong, good, weak, unread, each tier most connected first, then by score.
@@ -683,16 +697,17 @@ function fetchLeads(offset, limit) {
   return api.get('/api/leads?' + p);
 }
 async function loadMore(gen = S.gen, n = PAGE, replace = false) {
-  if (S.loading || (S.done && !replace)) return;
+  if (S.loading || S.error || (S.done && !replace)) return;
   S.loading = true;
   try {
     const d = await fetchLeads(replace ? 0 : S.rows.length, Math.min(500, n));
     if (gen !== S.gen) return;
     S.total = d.total;
     if (replace) {
-      const currentId = S.rows[S.cur]?.id;
+      const currentId = S.rows[S.cur]?.id, anchorId = S.rows[S.anchor]?.id;
       S.rows = d.rows;
       S.cur = currentId == null ? -1 : S.rows.findIndex((r) => r.id === currentId);
+      S.anchor = anchorId == null ? -1 : S.rows.findIndex((r) => r.id === anchorId);
     } else S.rows.push(...d.rows);
     S.done = S.rows.length >= d.total || !d.rows.length;
   } catch (e) {
@@ -780,23 +795,25 @@ function renderRows() {
     }
     return;
   }
-  box.style.height = S.rows.length * h + 'px';
+  box.style.height = (S.rows.length * h + (S.error ? 64 : 0)) + 'px';
   const from = Math.max(0, Math.floor(sc.scrollTop / h) - 8);
   const to = Math.min(S.rows.length, Math.ceil((sc.scrollTop + sc.clientHeight) / h) + 8);
   let out = '';
   for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i, h);
+  if (S.error) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Could not load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`;
   box.innerHTML = out;
   if (focusId && focusKey) {
     const target = box.querySelector(`[data-person-id="${CSS.escape(focusId)}"] ${focusKey}`);
     if (target) target.focus({ preventScroll: true });
     else { sc.tabIndex = -1; sc.focus({ preventScroll: true }); }
   }
-  if (!S.done && to >= S.rows.length - 20) loadMore();
+  if (!S.error && !S.done && to >= S.rows.length - 20) loadMore();
 }
 $('#scroll').addEventListener('scroll', () => requestAnimationFrame(renderRows), { passive: true });
 window.addEventListener('resize', debounce(() => { syncFilterToggle(); renderRows(); M.resize(); }, 60));
 $('#rows').addEventListener('click', (e) => {
   if (e.target.id === 'retry') return resetLeads();
+  if (e.target.closest('#retry-more')) { S.error = false; return loadMore(); }
   if (e.target.closest('#clear-all')) return clearFilters();
   if (e.target.closest('[data-ig]')) { e.stopPropagation(); return; }
   const row = e.target.closest('.row');
@@ -886,9 +903,17 @@ function renderBulk() {
   el.hidden = false;
   if (focused) $('#' + focused)?.focus();
 }
+function clearBulkSelection() {
+  const i = S.rows[S.cur] && S.pick.has(S.rows[S.cur].id) ? S.cur : S.rows.findIndex((r) => S.pick.has(r.id));
+  clearPick();
+  if (S.view === 'leads' && i >= 0) {
+    select(i, true);
+    $(`#rows [data-person-id="${S.rows[i].id}"] .lead-open`)?.focus({ preventScroll: true });
+  } else if (S.view === 'leads') $('#q').focus({ preventScroll: true });
+}
 $('#bulk').addEventListener('click', (e) => {
   if (e.target.id === 'bk-all') return pickAllInFilter();
-  if (e.target.id === 'bk-x') return clearPick();
+  if (e.target.id === 'bk-x') return clearBulkSelection();
   const s = e.target.closest('[data-bs]');
   if (s) bulk({ status: s.dataset.bs || null });
 });
@@ -898,7 +923,7 @@ $('#bulk').addEventListener('submit', (e) => {
   if (v) { $('#bk-add').value = ''; $('#bk-add').blur(); bulk({ add: [v] }); }
 });
 $('#bulk').addEventListener('change', (e) => { if (e.target.id === 'bk-rm' && e.target.value) bulk({ remove: [e.target.value] }); });
-$('#bulk').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.target.blur(); e.stopPropagation(); } });
+$('#bulk').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); clearBulkSelection(); } });
 
 async function bulk(op, ids = [...S.pick], quiet) {
   if (!ids.length) return;
@@ -1013,6 +1038,7 @@ function renderDetail() {
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const focused = document.activeElement?.id;
+  const focusedStatus = document.activeElement?.matches('#detail [data-s]') ? document.activeElement.dataset.s : null;
   const tagVal = $('#tag-in')?.value || '';
   const noteEl = $('#note'), noteVal = noteEl && +noteEl.dataset.id === p.id ? noteEl.value : p.note || '';
   const have = new Set((p.tags || []).map((t) => t.tag));
@@ -1046,6 +1072,7 @@ function renderDetail() {
     <div class="d-sec"><h4>Note<span class="grow"></span><span class="d-note" id="note-st">${p.note ? 'Saved' : 'Saves as you type'}</span></h4><textarea class="input" id="note" data-id="${p.id}" placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
+  if (focusedStatus != null) $(`#detail [data-s="${CSS.escape(focusedStatus)}"]`)?.focus({ preventScroll: true });
   if (focused === 'd-close') $('#d-close')?.focus({ preventScroll: true });
   if (focused === 'tag-in') $('#tag-in').focus();
   if (focused === 'note') { const t = $('#note'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
@@ -1096,10 +1123,32 @@ async function editTags(id, add, remove) {
 
 // ---------- keyboard ----------
 let gPending = 0;
+let helpReturnFocus = null;
+function setHelp(open) {
+  const help = $('#help');
+  gPending = 0;
+  if (open) {
+    helpReturnFocus = document.activeElement;
+    help.hidden = false;
+    help.tabIndex = -1;
+    help.focus({ preventScroll: true });
+  } else {
+    help.hidden = true;
+    if (helpReturnFocus?.isConnected) helpReturnFocus.focus({ preventScroll: true });
+    else $('#help-btn').focus({ preventScroll: true });
+    helpReturnFocus = null;
+  }
+}
+// Stop keys before native controls or delegated workspace handlers can act underneath help.
+document.addEventListener('keydown', (e) => {
+  if ($('#help').hidden) return;
+  if (!e.metaKey && !e.ctrlKey) e.preventDefault();
+  e.stopImmediatePropagation();
+  if (e.key === 'Escape' || e.key === '?') setHelp(false);
+}, true);
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
   if (e.key === 'Escape') {
-    if (!$('#help').hidden) { $('#help').hidden = true; return; }
     if (typing) { e.target.blur(); return; }
     if ($('#filters').classList.contains('show')) { setDrawer(false); return; }
     if (S.open || S.seedCard) { closeDetail(); return; }
@@ -1119,7 +1168,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (k === 'g') { gPending = Date.now(); return; }
-  if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
+  if (k === '?') { e.preventDefault(); setHelp(true); return; }
   if (k === 'd') { applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact'); return; }
   const work = S.view === 'leads' || S.view === 'map';
   if (k === '/' && S.view === 'tags') { e.preventDefault(); $('#tg-q').focus(); return; }
@@ -1168,8 +1217,8 @@ document.addEventListener('keydown', (e) => {
   if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
   if (k === 't') { e.preventDefault(); if (S.open !== r.id) openDetail(r.id).then(() => $('#tag-in')?.focus()); else $('#tag-in')?.focus(); }
 });
-$('#help-btn').onclick = () => { $('#help').hidden = false; };
-$('#help').onclick = () => { $('#help').hidden = true; };
+$('#help-btn').onclick = () => setHelp(true);
+$('#help').onclick = () => setHelp(false);
 
 // ---------- tags manager ----------
 const T = {
@@ -1186,6 +1235,7 @@ const T = {
   // Rename, merge and delete act on manual tags only. Rule tags follow their rule; auto tags follow the qualifier.
   editable: (t) => t.sources.includes('manual'),
   render() {
+    const focusedTag = $('#tg-body').contains(document.activeElement) ? document.activeElement.dataset.ck : null;
     const q = this.q.toLowerCase();
     this.renderGroups(q);
     const rows = this.list.filter((t) => this.editable(t) && (!q || t.tag.toLowerCase().includes(q)))
@@ -1198,13 +1248,16 @@ const T = {
       const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tagTier(t) ? ' t-' + tagTier(t) : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
-        <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}"></button>` : ''}</td>
+        <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}" role="checkbox" aria-checked="${on}" aria-label="Select ${esc(t.tag)}"></button>` : ''}</td>
         <td>${name}</td>
         <td class="r num">${int(t.total)}</td>
         <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
     }).join('') : `<tr><td colspan="4" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and type a tag under their profile.'}</td></tr>`;
-    const allOn = rows.filter((t) => this.editable(t)).every((t) => this.checked.has(t.tag)) && this.checked.size;
-    $('#tg-all').className = 'ck' + (allOn ? ' on' : this.checked.size ? ' part' : '');
+    const visibleChecked = rows.filter((t) => this.checked.has(t.tag)).length;
+    const allOn = rows.length > 0 && visibleChecked === rows.length;
+    $('#tg-all').className = 'ck' + (allOn ? ' on' : visibleChecked ? ' part' : '');
+    $('#tg-all').setAttribute('aria-checked', allOn ? 'true' : visibleChecked ? 'mixed' : 'false');
+    if (focusedTag) $$('#tg-body [data-ck]').find((b) => b.dataset.ck === focusedTag)?.focus({ preventScroll: true });
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
     this.renderMerge();
   },
@@ -1230,7 +1283,7 @@ const T = {
       const lim = this.more?.[key] || q ? 400 : key === 'top' ? 40 : 12;
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
         <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
-          : '<span class="muted">None yet. AI tags appear once the AI has checked people.</span>'}
+          : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
     $('#tg-groups').innerHTML = sec('top', 'Most useful', 'What makes a lead: the AI verdict, top fit, product category, decision maker, US market.', top, 'tg-top')
@@ -1473,7 +1526,7 @@ function renderScraper() {
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
-  if (sc.paused) { now = 'Paused'; sub = 'Press Resume at the top to carry on.'; }
+  if (sc.paused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
@@ -1509,7 +1562,9 @@ function renderScraper() {
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused'].includes(l.state)) };
-  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
+  const focusedListFilter = $('#lists-f').contains(document.activeElement) ? document.activeElement.dataset.v : null;
+  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
+  if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
   const order = { running: 0, queued: 1, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   const rows = listsAll ? all : all.slice(0, 8);
@@ -1528,7 +1583,7 @@ function backIn(t) {
   const m = Math.ceil(Math.max(0, Date.parse(t) - Date.now()) / 60000);
   return m <= 1 ? 'in about a minute' : m < 90 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`;
 }
-$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
+$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; renderScraper(); } });
 $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1574,7 +1629,7 @@ $('#seed-add').onclick = async () => {
 const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
 const ST_DOT = { running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
 const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
-const A = { wiz: null, setup: null, confirm: null, renaming: null, busy: new Set(), dismissed: false };
+const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false };
 
 async function copyText(text, btn) {
   let ok = false;
@@ -1602,7 +1657,7 @@ function accountRow(a) {
   const conf = A.confirm === a.lane_id, warn = a.status === 'needs_login' || a.status === 'challenge';
   const stat = (label, val, sub) => `<div><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   const name = A.renaming === a.lane_id
-    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(a.label || '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
+    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}<button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
   return `<section class="acc${warn ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
     <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
@@ -1616,8 +1671,8 @@ function accountRow(a) {
       ${stat('Last limit', a.last_limit ? ago(a.last_limit) + ' ago' : 'None')}
     </div>
     <div class="acc-ctl">
-      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
+      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
         <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric"><span class="muted">pages/day</span></label>
@@ -1659,15 +1714,19 @@ async function editAccount(lane, body, msg) {
   if (A.busy.has(lane)) return;
   A.busy.add(lane);
   const a = S.sc?.accounts?.find((x) => x.lane_id === lane);
+  let saved = false;
   try {
     const r = await api.post(`/api/accounts/${encodeURIComponent(lane)}`, body);
     if (a && r.account) Object.assign(a, r.account);
+    saved = true;
     renderAccounts(); renderStatus();
     if (msg) toast(msg);
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not save'); }
   finally { A.busy.delete(lane); }
   loadScraper();
+  return saved;
 }
+$('#acc-list').addEventListener('input', (e) => { if (e.target.id === 'acc-label') A.renameValue = e.target.value; });
 $('#acc-list').addEventListener('click', async (e) => {
   const row = e.target.closest('[data-lane]');
   if (!row) return;
@@ -1678,7 +1737,7 @@ $('#acc-list').addEventListener('click', async (e) => {
   if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${ROLES.find((x) => x[0] === t.dataset.role)[1].toLowerCase()}`);
   if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer the main account` : `${a.name} is the main account`);
   if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);
-  if (t.hasAttribute('data-rename')) { A.renaming = lane; A.confirm = null; return renderAccounts(); }
+  if (t.hasAttribute('data-rename')) { A.renameValue = null; A.renaming = lane; A.confirm = null; return renderAccounts(); }
   if (t.hasAttribute('data-ren-x')) { A.renaming = null; return renderAccounts(); }
   if (t.hasAttribute('data-remove')) {
     if (A.confirm !== lane) {
@@ -1691,15 +1750,17 @@ $('#acc-list').addEventListener('click', async (e) => {
     loadScraper();
   }
 });
-$('#acc-list').addEventListener('submit', (e) => {
+$('#acc-list').addEventListener('submit', async (e) => {
   e.preventDefault();
   const row = e.target.closest('[data-lane]'), lane = row?.dataset.lane;
   if (!lane) return;
   if (e.target.hasAttribute('data-ren')) {
     const label = $('#acc-label').value.trim();
-    A.renaming = null;
-    document.activeElement?.blur();
-    return editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
+    A.renameValue = $('#acc-label').value;
+    const saved = await editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
+    if (saved) { A.renaming = null; A.renameValue = null; document.activeElement?.blur(); renderAccounts(); }
+    else $('#acc-label')?.focus();
+    return;
   }
   if (e.target.hasAttribute('data-bud')) {
     const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
@@ -1773,12 +1834,12 @@ async function loadSettings() {
 }
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
-  try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = null; }
+  try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = 'failed'; }
   renderServices();
 }
-const upText = (up) => (up == null ? 'Checking' : up ? 'Running' : 'Not running');
+const upText = (up) => (SET.health === 'failed' ? 'Could not check' : up == null ? 'Checking' : up ? 'Running' : 'Not running');
 function renderServices() {
-  const h = SET.health && SET.health !== 'checking' ? SET.health : null, l = SET.llm;
+  const h = SET.health && typeof SET.health === 'object' ? SET.health : null, l = SET.llm;
   const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
   $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
     + row('Laya sidecar', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Optional. Start it with python3 sidecar/laya_server.py (see docs/SETUP.md).');
@@ -1793,6 +1854,8 @@ function renderSettings() {
   const l = SET.llm, sc = S.sc;
   $('#set-q-on').classList.toggle('on', !!sc?.qualify);
   $('#set-q-auto').classList.toggle('on', !!sc?.qualify_auto);
+  $('#set-q-on').setAttribute('aria-pressed', String(!!sc?.qualify));
+  $('#set-q-auto').setAttribute('aria-pressed', String(!!sc?.qualify_auto));
   const f = $('#set-q');
   if (l && !f.contains(document.activeElement)) { $('#set-workers').value = l.workers; $('#set-llm-min').value = l.llm_min; $('#set-bio-min').value = l.bio_min; }
   const bL = $('#b-list'), bP = $('#b-profile'), bud = sc?.ext?.budget || {};
@@ -1950,7 +2013,7 @@ const Q = {
     return `<article class="ql-card" data-id="${r.id}">
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
-        <div class="ql-score"><b class="num">${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
+        <div class="ql-score"><b class="num">${r.score ?? '–'}</b>${fitBadge(r, '', false)}</div></div>
       <div class="ql-body">
         <div class="ql-why"><h4>Verdict</h4><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
           ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul>` : ''}
@@ -1967,11 +2030,16 @@ const Q = {
   },
   render() {
     $('#ql-n').textContent = `${int(this.total)} ${this.total === 1 ? 'person' : 'people'}`;
+    const focused = $('#ql-list').contains(document.activeElement) ? document.activeElement : null;
+    const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
+    const focusId = focusAttr ? focused.getAttribute(focusAttr) : null;
     $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
-      : `<div class="muted ql-empty">${this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'Nobody has been checked by AI yet. Turn on Qualify at the top; results appear here.' : 'Nobody matches.'}</div>`;
+    if (focusAttr) $(`#ql-list [${focusAttr}="${focusId}"]`)?.focus({ preventScroll: true });
     $('#ql-more').hidden = this.rows.length >= this.total;
   },
   async deeper(id) {
+    const restoreFocus = document.activeElement?.dataset.deep === String(id);
     this.busy.add(id); this.render();
     try {
       const d = await api.post(`/api/qual/${id}/deeper`);
@@ -1980,6 +2048,9 @@ const Q = {
       toast(ucf(d.note || 'Done'));
     } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not dig deeper'); }
     this.busy.delete(id); this.render();
+    if (restoreFocus && document.activeElement === document.body && S.view === 'qual') {
+      $(`#ql-list [data-deep="${id}"]`)?.focus({ preventScroll: true });
+    }
   },
 };
 $('#ql-view').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b) return; Q.view = b.dataset.v; Q.fellBack = true; Q.syncSeg(); Q.load(); });
@@ -2029,7 +2100,7 @@ const M = {
     if (!this.loaded || this.stale) this.load();
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin()) this.sim.restart();
-    $('#map-labels').classList.toggle('on', this.labels);
+    $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels));
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
   resize() {
@@ -2207,6 +2278,7 @@ const M = {
   relax(n) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     let list = near(), frames = 14;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const step = () => {
       let moved = false;
       for (const a of [n, ...list]) for (const b of list) {
@@ -2217,12 +2289,12 @@ const M = {
         if (b.fx == null) { b.x += dx * push; b.y += dy * push; moved = true; }
         if (a !== n && a.fx == null) { a.x -= dx * push; a.y -= dy * push; }
       }
-      this.draw();
-      if (moved && --frames > 0) requestAnimationFrame(step);
+      if (!reduced) this.draw();
+      if (moved && --frames > 0) { if (reduced) step(); else requestAnimationFrame(step); }
     };
-    if (list.length) requestAnimationFrame(step);
+    if (list.length) { if (reduced) { step(); this.draw(); } else requestAnimationFrame(step); }
   },
-  toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); this.draw(); },
+  toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels)); this.draw(); },
   // Neighbourhood of the hovered or focused node.
   hood() {
     const n = this.hover || this.focus;
@@ -2545,7 +2617,9 @@ function seedCardClick(e) {
     drag = null; c.classList.remove('drag');
   };
   c.addEventListener('pointerup', end);
-  c.addEventListener('pointercancel', end);
+  c.addEventListener('pointercancel', (e) => {
+    pts.delete(e.pointerId); pinch = null; drag = null; c.classList.remove('drag');
+  });
   c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && M.hover) { M.hover = null; M.draw(); } $('#hover').hidden = true; });
   c.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -2562,7 +2636,7 @@ $('#map-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.prev
 $('#map-scope').addEventListener('click', (e) => {
   const b = e.target.closest('[data-v]');
   if (!b || b.dataset.v === M.scope) return;
-  $$('#map-scope button').forEach((x) => x.classList.toggle('on', x === b));
+  $$('#map-scope button').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
   M.scope = b.dataset.v; M.autoFit = true; M.load();
 });
 
