@@ -42,7 +42,9 @@ class Base(unittest.TestCase):
         self.tokens = {}
         self.old_qualify = server.qualify
         server.qualify = stub
+        self.addCleanup(setattr, server, 'qualify', self.old_qualify)
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         server.CFG['db'] = str(Path(self.tmp.name) / 'leads.sqlite')
         c = db.init(server.CFG['db'])
         db.set_setting(c, 'bio_min', 0)   # the stub prefilter (10 per seed) is not on the real scale
@@ -57,8 +59,6 @@ class Base(unittest.TestCase):
         self.conn.close()
         self.httpd.shutdown()
         self.httpd.server_close()
-        self.tmp.cleanup()
-        server.qualify = self.old_qualify
 
     def call(self, path, body=None, origin=None, host=None):
         port = server.CFG['port']
