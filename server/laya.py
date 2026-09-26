@@ -73,8 +73,19 @@ def reset():
         _health.update(at=None, ok=False, model=None, deployment_version=None)
 
 
+_signature = {}
+
+
 def cache_signature():
     """Version the answers by checkpoint deployment, question text, and local scoring policy."""
+    key = (PIPELINE_VERSION, MODEL, DEPLOYMENT_VERSION, id(QUESTIONS), tuple(sorted(FIT_W.items())))
+    if key not in _signature:
+        _signature.clear()
+        _signature[key] = _cache_signature()
+    return _signature[key]
+
+
+def _cache_signature():
     raw = json.dumps([PIPELINE_VERSION, MODEL, DEPLOYMENT_VERSION, QUESTIONS, FIT_W], ensure_ascii=False,
                      sort_keys=True, separators=(',', ':'))
     return 'laya:' + hashlib.sha256(raw.encode()).hexdigest()[:24]

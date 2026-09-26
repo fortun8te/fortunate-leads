@@ -47,9 +47,9 @@ CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person
 CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
-CREATE TABLE IF NOT EXISTS public_bio_retries(job_id INTEGER PRIMARY KEY, next_at TEXT, failures INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
 -- Per-run proof is separate from display totals and transient error messages.
 CREATE TABLE IF NOT EXISTS list_runs(job_id INTEGER PRIMARY KEY, first_page_seen INT NOT NULL DEFAULT 0,
   total INT, total_source TEXT NOT NULL DEFAULT 'unknown');
@@ -177,12 +177,8 @@ def init(path):
     # Revisions catch edits that counts/timestamps cannot distinguish, including
     # out-of-process imports. Settings is excluded to avoid recursive updates.
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
-    for table in ('people', 'verdicts', 'marks', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules', 'followups', 'activity'):
-        for operation in ('INSERT', 'UPDATE', 'DELETE'):
-            conn.execute(f"CREATE TRIGGER IF NOT EXISTS lead_rev_{table}_{operation.lower()} "
-                         f"AFTER {operation} ON {table} BEGIN "
-                         "INSERT INTO settings(key,value) VALUES('lead_data_rev','1') "
-                         "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END")
+    add_rev_triggers(conn, ('people', 'verdicts', 'marks', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules',
+                            'followups', 'activity'))
     conn.commit()
     return conn
 
@@ -228,6 +224,24 @@ def norm_handle(h):
     if not _HANDLE.fullmatch(s) or s.lower() in _RESERVED:
         return ''
     return s.lower()
+
+
+# Background bookkeeping that the lead list, facets and map never show; writing it must not invalidate their cache.
+REV_QUIET = {'people': {'pic_file', 'updated_at'}, 'verdicts': {'updated_at', 'input_hash', 'prompt'}}
+
+
+def add_rev_triggers(conn, tables):
+    """Advance lead_data_rev on every edit the lead list, facets or map can show (the response-cache key)."""
+    for table in tables:
+        quiet = REV_QUIET.get(table, set())
+        shown = [r[1] for r in conn.execute(f'PRAGMA table_info({table})') if r[1] not in quiet]
+        for operation in ('INSERT', 'UPDATE', 'DELETE'):
+            name = f'lead_rev_{table}_{operation.lower()}'
+            when = f"UPDATE OF {','.join(shown)}" if operation == 'UPDATE' and quiet else operation
+            conn.execute(f'DROP TRIGGER IF EXISTS {name}')   # redefine: columns may have been added
+            conn.execute(f"CREATE TRIGGER {name} AFTER {when} ON {table} BEGIN "
+                         "INSERT INTO settings(key,value) VALUES('lead_data_rev','1') "
+                         "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END")
 
 
 def mark_network_dirty(conn, person_ids):
@@ -599,7 +613,8 @@ def merge_people(conn, keep, drop):
     conn.execute('RELEASE merge_people')
 
 
-def add_edge(conn, seed, person_id, direction, ts=None, observed=True):
+def add_edge(conn, seed, person_id, direction, ts=None, observed=True, flipped=None):
+    """flipped: a set that collects seeds whose membership changed, so a caller can re-rank each seed once."""
     seed, ts = norm_handle(seed), ts or now()
     previous = conn.execute('SELECT active FROM edge_evidence WHERE seed=? AND person_id=? AND direction=?',
                             (seed, person_id, direction)).fetchone()
@@ -614,7 +629,10 @@ def add_edge(conn, seed, person_id, direction, ts=None, observed=True):
     current = conn.execute('SELECT active FROM edge_evidence WHERE seed=? AND person_id=? AND direction=?',
                            (seed, person_id, direction)).fetchone()
     if bool(previous and previous[0]) != bool(current and current[0]):
-        dirty_seed_members(conn, seed)
+        if flipped is None:
+            dirty_seed_members(conn, seed)
+        else:
+            flipped.add(seed)
     return added
 
 

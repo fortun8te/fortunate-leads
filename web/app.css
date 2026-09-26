@@ -247,7 +247,6 @@ main { flex: 1; min-height: 0; position: relative; }
 .fi.exc > span { text-decoration: line-through; }
 .fi.exc > span::before { content: "not "; display: inline-block; margin-right: 3px; text-decoration: none; }
 .fi.zero { color: var(--fg3); }
-.fi.zero .fic { opacity: .4; }
 .fi.zero:hover { opacity: 1; }
 .fi .del { width: 18px; flex: none; text-align: center; font-size: 15px; font-style: normal; line-height: 1; color: var(--fg3); visibility: hidden; }
 .fi:hover .del { visibility: visible; }
@@ -965,7 +964,6 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
   .fl-ctl-btn { grid-column: 3; grid-row: 1; padding: 0 5px; font-size: var(--fs-xs); }
   .fl-ctl-now { flex-basis: 140px; font-size: var(--fs-xs); }
   .fl-ctl-all { border-radius: var(--r2); }
-  .qbar #clear-filters { flex: none; }
 }
 /* ==== control strip — END ==== */
 
@@ -1052,7 +1050,6 @@ button:disabled { cursor:default; opacity:.5; }
   .connections-panel { padding: 14px; }
   .connections-layout { grid-template-columns: 1fr; }
   .connections-choices { max-height: 190px; }
-  #pane-map .mbar { flex-wrap: wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1061,7 +1058,7 @@ button:disabled { cursor:default; opacity:.5; }
 }
 
 /* Long source text and retry feedback stay within the existing panes. */
-.d-bio, .d-reason, .evidence li, .ql-based li span { overflow-wrap: anywhere; }
+.ql-based li span { overflow-wrap: anywhere; }
 .page-retry { position: absolute; left: 0; right: 0; height: 64px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 12px; color: var(--fg2); font-size: var(--fs-sm); }
 @media (max-width: 360px) {
   .fl-ctl-pill { grid-template-columns: 7px 1fr; }
@@ -1088,7 +1085,4 @@ button:disabled { cursor:default; opacity:.5; }
   .rl-row { flex-wrap: wrap; }
   .rl-prev { white-space: normal; }
   .acc { padding: var(--s3); }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

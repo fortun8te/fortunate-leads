@@ -86,6 +86,7 @@ class QualifierIntegrity(unittest.TestCase):
         before = self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0]
         with patch.object(q, 'llm_verdicts', side_effect=AssertionError('must not call model')):
             server.set_status(self.conn, [seed], status='client')
+            server.drain_network_dirty(self.conn)   # peers re-rank on the next background pass
         after = self.conn.execute('SELECT * FROM verdicts WHERE person_id=?', (lead,)).fetchone()
         self.assertGreater(after['score'], before)
         self.assertEqual(after['model'], 'fake-model')
@@ -94,6 +95,7 @@ class QualifierIntegrity(unittest.TestCase):
         p = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (lead,)).fetchone()))
         self.assertEqual(after['input_hash'], q.input_hash(p, server.edges_of(self.conn, lead), net))
         server.set_status(self.conn, [seed], status=None)
+        server.drain_network_dirty(self.conn)
         self.assertEqual(self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0], before)
 
     def test_shared_seed_yield_refreshes_unmarked_rules(self):
@@ -103,6 +105,7 @@ class QualifierIntegrity(unittest.TestCase):
         server.qualify_batch(self.conn)
         before = self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0]
         server.set_status(self.conn, [marked], status='client')
+        server.drain_network_dirty(self.conn)   # peers re-rank on the next background pass
         after = self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0]
         self.assertGreater(after, before)
 
