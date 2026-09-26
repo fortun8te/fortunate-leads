@@ -607,12 +607,8 @@ class TagsViewsMapTest(Base):
         db.add_edge(self.conn, 's3', ids['dan'], 'following')
         self.conn.commit()
         shared = lambda: [x['shared'] for x in self.call('/api/map')[1]['seed_links']]  # noqa: E731
-        self.assertEqual(shared(), [2, 2, 1])  # recomputed at most every SEED_LINKS_MIN_AGE s while edges stream in
-        old, server.SEED_LINKS_MIN_AGE = server.SEED_LINKS_MIN_AGE, 0
-        try:
-            self.assertEqual(shared(), [2, 2, 2])
-        finally:
-            server.SEED_LINKS_MIN_AGE = old
+        self.assertEqual(shared(), [2, 2, 2])  # next refresh acknowledges the committed observation
+        self.assertEqual(shared(), [2, 2, 2])
 
     def test_rule_preview(self):
         self.people(self.SPEC)

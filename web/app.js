@@ -2735,7 +2735,7 @@ const MARKED = new Set(['interested', 'contacted', 'talking', 'client']);
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
-  loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false,
+  loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
   show() {
     this.shown = true;
     this.resize();
@@ -2764,10 +2764,17 @@ const M = {
   },
   async load(poll) {
     if (this.loading && poll) return;
+    const seq = ++this.loadSeq;
     this.loading = true;
     const url = this.url();
     let d;
-    try { d = await api.get(url); } catch (e) { this.loading = false; if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map'); return; }
+    try { d = await api.get(url); } catch (e) {
+      if (seq !== this.loadSeq) return;
+      this.loading = false;
+      if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map');
+      return;
+    }
+    if (seq !== this.loadSeq) return;
     this.loading = false;
     if (url !== this.url()) return;
     this.loaded = true; this.stale = false;
@@ -2848,6 +2855,7 @@ const M = {
     const unverified = this.historyLinks.length - absent;
     $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees.`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
+    if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     this.simulate(old.size ? 0.5 : 1);
     this.search();
     if (!nl) this.draw();
@@ -3021,8 +3029,11 @@ const M = {
     };
     // Crowded maps fade the single-list lines so clusters and coloured dots stay readable.
     const crowd = this.leads.length > 5000 ? 0.4 : this.leads.length > 1500 ? 0.7 : 1;
-    edgePass(false, dim ? 0.03 : 0.1 * crowd);
-    c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
+    const distant = k < 0.15 && this.leads.length > 1500;
+    if (!distant || hd) {
+      edgePass(false, dim ? 0.03 : 0.1 * crowd);
+      c.strokeStyle = fg4; edgePass(true, dim ? 0.06 : 0.34 * crowd);
+    }
     if (hd) {
       c.globalAlpha = 0.85; c.strokeStyle = fg2; c.lineWidth = 1.2 / k; c.beginPath();
       for (const id of this.nbr.get(hd.n.id) || []) { const m = this.byId.get(id); c.moveTo(hd.n.x, hd.n.y); c.lineTo(m.x, m.y); }
@@ -3082,6 +3093,10 @@ const M = {
     c.restore();
     c.globalAlpha = 1;
     this.drawLabels(hd, match, fg, fg2, fg3, bg, sans);
+    if (distant && !hd) {
+      c.fillStyle = fg3; c.font = '12px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+      c.fillText('Zoom in to see individual recorded follow lines', 16, 28);
+    }
     if (this.loaded && !this.leads.length) { c.fillStyle = fg3; c.font = '14px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('No people match these filters', 16, 28); }
   },
   // Screen-space labels with greedy collision avoidance.
