@@ -107,6 +107,32 @@ class PrivateListHandoff(unittest.TestCase):
         self.assertEqual(self.c.execute('SELECT count(*) FROM list_private_denials').fetchone()[0], 0)
         self.assertIsNotNone(self.next('bot'))
 
+    def test_capped_partial_is_not_reopened_by_an_access_denial(self):
+        self.deny('bot', self.next('bot'))
+        self.c.execute("UPDATE jobs SET state='done' WHERE seed='seed' AND direction='followers'")
+        self.c.execute("UPDATE lists SET state='partial',released_why='instagram_cap' "
+                       "WHERE seed='seed' AND direction='followers'")
+        accounts.touch(self.c, 'new-viewer', {'ig_id': '505', 'handle': 'newviewer'})
+        self.c.commit()
+        self.assertIsNone(self.next('new-viewer'))
+        self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'partial')
+
+    def test_main_fallback_does_not_take_ordinary_list_over_share(self):
+        self.deny('bot', self.next('bot'))
+        self.deny('bot2', self.next('bot2'))
+        db.queue_list(self.c, 'ordinary', 'followers')
+        self.c.execute("UPDATE jobs SET priority=999 WHERE seed='ordinary' AND kind='list'")
+        self.c.commit()
+        self.assertEqual(self.next('main')['seed'], 'seed')
+
+    def test_login_handoff_records_source_lane(self):
+        job = self.next('bot')
+        server.ext_error(self.c, {'lane': ['bot']}, {'job_id': job['id'], 'lease_token': job['lease_token'],
+                         'code': 'login', 'message': 'login_required'})
+        self.assertEqual(self.next('bot2')['id'], job['id'])
+        self.assertEqual(db.get_setting(self.c, 'handoffs')[-1]['from'], 'bot')
+        self.assertEqual(db.get_setting(self.c, 'handoffs')[-1]['to'], 'bot2')
+
 
 if __name__ == '__main__':
     unittest.main()

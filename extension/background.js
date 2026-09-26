@@ -540,7 +540,7 @@ async function tabDom(tabId) {
     const [r] = await withTimeout(5e3, chrome.scripting.executeScript({ target: { tabId }, func: () =>
       { const body = document.body && document.body.innerText || '';
         return { url: location.href, title: document.title, text: body.slice(0, 400),
-          privateWall: /this account is private/i.test(body) }; } }));
+          privateWall: /this (?:account|profile) is private/i.test(body) }; } }));
     return (r && r.result) || { url: tab.url, title: tab.title };
   } catch { try { const tab = await chrome.tabs.get(tabId); return { url: tab.url, title: tab.title }; } catch { return null; } }
 }

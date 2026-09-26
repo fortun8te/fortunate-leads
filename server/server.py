@@ -497,10 +497,14 @@ def ext_error(conn, q, b):
                                      (job['seed'], job['direction'])).fetchone()
             state = ('partial' if final and collected and collected['received'] else
                      'private' if code == 'private' and final else 'error' if final else 'queued')
-            conn.execute('UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why=?, updated_at=? WHERE seed=? AND direction=?',
-                         (state, b.get('message') or code, lane if code == 'private' else None,
-                          ts if code == 'private' else None, 'private' if code == 'private' else None,
-                          ts, job['seed'], job['direction']))
+            if code == 'private':
+                conn.execute('UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why=?, updated_at=? WHERE seed=? AND direction=?',
+                             (state, b.get('message') or code, lane, ts, 'private', ts, job['seed'], job['direction']))
+            else:
+                # Keep ownership until release_all/release records the actual
+                # handoff cause and source lane. Clearing it here lost that proof.
+                conn.execute('UPDATE lists SET state=?, error=?, updated_at=? WHERE seed=? AND direction=?',
+                             (state, b.get('message') or code, ts, job['seed'], job['direction']))
         elif code == 'private':
             conn.execute('UPDATE people SET is_private=1, updated_at=? WHERE handle=?', (ts, job['handle']))
     if code in accounts.HOLDS:

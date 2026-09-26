@@ -86,6 +86,7 @@ CREATE INDEX IF NOT EXISTS people_first_seen ON people(first_seen);
 CREATE INDEX IF NOT EXISTS people_bio_at ON people(bio_at);
 CREATE INDEX IF NOT EXISTS marks_status ON marks(status);
 CREATE INDEX IF NOT EXISTS jobs_next ON jobs(state, kind, priority);
+CREATE INDEX IF NOT EXISTS jobs_list_seed_state ON jobs(kind,seed,direction,state);
 CREATE INDEX IF NOT EXISTS jobs_handle ON jobs(handle);
 """
 
