@@ -22,6 +22,7 @@ from pathlib import Path
 
 import db
 import qualify
+import websearch
 
 SCOUT_MIN = 60          # bulk AI fit needed before an agent looks
 TIMEOUT = 240           # seconds per lead
@@ -30,7 +31,7 @@ CMD = os.environ.get('LEADSCOUT_CMD', f"{Path.home() / '.local/bin/hermesme'} -p
 # Which model the agent runs on (setting scout_model); the profile's fallback chain still applies after it.
 MODELS = {
     'space-bunny': {'label': 'Space Bunny (OpenRouter stealth, free)', 'args': ['--provider', 'orslot', '-m', 'stealth/space-bunny-alpha']},
-    'grok': {'label': 'Grok 4.6 (your SuperGrok plan)', 'args': ['--provider', 'xai-oauth', '-m', 'grok-4.6']},
+    'grok': {'label': 'Grok 4.7 (your SuperGrok plan)', 'args': ['--provider', 'xai-oauth', '-m', 'grok-4.7', '--reasoning', 'medium']},
 }
 STATE_DB = Path.home() / '.hermes-me/profiles/leadscout/state.db'
 
@@ -48,7 +49,18 @@ def available():
     return not os.environ.get('FL_NO_ORSLOT') and Path(shlex.split(CMD)[0]).exists()
 
 
-def prompt(p):
+def prompt(p, research=None):
+    """The lead plus the research already gathered (SearXNG results, their website), so the agent verifies and fills
+    gaps instead of repeating the same searches: fewer tool turns per lead."""
+    head = _vet_line(p)
+    lines = websearch.lines(research) if research else []
+    if not lines:
+        return head
+    return (head + '\n\nALREADY GATHERED (verify, do not repeat these searches; at most 2 new searches, only for gaps such as '
+            'founder name, shop, market or size):\n' + '\n'.join(lines)[:3500])
+
+
+def _vet_line(p):
     bits = [f"@{p['handle']}"]
     for label, key in (('name', 'name'), ('website', 'website'), ('bio', 'bio')):
         if p.get(key):
@@ -59,12 +71,12 @@ def prompt(p):
     return 'Vet ' + ' | '.join(bits)
 
 
-def run(p, model='space-bunny'):
+def run(p, model='space-bunny', research=None):
     """Network only: one agent run. -> parsed dict or None."""
     base = shlex.split(CMD)
     args = base[:-1] + MODELS.get(model, MODELS['space-bunny'])['args'] + base[-1:]   # model flags before -z
     try:
-        out = subprocess.run(args + [prompt(p)], capture_output=True, text=True, timeout=TIMEOUT,
+        out = subprocess.run(args + [prompt(p, research)], capture_output=True, text=True, timeout=TIMEOUT,
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -203,7 +215,24 @@ class ScoutPool:
                 model = db.get_setting(conn0, 'scout_model') or 'space-bunny'
             finally:
                 conn0.close()
-            data = run(p, model)
+            research = None
+            if websearch.available():   # Special owns fresh lookups; Bulk only reads this cache
+                conn1 = db.connect(self.db_path)
+                try:
+                    websearch.ensure(conn1)
+                    research = websearch.cached(conn1, p)
+                    conn1.commit()
+                finally:
+                    conn1.close()
+                if research is None:
+                    research = websearch.lookup(p)
+                    conn1 = db.connect(self.db_path)
+                    try:
+                        websearch.store(conn1, p, research)
+                        conn1.commit()
+                    finally:
+                        conn1.close()
+            data = run(p, model, research)
             conn = db.connect(self.db_path)
             try:
                 if data is None:
