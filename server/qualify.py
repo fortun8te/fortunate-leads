@@ -15,7 +15,7 @@ TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only 
 PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q2'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't2'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+TAGS_VERSION = 't3-observed-links'   # rebuild old relationship claims from the underlying evidence
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -367,8 +367,10 @@ def rule_tags(person: dict, edges: list[dict], me: str | None) -> list[tuple[str
     total = len(others) + (1 if mine else 0)
     if total >= 2:
         add(f'in {total} lists', 'source')
-    if mine or (me and re.search(r'@' + re.escape(me.lstrip('@')) + r'\b', bio, re.I)):
-        add('knows you', 'source')
+    if mine:
+        add('Instagram link', 'source')
+    if me and re.search(r'@' + re.escape(me.lstrip('@')) + r'(?![a-zA-Z0-9_.])', bio, re.I):
+        add('mentions you', 'source')
     if 'followers' in mine:
         add('follows you', 'source')
     if 'following' in mine:
@@ -407,7 +409,7 @@ def _source_phrase(g):
 
 
 def _seed_count(g):
-    return len([t for t in g.get('source', []) if t.startswith('via @')]) + (1 if 'knows you' in g.get('source', []) else 0)
+    return len([t for t in g.get('source', []) if t.startswith('via @')]) + (1 if 'Instagram link' in g.get('source', []) else 0)
 
 
 def rule_verdict(person: dict, tags, net=None) -> dict:

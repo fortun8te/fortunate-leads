@@ -28,6 +28,7 @@ sys.modules['qualify'] = stub
 import db  # noqa: E402
 import migrate  # noqa: E402
 import server  # noqa: E402
+server.qualify = stub  # an earlier test module may have imported server with the real qualify
 
 EXT = server.EXT_ORIGIN
 
@@ -842,3 +843,33 @@ class AuditTest(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ConnectionAPITest(Base):
+    def fixture(self):
+        for h, i in [('alice', '100'), ('bob', '200')]:
+            self.conn.execute('INSERT INTO seeds(handle,ig_id) VALUES(?,?)', (h, i))
+        pid = db.upsert_person(self.conn, {'handle': 'casey', 'ig_id': '300'})
+        db.add_edge(self.conn, 'alice', pid, 'following')
+        db.add_edge(self.conn, 'bob', pid, 'followers')
+        self.conn.commit()
+
+    def test_directed_comparison_and_validation(self):
+        self.fixture()
+        code, data = self.call('/api/connections?source=alice&target=bob')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['connectors'][0]['motifs'], ['directed_path'])
+        self.assertEqual(data['total_candidates'], 1)
+        self.assertEqual({(x['source'], x['target']) for x in data['graph']['links']},
+                         {('ig:100', 'ig:300'), ('ig:300', 'ig:200')})
+        for query in ('', 'source=alice', 'source=alice&target=unknown', 'source=alice&target=alice',
+                      'source=alice&target=bob&limit=0', 'source=alice&target=bob&limit=101',
+                      'source=alice&target=bob&limit=oops'):
+            self.assertEqual(self.call('/api/connections?' + query)[0], 400, query)
+
+    def test_comparison_is_not_filtered_by_lead_display(self):
+        self.fixture()
+        code, data = self.call('/api/connections?source=alice&target=bob&tags=doesnotexist&scope=all')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['total_candidates'], 1)
+        self.assertEqual(self.call('/api/connections?source=alice&target=bob', origin='https://example.com')[0], 403)

@@ -63,7 +63,7 @@ class BugTest(Base):
         self.page(job, [{'ig_id': '1', 'handle': 'x'}], done=True)
         self.page(job, [{'ig_id': '2', 'handle': 'y'}], cursor='late')
         self.assertEqual(self.conn.execute("SELECT state, cursor FROM lists WHERE seed='brand'").fetchone()[:], ('done', None))
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM edges WHERE seed='brand'").fetchone()[0], 2)  # people still kept
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM edges WHERE seed='brand'").fetchone()[0], 1)  # terminal-job retries cannot introduce new edges
 
     def test_unknown_person_is_404(self):
         self.assertEqual(self.call('/api/person/999')[0], 404)

@@ -1,12 +1,13 @@
 """Optional client for the local Laya decision sidecar (sidecar/laya_server.py on 127.0.0.1:18742). Stdlib only.
 
-Laya is ONE soft ranking signal: it never gates anyone and never gives a verdict. It tags only on its own when very sure
-(p >= 0.9 for creator / brand_account / netherlands); otherwise a Laya tag needs a rule or LLM tag that agrees.
-Down or slow -> skipped silently (health is checked with a 3 s timeout and cached for 60 s).
+Laya's score influences the prefilter used to select profile reads and LLM reviews. It can also add
+creator / brand_account / netherlands tags at p >= 0.9. Base checkpoint probabilities need domain calibration.
+Down, slow or malformed service response -> skipped (health uses a 3 s timeout, cached for 60 s).
 """
 from __future__ import annotations
 
 import json
+from http.client import HTTPException
 import threading
 import time
 import urllib.request
@@ -28,7 +29,7 @@ TAG_OF = {'dtc_founder': 'Founder', 'brand_account': 'Brand', 'creator': 'Creato
 SURE = {'creator': 0.9, 'brand_account': 0.9, 'netherlands': 0.9}
 FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -30, 'service_provider': -25}
 
-_health = {'at': 0.0, 'ok': False}
+_health = {'at': None, 'ok': False}
 _lock = threading.Lock()
 
 
@@ -39,14 +40,14 @@ def _open(req, timeout):
 def available(now=None):
     now = time.monotonic() if now is None else now
     with _lock:
-        if now - _health['at'] < HEALTH_TTL:
+        if _health['at'] is not None and 0 <= now - _health['at'] < HEALTH_TTL:
             return _health['ok']
     ok = False
     try:
         with _open(urllib.request.Request(URL + '/health'), HEALTH_TIMEOUT) as r:
             data = json.loads(r.read(100_000))
-            ok = isinstance(data, dict) and data.get('ok') is not False
-    except (OSError, ValueError):
+            ok = isinstance(data, dict) and data.get('ok') is True
+    except (OSError, ValueError, HTTPException):
         ok = False
     with _lock:
         _health.update(at=now, ok=ok)
@@ -56,12 +57,12 @@ def available(now=None):
 def last_known():
     """Last health result without probing (status endpoints must never wait on the sidecar)."""
     with _lock:
-        return _health['ok'] if _health['at'] else None
+        return _health['ok'] if _health['at'] is not None else None
 
 
 def reset():
     with _lock:
-        _health.update(at=0.0, ok=False)
+        _health.update(at=None, ok=False)
 
 
 def person_text(p):
@@ -85,11 +86,14 @@ def decide(people):
         try:
             with _open(req, DECIDE_TIMEOUT) as r:
                 data = json.loads(r.read(5_000_000))
-        except (OSError, ValueError):
+            results = data.get('results') if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                raise ValueError('Laya response must contain a results list')
+        except (OSError, ValueError, HTTPException):
             with _lock:
-                _health.update(at=time.monotonic(), ok=False)   # down or timed out: back off like a failed health check
+                _health.update(at=time.monotonic(), ok=False)   # failed response: back off like a failed health check
             return out
-        for res in (data.get('results') if isinstance(data, dict) else None) or []:
+        for res in results:
             if not isinstance(res, dict) or not isinstance(res.get('answers'), dict):
                 continue
             ans = {}
@@ -100,7 +104,7 @@ def decide(people):
                     ans[q['key']] = float(p)
             try:
                 out[int(res.get('id'))] = ans
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
     return out
 

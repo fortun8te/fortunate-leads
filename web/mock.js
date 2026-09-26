@@ -6,7 +6,7 @@
   const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const chance = (p) => rnd() < p;
-  const now = () => new Date().toISOString();
+  const now = () => new Date().toISOString().replace('Z', '000+00:00');
 
   const ME = 'fortun8te';
   // Seeds with a rough niche bias and neighbours (people overlap mostly with neighbours).
@@ -56,6 +56,115 @@
   const tags = new Map(); // id -> [{tag, grp, source}]
   const marks = new Map();
   const notes = new Map();
+  const followups = new Map();
+  const activity = new Map();
+  const reads = new Map(); // id -> latest profile-read state; no real collector runs in demo mode
+  let activityId = 1;
+  const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function event(id, kind, body, before = null, after = null, happened = now()) {
+    const entry = { id: activityId++, kind, body, before_value: before, after_value: after, happened_at: happened, created_at: now() };
+    activity.set(id, [entry, ...(activity.get(id) || [])]);
+    return entry;
+  }
+  function history(id, cursor, limit = 50) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) invalid('limit must be 1-100');
+    let before = null;
+    if (cursor) {
+      try { before = JSON.parse(cursor); } catch (_) { invalid('invalid activity cursor'); }
+      if (!Array.isArray(before) || before.length !== 2 || typeof before[0] !== 'string' || !Number.isInteger(before[1])) invalid('invalid activity cursor');
+    }
+    const ordered = [...(activity.get(id) || [])]
+      .filter((e) => !before || e.happened_at < before[0] || (e.happened_at === before[0] && e.id < before[1]))
+      .sort((a, b) => b.happened_at.localeCompare(a.happened_at) || b.id - a.id);
+    const rows = ordered.slice(0, limit), last = rows[rows.length - 1];
+    return { rows, next_cursor: ordered.length > limit ? JSON.stringify([last.happened_at, last.id]) : null };
+  }
+  function invalid(message) { const error = new Error(message); error.mockStatus = 400; throw error; }
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const STATUSES = ['interested', 'contacted', 'talking', 'client', 'no'];
+  function validStatus(value) {
+    if (value === 'good') value = 'interested';
+    if (value !== null && !STATUSES.includes(value)) invalid('bad status');
+    return value;
+  }
+  function calendarDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) invalid('date must be YYYY-MM-DD');
+    const day = new Date(value + 'T00:00:00Z');
+    if (value.startsWith('0000-') || !Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== value) invalid('invalid calendar date');
+    return value;
+  }
+  function occurrenceTime(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) invalid('happened_at must be an ISO timestamp with timezone');
+    calendarDate(value.slice(0, 10));
+    if (+value.slice(11, 13) > 23 || +value.slice(14, 16) > 59 || (value[16] === ':' && +value.slice(17, 19) > 59)) invalid('invalid happened_at');
+    const stamp = new Date(value);
+    if (!Number.isFinite(stamp.getTime())) invalid('invalid happened_at');
+    const fraction = ((value.match(/\.(\d+)/) || [])[1] || '').padEnd(6, '0').slice(0, 6);
+    return stamp.toISOString().slice(0, 19) + '.' + fraction + '+00:00';
+  }
+  function markInput(body) {
+    const value = { ...body };
+    if ('status' in value) value.status = validStatus(value.status);
+    if ('note' in value && value.note !== null && (typeof value.note !== 'string' || value.note.length > 5000)) invalid('note must be text');
+    return value;
+  }
+  function followUpInput(body) {
+    if (!isObject(body)) invalid('follow_up must be an object');
+    const action = body.action;
+    if (action === 'complete' || action === 'clear') {
+      if ('due_on' in body || 'note' in body) invalid('use complete or clear without date/note');
+      return { action };
+    }
+    if (action != null && !['schedule', 'complete_and_schedule'].includes(action)) invalid('invalid follow_up action');
+    const due_on = calendarDate(body.due_on), note = 'note' in body ? body.note : '';
+    if (typeof note !== 'string' || note.length > 500) invalid('note must be text up to 500 characters');
+    return { action: action || 'schedule', due_on, note: note.trim() };
+  }
+  function setFollowUp(id, input) {
+    let before = followups.get(id) || null;
+    if (input.action === 'clear') {
+      if (before) { followups.delete(id); event(id, 'follow_up_cleared', '', before); }
+      return;
+    }
+    if (input.action === 'complete' || input.action === 'complete_and_schedule') {
+      if (before && !before.completed_at) {
+        const next = { ...before, completed_at: now(), updated_at: now() };
+        followups.set(id, next); event(id, 'follow_up_completed', '', before, next); before = next;
+      }
+      if (input.action === 'complete') return;
+    }
+    if (!before || before.completed_at || before.due_on !== input.due_on || before.note !== input.note) {
+      const next = { due_on: input.due_on, note: input.note, completed_at: null, updated_at: now() };
+      followups.set(id, next); event(id, 'follow_up_scheduled', '', before, next);
+    }
+  }
+  function saveInteraction(id, body) {
+    if (!['dm', 'reply', 'call', 'meeting', 'note'].includes(body.kind)) invalid('invalid interaction kind');
+    if (typeof body.body !== 'string' || !body.body.trim() || body.body.length > 5000) invalid('body must be 1-5000 characters');
+    const stamp = occurrenceTime('happened_at' in body ? body.happened_at : now());
+    const status = 'status' in body ? validStatus(body.status) : undefined;
+    const follow = 'follow_up' in body ? followUpInput(body.follow_up) : null;
+    // Match the server transaction, including rollback if building the response fails.
+    const snapshot = [marks, notes, followups, activity].map((map) => [map, map.has(id), map.get(id)]), nextId = activityId;
+    try {
+      event(id, body.kind, body.body.trim(), null, null, stamp);
+      if ('status' in body) setMark(id, { status });
+      if (follow) setFollowUp(id, follow);
+      return { ok: true, ...history(id), status: marks.get(id) || null, follow_up: followups.get(id) || null };
+    } catch (error) {
+      snapshot.forEach(([map, existed, value]) => { if (existed) map.set(id, value); else map.delete(id); });
+      activityId = nextId;
+      throw error;
+    }
+  }
+  function setMark(id, body) {
+    for (const [key, map] of [['status', marks], ['note', notes]]) {
+      if (!(key in body)) continue;
+      const before = map.get(id) || null, after = body[key] || null;
+      if (before !== after) event(id, key, '', before, after);
+      if (after) map.set(id, after); else map.delete(id);
+    }
+  }
   const handles = new Set();
   const N = 3200;
 
@@ -90,6 +199,8 @@
       followers, following: Math.floor(150 + rnd() * 2200), posts: Math.floor(5 + rnd() * 1200),
       is_verified: followers > 200000 && chance(0.4) ? 1 : 0, is_business: isBrandAcct ? 1 : 0,
       first_seen: new Date(Date.now() - rnd() * 20 * 86400000).toISOString(),
+      bio_at: hasBio ? new Date(Date.now() - rnd() * 45 * 86400000).toISOString() : null,
+      bio_src: hasBio ? 'extension' : null,
       _role: role, _niche: niche, _us: us, _nl: nl,
     });
     // Seeds: primary plus neighbours (overlap) plus occasional random.
@@ -123,7 +234,7 @@
     const mine = es.filter((e) => e.seed === ME);
     const total = others.length + (mine.length ? 1 : 0);
     if (total >= 2) add(`in ${total} lists`, 'source');
-    if (mine.length) add('knows you', 'source');
+    if (mine.length) add('Instagram link', 'source');
     if (mine.some((e) => e.direction === 'followers')) add('follows you', 'source');
     if (mine.some((e) => e.direction === 'following')) add('you follow', 'source');
     return t;
@@ -133,6 +244,18 @@
   const MANUAL = ['Warm intro', 'Pitch Q4', 'Met at event', 'Follow up', 'Dream client'];
   people.forEach((p) => { if (p.bio && chance(0.035)) tags.get(p.id).push({ tag: pick(MANUAL), grp: 'custom', source: 'manual' }); });
   people.forEach((p) => { if (chance(0.025)) marks.set(p.id, pick(['interested', 'interested', 'contacted', 'talking', 'client', 'no'])); });
+  people.slice(0, 12).forEach((p, i) => {
+    const day = new Date(); day.setDate(day.getDate() + i - 5);
+    const f = { due_on: localDay(day), note: 'Check whether they need new product visuals', completed_at: i === 11 ? now() : null, updated_at: now() };
+    followups.set(p.id, f);
+    event(p.id, 'follow_up_scheduled', '', null, f);
+    event(p.id, 'dm', 'Introduced Fortunate and asked about their next launch.');
+  });
+  // Extra examples for the daily view and read-state UI. Nothing is sent or fetched.
+  marks.set(13, 'no');
+  const rejectedDue = new Date(); rejectedDue.setDate(rejectedDue.getDate() - 2);
+  setFollowUp(13, { action: 'schedule', due_on: localDay(rejectedDue), note: 'Review the reminder kept on this not-a-fit lead' });
+  ['queued', 'reading', 'failed', 'done'].forEach((state, i) => reads.set(14 + i, state));
 
   // Tag rules.
   let ruleId = 3;
@@ -185,7 +308,7 @@
     const has = (x) => t.some((y) => y.tag === x);
     const [role, base] = ROLE_BASE[p._role];
     const n = lists(p.id);
-    const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('knows you') + rnd() * 16 - 6)));
+    const score = Math.max(4, Math.min(98, Math.round(base + 6 * has('Founder') + 7 * has('Shop Link') + 4 * (n - 1) + 3 * has('Instagram link') + rnd() * 16 - 6)));
     if (!p.bio) { verdicts.set(p.id, { score: Math.min(60, 20 + 8 * n), tier: 'unread', role: null, reason: n > 1 ? `In ${n} lists, bio not read yet` : 'Bio not read yet', model: null, evidence: [] }); return; }
     const llm = chance(0.6);
     const tier = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
@@ -207,6 +330,9 @@
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
     tags: tags.get(p.id), via: [...new Set(edges.get(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
+    note: notes.get(p.id) || null, follow_up: followups.get(p.id) || null, bio_at: p.bio_at, bio_src: p.bio_src,
+    profile_read_pending: ['queued', 'reading'].includes(reads.get(p.id)),
+    profile_read: reads.has(p.id) ? { state: reads.get(p.id) } : null,
   });
   const verdictFields = (id) => { const v = verdicts.get(id); return { tier: v.tier, score: v.score, role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -214,12 +340,22 @@
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
   function filtered(q) {
     const all = csv(q, 'tags'), any = csv(q, 'any'), not = csv(q, 'not');
-    const sts = csv(q, 'status'), text = (q.get('q') || '').toLowerCase().trim();
+    const sts = csv(q, 'status').map((s) => s === 'good' ? 'interested' : s), text = (q.get('q') || '').toLowerCase().trim();
     const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
     const fmin = q.get('followers_min'), fmax = q.get('followers_max'), tiers = csv(q, 'tier');
+    if (!sts.includes('all') && sts.some((s) => s !== 'none' && !STATUSES.includes(s))) invalid('bad status');
+    const follow = q.get('follow_up');
+    if (follow && !['due', 'overdue', 'scheduled', 'completed', 'none'].includes(follow)) invalid('invalid follow_up filter');
+    const today = follow ? calendarDate(q.get('today') || localDay()) : localDay();
     return people.filter((p) => {
       if (tiers.length && !tiers.includes(verdicts.get(p.id).tier)) return false;
       const m = marks.get(p.id) || null;
+      const f = followups.get(p.id);
+      if (follow === 'due' && (!f || f.completed_at || f.due_on > today)) return false;
+      if (follow === 'overdue' && (!f || f.completed_at || f.due_on >= today)) return false;
+      if (follow === 'scheduled' && (!f || f.completed_at)) return false;
+      if (follow === 'completed' && !f?.completed_at) return false;
+      if (follow === 'none' && f) return false;
       if (!sts.length ? m === 'no' : !sts.includes('all') && !sts.some((s) => (s === 'none' ? m === null : m === s))) return false;
       if (ml && lists(p.id) < ml) return false;
       if (hb === '1' && !p.bio) return false;
@@ -233,14 +369,19 @@
         if (any.length && !any.some((t) => ts.has(t))) return false;
         if (not.some((t) => ts.has(t))) return false;
       }
-      if (text && !(p.handle + ' ' + p.name + ' ' + (p.bio || '')).toLowerCase().includes(text)) return false;
+      if (text && !(p.handle + ' ' + p.name + ' ' + (p.bio || '') + ' ' + (notes.get(p.id) || '')).toLowerCase().includes(text)) return false;
       return true;
     });
   }
   const TIER_RANK = { hot: 0, warm: 1, cold: 2, unread: 3 };
   const FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
   function sorted(list, sort) {
+    if (!['follow_up', 'connected', 'followers', 'recent', 'score', 'fit'].includes(sort)) invalid('invalid sort');
     const cmp = {
+      follow_up: (a, b) => {
+        const day = (p) => { const f = followups.get(p.id); return f && !f.completed_at ? f.due_on : '9999-12-31'; };
+        return day(a).localeCompare(day(b));
+      },
       connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
       followers: (a, b) => b.followers - a.followers,
       recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
@@ -278,7 +419,7 @@
   };
   function tickScraper() {
     const t = Date.now();
-    if (scraper.paused || t < scraper.nextAt) return;
+    if (scraper.paused || stagePaused.lists || t < scraper.nextAt) return;
     const l = scraper.lists.find((x) => x.state === 'running') || scraper.lists.find((x) => x.state === 'queued');
     if (!l) return;
     l.state = 'running';
@@ -317,6 +458,20 @@
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
   const settings = { main_list_share: 0 };
+  const stagePaused = { lists: false, bios: false };
+  const sites = new Map();
+  function controlView() {
+    const stages = [['lists', 'Collect lists', 'people'], ['bios', 'Read bios', 'bios'], ['ai', 'AI scoring', 'scores']].map(([id, label, unit]) => {
+      const paused = id === 'ai' ? !scraper.qualify : scraper.paused || stagePaused[id];
+      const wait = !paused && id === 'bios' ? { why: 'Pacing between bio reads', seconds: 24 } : null;
+      return { id, label, unit, paused, help: 'Pausing keeps your progress. Resume continues where you left off.',
+        state: paused ? 'paused' : wait ? 'waiting' : 'running', wait,
+        now: paused ? 'Paused in workspace' : id === 'lists' ? '@cpgguild followers' : id === 'bios' ? 'Next bio read shortly' : 'Checking people with a bio',
+        hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
+        today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
+    });
+    return { stages, accounts, all_paused: stages.every((s) => s.paused), at: now() };
+  }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
       { id: '3f9a1c02be', key: 'sk-…8c1d', source: 'file', disabled: false, cooldowns: {}, requests_today: { 'z-ai/glm-5.2:free': 412, 'google/gemma-4-31b-it:free': 38 }, last_error: null },
@@ -348,6 +503,11 @@
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
+      progress: {
+        lists: { left: scraper.lists.filter((l) => l.state === 'queued' || l.state === 'running').reduce((n, l) => n + Math.max(0, (l.total || 1000) - l.received), 0), per_hour: 11280, eta_h: 3.4 },
+        bios: { left: people.filter((p) => !p.bio).length, per_day: scraper.budget.profile, eta_h: 8.2 },
+        qualify: { on: scraper.qualify, left: 1100, per_hour: scraper.qualify ? 120 : 0, eta_h: scraper.qualify ? 9.2 : null, workers: 4, keys: 2 },
+      },
       queue: { list: scraper.lists.filter((x) => x.state === 'queued' || x.state === 'running').length, profile: 0 },
     };
   }
@@ -369,6 +529,56 @@
     const q = u.searchParams;
     const path = u.pathname;
     let m;
+    if (path === '/api/leads/export' && method === 'POST') {
+      if (('ids' in body) === ('query' in body)) invalid('provide either ids or query');
+      if ('ids' in body) {
+        if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 5000 || body.ids.some((id) => !Number.isInteger(id) || id < 1)) invalid('ids must be 1-5000 positive ids');
+        if (body.ids.some((id) => !people[id - 1])) invalid('some selected people no longer exist; refresh your selection');
+      } else if (typeof body.query !== 'string' || body.query.length > 16000) invalid('query must be a URL query string');
+      const p = new URLSearchParams(body.query || '');
+      const chosen = Array.isArray(body.ids) ? people.filter((x) => body.ids.includes(x.id)) : sorted(filtered(p), p.get('sort') || 'score');
+      const columns = ['id', 'handle', 'name', 'instagram_url', 'bio', 'website', 'followers', 'following', 'posts', 'tier', 'score', 'role', 'status', 'note', 'tags', 'sources', 'bio_at', 'bio_src', 'follow_up_due', 'follow_up_note', 'follow_up_completed_at'];
+      const cell = (v) => {
+        let text = String(v ?? '');
+        if (typeof v !== 'number' && (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) text = "'" + text;
+        return '"' + text.replace(/"/g, '""') + '"';
+      };
+      const lines = [columns, ...chosen.map((p) => {
+        const r = row(p), f = r.follow_up || {};
+        Object.assign(r, { instagram_url: `https://www.instagram.com/${r.handle}/`, tags: r.tags.map((t) => t.tag).join('; '), sources: r.via.join('; '),
+          follow_up_due: f.due_on, follow_up_note: f.note, follow_up_completed_at: f.completed_at });
+        return columns.map((k) => r[k]);
+      })];
+      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"', 'Cache-Control': 'no-store' } });
+    }
+    if (path === '/api/control') {
+      if (method === 'POST') {
+        if (!['pause', 'resume'].includes(body?.action) || !['all', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
+        const pause = body.action === 'pause';
+        if (scraper.paused) { stagePaused.lists = true; stagePaused.bios = true; scraper.paused = false; }
+        for (const id of body.stage === 'all' ? ['lists', 'bios', 'ai'] : [body.stage]) {
+          if (id === 'ai') { scraper.qualify = !pause; scraper.qualify_auto = false; }
+          else stagePaused[id] = pause;
+        }
+      }
+      return controlView();
+    }
+    if (path === '/api/qual') {
+      const view = q.get('view') || 'ai';
+      const ai = (p) => { const model = verdicts.get(p.id).model; return model && model !== 'rules'; };
+      let list = filtered(q).filter((p) => view === 'all' || (view === 'ai' ? ai(p) : !ai(p)));
+      list = q.get('sort') === 'recent' ? list.slice().sort((a, b) => b.id - a.id) : sorted(list, 'score');
+      const off = Math.max(0, +q.get('offset') || 0), lim = Math.min(100, Math.max(1, +q.get('limit') || 30));
+      return { total: list.length, rows: list.slice(off, off + lim).map((p) => ({ ...row(p), verdict: { ...verdicts.get(p.id), at: ago_(2 * H) }, bio_at: p.bio ? ago_(3 * H) : null, site: sites.get(p.id) || null })),
+        summary: { verdicts: people.filter((p) => p.bio).length, ai: people.filter(ai).length, rules: people.filter((p) => p.bio && !ai(p)).length, with_bio: people.filter((p) => p.bio).length, sites: sites.size } };
+    }
+    if ((m = path.match(/^\/api\/qual\/(\d+)\/deeper$/)) && method === 'POST') {
+      const p = people.find((p) => p.id === +m[1]);
+      if (!p) return { ok: false, error: 'Person not found' };
+      const site = p.website ? { url: p.website, final_url: p.website, title: p.name, summary: 'Sample website result for preview.', signals: { shop: 'Shopify' }, model: 'rules', at: now() } : null;
+      if (site) sites.set(p.id, site);
+      return { bio_queued: !p.bio, site, note: site ? null : 'No website in the bio yet.' };
+    }
     if (path === '/api/leads') {
       const list = sorted(filtered(q), q.get('sort') || 'score');
       const off = +q.get('offset') || 0, lim = Math.min(500, +q.get('limit') || 50);
@@ -404,10 +614,11 @@
       return { deleted };
     }
     if (path === '/api/people/bulk') {
+      if ('status' in body) body = { ...body, status: validStatus(body.status) };
       const ids = (body.ids || []).map(Number).filter((id) => tags.has(id));
       ids.forEach((id) => {
         if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) { if (body.status) marks.set(id, body.status); else marks.delete(id); }
+        if ('status' in body) setMark(id, { status: body.status });
       });
       return { ok: true, changed: ids.length };
     }
@@ -438,7 +649,7 @@
       return { ok: true };
     }
     if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
-      const c = { hot: 0, warm: 0, cold: 0, unread: 0, good: 0, maybe: 0, no: 0, contacted: 0, client: 0, known: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
+      const c = { hot: 0, warm: 0, cold: 0, unread: 0, interested: 0, talking: 0, no: 0, contacted: 0, client: 0, none: 0, open: 0, total: people.length, with_bio: 0 };
       const without = (k) => { const x = new URLSearchParams(q); x.delete(k); return x; };
       filtered(without('tier')).forEach((p) => { c[verdicts.get(p.id).tier]++; });
       const st = without('status'); if (!st.get('status')) st.set('status', 'all');
@@ -446,13 +657,24 @@
       people.forEach((p) => { if (p.bio) c.with_bio++; });
       return c;
     }
-    if ((m = path.match(/^\/api\/person\/(\d+)(\/(\w+))?$/))) {
+    if ((m = path.match(/^\/api\/person\/(\d+)(\/([\w-]+))?$/))) {
       const id = +m[1]; const p = people[id - 1];
       if (!p) return null;
-      if (!m[3]) return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, note: notes.get(id) || '' };
-      if (m[3] === 'mark') { if (body.status) marks.set(id, body.status); else marks.delete(id); if (body.note !== undefined) notes.set(id, body.note); return { ok: true }; }
-      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
-      if (m[3] === 'read') return { ok: true };
+      if (!m[3] && method === 'GET') return { ...row(p), edges: edges.get(id).map((e) => ({ ...e })), verdict: { ...verdicts.get(id) }, activity: history(id) };
+      if (m[3] === 'mark' && method === 'POST') { setMark(id, markInput(body)); return { ok: true }; }
+      if (m[3] === 'activity') {
+        if (method === 'GET') return history(id, q.get('cursor'), q.has('limit') ? +q.get('limit') : 50);
+        if (method === 'POST') return saveInteraction(id, body);
+      }
+      if (m[3] === 'follow-up' && method === 'POST') {
+        setFollowUp(id, followUpInput(body));
+        return { ok: true, follow_up: followups.get(id) || null };
+      }
+      if (m[3] === 'tags' && method === 'POST') { editTags(id, body.add, body.remove); return { ok: true }; }
+      if (m[3] === 'read' && method === 'POST') {
+        if (!['queued', 'reading'].includes(reads.get(id))) reads.set(id, 'queued');
+        return { ok: true };
+      }
     }
     if (path === '/api/map') {
       const scope = q.get('scope') || 'leads';
@@ -549,10 +771,21 @@
   window.fetch = function (url, opts = {}) {
     const s = String(url);
     if (!s.startsWith('/api/')) return realFetch(url, opts);
-    const body = opts.body ? JSON.parse(opts.body) : null;
-    let res;
-    try { res = route(opts.method || 'GET', s, body); } catch (e) { console.warn('mock', s, e); res = null; }
+    let res, failure = 0;
+    try {
+      let body = {};
+      if (opts.body) {
+        try { body = JSON.parse(opts.body); } catch (_) { invalid('body must be valid JSON'); }
+      }
+      if (!isObject(body)) invalid('body must be a JSON object');
+      res = route((opts.method || 'GET').toUpperCase(), s, body);
+    } catch (e) {
+      failure = e.mockStatus || 500;
+      if (failure === 500) console.warn('mock', s, e);
+      res = { ok: false, error: e.message };
+    }
+    if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;
-    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: !res ? 404 : bad ? 400 : 200, headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
+    return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: failure || (!res ? 404 : bad ? 400 : 200), headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };
 })();

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -12,6 +13,13 @@ CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE TABLE IF NOT EXISTS edges(seed TEXT COLLATE NOCASE, person_id INT, direction TEXT, first_seen TEXT,
   PRIMARY KEY(seed,person_id,direction));
+-- Only directly ingested page members get observations; never infer freshness from list timestamps.
+CREATE TABLE IF NOT EXISTS edge_observations(seed TEXT COLLATE NOCASE NOT NULL, person_id INT NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN('followers','following')), page_key TEXT NOT NULL, job_id INT,
+  observed_at TEXT NOT NULL, PRIMARY KEY(seed,person_id,direction,page_key));
+CREATE INDEX IF NOT EXISTS edge_observations_person ON edge_observations(person_id,seed,direction,observed_at);
+CREATE TABLE IF NOT EXISTS ingested_list_pages(page_key TEXT PRIMARY KEY, seed TEXT COLLATE NOCASE NOT NULL,
+  direction TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manual','rule')),
   PRIMARY KEY(person_id,tag));
 CREATE TABLE IF NOT EXISTS tag_rules(id INTEGER PRIMARY KEY, tag TEXT NOT NULL, grp TEXT NOT NULL DEFAULT 'signal',
@@ -22,6 +30,10 @@ CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, sc
   model TEXT, input_hash TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS followups(person_id INTEGER PRIMARY KEY, due_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', completed_at TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', before_value TEXT, after_value TEXT, happened_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person_id);
+CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
@@ -142,6 +154,25 @@ def norm_handle(h):
     return h.lower()
 
 
+def normalize_ig_id(value):
+    """Blank external IDs are missing evidence, never a replacement identity."""
+    return (str(value).strip() or None) if value is not None else None
+
+
+def _preserve_seed_identity(conn, person):
+    """Keep handle-keyed history attached to its known owner before a rename.
+
+    An already identified seed can disagree with the current handle holder. Keep
+    that evidence intact; only fill absent IDs, including legacy blank values.
+    """
+    ig_id = normalize_ig_id(person['ig_id'])
+    if ig_id:
+        seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (person['handle'],)).fetchone()
+        if seed is not None and normalize_ig_id(seed['ig_id']) is None:
+            conn.execute('UPDATE seeds SET ig_id=? WHERE handle=? AND ig_id IS ?',
+                         (ig_id, person['handle'], seed['ig_id']))
+
+
 def upsert_person(conn, u, ts=None):
     ts = ts or now()
     vals = {k: u[k] for k in PERSON_FIELDS if u.get(k) is not None}
@@ -149,17 +180,30 @@ def upsert_person(conn, u, ts=None):
         if k in vals:
             vals[k] = int(bool(vals[k]))
     if 'ig_id' in vals:
-        vals['ig_id'] = str(vals['ig_id'])
+        ig_id = normalize_ig_id(vals['ig_id'])
+        if ig_id is None:
+            del vals['ig_id']
+        else:
+            vals['ig_id'] = ig_id
     if 'handle' in vals:
         vals['handle'] = norm_handle(vals['handle'])
-    by_id = vals.get('ig_id') and conn.execute('SELECT id FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
-    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id FROM people WHERE handle=?', (vals['handle'],)).fetchone()
-    if not by_id and by_handle and by_handle['ig_id'] and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
+    by_id = vals.get('ig_id') and conn.execute('SELECT id, ig_id, handle FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
+    by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id, handle FROM people WHERE handle=?', (vals['handle'],)).fetchone()
+    if by_handle and normalize_ig_id(by_handle['ig_id']) is None and vals.get('ig_id'):
+        seed = conn.execute('SELECT ig_id FROM seeds WHERE handle=?', (by_handle['handle'],)).fetchone()
+        seed_id = normalize_ig_id(seed['ig_id']) if seed is not None else None
+        if seed_id and seed_id != vals['ig_id']:
+            raise ValueError('seed account identity conflicts with incoming profile')
+    if by_id and vals.get('handle') and by_id['handle'].lower() != vals['handle']:
+        _preserve_seed_identity(conn, by_id)
+    if not by_id and by_handle and normalize_ig_id(by_handle['ig_id']) and vals.get('ig_id') and by_handle['ig_id'] != vals['ig_id']:
         # a different account now holds this handle: the old row keeps its marks/edges/tags under a parked handle
+        _preserve_seed_identity(conn, by_handle)
         conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
         by_handle = None
     if by_id and by_handle and by_id['id'] != by_handle['id']:
-        if by_handle['ig_id']:  # the handle now belongs to this ig_id; the old holder renamed
+        if normalize_ig_id(by_handle['ig_id']):  # the handle now belongs to this ig_id; the old holder renamed
+            _preserve_seed_identity(conn, by_handle)
             conn.execute("UPDATE people SET handle=handle||'~'||id WHERE id=?", (by_handle['id'],))
         else:  # same account seen before without ig_id: fold it in
             merge_people(conn, keep=by_id['id'], drop=by_handle['id'])
@@ -178,16 +222,162 @@ def upsert_person(conn, u, ts=None):
                         (*vals.values(), ts, ts)).lastrowid
 
 
+def _earliest_observed(left, right):
+    """Prefer the earliest trustworthy instant over invalid/naive/future dates.
+
+    If neither date establishes an instant, retain a deterministic source value
+    for legacy compatibility. It remains unknown to evidence readers. Two
+    missing values stay NULL; ledger callers use '' for their NOT NULL column.
+    """
+    valid = []
+    cutoff = utc_now()
+    for value in (left, right):
+        if not isinstance(value, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if dt.tzinfo is not None and dt <= cutoff:
+                valid.append(dt.astimezone(timezone.utc))
+        except (ValueError, OverflowError):
+            continue
+    if valid:
+        return min(valid).isoformat()
+    unknown = [value for value in (left, right) if isinstance(value, str) and value]
+    return min(unknown) if unknown else None
+
+
 def merge_people(conn, keep, drop):
-    for t in ('edges', 'tags', 'marks', 'verdicts'):
-        conn.execute(f'UPDATE OR IGNORE {t} SET person_id=? WHERE person_id=?', (keep, drop))
-        conn.execute(f'DELETE FROM {t} WHERE person_id=?', (drop,))
-    conn.execute('DELETE FROM people WHERE id=?', (drop,))
+    import workflows
+    if keep == drop:
+        return
+    # Leave committing to the caller, including when called outside an existing transaction.
+    if not conn.in_transaction:
+        conn.execute('BEGIN')
+    conn.execute('SAVEPOINT merge_people')
+    try:
+        if conn.execute('SELECT count(*) FROM people WHERE id IN (?,?)', (keep, drop)).fetchone()[0] != 2:
+            raise ValueError('both people must exist before merging')
+        conn.execute('UPDATE activity SET person_id=? WHERE person_id=?', (keep, drop))
+        kept, dropped = workflows.follow_up(conn, keep), workflows.follow_up(conn, drop)
+        if dropped:
+            # Keep an open reminder over completed; then earliest due. Record both snapshots on conflict.
+            chosen = min([x for x in (kept, dropped) if x], key=lambda x: (x['completed_at'] is not None, x['due_on']))
+            conn.execute('INSERT OR REPLACE INTO followups VALUES(?,?,?,?,?)', (keep, chosen['due_on'], chosen['note'], chosen['completed_at'], chosen['updated_at']))
+            conn.execute('DELETE FROM followups WHERE person_id=?', (drop,))
+            if kept:
+                workflows.event(conn, keep, 'follow_up_merged', before={'kept': kept, 'merged': dropped}, after=chosen)
+
+        km = conn.execute('SELECT * FROM marks WHERE person_id=?', (keep,)).fetchone()
+        dm = conn.execute('SELECT * FROM marks WHERE person_id=?', (drop,)).fetchone()
+        before, after = {}, {}
+        if km and dm:
+            note = km['note'] or dm['note']
+            if km['note'] and dm['note'] and km['note'] != dm['note']:
+                combined = km['note'] + '\n\n' + dm['note']
+                # Keep the editable note within its limit; the full dropped note stays in history.
+                note = combined if len(combined) <= 5000 else km['note']
+            status = km['status'] or dm['status']
+            before, after = dict(dm), {'status': status, 'note': note}
+            conn.execute('UPDATE marks SET status=?,note=?,updated_at=? WHERE person_id=?', (status, note, now(), keep))
+
+        # Derived scores belong to their profile inputs. Keep the survivor's result.
+        # Website reads instead keep the newest useful evidence, ahead of empty failures.
+        def site_priority(row):
+            try:
+                signals = json.loads(row['signals'] or '{}')
+            except (ValueError, TypeError):
+                signals = {}
+            useful = bool(row['title'] or row['summary'] or isinstance(signals, dict) and signals or not row['error'])
+            try:
+                stamp = datetime.fromisoformat((row['at'] or '').replace('Z', '+00:00'))
+                stamp = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+            except (ValueError, TypeError):
+                stamp = datetime.min.replace(tzinfo=timezone.utc)
+            return useful, stamp
+
+        conflicts, chosen_records = {}, {}
+        singletons = ['verdicts', 'laya']
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_reads'").fetchone():
+            singletons.append('site_reads')
+        for table in singletons:
+            kept = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (keep,)).fetchone()
+            dropped = conn.execute(f'SELECT * FROM {table} WHERE person_id=?', (drop,)).fetchone()
+            if kept and dropped:
+                if any(kept[key] != dropped[key] for key in kept.keys() if key != 'person_id'):
+                    chosen = kept
+                    if table == 'site_reads' and site_priority(dropped) > site_priority(kept):
+                        chosen = dropped
+                        columns = ('url', 'final_url', 'title', 'summary', 'signals', 'error', 'model', 'at')
+                        conn.execute('UPDATE site_reads SET ' + ','.join(key + '=?' for key in columns) + ' WHERE person_id=?',
+                                     (*[dropped[key] for key in columns], keep))
+                    conflicts[table] = {'kept': dict(kept), 'merged': dict(dropped)}
+                    chosen_records[table] = dict(chosen, person_id=keep)
+            conn.execute(f'UPDATE OR IGNORE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+            conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
+
+        for dropped in conn.execute('SELECT * FROM tags WHERE person_id=?', (drop,)).fetchall():
+            kept = conn.execute('SELECT * FROM tags WHERE person_id=? AND tag=?', (keep, dropped['tag'])).fetchone()
+            if kept and (kept['grp'], kept['source']) != (dropped['grp'], dropped['source']):
+                chosen = dropped if dropped['source'] == 'manual' and kept['source'] != 'manual' else kept
+                conflicts.setdefault('tags', []).append({'kept': dict(kept), 'merged': dict(dropped)})
+                chosen_records.setdefault('tags', []).append(dict(chosen, person_id=keep))
+                if chosen is dropped:
+                    conn.execute('UPDATE tags SET grp=?,source=? WHERE person_id=? AND tag=?',
+                                 (dropped['grp'], dropped['source'], keep, dropped['tag']))
+
+        # Retain the earliest edge and every distinct page observation when identities merge.
+        conn.create_function('earliest_observed', 2, _earliest_observed)
+        conn.execute('INSERT INTO edges(seed,person_id,direction,first_seen) '
+                     'SELECT seed,?,direction,first_seen FROM edges WHERE person_id=? '
+                     'ON CONFLICT(seed,person_id,direction) DO UPDATE SET first_seen='
+                     'earliest_observed(edges.first_seen,excluded.first_seen)',
+                     (keep, drop))
+        conn.execute('DELETE FROM edges WHERE person_id=?', (drop,))
+        conn.execute('INSERT INTO edge_observations(seed,person_id,direction,page_key,job_id,observed_at) '
+                     'SELECT seed,?,direction,page_key,job_id,observed_at FROM edge_observations WHERE person_id=? '
+                     'ON CONFLICT(seed,person_id,direction,page_key) DO UPDATE SET '
+                     # The ledger's NOT NULL date uses an empty string for unknown.
+                     "observed_at=coalesce(earliest_observed(edge_observations.observed_at,excluded.observed_at),'')", (keep, drop))
+        conn.execute('DELETE FROM edge_observations WHERE person_id=?', (drop,))
+        for table in ('tags', 'marks'):
+            conn.execute(f'UPDATE OR IGNORE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+            conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
+        if conflicts:
+            before['records'], after['records'] = conflicts, chosen_records
+        if before:
+            workflows.event(conn, keep, 'identity_merged', before=before, after=after)
+        conn.execute('DELETE FROM people WHERE id=?', (drop,))
+    except Exception:
+        conn.execute('ROLLBACK TO merge_people')
+        conn.execute('RELEASE merge_people')
+        raise
+    conn.execute('RELEASE merge_people')
 
 
 def add_edge(conn, seed, person_id, direction, ts=None):
     return conn.execute('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)',
                         (norm_handle(seed), person_id, direction, ts or now())).rowcount == 1
+
+
+def list_page_key(seed, direction, users, cursor, job_id=None):
+    """Replay identity, not proof of a complete snapshot or Instagram event time.
+
+    Unmanaged imports have no collection run identifier. Deduplicate the same member
+    batch conservatively, ignoring order and mutable profile fields. A genuine new
+    observation of an identical batch requires a new managed collection job.
+    """
+    if job_id is not None:
+        return f'job:{job_id}:{cursor or ""}'
+    members = sorted({('id:' + ig_id) if (ig_id := normalize_ig_id(u.get('ig_id'))) is not None
+                      else ('handle:' + norm_handle(u['handle'])) for u in users})
+    payload = json.dumps([norm_handle(seed), direction, cursor or '', members], separators=(',', ':'))
+    return 'import:' + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def observe_edge(conn, seed, person_id, direction, page_key, job_id, ts):
+    return conn.execute('INSERT OR IGNORE INTO edge_observations'
+                        '(seed,person_id,direction,page_key,job_id,observed_at) VALUES(?,?,?,?,?,?)',
+                        (norm_handle(seed), person_id, direction, page_key, job_id, ts)).rowcount == 1
 
 
 def get_setting(conn, key, default=None):

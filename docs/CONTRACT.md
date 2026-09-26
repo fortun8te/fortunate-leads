@@ -83,7 +83,7 @@ Auto tag vocabulary (all `grp` fixed by `qualify.TAXONOMY`):
 - role: Brand, Store, Agency, Freelancer, Creative (photographer/UGC/3D/video), Creator, Supplier, SaaS, Coach, Personal
 - niche: Skincare, Beauty, Supplements, Apparel, Jewelry, Home, Pets, Coffee, Food & Drink, Fitness, Wellness, Baby, Accessories, Outdoor, Tech Gadgets
 - signal: Founder, Scaling, Hiring, Ecom (DTC/e-commerce/Shopify words), Shopify, Shop Link, Link Hub, Email, US, NL, UK, Verified, Business
-- size: <1k, 1k-10k, 10k-100k, 100k-1M, 1M+ · source: via @seed, in N lists, knows you, follows you, you follow
+- size: <1k, 1k-10k, 10k-100k, 100k-1M, 1M+ · source: via @seed, in N lists, Instagram link, follows you, you follow
 Precision over recall: promo codes for someone else's brand ("code X at @brand") count as Creator, not Brand; "dog owner", "CEO of my life",
 "of course", "available on Spotify", "model agency", "mama to baby", affiliate storefronts (shopmy/LTK) and look-alike domains
 (restorehealth.com, theworkshop.com) no longer fire. Instagram's own category label is used only when unambiguous ("… (Brand)", "E-commerce website", "Jewelry/watches").
@@ -113,7 +113,7 @@ Staged pipeline (all stages run in background threads; HTTP handlers and ingest 
    count moves by ≥ 5 (or 20 %); then LLM verdicts from another prompt version with score ≥ 35 (warm or near it) are re-run. Bounded pool: `llm_workers` concurrent
    calls (default 4) spread across providers/keys.
 
-`person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `knows you` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
+`person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `Instagram link` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
 
 **Providers** (`server/llm.py`, stdlib): the local proxy first, then `https://openrouter.ai/api/v1/chat/completions` direct, rotating
 keys from `OPENROUTER_API_KEYS` (comma-separated) and `data/openrouter.json` `{"keys":[...],"models":[...],"daily_limit":n}` (written
@@ -185,6 +185,17 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 ### Saved views
 - `GET /api/views` → `[{"id","name","query"}]` (sorted by name). `POST /api/views` `{"name","query"}` → `{"ok","id","name","query"}` — `query` is the URL query string (leading `?` stripped); saving an existing name (any case) overwrites it. `POST /api/views/{id}/delete` → `{"ok","deleted":0|1}`.
 
+### Follow-ups, activity and CSV export (2026-09-26)
+
+- Lead rows also include `bio_at`, `bio_src` and `follow_up`, either null or `{due_on,note,completed_at,updated_at}`. Person detail includes `profile_read_pending` and `activity:{rows,next_cursor}` with the newest 50 entries.
+- `POST /api/person/{id}/follow-up` accepts `{due_on:"YYYY-MM-DD",note?:str}` with a valid calendar date and a note up to 500 characters. An existing reminder is rescheduled and reopened. `{action:"complete"}` completes it; `{action:"clear"}` removes it. Action and date/note fields cannot be mixed. Responses include `follow_up`. Unchanged operations append no event.
+- Shared filters for leads/counts/tags/map and filtered export accept `follow_up=due|overdue|scheduled|completed|none` and `today=YYYY-MM-DD`. Due means unfinished and `due_on <= today`; overdue uses `<`; scheduled means any unfinished reminder. None means no reminder row, not a completed row. Without `today`, the server's local calendar date is used. The UI injects the browser's current local date into requests and leaves it out of saved queries. `sort=follow_up` places open reminders first by due date, then person ID.
+- `GET /api/person/{id}/activity?limit=50&cursor=...` returns `{rows,next_cursor}`. Limit is 1-100. Treat `next_cursor` as opaque and URL-encode it. Ordering is occurrence time descending, then ID descending. Each row has `{id,kind,body,before_value,after_value,happened_at,created_at}`; before/after are decoded JSON values.
+- `POST /api/person/{id}/activity` accepts `{kind:"dm"|"reply"|"call"|"meeting"|"note",body,happened_at?}`. Body must contain 1-5,000 characters. Optional occurrence time must be an ISO timestamp with timezone; otherwise server time is used. Times normalize to UTC. Returns the latest history page plus `ok`.
+- Automatic event kinds include `status`, `note`, `follow_up_scheduled`, `follow_up_completed`, `follow_up_cleared`, `follow_up_merged` and `identity_merged`. Status and note events record real changes, including bulk actions and undo. New tables are additive; existing states are not backfilled as invented historical events. Identity merging moves all activity and preserves conflicting reminder/note context.
+- `POST /api/leads/export` accepts exactly one of `{query:"URL query string"}` or `{ids:[positive integer IDs]}`. Query limit: 16,000 characters. Selected limit: 1-5,000 IDs; duplicate IDs collapse, missing IDs fail visibly. Selected scope is independent of filters. Filtered scope uses the shared filter, excludes the owner's account, and respects sorting; pagination parameters do not truncate it.
+- Successful export returns raw UTF-8 CSV with BOM, `Content-Disposition: attachment; filename="fortunate-leads.csv"` and `Cache-Control: no-store`. Failures remain ordinary JSON errors with existing same-origin checks. Fields: `id,handle,name,instagram_url,bio,website,followers,following,posts,tier,score,role,status,note,tags,sources,bio_at,bio_src,follow_up_due,follow_up_note,follow_up_completed_at`. Tags/sources are semicolon-separated. Empty filtered results still return the header. Text formula prefixes are guarded; numeric values stay numeric. CSV is assembled in memory and is not a complete backup.
+
 ### People, map, scraper
 - `GET /api/counts?<filter>` → `{"hot","warm","cold","unread","interested","contacted","talking","client","no","none","open","total","with_bio"}` — tier counts within the filter without its `tier`; status counts within the filter without its `status` (`none` = unmarked, `open` = all but `no`); `total`/`with_bio` = the whole database. Cached per query and `data_rev`.
 - `GET /api/person/{id}` → lead row + `{"edges":[{"seed","direction"}],"verdict":{...,"evidence":[str]},"note"}` — `evidence` is always a list.
@@ -234,3 +245,7 @@ Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_a
 person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
 `input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
 judgement re-runs the model for that person.
+
+## Evidence-based pair comparison
+
+See [CONNECTIONS.md](CONNECTIONS.md) for `/api/connections`, the additive observation ledger, input validation and limitations. The existing overview `/api/map` remains compatible. Follow links and bio mentions no longer generate an automatic personal-relationship claim.

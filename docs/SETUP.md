@@ -149,6 +149,7 @@ To stop scraping on purpose use **Pause** in the top strip (all accounts) or on 
 python3 -m unittest discover -s server/tests
 python3 -m unittest sidecar/test_laya.py
 node --test extension/test/*.test.mjs
+node --test tests/web/*.test.mjs          # note-save races, filters, exports and demo workflows
 node tests/e2e/driver.mjs                 # 8 simulated hours against a fake Instagram, about a minute
 node tests/e2e/driver.mjs --lanes 1,2,4   # several accounts
 python3 tests/bench.py                    # timings on a synthetic 100k-people database
