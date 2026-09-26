@@ -45,12 +45,8 @@ def _ensure(conn):
     if 'content_hash' not in {r[1] for r in conn.execute('PRAGMA table_info(site_reads)')}:
         conn.execute('ALTER TABLE site_reads ADD COLUMN content_hash TEXT')
     conn.execute(EVIDENCE_SCHEMA)
-    for table in ('site_reads', 'site_evidence'):
-        for operation in ('INSERT', 'UPDATE', 'DELETE'):
-            conn.execute(f"CREATE TRIGGER IF NOT EXISTS lead_rev_{table}_{operation.lower()} "
-                         f"AFTER {operation} ON {table} BEGIN "
-                         "INSERT INTO settings(key,value) VALUES('lead_data_rev','1') "
-                         "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END")
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='lead_rev_site_evidence_delete'").fetchone():
+        db.add_rev_triggers(conn, ('site_reads', 'site_evidence'))
 
 
 # ---------- safe fetch ----------

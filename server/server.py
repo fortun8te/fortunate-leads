@@ -166,6 +166,15 @@ def ext_next(conn, q, b):
     return dict(st, job=out)
 
 
+def check_seed_identity(conn, handle, ig_id):
+    """A seed's history belongs to one Instagram account: refuse a different ID for a known handle."""
+    known = {str(r[0]) for r in conn.execute(
+        'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
+        'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (handle, handle)) if r[0]}
+    if known - {ig_id}:
+        raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
+
+
 def stale_lease(conn, job, q, b):
     """Old outbox messages cannot alter a job after another lane/lease has taken it."""
     if not job:
@@ -212,11 +221,7 @@ def _ext_list_page(conn, q, b):
     if job and (job['kind'] != 'list' or seed != job['seed'] or direction != job['direction']):
         raise Bad('page does not match its list job')
     if seed_ig_id is not None:
-        known_ids = {str(r[0]) for r in conn.execute(
-            'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
-            'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (seed, seed)) if r[0]}
-        if known_ids - {seed_ig_id}:
-            raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
+        check_seed_identity(conn, seed, seed_ig_id)
     for field in ('requested_cursor', 'next_cursor'):
         if b.get(field) is not None and not isinstance(b[field], str):
             raise Bad(f'{field} must be a string or null')
@@ -313,7 +318,7 @@ def _ext_list_page(conn, q, b):
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if seed_ig_id is not None:
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (seed_ig_id, seed))
-    pids = []
+    pids, flipped = [], set()
     users = b.get('users') if isinstance(b.get('users'), list) else []
     for u in users:
         if (isinstance(u, dict) and isinstance(u.get('handle'), str) and db.norm_handle(u['handle'])
@@ -321,11 +326,12 @@ def _ext_list_page(conn, q, b):
             u = dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
                      ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None)
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
-            db.add_edge(conn, seed, pid, direction, ts)
+            db.add_edge(conn, seed, pid, direction, ts, flipped=flipped)
             db.observe_edge(conn, seed, pid, direction, page_key, job['id'] if job else None, ts)
             pids.append(pid)
             if job:
                 conn.execute('INSERT OR REPLACE INTO list_members VALUES(?,?,?)', (job['id'], pid, ts))
+    db.dirty_seed_members(conn, *flipped)   # once per seed, not once per new member
     rules.sync(conn, pids)
     received = conn.execute('SELECT count(*) FROM list_members WHERE job_id=?', (job['id'],)).fetchone()[0] if job else len(set(pids))
     limited = bool(b.get('limited'))
@@ -421,11 +427,7 @@ def ext_profile(conn, q, b):
         p.pop('bio_at', None)
     handle = db.norm_handle(p['handle'])
     if p.get('ig_id') and conn.execute('SELECT 1 FROM seeds WHERE handle=?', (handle,)).fetchone():
-        known_ids = {str(r[0]) for r in conn.execute(
-            'SELECT ig_id FROM seeds WHERE handle=? AND ig_id IS NOT NULL '
-            'UNION SELECT ig_id FROM people WHERE handle=? AND ig_id IS NOT NULL', (handle, handle)) if r[0]}
-        if known_ids - {str(p['ig_id'])}:
-            raise Bad('seed account identity changed; existing relationship history cannot be reassigned')
+        check_seed_identity(conn, handle, str(p['ig_id']))
     pid = db.upsert_person(conn, p, ts)
     rules.sync(conn, [pid])
     if p.get('ig_id'):
@@ -664,8 +666,6 @@ def lead_filter(q, status_default=True):
     return where, args
 
 
-TIER_RANK = "CASE coalesce(v.tier,'unread') WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END"
-FIT = {'hot': 'strong', 'warm': 'good', 'cold': 'weak'}   # the UI's name for a tier; anything else is 'unread'
 SORTS = {'follow_up': '(SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL) IS NULL, (SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL)', 'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC',
          'connected': 'lists DESC, p.followers IS NULL, p.followers DESC',
          'fit': "CASE WHEN v.tier='unread' THEN 1 ELSE 0 END, v.content_fit IS NULL, v.content_fit DESC, lists DESC, v.score IS NULL, v.score DESC",
@@ -780,8 +780,6 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
                 f'SELECT DISTINCT person_id FROM current_edges WHERE seed IN (SELECT seed FROM current_edges WHERE person_id IN ({placeholders}) '
                 f'UNION SELECT handle FROM people WHERE id IN ({placeholders}))', (*chunk, *chunk)))
     affected.difference_update(pids)
-    me = me_handle(conn)
-    prior = network_snapshot(conn, affected, me) if affected else {}
     ts = db.now()
     for pid in dict.fromkeys(pids):
         old = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
@@ -798,9 +796,10 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
         conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
     if sets:
         touch(conn, pids)   # status and note feed the qualifier: the person is re-qualified on the next batch
-    # A mark changes the yield of shared seeds, and a client's own seed becomes a
-    # stronger link. Refresh those rankings locally without buying new classifications.
-    refresh_network(conn, affected, prior, me)
+    # A mark changes the yield of shared seeds, and a client's own seed becomes a stronger link.
+    # One seed can hold tens of thousands of people: queue their local re-rank for the background
+    # drain instead of doing it inside this request's write lock.
+    db.mark_network_dirty(conn, affected)
 
 
 def api_mark(conn, q, b, pid):
@@ -1083,7 +1082,7 @@ SEED_LINKS_MIN_AGE = 30   # s: while a list is streaming in, recompute the overl
 
 
 def seed_links(conn):
-    key = (CFG['db'], *conn.execute('SELECT count(*),max(checked_at) FROM edge_evidence').fetchone())
+    key = (CFG['db'], data_rev(conn))   # the trigger-maintained revision covers edge evidence
     cached, now = SEED_LINKS[0], datetime.now().timestamp()
     if cached and (cached[0] == key or (cached[0][0] == key[0] and now - cached[1] < SEED_LINKS_MIN_AGE)):
         return cached[2]
@@ -1224,22 +1223,75 @@ def eta_hours(left, per_hour):
     return round(left / per_hour, 2) if left and per_hour else (0 if not left else None)
 
 
+RATE_WINDOW = timedelta(hours=6)   # measured throughput includes pacing breaks and cooldowns
+
+
+def measured_rate(conn, sql, now):
+    """Items per hour over the trailing window, measured from when work in it began (at least 15 minutes)."""
+    since = iso(now - RATE_WINDOW)
+    n, first = conn.execute(sql, (since,)).fetchone()
+    if not n or not first:
+        return None
+    hours = max(0.25, (now - utc(first)).total_seconds() / 3600)
+    return n / hours
+
+
+def eta_with_budget(left, per_hour, per_request, lanes, kind, now):
+    """Hours to finish at the measured pace, never faster than what today's and later daily budgets allow.
+    per_request: items one budgeted request yields (people per list page, 1 for a bio)."""
+    if not left:
+        return 0
+    if not per_hour:
+        return None
+    hours = left / per_hour
+    daily = [a['budget'].get(kind) or 0 for a in lanes]
+    if lanes and all(daily):   # 0 = no daily number: the pace alone decides
+        per_day = sum(daily) * per_request
+        today = sum(max(0, d - (a['today'].get(kind) or 0)) for d, a in zip(daily, lanes)) * per_request
+        if left > today:
+            midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            to_midnight = (midnight - now).total_seconds() / 3600
+            hours = max(hours, to_midnight + (left - today) / per_day * 24)
+    return round(hours, 2)
+
+
 def progress(conn, accts):
-    """Plain numbers for the Scraper page: what is left, how fast it goes, when it is done."""
-    rate = accounts.aggregate_rate(accts)
-    lists_left = conn.execute("SELECT coalesce(sum(max(coalesce(total,0)-received,0)),0) FROM lists "
-                              "WHERE state NOT IN ('done','private','error')").fetchone()[0]
-    bios_left = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
-    bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
-    online = rate.get('online') or 0
+    """Plain numbers for the Scraper page: what is left, how fast it really goes (measured), when it is done."""
+    now = datetime.now(timezone.utc)
+    lanes = [a for a in accts if not a['paused']]
+    list_lanes = [a for a in lanes if (a['role'] or 'both') in ('lists', 'both')]
+    bio_lanes = [a for a in lanes if (a['role'] or 'both') in ('bios', 'both')]
+    # Unknown list sizes fall back to the seed's follower/following count, so the total is an estimate.
+    lists_left, unknown = conn.execute(
+        "SELECT coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END, 0)"
+        " - l.received, 0)), 0), count(CASE WHEN l.total IS NULL THEN 1 END) FROM lists l "
+        "LEFT JOIN people p ON p.handle=l.seed WHERE l.state NOT IN ('done','private','error','partial')").fetchone()
+    pages_h = measured_rate(conn, 'SELECT count(*), min(at) FROM pages WHERE at>=?', now)
+    people_h = measured_rate(conn, 'SELECT coalesce(sum(users), 0), min(at) FROM pages WHERE at>=?', now)
+    per_page = people_h / pages_h if pages_h and people_h else 25
+    bio_min = db.get_setting(conn, 'bio_min') or 0
+    queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
+    # The planner queues bios in batches; count everyone it will still plan, not just the current batch.
+    unplanned = conn.execute(
+        "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE p.bio_at IS NULL "
+        "AND coalesce(p.is_private,0)=0 AND v.prefilter>=? AND instr(p.handle,'~')=0 "
+        "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
+    bios_left = queued + unplanned
+    bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
     q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
     q_rate = POOL[0].rate() if POOL[0] else None
+    bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
-        'lists': {'left': lists_left, 'per_hour': rate.get('people_hour'), 'eta_h': eta_hours(lists_left, rate.get('people_hour'))},
-        'bios': {'left': bios_left, 'per_day': bio_budget * max(1, online),
-                 'eta_h': eta_hours(bios_left, bio_budget * max(1, online) / 24) if online else None},
+        'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
+                  'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
+        'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
+                 'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
+                 # No reads measured yet: fall back to what the daily bio limits allow.
+                 'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
+                                          1, bio_lanes, 'profile', now),
+                 'estimate': not bios_h},
         'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
                     'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
@@ -1705,7 +1757,7 @@ def network_snapshot(conn, pids, me=None):
     return out
 
 
-def refresh_network(conn, pids, prior=None, me=None):
+def refresh_network(conn, pids, prior=None, me=None, nets=None):
     """Refresh connection claims and reblend already known fit without classifying anyone.
 
     Content hashes allow queued changes to reblend without a prior snapshot.
@@ -1716,7 +1768,8 @@ def refresh_network(conn, pids, prior=None, me=None):
     if not pids:
         return 0
     me = me if me is not None else me_handle(conn)
-    nets = network_context(conn, pids, me)
+    if nets is None or not all(pid in nets for pid in pids):
+        nets = network_context(conn, pids, me)
     changed = 0
     for pid in pids:
         row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
@@ -1821,7 +1874,7 @@ def requalify(conn, p, me, net=None):
     # Use the fit as a ranking hint only; rule and LLM tags keep their own evidence.
     conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in auto])
     if keep_llm:
-        refresh_network(conn, [p['id']], me=me)
+        refresh_network(conn, [p['id']], me=me, nets={p['id']: net} if net is not None else None)
         # The verdict is current for this profile revision even when the reblend changed nothing;
         # without this the batch would pick the same person up again on every pass.
         conn.execute('UPDATE verdicts SET updated_at=? WHERE person_id=? AND updated_at<?',

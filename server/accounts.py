@@ -167,7 +167,6 @@ def release(conn, now, only=None):
     fine = {k for k, r in rows.items() if healthy(r, now)}
     jobs = [j for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL")
             if j['lane'] not in (ok if j['kind'] == 'list' else fine) and (only is None or j['lane'] == only)
-            and not (j['kind'] == 'profile' and j['lane'].startswith('public-bios:') and (j['leased_until'] or '') > ts)
             and not (j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold'] and (j['leased_until'] or '') > ts)]
     held = {j['lane'] for j in conn.execute("SELECT lane FROM jobs WHERE state='leased' AND lane IS NOT NULL AND leased_until>?", (ts,))
             if j['lane'] in rows and rows[j['lane']]['paused'] and not rows[j['lane']]['hold']}
@@ -232,11 +231,10 @@ def pick_job(conn, lane, kinds, now):
         f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
-          AND NOT EXISTS (SELECT 1 FROM public_bio_retries r WHERE r.job_id=j.id AND r.next_at>?)
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, ts, lane, *ok, lane)).fetchone()
+        (*kinds, ts, lane, *ok, lane)).fetchone()
 
 
 def took(conn, lane, job):

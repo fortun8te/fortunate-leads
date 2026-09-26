@@ -55,21 +55,6 @@ class IntegrityTest(unittest.TestCase):
         self.assertTrue(db.queue_list(c, 'seed', 'followers'))
         self.assertEqual(tuple(c.execute("SELECT state,cursor,received,run_job_id FROM lists WHERE direction='followers'").fetchone()), ('queued', None, 0, None))
 
-    def test_extension_observes_shared_public_retry_wait(self):
-        import accounts
-        from datetime import timedelta
-        c = self.conn
-        ts = db.now()
-        job = c.execute("INSERT INTO jobs(kind,handle,created_at) VALUES('profile','waiting',?)", (ts,)).lastrowid
-        now = db.utc_now()
-        c.execute('INSERT INTO public_bio_retries VALUES(?,?,1)', (job, (now + timedelta(minutes=3)).isoformat()))
-        self.assertIsNone(accounts.pick_job(c, 'test', ['profile'], now))
-        self.assertEqual(accounts.pick_job(c, 'test', ['profile'], now + timedelta(minutes=4))['id'], job)
-
-
-class FreshnessTest(unittest.TestCase):
-    setUp = IntegrityTest.setUp
-    tearDown = IntegrityTest.tearDown
     def test_identity_fold_rejects_stale_bio(self):
         c = self.conn
         keep = db.upsert_person(c, {'handle': 'old', 'ig_id': '1'}, '2026-01-01')

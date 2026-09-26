@@ -259,7 +259,6 @@ function parseToken(w, strict) {
 const words = (s) => s.match(/[^\s"]*"[^"]*"?|\S+/g) || [];
 
 // ---------- routing / URL ----------
-$('.skip-link')?.addEventListener('click', (e) => { e.preventDefault(); $('#main-content')?.focus(); });
 function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
@@ -1992,7 +1991,6 @@ function renderStatus() {
   const alerts = (sc?.alerts || []).filter((x) => x.level === 'error').length;
   $('#n-acc').textContent = alerts ? '!' + alerts : accs.length > 1 ? String(accs.length) : '';
 }
-let scraperLoadGeneration = 0;
 async function loadScraper() {
   if (S.scLoading) return;
   S.scLoading = true;
@@ -2049,12 +2047,15 @@ function renderScraper() {
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
+  const capped = ['list', 'profile'].some((k) => x.budget?.[k] && (x.today?.[k] || 0) >= x.budget[k]);
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
   else if (sc.paused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (cool && capped) { now = 'Daily limit reached'; sub = `Back ${backIn(x.cooldown_until)}. Add another Instagram account under Accounts to keep going today.`; }
+  else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Resting'; sub = `Instagram asked us to slow down. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} people so far.`; }
   else { now = 'Online, waiting for work'; sub = 'Add accounts to scrape below.'; }
@@ -2073,13 +2074,16 @@ function renderScraper() {
     <div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div><div class="muted">${line}</div></div>`;
   const offline = x.online ? '' : 'waiting for the extension';
   const listsDone = ls.length > 0 && ls.every(l => l.state === 'done');
-  const unknownLists = ls.some(l => l.state !== 'done' && (!Number.isFinite(l.total) || l.total <= 0));
-  const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused' : run ? 'Reading now' : offline || 'Waiting';
-  const bioLine = `${int(B.left)} bios waiting · extension limit ${int(B.per_day)} a day`;
-  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : '');
+  const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
+    : eta(L.eta_h) ? `${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
+  const bioLine = `${int(B.left)} bios to read${B.per_hour ? ` · ${int(B.per_hour)} per hour` : ''} · limit ${int(B.per_day)} a day`;
+  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
+  // Speed scales with accounts: each extra Instagram account adds roughly one account's measured pace.
+  const lanes = Math.max(1, (sc.accounts || []).filter((a) => a.online && !a.paused).length);
+  const faster = L.eta_h > 72 && L.per_hour ? `<p class="muted">Each extra Instagram account adds about ${int(Math.round(L.per_hour / lanes))} people an hour. Add one under Accounts.</p>` : '';
   $('#stages').innerHTML = [
-    stage('1. Collect lists', `${int(recv)} people collected, ${unknownLists ? 'remaining count unknown' : int(L.left) + ' still to go'}${L.per_hour ? ` · ${int(Math.round(L.per_hour))} per hour` : ''}`,
-      listsDone ? 100 : unknownLists ? 0 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen),
+    stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go${L.per_hour ? ` · ${int(Math.round(L.per_hour))} per hour` : ''}`,
+      listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
     stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
       : `Off. Turn on Qualify at the top to let AI score ${int(Q.left || 0)} people with bios.`,
@@ -2367,10 +2371,9 @@ $('#wiz').addEventListener('click', (e) => {
 });
 
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
-const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, busy: false };
+const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, dirty: false };
 async function loadSettings() {
   loadBiofetch();
-  loadPublicBios();
   const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
   if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
   if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;

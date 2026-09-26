@@ -472,7 +472,6 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
-  const demoScenario = new URLSearchParams(location.search || '').get('mock_scenario') || 'cooldown';
   const settings = { main_list_share: 0 };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
@@ -497,14 +496,7 @@
   const llmView = () => ({ providers: [{ id: 'proxy', name: 'proxy', url: 'http://127.0.0.1:18741/api/v1/chat/completions', key: null, source: null, disabled: false, cooldowns: {}, requests_today: {}, last_error: null },
     ...llm.keys.map((k) => ({ ...k, name: 'openrouter', url: 'https://openrouter.ai/api/v1/chat/completions' }))], models: llm.models, daily_limit: llm.daily_limit,
     workers: llm.workers, llm_min: llm.llm_min, bio_min: llm.bio_min, laya: { url: 'http://127.0.0.1:18742', up: true }, config: 'data/openrouter.json', verdicts: { llm: 1180, rules: 1100 } });
-  let wizardLane = null;
-  function startWizardLane() {   // a new profile's extension checks in, then reports its logged-in account
-    if (wizardLane) return;
-    wizardLane = acct({ lane_id: 'ln_new9c3kd7s', ig_id: null, handle: null, status: 'online', state: 'idle', first_seen: now(), hour: { pages: 0, people: 0 } });
-    wizardLane.name = 'lane ln_new9c';
-    setTimeout(() => accounts.push(wizardLane), 5000);
-    setTimeout(() => { Object.assign(wizardLane, { ig_id: '51120999', handle: 'fl.west', name: '@fl.west' }); }, 11000);
-  }
+
   function scraperView() {
     const l = scraper.lists.find((x) => x.state === 'running');
     const secs = Math.max(0, Math.round((scraper.nextAt - Date.now()) / 1000));
@@ -802,9 +794,9 @@
       a.status = statusOf(a);
       return { ok: true, account: { ...a } };
     }
-    if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; setStage('lists', body.paused); setStage('bios', body.paused); return { ok: true }; }
+    if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; stagePaused.lists = stagePaused.bios = body.paused; return { ok: true }; }
     if (path === '/api/settings/qualify') {
-      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); setStage('ai', !body.on); }
+      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); scraper.qualify = body.on; if (!body.on) scraper.qualify_auto = false; }
       if ('auto' in body) scraper.qualify_auto = !!body.auto;
       for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
       return { ok: true, qualify: scraper.qualify };

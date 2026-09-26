@@ -22,9 +22,9 @@ test('bulk tag change offers no destructive inverse undo',async()=>{
 });
 test('running list with unknown total never renders Done; unknown bio metrics remain unknown',()=>{
   const c=base({document:{activeElement:null},ago:()=>'',eta:()=>null, ST_LABEL:{},ST_DOT:{},LIST_STATE:{},listFilter:'all',listsAll:false});
-  c.S.sc={ext:{online:true}, lists:[{state:'running',seed:'test',received:100,total:null}], progress:{lists:{left:0}}};
+  c.S.sc={ext:{online:true}, lists:[{state:'running',seed:'test',received:100,total:null}], progress:{lists:{left:5000,estimate:true,eta_h:null}}};
   vm.runInContext(section('function renderScraper()', 'let listsAll ='),c);c.renderScraper();
-  const html=c.$('#stages').innerHTML;assert.match(html,/remaining count unknown/);assert.match(html,/Reading now/);assert.doesNotMatch(html.split('2. Read bios')[0],/>Done</);
+  const html=c.$('#stages').innerHTML;assert.match(html,/about 5000 still to go/);assert.match(html,/Reading now/);assert.doesNotMatch(html.split('2. Read bios')[0],/>Done</);
   c.S.scStale=true;c.renderScraper();assert.match(c.$('#now').innerHTML,/Connection lost/);
 });
 test('controls expose failed action and disable stale controls',async()=>{
