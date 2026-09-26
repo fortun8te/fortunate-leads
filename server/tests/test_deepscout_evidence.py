@@ -1,5 +1,6 @@
 """Offline evidence checks. No Hermes, public network, or live database."""
 import os
+import http.client
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +95,9 @@ class EvidenceTest(unittest.TestCase):
         p = dict(self.p, bio='This is not a brand or a shop selling skincare products.')
         self.assertFalse(scout.verify(p, self.answer(
             quote='This is not a brand or a shop selling skincare products.'))[0])
+        reviewer = dict(self.p, bio='I review skincare brand products for clients.')
+        self.assertFalse(scout.verify(reviewer, self.answer(
+            quote='I review skincare brand products for clients.'))[0])
         long_page = '<html><body>' + 'Introductory information. ' * 220 + 'We sell skincare products.</body></html>'
         with patch.object(scout, '_fetch_cited_page', return_value=('https://glow.example/about', long_page)):
             self.assertTrue(scout.verify(self.p, self.answer(
@@ -121,6 +125,19 @@ class EvidenceTest(unittest.TestCase):
                 scout._fetch_cited_page('http://glow.example/about', self.p)
             connect.assert_not_called()
 
+    def test_trickled_headers_obey_total_deadline(self):
+        class SlowSocket:
+            def settimeout(self, _):
+                pass
+            def recv_into(self, buffer):
+                buffer[0] = ord('H')
+                return 1
+        socket = scout._DeadlineSocket(SlowSocket(), 10)
+        with patch.object(scout.time, 'monotonic', side_effect=[6, 11]):
+            response = http.client.HTTPResponse(socket)
+            with self.assertRaises(TimeoutError):
+                response.begin()
+
     def test_every_worker_reply_is_recorded_and_unverified_keeps_bulk(self):
         pool = scout.ScoutPool(self.path)
         with patch.object(scout, 'run', return_value=self.answer(quote='Invented quote')):
@@ -140,6 +157,9 @@ class EvidenceTest(unittest.TestCase):
         restarted = scout.ScoutPool(self.path)
         self.assertEqual(restarted.failed, {})
         self.assertEqual(scout.candidates(self.conn, 5, set()), [])
+        self.conn.execute("UPDATE people SET bio='New products sold by Glow Goods' WHERE id=?", (self.pid,))
+        self.assertEqual([p['id'] for p in scout.candidates(self.conn, 5, set())], [self.pid])
+        self.conn.execute("UPDATE people SET bio='Founder of Glow Goods, a skincare brand.' WHERE id=?", (self.pid,))
         self.conn.execute("UPDATE deep_research_runs SET retry_after='2000-01-01'")
         self.conn.execute("UPDATE deep_research SET retry_after='2000-01-01'")
         self.assertEqual([p['id'] for p in scout.candidates(self.conn, 5, set())], [self.pid])

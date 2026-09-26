@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import http.client
 import ipaddress
+import io
 import os
 import re
 import shlex
@@ -68,7 +69,11 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research(person_id INTEGER PRIMARY K
   followers_at_check INTEGER, is_private_at_check INTEGER, verified INTEGER NOT NULL DEFAULT 0,
   verification_reason TEXT, retry_after TEXT)"""
 RUNS_SCHEMA = """CREATE TABLE IF NOT EXISTS deep_research_runs(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL,
-  at TEXT NOT NULL, model TEXT, outcome TEXT NOT NULL, raw TEXT, verification_reason TEXT, retry_after TEXT)"""
+  at TEXT NOT NULL, model TEXT, outcome TEXT NOT NULL, raw TEXT, verification_reason TEXT, retry_after TEXT,
+  ig_id_at_run TEXT, handle_at_run TEXT, name_at_run TEXT, bio_at_run TEXT, website_at_run TEXT,
+  followers_at_run INTEGER, is_private_at_run INTEGER)"""
+RUN_SNAPSHOT = {field: field + '_at_run' for field in PROFILE_FIELDS}
+RUN_MATCH = ' AND '.join(f'r.{column} IS {_sql_value("p", field)}' for field, column in RUN_SNAPSHOT.items())
 RETRY_HOURS = 1
 MAX_EVIDENCE = 4
 PAGE_TIMEOUT = 5
@@ -76,8 +81,7 @@ PAGE_TOTAL_TIMEOUT = 10
 PAGE_CAP = 400 * 1024
 PAGE_REDIRECTS = 2
 NEGATED_CLAIM = re.compile(r"\b(?:no|not|never|without|neither|former|isn't|aren't|don't|doesn't|isnt|arent|dont|doesnt)\b", re.I)
-OWNER_CLAIM = re.compile(r'\b(?:founder|co-founder|owner|ceo|chief executive|founded)\b', re.I)
-BRAND_CLAIM = re.compile(r'\b(?:brand|company|business)\b', re.I)
+OWNER_CLAIM = re.compile(r'\b(?:founder|co-founder|owner|ceo|chief executive)\s+of\b|\b(?:i|we)\s+founded\b', re.I)
 PRODUCT_CLAIM = re.compile(r'\b(?:products?|skincare|cosmetics|clothing|apparel|supplements?|candles|jewelry|goods)\b', re.I)
 SELL_CLAIM = re.compile(r'\b(?:we|i|our company|our brand)\s+(?:make|produce|sell|sells|create|design|ship)\b', re.I)
 SHARED_HOSTS = {'instagram.com', 'linktr.ee', 'beacons.ai', 'stan.store', 'taplink.cc',
@@ -91,6 +95,11 @@ def ensure(conn):
     conn.execute(RUNS_SCHEMA)
     if 'retry_after' not in {r[1] for r in conn.execute('PRAGMA table_info(deep_research_runs)')}:
         conn.execute('ALTER TABLE deep_research_runs ADD COLUMN retry_after TEXT')
+    run_columns = {r[1] for r in conn.execute('PRAGMA table_info(deep_research_runs)')}
+    for column in RUN_SNAPSHOT.values():
+        if column not in run_columns:
+            kind = 'INTEGER' if column in ('followers_at_run', 'is_private_at_run') else 'TEXT'
+            conn.execute(f'ALTER TABLE deep_research_runs ADD COLUMN {column} {kind}')
     conn.execute('CREATE INDEX IF NOT EXISTS deep_research_runs_person ON deep_research_runs(person_id,id DESC)')
     columns = {r[1] for r in conn.execute('PRAGMA table_info(deep_research)')}
     missing = [column for column in SNAPSHOT.values() if column not in columns]
@@ -195,8 +204,37 @@ def _public_address(host, port):
     return addresses[0]
 
 
+class _DeadlineReader(io.RawIOBase):
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('cited page timed out')
+        self.sock.settimeout(min(PAGE_TIMEOUT, remaining))
+        return self.sock.recv_into(buffer)
+
+
+class _DeadlineSocket:
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def makefile(self, mode='rb', *args, **kwargs):
+        if mode != 'rb':
+            raise ValueError('only response reads are supported')
+        return io.BufferedReader(_DeadlineReader(self.sock, self.deadline))
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
 def _fetch_cited_page(url, p):
     """Bounded direct HTTP read, pinned to a vetted IP with the URL host kept for TLS."""
+    deadline = time.monotonic() + PAGE_TOTAL_TIMEOUT
     for _ in range(PAGE_REDIRECTS + 1):
         if not _related(url, p):
             raise ValueError('page is not tied to the profile')
@@ -208,18 +246,23 @@ def _fetch_cited_page(url, p):
             raise ValueError('nonstandard cited URL port')
         host = parsed.hostname
         address = _public_address(host, port)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('cited page timed out')
         connection = http.client.HTTPSConnection(host, port, timeout=PAGE_TIMEOUT) if port == 443 else \
             http.client.HTTPConnection(host, port, timeout=PAGE_TIMEOUT)
         try:
-            raw = socket.create_connection((address, port), timeout=PAGE_TIMEOUT)
+            raw = socket.create_connection((address, port), timeout=min(PAGE_TIMEOUT, remaining))
             if port == 443:
                 try:
-                    connection.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+                    raw.settimeout(min(PAGE_TIMEOUT, max(0.001, deadline - time.monotonic())))
+                    wrapped = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
                 except Exception:
                     raw.close()
                     raise
             else:
-                connection.sock = raw
+                wrapped = raw
+            connection.sock = _DeadlineSocket(wrapped, deadline)
             target = (parsed.path or '/') + (('?' + parsed.query) if parsed.query else '')
             connection.request('GET', target, headers={'Host': host, 'User-Agent': 'Fortunate-Leads/1',
                                                        'Accept': 'text/html,text/plain', 'Accept-Encoding': 'identity'})
@@ -235,7 +278,6 @@ def _fetch_cited_page(url, p):
             content_type = response.getheader('Content-Type', '')
             if content_type and not any(t in content_type.lower() for t in ('text/html', 'text/plain')):
                 raise ValueError('cited page is not text')
-            deadline = time.monotonic() + PAGE_TOTAL_TIMEOUT
             chunks, size = [], 0
             while True:
                 remaining = deadline - time.monotonic()
@@ -289,7 +331,7 @@ def _supports_positive(quote):
     if NEGATED_CLAIM.search(quote):
         return False
     product = bool(PRODUCT_CLAIM.search(quote))
-    return product and bool(OWNER_CLAIM.search(quote) or BRAND_CLAIM.search(quote) or SELL_CLAIM.search(quote))
+    return product and bool(OWNER_CLAIM.search(quote) or SELL_CLAIM.search(quote))
 
 
 def verify(p, data):
@@ -438,7 +480,7 @@ def candidates(conn, limit, exclude):
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH} "
         "AND (d.verified=1 OR d.retry_after>?)) "
-        "AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>?) "
+        f"AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>? AND {RUN_MATCH}) "
         f"AND p.id NOT IN ({','.join('?' * len(held))}) ORDER BY v.score DESC, p.id LIMIT ?",
         (SCOUT_MIN, now, now, *held, limit))]
 
@@ -468,7 +510,7 @@ def status(conn):
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH} "
         "AND (d.verified=1 OR d.retry_after>?)) "
-        "AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>?)",
+        f"AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>? AND {RUN_MATCH})",
         (SCOUT_MIN, now, now)).fetchone()[0]
     return {'on': db.get_setting(conn, 'scout') is not False, 'available': available(),
             'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
@@ -530,11 +572,11 @@ class ScoutPool:
                 outcome = 'stale' if stale else 'failed' if data is None else 'verified' if verification[0] else 'unverified'
                 retry_after = (datetime.now(timezone.utc) + timedelta(hours=RETRY_HOURS)).isoformat() \
                     if not stale and not verification[0] else None
-                conn.execute('INSERT INTO deep_research_runs(person_id,at,model,outcome,raw,verification_reason,retry_after) '
-                             'VALUES(?,?,?,?,?,?,?)',
+                conn.execute('INSERT INTO deep_research_runs(person_id,at,model,outcome,raw,verification_reason,retry_after,'
+                             + ','.join(RUN_SNAPSHOT.values()) + ') VALUES(' + ','.join('?' * (7 + len(RUN_SNAPSHOT))) + ')',
                              (p['id'], db.now(), model, outcome,
                               json.dumps(data, ensure_ascii=False)[:8000] if data is not None else None,
-                              verification[1], retry_after))
+                              verification[1], retry_after, *(_value(p, field) for field in PROFILE_FIELDS)))
                 if stale:
                     conn.commit()
                     return
