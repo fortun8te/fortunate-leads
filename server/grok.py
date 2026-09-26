@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import llm
+
 HERMES = Path.home() / '.hermes-me'
 PYTHON = HERMES / 'hermes-agent' / 'venv' / 'bin' / 'python'
 MODEL = 'grok-4.7'
@@ -66,7 +68,7 @@ def call(system, user, schema, cache_key, timeout=TIMEOUT):
                                      headers={'Authorization': 'Bearer ' + c['api_key'], 'Content-Type': 'application/json',
                                               'x-grok-conv-id': cache_key})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout, context=llm.SSL) as r:
                 data = json.loads(r.read())
             break
         except urllib.error.HTTPError as e:
