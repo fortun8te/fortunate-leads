@@ -3,9 +3,11 @@ import sqlite3
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db
+import connection_graph
 from connection_graph import compare
 
 
@@ -18,6 +20,45 @@ class VariableLimitedConnection(sqlite3.Connection):
 
 
 class ConnectionScalingTests(unittest.TestCase):
+    def test_temp_store_and_caller_temp_objects_are_preserved(self):
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db.SCHEMA)
+        conn.execute('PRAGMA temp_store=MEMORY')
+        conn.execute("INSERT INTO seeds(handle) VALUES('alice')")
+        conn.execute("INSERT INTO seeds(handle) VALUES('bob')")
+        conn.commit()
+        compare(conn, 'alice', 'bob')
+        self.assertEqual(conn.execute('PRAGMA temp_store').fetchone()[0], 2)
+        self.assertFalse(conn.in_transaction)
+        conn.execute('CREATE TEMP TABLE caller_data(value INT)')
+        conn.execute('INSERT INTO caller_data VALUES(42)')
+        compare(conn, 'alice', 'bob')
+        self.assertEqual(conn.execute('SELECT value FROM caller_data').fetchone()[0], 42)
+        self.assertTrue(conn.in_transaction)
+        self.assertEqual(conn.execute('PRAGMA temp_store').fetchone()[0], 2)
+
+    def test_dense_compare_never_materializes_endpoint_graph_in_python(self):
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db.SCHEMA)
+        stamp = '2026-01-01T00:00:00+00:00'
+        conn.executemany('INSERT INTO seeds(handle) VALUES(?)', [('alice',), ('bob',)])
+        conn.executemany('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
+                         ((i, f'user{i:04}', stamp, stamp) for i in range(1, 5001)))
+        conn.executemany('INSERT INTO edges VALUES(?,?,?,?)',
+                         ((seed, i, 'following', stamp) for seed in ('alice', 'bob')
+                          for i in range(1, 5001)))
+        with patch.object(connection_graph._Graph, 'observations', side_effect=AssertionError('full endpoint load')), \
+             patch.object(connection_graph._Graph, 'degrees', side_effect=AssertionError('Python degree sets')):
+            result = compare(conn, 'alice', 'bob', 20)
+        self.assertEqual(result['total_candidates'], 5000)
+        self.assertEqual([node['node']['handle'] for node in result['connectors']],
+                         [f'user{i:04}' for i in range(1, 21)])
+        self.assertTrue(all(node['rank']['observed_degree'] == 2 for node in result['connectors']))
+
     def test_dense_candidates_chunking_and_top_k(self):
         conn = sqlite3.connect(':memory:', factory=VariableLimitedConnection)
         self.addCleanup(conn.close)

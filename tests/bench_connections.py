@@ -1,77 +1,105 @@
-"""Reproducible connection compare benchmark; never opens application data.
+"""Bounded compare benchmark on synthetic edge databases, never application data.
 
-    python3 tests/bench_connections.py --people 100000 --runs 3
+    PYTHONPATH=server python3 tests/bench_connections.py --db /private/tmp/fl-map-scale-100k.sqlite \
+      --db /private/tmp/fl-map-scale-1m.sqlite --db /private/tmp/fl-map-scale-5m.sqlite --runs 5
 
-Reuses bench.py's seeded synthetic distribution, then adds a 20k-neighbor
-source. Also measures tracked history with three page observations per hub edge.
-Also compares two sources sharing the full candidate pool.
-Reports first-call and median timings, SQL statement counts, and result size.
+Each run uses a fresh process so peak RSS is meaningful. The supplied databases
+must contain seeds seed02 and seed03. A separate full-overlap two-hub fixture
+is generated with --dense-people (default 20000).
 """
 import argparse
+import hashlib
 import json
 import os
+import resource
+import sqlite3
 import statistics
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-os.environ.setdefault('FL_NO_ORSLOT', '1')
-from bench import build, db
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'server'))
+import db
 from connection_graph import compare
 
 
-def measure(conn, source, target, runs):
-    durations = []
-    statements = []
-    for _ in range(runs):
-        count = [0]
-        conn.set_trace_callback(lambda sql: count.__setitem__(0, count[0] + 1))
+def one_run(path, source, target):
+    conn = sqlite3.connect('file:' + str(Path(path).resolve()) + '?mode=ro', uri=True)
+    conn.row_factory = sqlite3.Row
+    # Match the production connection policy; SQLite's default uses file temp store.
+    conn.execute('PRAGMA temp_store=MEMORY')
+    try:
         start = time.perf_counter()
-        result = compare(conn, source, target)
-        durations.append(round((time.perf_counter() - start) * 1000, 2))
-        conn.set_trace_callback(None)
-        statements.append(count[0])
-    return dict(source=source, target=target, first_ms=durations[0], median_ms=statistics.median(durations),
-                runs_ms=durations, sql_statements=statements[0], candidates=result['total_candidates'],
-                returned=result['returned_count'])
+        result = compare(conn, source, target, 20)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        digest = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+        return dict(ms=round(elapsed_ms, 3), peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                    candidates=result['total_candidates'], returned=result['returned_count'], digest=digest)
+    finally:
+        conn.close()
+
+
+def dense_fixture(path, people):
+    conn = db.init(path)
+    stamp = '2026-01-01T00:00:00+00:00'
+    conn.executemany('INSERT INTO seeds(handle) VALUES(?)', [('hub_a',), ('hub_b',)])
+    for start in range(1, people + 1, 10000):
+        ids = range(start, min(start + 10000, people + 1))
+        conn.executemany('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
+                         ((pid, f'user{pid:08}', stamp, stamp) for pid in ids))
+        conn.executemany('INSERT INTO edges VALUES(?,?,?,?)',
+                         ((seed, pid, 'following', stamp) for seed in ('hub_a', 'hub_b') for pid in ids))
+    conn.commit()
+    conn.close()
+
+
+def percentile(values, pct):
+    values = sorted(values)
+    position = (len(values) - 1) * pct
+    low = int(position)
+    return round(values[low] + (values[min(low + 1, len(values) - 1)] - values[low]) * (position - low), 3)
+
+
+def measure(path, source, target, runs):
+    samples = []
+    for _ in range(runs):
+        output = subprocess.check_output([sys.executable, __file__, '--worker', path, source, target], text=True)
+        samples.append(json.loads(output))
+    if len({sample['digest'] for sample in samples}) != 1:
+        raise RuntimeError('compare output changed between identical benchmark runs')
+    ms = [sample['ms'] for sample in samples]
+    conn = sqlite3.connect('file:' + str(Path(path).resolve()) + '?mode=ro', uri=True)
+    try:
+        edge_count = conn.execute('SELECT COUNT(*) FROM edges').fetchone()[0]
+    finally:
+        conn.close()
+    return dict(db=str(path), sources=[source, target], edges=edge_count,
+        candidates=samples[0]['candidates'], returned=samples[0]['returned'],
+        p50_ms=percentile(ms, .5), p95_ms=percentile(ms, .95),
+        peak_rss_bytes=max(sample['peak_rss_bytes'] for sample in samples),
+        runs_ms=ms, result_sha256=samples[0]['digest'])
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--people', type=int, default=100000)
-    parser.add_argument('--runs', type=int, default=3)
+    parser.add_argument('--db', action='append', default=[], help='synthetic fixture with seed02 and seed03')
+    parser.add_argument('--runs', type=int, default=5)
+    parser.add_argument('--dense-people', type=int, default=20000)
+    parser.add_argument('--worker', nargs=3, metavar=('DB', 'SOURCE', 'TARGET'))
     args = parser.parse_args()
-    if args.people < 2 or args.runs < 1:
-        parser.error('people must be at least 2 and runs at least 1')
-    with tempfile.TemporaryDirectory(prefix='fortunate-connections-bench-') as folder:
-        path = str(Path(folder) / 'synthetic.sqlite')
-        build(path, args.people)
-        conn = db.connect(path)
-        base_edges = conn.execute('SELECT COUNT(*) FROM edges').fetchone()[0]
-        report = dict(people=args.people, baseline_edges=base_edges, cases=[])
-        report['cases'].append(dict(case='representative', **measure(conn, 'seed0', 'seed1', args.runs)))
-        size = min(20000, args.people)
-        ts = db.now()
-        conn.execute("INSERT INTO seeds(handle,added_at) VALUES('benchhub',?)", (ts,))
-        conn.executemany("INSERT INTO edges VALUES('benchhub',?,'following',?)", ((pid, ts) for pid in range(1, size + 1)))
-        conn.commit()
-        report['hub_edges'] = size
-        report['cases'].append(dict(case='20k_hub_legacy', **measure(conn, 'benchhub', 'seed0', args.runs)))
-        conn.executemany("INSERT INTO edge_observations(seed,person_id,direction,page_key,job_id,observed_at) VALUES('benchhub',?,'following',?,NULL,?)",
-                         ((pid, f'bench:{page}', ts) for pid in range(1, size + 1) for page in range(3)))
-        conn.commit()
-        report['history_rows'] = size * 3
-        report['cases'].append(dict(case='20k_hub_tracked', **measure(conn, 'benchhub', 'seed0', args.runs)))
-        dense_sources = ('benchdensea', 'benchdenseb')
-        conn.executemany('INSERT INTO seeds(handle,added_at) VALUES(?,?)',
-                         ((seed, ts) for seed in dense_sources))
-        conn.executemany('INSERT INTO edges VALUES(?,?,?,?)',
-                         ((seed, pid, 'following', ts) for seed in dense_sources
-                          for pid in range(1, args.people + 1)))
-        conn.commit()
-        report['cases'].append(dict(case='dense_overlap', **measure(conn, *dense_sources, args.runs)))
-        conn.close()
-        print(json.dumps(report, indent=2))
+    if args.worker:
+        print(json.dumps(one_run(*args.worker)))
+        return
+    if args.runs < 1 or args.dense_people < 1:
+        parser.error('runs and dense-people must be positive')
+    report = [measure(path, 'seed02', 'seed03', args.runs) for path in args.db]
+    with tempfile.TemporaryDirectory(prefix='fl-compare-dense-') as folder:
+        path = str(Path(folder) / 'dense.sqlite')
+        dense_fixture(path, args.dense_people)
+        report.append(measure(path, 'hub_a', 'hub_b', args.runs))
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == '__main__':
