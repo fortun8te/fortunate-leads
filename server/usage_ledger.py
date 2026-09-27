@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -10,9 +11,11 @@ from pathlib import Path
 PATH = Path(__file__).resolve().parent.parent / 'data' / 'llm_usage.sqlite'
 LOCK = threading.Lock()
 EVENT_DAYS = 90
+INITIALIZED = set()
+LAST_PRUNE = {}
 
 
-def _connect(path):
+def _connect(path, initialize=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -22,15 +25,18 @@ def _connect(path):
     else:
         os.close(fd)
     db = sqlite3.connect(path, timeout=5)
-    db.execute('PRAGMA busy_timeout=5000')
-    db.execute('''CREATE TABLE IF NOT EXISTS attempts (
+    try:
+        db.execute('PRAGMA busy_timeout=5000')
+        if not initialize:
+            return db
+        db.execute('''CREATE TABLE IF NOT EXISTS attempts (
         id INTEGER PRIMARY KEY, at TEXT NOT NULL, provider TEXT NOT NULL,
         model TEXT NOT NULL, purpose TEXT NOT NULL, batch_size INTEGER NOT NULL,
         success INTEGER NOT NULL, status TEXT NOT NULL, latency_ms INTEGER NOT NULL,
         input_tokens INTEGER, output_tokens INTEGER
     )''')
-    db.execute('CREATE INDEX IF NOT EXISTS attempts_at ON attempts(at)')
-    db.execute('''CREATE TABLE IF NOT EXISTS days (
+        db.execute('CREATE INDEX IF NOT EXISTS attempts_at ON attempts(at)')
+        db.execute('''CREATE TABLE IF NOT EXISTS days (
         day TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
         purpose TEXT NOT NULL, success INTEGER NOT NULL, status TEXT NOT NULL,
         requests INTEGER NOT NULL, items INTEGER NOT NULL, latency_ms INTEGER NOT NULL,
@@ -38,7 +44,42 @@ def _connect(path):
         token_reports INTEGER NOT NULL, first_at TEXT NOT NULL, last_at TEXT NOT NULL,
         PRIMARY KEY(day, provider, model, purpose, success, status)
     )''')
-    return db
+        return db
+    except Exception:
+        db.close()
+        raise
+
+
+def _gap_path(path):
+    return Path(path).with_suffix('.gap.json')
+
+
+def read_gap(path):
+    try:
+        gap = json.loads(_gap_path(path).read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError):
+        return {'at': None, 'error': 'gap_marker_unreadable'}
+    if not isinstance(gap, dict) or not isinstance(gap.get('at'), str):
+        return {'at': None, 'error': 'gap_marker_unreadable'}
+    return {'at': gap['at'], 'error': str(gap.get('error') or 'unknown')[:64]}
+
+
+def mark_gap(path, error):
+    """Persist the first missing accounting event independently of the possibly broken SQLite file."""
+    marker = _gap_path(path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    gap = {'at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'error': str(error)[:64]}
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return read_gap(path)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(gap, f)
+        f.flush()
+        os.fsync(f.fileno())
+    return gap
 
 
 def _int_or_none(value):
@@ -60,7 +101,9 @@ def record(provider, model, purpose, batch_size, success, status, latency_ms,
     at = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
     day = at[:10]
     with LOCK:
-        db = _connect(path)
+        path = Path(path)
+        first = path not in INITIALIZED
+        db = _connect(path, initialize=first)
         try:
             db.execute('''INSERT INTO attempts(at,provider,model,purpose,batch_size,success,status,latency_ms,input_tokens,output_tokens)
                           VALUES(?,?,?,?,?,?,?,?,?,?)''',
@@ -77,10 +120,13 @@ def record(provider, model, purpose, batch_size, success, status, latency_ms,
                        (day, provider, model, purpose, int(bool(success)), status, 1, batch_size,
                         latency_ms, input_tokens or 0, output_tokens or 0,
                         int(input_tokens is not None or output_tokens is not None), at, at))
-            # Daily aggregates preserve longer history while individual events stay bounded.
-            db.execute('DELETE FROM attempts WHERE at < ?',
-                       ((datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).isoformat(),))
+            # Prune once per day per process, rather than in every provider write.
+            if LAST_PRUNE.get(path) != day:
+                db.execute('DELETE FROM attempts WHERE at < ?',
+                           ((datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).isoformat(),))
             db.commit()
+            INITIALIZED.add(path)
+            LAST_PRUNE[path] = day
         finally:
             db.close()
     os.chmod(path, 0o600)

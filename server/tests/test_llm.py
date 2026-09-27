@@ -88,6 +88,22 @@ class ProviderTest(unittest.TestCase):
             again = llm.usage_ledger.summary(path)
             self.assertEqual(again['requests'], 2)
 
+    def test_accounting_gap_survives_recovery_and_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'usage.sqlite'
+            path.write_bytes(b'broken SQLite file')
+            p = llm.Providers([], ('m/a:free',), proxy=self.url, usage_path=path)
+            self.assertEqual(p.chat([])[1], 'm/a:free')  # a ledger failure cannot stop qualification
+            self.assertEqual(p.usage_error, 'DatabaseError')
+            self.assertIsNotNone(p.usage_gap)
+            self.assertTrue(path.with_suffix('.gap.json').exists())
+            path.unlink()
+            self.assertEqual(p.chat([])[1], 'm/a:free')
+            self.assertEqual(llm.usage_ledger.summary(path)['requests'], 1)
+            self.assertIsNotNone(p.usage_gap)  # recovery never erases the missing attempt
+            restarted = llm.Providers([], ('m/a:free',), proxy=self.url, usage_path=path)
+            self.assertIsNotNone(restarted.usage_gap)
+
     def test_rotation_and_cooldown_on_429(self):
         p = self.prov()   # proxy down: transport error cools the proxy, then the keys take over
         Stub.plan = {'sk-or-aaaa1111': [(429, {'Retry-After': '120'}, None)], 'sk-or-bbbb2222': [(200, {}, None)]}

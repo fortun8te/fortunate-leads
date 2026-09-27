@@ -140,7 +140,8 @@ class Providers:
         self.rr = 0
         self.state_path = Path(state_path) if state_path else None
         self.usage_path = Path(usage_path) if usage_path else None
-        self.usage_error = None
+        self.usage_gap = usage_ledger.read_gap(self.usage_path) if self.usage_path else None
+        self.usage_error = self.usage_gap.get('error') if self.usage_gap else None
         self._load_state()
         self.configure(keys, models, daily_limit, env_keys)
 
@@ -249,10 +250,14 @@ class Providers:
             usage_ledger.record(pid, model, purpose, batch_size, success, status,
                                 round((time.monotonic() - started) * 1000),
                                 usage.get('input_tokens'), usage.get('output_tokens'), self.usage_path)
-            self.usage_error = None
         except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as exc:
             # Accounting failure cannot halt qualification. Status exposes the failure without sensitive data.
             self.usage_error = type(exc).__name__
+            if self.usage_gap is None:
+                try:
+                    self.usage_gap = usage_ledger.mark_gap(self.usage_path, self.usage_error)
+                except OSError:
+                    self.usage_gap = {'at': _iso(time.time()), 'error': self.usage_error}
 
     def chat(self, messages, models=None, timeout=45, budget=90, max_tokens=400, json_mode=True,
              batch_size=1, purpose='qualification'):
@@ -424,7 +429,7 @@ class Providers:
                             'spent_until': _iso(self.spent[pid]) if self.spent.get(pid, 0) > now else None,
                             'checked_at': _iso(self.checked[pid][0]) if pid in self.checked else None})
             return {'providers': out, 'models': list(self.models), 'daily_limit': self.daily_limit,
-                    'usage_error': self.usage_error}
+                    'usage_error': self.usage_error, 'usage_gap': self.usage_gap}
 
 
 ORSLOT = Path.home() / '.config' / 'openrouter' / 'slots'

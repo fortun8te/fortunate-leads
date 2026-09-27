@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import secrets
+import sqlite3
 import socket
 import ssl
 import sys
@@ -1548,8 +1549,20 @@ def api_llm(conn, q, b):
     out['summary'] = counts   # e.g. {'ok': 2, 'spent': 2, 'error': 1}: spent keys are not broken, they return at 00:00 UTC
     out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
                                         'GROUP BY 1').fetchall())
-    out['usage'] = usage_ledger.summary(llm.get().usage_path or usage_ledger.PATH)
+    out['usage'] = llm_usage_report()
     return out
+
+
+def llm_usage_report(days=30, purpose='qualification'):
+    pool = llm.get()
+    path = pool.usage_path or usage_ledger.PATH
+    gap = pool.usage_gap or usage_ledger.read_gap(path)
+    try:
+        report = usage_ledger.summary(path, days, purpose)
+    except (OSError, ValueError, sqlite3.Error):
+        return {'available': False, 'error': 'usage_ledger_unavailable',
+                'accounting_gap': gap, 'window_days': days, 'purpose': purpose}
+    return dict(report, available=True, complete=gap is None, accounting_gap=gap)
 
 
 def api_llm_usage(conn, q, b):
@@ -1559,7 +1572,7 @@ def api_llm_usage(conn, q, b):
     purpose = (q.get('purpose') or ['qualification'])[0]
     if purpose not in ('qualification', 'website_summary', 'provider_test', 'all'):
         raise Bad('unknown usage purpose')
-    return usage_ledger.summary(llm.get().usage_path or usage_ledger.PATH, int(raw), purpose)
+    return llm_usage_report(int(raw), purpose)
 
 
 def api_llm_health(conn, q, b):
