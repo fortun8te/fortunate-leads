@@ -1,4 +1,7 @@
 import sys
+import sqlite3
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,8 +15,8 @@ import server
 
 class FakeConn:
     @staticmethod
-    def execute(_query):
-        return FakeConn()
+    def execute(_query, *_args):
+        return SimpleNamespace(fetchone=lambda: None) if 'settings' in _query else FakeConn()
 
     @staticmethod
     def fetchone():
@@ -68,6 +71,27 @@ class EngineStartTest(unittest.TestCase):
             run = lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout='', stderr='Laya is unavailable\n')
             with self.assertRaisesRegex(engine_start.EngineStartError, 'Laya is unavailable'):
                 engine_start.start(repo, 3, run)
+
+    def test_direct_launcher_hold_check_fails_closed_without_opening_chrome(self):
+        script = (Path(__file__).resolve().parents[2] / 'ops/start-all.command').read_text()
+        function = script[script.index('check_collection_hold() {'):script.index('check_collection_hold allow-missing || exit 1')]
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'state.sqlite'
+            with sqlite3.connect(database) as conn:
+                conn.execute('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)')
+                conn.execute('INSERT INTO settings VALUES(?,?)', ('cooldown', json.dumps('2099-01-01T00:00:00Z')))
+            command = function + '\ncheck_collection_hold'
+            env = dict(__import__('os').environ, FL_DB=str(database), FL_PYTHON=sys.executable)
+            blocked = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn('shared safety hold', blocked.stderr)
+            with sqlite3.connect(database) as conn:
+                conn.execute("UPDATE settings SET value=?", (json.dumps('2000-01-01T00:00:00Z'),))
+            self.assertEqual(subprocess.run(['bash', '-c', command], env=env, capture_output=True).returncode, 0)
+            env['FL_DB'] = str(Path(directory) / 'missing.sqlite')
+            self.assertNotEqual(subprocess.run(['bash', '-c', command], env=env, capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run(['bash', '-c', function + '\ncheck_collection_hold allow-missing'], env=env, capture_output=True).returncode, 0)
+        self.assertIn('check_collection_hold || exit 1\n  open', script)
 
     def test_app_account_count_must_match_configured_profile_count(self):
         with tempfile.TemporaryDirectory() as directory:

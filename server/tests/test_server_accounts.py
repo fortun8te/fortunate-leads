@@ -135,7 +135,12 @@ class LaneTest(Base):
         self.page('a', ja, 4, 'c1')
         self.nxt('a')   # a resumes its list...
         self.post('a', '/api/ext/error', {'job_id': ja['id'], 'code': 'login', 'retry_at': None, 'message': 'login_required'})
-        jb = self.nxt('b')['job']     # ...and b takes over from the saved cursor right away
+        self.assertIsNone(self.nxt('b')['job'])
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertIsNone(self.nxt('b')['job'])  # expiry alone cannot resume security-paused collection
+        self.assertEqual(self.call('/api/control', {'action': 'resume', 'stage': 'all'})[0], 200)
+        jb = self.nxt('b')['job']     # explicit operator resume after shared hold expires
         self.assertEqual((jb['id'], jb['cursor'], jb['received']), (ja['id'], 'c1', 4))
         self.page('b', jb, 3, 'c2')
         self.assertEqual(self.conn.execute("SELECT received, lane FROM lists WHERE seed='s1'").fetchone()[:], (7, 'lane-b'))
@@ -235,6 +240,60 @@ class LaneTest(Base):
                                          'reason': 'http_500', 'message': 'temporary response'})
         self.assertIsNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
         self.assertEqual(self.nxt('c', 'list')['job']['seed'], 'third')
+
+    def test_stale_home_redirect_still_holds_other_accounts(self):
+        self.seeds('first', 'second')
+        job = self.nxt('a', 'list')['job']
+        self.conn.execute("UPDATE jobs SET state='done', lane=NULL WHERE id=?", (job['id'],))
+        self.conn.commit()
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'kind': 'list', 'code': 'other',
+                                        'reason': 'list_html_home_redirect'})
+        self.assertIsNotNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+        self.assertIsNone(self.nxt('b')['job'])
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'done')
+
+    def test_reported_kind_cannot_turn_profile_error_into_home_redirect_hold(self):
+        self.nxt('a', 'profile')
+        self.conn.execute("INSERT INTO jobs(kind,handle,state,created_at) VALUES('profile','person','done',?)", (db.now(),))
+        jid = self.conn.execute('SELECT max(id) FROM jobs').fetchone()[0]
+        self.conn.commit()
+        response = self.post('a', '/api/ext/error', {'job_id': jid, 'kind': 'list', 'code': 'other',
+                                        'reason': 'list_html_home_redirect'})
+        self.assertEqual(response[0], 200)
+        self.assertTrue(response[1]['stale'])
+        self.assertIsNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+
+    def test_start_all_succeeds_after_hold_expires(self):
+        db.set_setting(self.conn, 'paused_lists', True)
+        db.set_setting(self.conn, 'paused_bios', True)
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 200)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_invalid_stored_hold_fails_closed(self):
+        for raw in ('not-a-date', 42, False):
+            db.set_setting(self.conn, 'cooldown', raw)
+            self.conn.commit()
+            self.assertEqual(self.call('/api/ext/next')[0], 400)
+            self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 400)
+
+    def test_security_warnings_hold_all_stages_and_block_start_engine(self):
+        from unittest.mock import patch
+        self.seeds('first', 'second')
+        for code in ('login', 'challenge'):
+            self.post('a', '/api/ext/error', {'kind': 'profile', 'code': code})
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 400)
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertIsNone(self.nxt('b')['job'])
+            self.assertEqual(self.nxt('c')['stages'], {'list': False, 'profile': False})
+            with patch.object(server.engine_start, 'start') as launch:
+                self.assertEqual(self.call('/api/engine/start', {})[0], 400)
+                launch.assert_not_called()
 
     def test_profile_rate_limit_quarantines_same_handle_across_lanes(self):
         self.nxt('a', 'profile')

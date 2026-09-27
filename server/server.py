@@ -116,7 +116,10 @@ def edge_history_of(conn, pid):
 
 def workspace_cooldown(conn, now):
     """A persisted Instagram warning pauses collection across all browser accounts."""
-    value = clean_iso(db.get_setting(conn, 'cooldown'))
+    raw = db.get_setting(conn, 'cooldown')
+    value = clean_iso(raw)
+    if raw is not None and raw != '' and value is None:
+        raise Bad('Stored safety hold is invalid. Collection remains stopped until it is repaired.')
     until = utc(value) if value else None
     return value if until and until > now else None
 
@@ -508,12 +511,11 @@ def ext_error(conn, q, b):
     if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
         conn.commit()
         return {'duplicate': True}
-    # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
-    # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
-    # Per lane: a login wall hands that account's lists to the other lanes now; a list limit hands its list on.
+    # Security and login warnings also stop other accounts sharing this workspace.
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
     was_list = bool(job and job['kind'] == 'list')
+    reported_job = job or conn.execute('SELECT kind FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
     if code == 'private' and was_list and not stale:
         viewer_id = job['viewer_ig_id']
         if not viewer_id or b.get('reason') != 'profile_private_wall':
@@ -528,14 +530,16 @@ def ext_error(conn, q, b):
                  'VALUES(?,?,?,?,?,?,?,?,?)',
                  (event_id, ts, lane, job['id'] if job else None, kind, direction, str(code or 'other')[:40],
                   str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599)))
+    home_redirect = (code == 'other' and b.get('reason') == 'list_html_home_redirect'
+                     and ((reported_job and reported_job['kind'] == 'list')
+                          or (not b.get('job_id') and b.get('kind') == 'list')))
     if stale:
         job = None  # account-level waits still apply, but the old callback cannot change a released job
-        if code not in ('rate_limit', 'soft_block'):
+        if code not in ('rate_limit', 'soft_block', 'login', 'challenge') and not home_redirect:
             conn.commit()
             return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
-    home_redirect = code == 'other' and b.get('reason') == 'list_html_home_redirect' and was_list
-    if code in ('rate_limit', 'soft_block') or home_redirect:
+    if code in ('rate_limit', 'soft_block', 'login', 'challenge') or home_redirect:
         now = datetime.now(timezone.utc)
         # Keep the longest known wait. A second account's shorter warning must
         # never reopen collection while the first one is still cooling.
@@ -546,6 +550,10 @@ def ext_error(conn, q, b):
                 deadlines.append(utc(clean))
         until = iso(max(deadlines))
         db.set_setting(conn, 'cooldown', until)
+    if code in ('login', 'challenge'):
+        # The timed wait must not silently restart collection after a security warning.
+        db.set_setting(conn, 'paused_lists', True)
+        db.set_setting(conn, 'paused_bios', True)
     if code in ('rate_limit', 'soft_block'):
         fields['cooldown_until'] = until
         if was_list:
@@ -1832,6 +1840,9 @@ def api_control(conn, q, b):
 
 def api_control_set(conn, q, b):
     """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
+    if b.get('action') == 'start_all':
+        if workspace_cooldown(conn, datetime.now(timezone.utc)):
+            raise Bad('Instagram is on a shared safety hold. Collection remains paused.')
     try:
         control.apply(conn, b)
     except LookupError:
@@ -1841,6 +1852,8 @@ def api_control_set(conn, q, b):
 
 def api_engine_start(conn, q, b):
     """Start local services and configured Chrome profiles, then resume collection."""
+    if workspace_cooldown(conn, datetime.now(timezone.utc)):
+        raise Bad('Instagram is on a shared safety hold. Start engine is unavailable until it ends.')
     try:
         account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
         return engine_start.start(ROOT, account_count)

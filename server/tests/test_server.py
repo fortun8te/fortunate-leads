@@ -894,12 +894,15 @@ class AuditTest(Base):
             job = self.call('/api/ext/next')[1]['job']
             self.assertIsNotNone(job, code)
             self.call('/api/ext/error', {'job_id': job['id'], 'code': code, 'message': code})
-            if code in ('rate_limit', 'soft_block', 'other'):
+            if code in ('rate_limit', 'soft_block', 'login', 'challenge', 'other'):
                 # Simulate both the target-specific delay and this lane's
                 # Instagram cooldown elapsing before the next attempt.
                 self.conn.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
                 self.conn.execute("UPDATE accounts SET list_cool_until=NULL WHERE lane_id='default'")
                 db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+                if code in ('login', 'challenge'):
+                    db.set_setting(self.conn, 'paused_lists', False)
+                    db.set_setting(self.conn, 'paused_bios', False)
                 self.conn.commit()
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'queued')
         job = self.call('/api/ext/next')[1]['job']
