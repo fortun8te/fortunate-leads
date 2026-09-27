@@ -14,13 +14,16 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
 import db
 
 URL = os.environ.get('SEARXNG_URL', 'http://127.0.0.1:8888').rstrip('/')
 PARALLEL = max(1, int(os.environ.get('SEARXNG_PARALLEL', '6')))   # upstream engines rate-limit bursts from one IP
-SEARCH_TIMEOUT = 12
+SEARCH_TIMEOUT = 6
+LOOKUP_BUDGET = 16   # seconds for both searches and the site, including time waiting for the search gate
+SITE_WORKERS = 8     # website reads are shared across lookup workers, not one extra thread per person
 RESULTS = 6          # search results kept per person
 SNIPPET = 240        # characters per result
 SITE_TEXT = 600      # characters of the website's own text
@@ -31,6 +34,7 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS web_research(person_id INTEGER PRIMARY KE
   results TEXT NOT NULL, site TEXT, at TEXT NOT NULL)"""
 
 _gate = threading.BoundedSemaphore(PARALLEL)
+_sites = ThreadPoolExecutor(max_workers=SITE_WORKERS, thread_name_prefix='research-site')
 _health = {'at': None, 'ok': False}
 _lock = threading.Lock()
 
@@ -57,17 +61,27 @@ def available(now=None):
     return ok
 
 
-def search(query, n=RESULTS, retry=True):
+def search(query, n=RESULTS, retry=True, deadline=None):
     """-> [{'title','url','snippet'}] for one query; [] on any failure. An empty answer is retried once (engines
     that were just rate-limited or still warming up often answer a second later)."""
     params = urllib.parse.urlencode({'q': query, 'format': 'json', 'language': 'all', 'safesearch': 0})
     req = urllib.request.Request(f'{URL}/search?{params}', headers={'Accept': 'application/json'})
-    with _gate:
+    remaining = (deadline - time.monotonic()) if deadline is not None else SEARCH_TIMEOUT
+    if remaining <= 0 or not _gate.acquire(timeout=remaining):
+        return []
+    try:
         try:
-            with urllib.request.urlopen(req, timeout=SEARCH_TIMEOUT) as r:
+            remaining = (deadline - time.monotonic()) if deadline is not None else SEARCH_TIMEOUT
+            if remaining <= 0:
+                return []
+            with urllib.request.urlopen(req, timeout=min(SEARCH_TIMEOUT, remaining)) as r:
                 data = json.loads(r.read(3_000_000))
         except (OSError, ValueError):
             return []
+    finally:
+        _gate.release()
+    if not isinstance(data, dict):
+        return []
     out = []
     for item in data.get('results') or []:
         if not isinstance(item, dict) or not isinstance(item.get('url'), str):
@@ -76,9 +90,9 @@ def search(query, n=RESULTS, retry=True):
                     'snippet': _clean(item.get('content'))[:SNIPPET]})
         if len(out) >= n:
             break
-    if not out and retry:
+    if not out and retry and (deadline is None or deadline - time.monotonic() > 1):
         time.sleep(1)
-        return search(query, n, retry=False)
+        return search(query, n, retry=False, deadline=deadline)
     return out
 
 
@@ -139,19 +153,28 @@ def cached(conn, person):
         at = datetime.fromisoformat(row['at'])
     except ValueError:
         return None
-    if datetime.now(timezone.utc) - at > CACHE_AGE:
+    results = json.loads(row['results'])
+    site = row['site'] or ''
+    # Retry missing evidence soon. A transient search outage must not suppress research for 30 days.
+    complete = bool(results) and (bool(site) or not person.get('website'))
+    age = CACHE_AGE if complete else timedelta(days=1) if results or site else timedelta(hours=1)
+    if datetime.now(timezone.utc) - at > age:
         return None
-    return {'results': json.loads(row['results']), 'site': row['site'] or ''}
+    return {'results': results, 'site': site}
 
 
 def lookup(person):
-    """Network only (no DB): run the searches and the website read. -> {'results', 'site'}."""
+    """Network only (no DB). Site and searches overlap; slow lookups return partial evidence."""
+    deadline = time.monotonic() + LOOKUP_BUDGET
+    site_future = _sites.submit(read_website, person) if person.get('website') else None
     seen, per_host, results = set(), {}, []
     # A result has to name them (full name, handle or their domain) to count; common words alone match strangers.
     marks = {m.lower() for m in (_clean(person.get('name')), str(person.get('handle') or '').lstrip('@'),
                                  _host(person.get('website') or '')) if m and len(m) >= 4}
     for q in queries(person):
-        for r in search(q):
+        # The second query covers ownership/brand evidence absent from a profile-name search.
+        # Two distinct queries replace the old empty-result retry; neither can consume the full batch.
+        for r in search(q, retry=False, deadline=deadline):
             host = _host(r['url'])
             blob = f"{r['title']} {r['snippet']} {r['url']}".lower()
             if marks and not any(m in blob for m in marks):
@@ -162,7 +185,16 @@ def lookup(person):
             seen.add(r['url'])
             per_host[host] = per_host.get(host, 0) + 1
             results.append(r)
-    return {'results': results[:RESULTS], 'site': read_website(person)}
+    site = ''
+    if site_future:
+        try:
+            site = site_future.result(timeout=max(0, deadline - time.monotonic()))
+        except FutureTimeout:
+            site_future.cancel()
+        except Exception:
+            # A failed site read must not discard independently useful search evidence.
+            pass
+    return {'results': results[:RESULTS], 'site': site}
 
 
 def store(conn, person, found):

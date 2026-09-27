@@ -7,10 +7,10 @@
   const PACE = {
     listGap: [7e3, 12e3], breakEvery: [40, 60], breakLen: [90e3, 180e3],
     profileGap: [35e3, 70e3], spacing: [2e3, 5e3], window: 11 * MIN, windowMax: 72,
-    cooldownBase: 10 * MIN, cooldownCap: DAY, strikes: 3,
+    cooldownBase: 10 * MIN, cooldownCap: 6 * HOUR, strikes: 3, strikePause: 2 * HOUR,
     hitPause: 5 * MIN,                 // any hit pauses the whole lane at least this long, whatever the bucket
     netBase: 30e3, netCap: 10 * MIN,   // tab / network trouble: local backoff, never counted as an Instagram limit
-    otherBase: 2 * MIN, otherCap: 30 * MIN, // unknown Instagram answers: escalating backoff so they never hammer
+    otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
   const KINDS = ['list', 'profile'];
   // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
@@ -117,7 +117,7 @@
     if (!status) return out('network', res.aborted ? 'timeout' : res.tabError ? 'tab' : 'fetch');
     if (!ok) return out('other', 'http_' + status);
     if (!json) return /login|password/.test(raw) ? out('login', 'html_login') : out('other', 'not_json');
-    if (json.status && json.status !== 'ok') return out('soft_block', 'status_' + String(json.status).slice(0, 20));
+    if (json.status && json.status !== 'ok') return out('other', 'status_' + String(json.status).slice(0, 20));
     if (kind === 'list') return listCheck(json, ctx || {}, out);
     if (kind === 'profile' && !mapProfile(userOf(json))) return out('other', 'no_user');
     return null;
@@ -249,20 +249,21 @@
     return { n: inWin.length, until: inWin.length >= PACE.windowMax ? inWin[inWin.length - PACE.windowMax] + PACE.window : 0 };
   }
   const allHits = (st) => KINDS.flatMap((k) => (st.cool && st.cool[k] && st.cool[k].hits) || []);
-  // rate_limit / soft_block on bucket `kind`: that bucket cools 10 min, doubling per hit in 24 h (cap 24 h, Retry-After
-  // wins when longer), 3 hits in 24 h = that bucket done for today. Every hit also pauses the whole lane 5 min, and
-  // 3 hits across buckets within one hour stop everything until midnight.
+  // rate_limit / soft_block on bucket `kind`: start at 10 min, doubling per hit in 24 h (cap 6 h).
+  // Three hits require at least 2 h of rest for that bucket; three across buckets within an hour rest both.
+  // Later hits keep escalating instead of repeatedly unlocking at midnight. Instagram's Retry-After always wins.
+  // Every hit also pauses the whole lane for at least 5 min.
   function applyHit(st, now, retryAt, kind = 'list') {
     const b = st.cool[kind];
     b.hits = (b.hits || []).filter((t) => now - t < DAY).concat(now);
     const n = b.hits.length;
     let until = now + Math.min(PACE.cooldownBase * 2 ** (n - 1), PACE.cooldownCap);
     if (retryAt && retryAt > until) until = retryAt;
-    if (n >= PACE.strikes) until = Math.max(until, nextMidnight(now));
+    if (n >= PACE.strikes) until = Math.max(until, now + PACE.strikePause);
     b.until = Math.max(b.until || 0, until);
     st.nextAt = Math.max(st.nextAt || 0, now + PACE.hitPause);
     if (allHits(st).filter((t) => now - t < HOUR).length >= PACE.strikes) {
-      for (const k of KINDS) st.cool[k].until = Math.max(st.cool[k].until || 0, nextMidnight(now));
+      for (const k of KINDS) st.cool[k].until = Math.max(st.cool[k].until || 0, now + PACE.strikePause);
     }
     return st;
   }

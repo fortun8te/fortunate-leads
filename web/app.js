@@ -323,6 +323,7 @@ function setView(v) {
   if (v === 'settings') loadSettings();
   if (v === 'tags') T.show();
   if (v === 'qual') Q.show();
+  if (prev !== v && SCRAPER_FULL_VIEWS.has(v) && !document.hidden) loadScraper();
   if (!work) hideSuggest();
 }
 
@@ -1983,6 +1984,7 @@ async function deleteRule(id) {
 
 
 // ---------- scraper ----------
+const SCRAPER_FULL_VIEWS = new Set(['scraper', 'accounts', 'settings', 'qual']);
 function scState() {
   const sc = S.sc;
   if (S.scStale) return { label: 'Connection lost · last known status', short: 'Offline', dot: 'hollow' };
@@ -2037,6 +2039,18 @@ async function loadScraper() {
   if (S.view === 'accounts') renderAccounts();
   if (S.view === 'settings') renderSettings();
   if (S.view === 'qual') Q.renderProg();
+}
+async function loadScraperStatus() {
+  if (S.scLoading || S.scStatusLoading) return;
+  S.scStatusLoading = true;
+  try {
+    // Preserve the detailed lists and progress from the slower full refresh.
+    S.sc = { ...(S.sc || {}), ...await api.get('/api/scraper/status') };
+    S.scStale = false;
+  } catch (e) { S.scStale = true; }
+  finally { S.scStatusLoading = false; }
+  renderStatus();
+  if (S.view === 'accounts') renderAccounts();
 }
 $('#pause-btn').onclick = async () => {
   if (!S.sc) return;
@@ -3409,8 +3423,13 @@ syncFilterToggle();
   noteQueue.flushAll().catch(() => toast('Some notes are not saved. Your drafts are kept.'));
   setView(view);
 })();
-setInterval(() => { if (!document.hidden) loadScraper(); }, 3000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadScraper(); });
+setInterval(() => { if (!document.hidden) loadScraperStatus(); }, 5000);
+setInterval(() => { if (!document.hidden && SCRAPER_FULL_VIEWS.has(S.view)) loadScraper(); }, 15000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (SCRAPER_FULL_VIEWS.has(S.view)) loadScraper();
+  else loadScraperStatus();
+});
 setInterval(() => { if (!document.hidden) { loadCounts(); loadFacets(); } }, 30000);
 setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open && !S.pick.size) resetLeads(true); }, 45000);
 setInterval(() => { if (offlineSince) setOnline(false); if (S.view === 'scraper') renderScraper(); else renderStatus(); }, 1000);

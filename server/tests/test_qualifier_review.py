@@ -89,6 +89,45 @@ class QualifierReview(unittest.TestCase):
         self.assertNotIn('millions', v['reason'])
         self.assertIn('Founder of a skincare brand', v['reason'])
 
+    def test_search_snippet_cannot_turn_an_unrelated_profile_into_a_buyer(self):
+        p = self.person(bio='Coffee fan and photographer')
+        p['web_text'] = 'Founder of a skincare brand. Shipping to USA. Running paid ads.'
+        v = self.verdict(self.reply(evidence=['Founder of a skincare brand'], runs_ads=True,
+                                    us_market=True, stage='growing'), p)
+        self.assertEqual(v['role'], 'unclear')
+        self.assertLessEqual(v['fit'], 40)
+        self.assertTrue(v['reason'].startswith('Search result says:'))
+        self.assertTrue(v['evidence'][0].startswith('Search result:'))
+        self.assertNotIn(('AI: Runs ads', 'ai'), v['tags'])
+        self.assertNotIn(('AI: US market', 'ai'), v['tags'])
+
+    def test_linked_brand_site_can_support_product_business_with_correct_label(self):
+        p = self.person(handle='glowskin', bio='Our products')
+        p['name'] = 'Glow Skin'
+        p['website'] = 'https://glowskin.com'
+        p['web_site'] = 'glowskin.com: Glow Skin skincare brand | Shop now | Ships to USA'
+        p['web_text'] = p['web_site']
+        v = self.verdict(self.reply(evidence=['Glow Skin skincare brand'], us_market=True,
+                                    decision_maker=True), p)
+        self.assertEqual(v['role'], 'buyer')
+        self.assertTrue(v['reason'].startswith('Linked website says:'))
+        self.assertTrue(v['evidence'][0].startswith('Linked website:'))
+        self.assertNotIn(('AI: Decision maker', 'ai'), v['tags'])
+        self.assertIn(('AI: US market', 'ai'), v['tags'])
+
+    def test_other_site_or_unrelated_personal_link_cannot_supply_buyer_support(self):
+        p = self.person(handle='zoephoto', bio='Photographer')
+        p['website'] = 'https://glowskin.com'
+        p['web_site'] = 'glowskin.com: Glow Skin skincare brand | Shop now'
+        p['web_text'] = p['web_site']
+        v = self.verdict(self.reply(evidence=['Glow Skin skincare brand']), p)
+        self.assertNotEqual(v['role'], 'buyer')
+        p['web_site'] = 'stranger.com: Founder of a skincare brand'
+        p['web_text'] = p['web_site']
+        v = self.verdict(self.reply(evidence=['Founder of a skincare brand']), p)
+        self.assertEqual(v['role'], 'unclear')
+        self.assertTrue(v['reason'].startswith('Search result says:'))
+
     def test_rules_require_business_activity(self):
         for bio in ['Founder at a tech startup. I love skincare.', 'Freelancer',
                     'Freelance photographer', 'Founder. Interested in Shopify and supplements.',

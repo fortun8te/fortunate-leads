@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_server import Base  # noqa: E402  (installs the qualify stub first)
 
 import accounts  # noqa: E402
+import control  # noqa: E402
 import db  # noqa: E402
 
 ACCT = {'a': ('lane-a', '101', 'acct.a'), 'b': ('lane-b', '102', 'acct.b'), 'c': ('lane-c', '103', 'acct.c')}
@@ -128,18 +129,68 @@ class LaneTest(Base):
         self.assertTrue(any(t.startswith('@acct.a offline for 11m — open its Chrome profile; its list moved to @acct.b') for t in texts), texts)
 
     def test_list_cooldown_is_per_lane(self):
-        self.seeds('s1', 's2')
+        self.seeds('s1', 's2', 's3')
         ja, jb = self.nxt('a')['job'], self.nxt('b')['job']
         self.page('a', ja, 2, 'c1')
+        ja = self.nxt('a')['job']  # the next page has a fresh lease
         self.post('a', '/api/ext/error', {'job_id': ja['id'], 'code': 'rate_limit', 'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
         s = self.call('/api/scraper')[1]
         by = {a['lane_id']: a for a in s['accounts']}
-        self.assertEqual(by['lane-a']['status'], 'cooldown')
+        self.assertEqual(by['lane-a']['status'], 'online')  # its bios can still run
         self.assertEqual(by['lane-b']['status'], 'running')   # b still holds its own list
         self.assertIsNone(s['ext']['cooldown_until'])   # one lane cooling is not the whole scraper cooling
         self.page('b', jb, 2, None, done=True)
-        jb2 = self.nxt('b')['job']                     # b finished its own list and picks up a's where a stopped
-        self.assertEqual((jb2['seed'], jb2['cursor']), (ja['seed'], 'c1'))
+        jb2 = self.nxt('b')['job']                     # b keeps working on an unrelated list
+        self.assertEqual(jb2['seed'], 's3')
+        self.assertIsNone(self.nxt('c', 'profile')['job'])
+        blocked = self.conn.execute('SELECT retry_not_before FROM jobs WHERE id=?', (ja['id'],)).fetchone()[0]
+        self.assertGreater(datetime.fromisoformat(blocked), datetime.now(timezone.utc))
+        self.assertIsNone(self.nxt('c', 'list')['job'])
+        self.conn.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (ja['id'],))
+        self.conn.commit()
+        self.page('b', jb2, 1, None, done=True)
+        resumed = self.nxt('b')['job']
+        self.assertEqual((resumed['seed'], resumed['cursor']), (ja['seed'], 'c1'))
+
+    def test_profile_rate_limit_quarantines_same_handle_across_lanes(self):
+        self.nxt('a', 'profile')
+        self.nxt('b', 'profile')
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','hot',10000)")
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','hot',9000)")
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','other',100)")
+        self.conn.commit()
+        job = self.nxt('a', 'profile')['job']
+        self.assertEqual(job['handle'], 'hot')
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit',
+                                           'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
+        following = self.nxt('b', 'profile')['job']
+        self.assertEqual(following['handle'], 'other')
+        blocked = self.conn.execute("SELECT retry_not_before FROM jobs WHERE handle='hot'").fetchall()
+        self.assertEqual(len(blocked), 2)
+        self.assertTrue(all(datetime.fromisoformat(r[0]) > datetime.now(timezone.utc) for r in blocked))
+        self.assertTrue(all(datetime.fromisoformat(r[0]) < datetime.now(timezone.utc) + timedelta(hours=1)
+                            for r in blocked))  # a lane's long cooldown is not shared by the target
+
+    def test_explicit_retry_after_is_shared_with_target(self):
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','hot',100)")
+        self.conn.commit()
+        job = self.nxt('a', 'profile')['job']
+        future = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit',
+                                           'retry_at': future, 'retry_after': future, 'message': '429'})
+        blocked = self.conn.execute('SELECT retry_not_before FROM jobs WHERE id=?', (job['id'],)).fetchone()[0]
+        self.assertGreaterEqual(datetime.fromisoformat(blocked), datetime.fromisoformat(future))
+
+    def test_profile_only_cooldown_does_not_mask_list_readiness(self):
+        self.nxt('a', 'list')
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'cooldown',
+                                             'cooldown_until': future, 'cool': {'list': None, 'profile': future}})
+        row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        now = datetime.now(timezone.utc)
+        self.assertIsNone(control.lane_wait(self.conn, row, 'list', now))
+        self.assertEqual(control.lane_wait(self.conn, row, 'profile', now)[0],
+                         'Instagram asked us to slow down, resting')
 
     def test_main_account_protected(self):
         self.conn.execute("INSERT INTO seeds(handle, is_me) VALUES('acct.a', 1)")
@@ -163,6 +214,16 @@ class LaneTest(Base):
         self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE kind='list'")
         self.conn.commit()
         self.assertEqual(self.nxt('a', 'list')['job']['kind'], 'list')
+
+    def test_main_takes_lists_when_alts_reach_their_budget(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle', 'today': {'list': 1}})
+        self.call('/api/accounts/lane-b', {'budget': {'list': 1, 'profile': 300}})
+        self.seeds('s1')
+        self.assertIsNone(self.nxt('b', 'list')['job'])
+        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 's1')
 
     def test_default_lane_backwards_compatible(self):
         self.seeds('s1')

@@ -94,6 +94,12 @@ class Base(unittest.TestCase):
 
 
 class ServerTest(Base):
+    def test_scraper_status_is_small_but_has_live_controls(self):
+        slim = self.call('/api/scraper/status')[1]
+        self.assertTrue({'ext', 'accounts', 'rate', 'alerts', 'paused', 'qualify', 'qualify_auto', 'queue'} <= slim.keys())
+        self.assertFalse({'lists', 'progress', 'llm', 'soak'} & slim.keys())
+        self.assertIn('progress', self.call('/api/scraper')[1])
+
     def test_origin_and_host_checks(self):
         self.assertEqual(self.call('/api/ext/next', origin='https://evil.example')[0], 403)
         self.assertEqual(self.call('/api/ext/next', origin='http://127.0.0.1:%d' % server.CFG['port'])[0], 403)
@@ -136,13 +142,19 @@ class ServerTest(Base):
 
     def test_error_cooldown_and_private(self):
         self.call('/api/scraper/seeds', {'handles': ['a'], 'directions': ['followers']})
-        job = self.call('/api/ext/next')[1]['job']
+        url = '/api/ext/next?lane=default&ig_id=99&handle=viewer'
+        job = self.call(url)[1]['job']
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
         s = self.call('/api/scraper')[1]
-        self.assertTrue(s['ext']['cooldown_until'].startswith('2099-01-01'))
+        self.assertIsNone(s['ext']['cooldown_until'])  # bios are still available
+        self.assertTrue(s['accounts'][0]['cool']['list'].startswith('2099-01-01'))
         self.assertEqual(s['queue']['list'], 1)
-        job = self.call('/api/ext/next')[1]['job']  # the extension enforces cooldowns; the server just records them
-        self.call('/api/ext/error', {'job_id': job['id'], 'code': 'private', 'retry_at': None, 'message': 'private'})
+        self.assertIsNone(self.call(url)[1]['job'])  # the blocked target does not bounce to another lane
+        self.conn.execute("UPDATE jobs SET retry_not_before=NULL WHERE id=?", (job['id'],))
+        self.conn.commit()
+        job = self.call(url)[1]['job']
+        self.call('/api/ext/error', {'job_id': job['id'], 'code': 'private', 'reason': 'profile_private_wall',
+                                     'retry_at': None, 'message': 'private', 'account': {'ig_id': '99', 'handle': 'viewer'}})
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='a'").fetchone()[0], 'private')
         self.assertIsNone(self.call('/api/ext/next')[1]['job'])
 
@@ -872,6 +884,10 @@ class AuditTest(Base):
             job = self.call('/api/ext/next')[1]['job']
             self.assertIsNotNone(job, code)
             self.call('/api/ext/error', {'job_id': job['id'], 'code': code, 'message': code})
+            if code in ('rate_limit', 'soft_block', 'other'):
+                # Simulate the target-specific wait elapsing before the next attempt.
+                self.conn.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
+                self.conn.commit()
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'queued')
         job = self.call('/api/ext/next')[1]['job']
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'other', 'message': 'boom'})  # 5th real error

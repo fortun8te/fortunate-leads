@@ -477,6 +477,8 @@ def ext_error(conn, q, b):
         fields['cooldown_until'] = until
         if was_list:
             fields['list_cool_until'] = until
+        else:
+            fields['profile_cool_until'] = until
     if code in accounts.HOLDS:
         fields['hold'] = code
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
@@ -498,6 +500,33 @@ def ext_error(conn, q, b):
             final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
+        if code in ('rate_limit', 'soft_block'):
+            # A hot job must not bounce immediately through every signed-in account.
+            # An explicit Instagram Retry-After wins; the lane's *computed* cooldown
+            # is separate, so one account does not freeze a target for all accounts.
+            hits = (job['limit_hits'] or 0) + 1
+            delay = min(30 * 2 ** min(hits - 1, 4), 360) if code == 'rate_limit' else min(15 * 2 ** min(hits - 1, 3), 120)
+            retry = datetime.now(timezone.utc) + timedelta(minutes=delay)
+            if code == 'rate_limit':
+                reported = utc(clean_iso(b.get('retry_after'))) if clean_iso(b.get('retry_after')) else None
+                if reported and reported > retry:
+                    retry = reported
+            if job['kind'] == 'profile':
+                conn.execute("UPDATE jobs SET retry_not_before=?, limit_hits=max(limit_hits, ?) "
+                             "WHERE kind='profile' AND handle=? AND state='queued'",
+                             (iso(retry), hits, job['handle']))
+            else:
+                conn.execute('UPDATE jobs SET retry_not_before=?, limit_hits=? WHERE id=?',
+                             (iso(retry), hits, job['id']))
+        elif code == 'other' and not final:
+            # Keep a malformed or temporarily failing target from occupying the
+            # whole account through repeated local backoffs.
+            retry = iso(datetime.now(timezone.utc) + timedelta(minutes=min(2 ** min(job['attempts'], 4), 15)))
+            if job['kind'] == 'profile':
+                conn.execute("UPDATE jobs SET retry_not_before=? WHERE kind='profile' AND handle=? AND state='queued'",
+                             (retry, job['handle']))
+            else:
+                conn.execute('UPDATE jobs SET retry_not_before=? WHERE id=?', (retry, job['id']))
         if job['kind'] == 'list':
             collected = conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
                                      (job['seed'], job['direction'])).fetchone()
@@ -557,6 +586,7 @@ def ext_heartbeat(conn, q, b):
               'today': json.dumps({k: count_or_none(today.get(k)) or 0 for k in ('list', 'profile')})}
     if isinstance(b.get('cool'), dict):   # per-bucket cooldowns (3.4+): a list cooldown hands the list to another lane
         fields['list_cool_until'] = clean_iso(b['cool'].get('list'))
+        fields['profile_cool_until'] = clean_iso(b['cool'].get('profile'))
     if 'hold' in b:   # 3.4+ report a login wall / security check here too; older builds only via /api/ext/error
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
@@ -1332,6 +1362,20 @@ def api_scraper(conn, q, b):
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
 
 
+def api_scraper_status(conn, q, b):
+    """Small poll for the navigation strip; the full scraper report is for its page."""
+    now = datetime.now(timezone.utc)
+    accts = accounts.listing(conn, now, include_lists=False)
+    return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts,
+            'rate': accounts.aggregate_rate(accts),
+            'alerts': accounts.alerts(conn, now, accts),
+            'paused': bool(db.get_setting(conn, 'paused')),
+            'qualify': bool(db.get_setting(conn, 'qualify')),
+            'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
+            'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
+                "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
+
+
 def eta_hours(left, per_hour):
     return round(left / per_hour, 2) if left and per_hour else (0 if not left else None)
 
@@ -1706,7 +1750,8 @@ ROUTES = [
     ('GET', r'/api/views', api_views), ('POST', r'/api/views', api_view_save), ('POST', r'/api/views/(\d+)/delete', api_view_delete),
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
-    ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections), ('GET', r'/api/scraper', api_scraper),
+    ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
+    ('GET', r'/api/scraper/status', api_scraper_status), ('GET', r'/api/scraper', api_scraper),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
@@ -2240,6 +2285,19 @@ def llm_candidates(conn, limit, exclude):
                         (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
 
 
+# All model workers share the same small research pool. A pool per model batch
+# queued 32+ lookups behind six search slots and spent their deadlines waiting.
+RESEARCH_POOL = ThreadPoolExecutor(max_workers=websearch.PARALLEL, thread_name_prefix='research')
+
+
+def safe_research_lookup(person):
+    try:
+        return websearch.lookup(person)
+    except Exception as exc:
+        print(f'research failed for person {person.get("id")}: {exc}', file=sys.stderr)
+        return {'results': [], 'site': ''}
+
+
 def research(conn, items):
     """Attach web research (SearXNG + their website) to each item's person before the model call.
     Cached per person; missing lookups run in parallel with no DB transaction open. Search down -> no research."""
@@ -2255,16 +2313,16 @@ def research(conn, items):
             found[it['person']['id']] = hit
     conn.commit()
     if todo:
-        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
-            for p, got in zip(todo, pool.map(websearch.lookup, todo)):
-                found[p['id']] = got
+        for p, got in zip(todo, RESEARCH_POOL.map(safe_research_lookup, todo)):
+            found[p['id']] = got
         for p in todo:
             websearch.store(conn, p, found[p['id']])
         conn.commit()
     for it in items:
         got = found.get(it['person']['id'])
         # A copy: the input hash and the stored profile never see the research fields.
-        it['person'] = dict(it['person'], web_lines=websearch.lines(got), web_text=websearch.text(got))
+        it['person'] = dict(it['person'], web_lines=websearch.lines(got), web_text=websearch.text(got),
+                            web_site=(got or {}).get('site') or '')
 
 
 def run_llm(conn, rows, skip):
@@ -2474,8 +2532,20 @@ def plan_profiles(conn):
     need = room - active
     if need <= 0:
         return 0
-    rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {LISTS} AS n
-        FROM people p JOIN verdicts v ON v.person_id=p.id
+    # The map's transactionally maintained degree has the same distinct-current-seed
+    # meaning as LISTS. Keep the exact read-through query if its backfill was interrupted.
+    degree_ready = db.get_setting(conn, 'map_person_degree_v1', False) and db.get_setting(
+        conn, 'map_people_present_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6
+    degree_ready = degree_ready and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3
+    if degree_ready:
+        degree_join = ('JOIN' if early else 'LEFT JOIN') + ' map_person_degree d ON d.person_id=p.id'
+        degree = 'd.degree' if early else 'coalesce(d.degree,0)'
+    else:
+        degree_join, degree = '', LISTS
+    rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {degree} AS n
+        FROM people p JOIN verdicts v ON v.person_id=p.id {degree_join}
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
           AND p.handle NOT IN (SELECT handle FROM seeds) AND instr(p.handle, '~')=0
