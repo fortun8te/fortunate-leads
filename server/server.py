@@ -640,6 +640,7 @@ def ext_heartbeat(conn, q, b):
     def text(v, n=500):
         return v[:n] if isinstance(v, str) else None
     fields = {'version': text(b.get('version'), 40), 'state': text(b.get('state'), 20),
+              'identity_day': b.get('day'),
               'cooldown_until': b['cooldown_until'], 'rate': json.dumps(b['rate']) if b['rate'] else None,
               'last_error': text(b.get('last_error')), 'activity': text(b.get('activity'), 200), 'text': text(b.get('text'), 200),
               'today': json.dumps({k: count_or_none(today.get(k)) or 0 for k in ('list', 'profile')})}
@@ -2232,6 +2233,11 @@ def qualify_batch(conn, limit=1000):
                         "OR (v.reason LIKE 'retry %' AND v.updated_at<=?))) LIMIT ?",
                         (db.now(), limit)).fetchall()
     me = me_handle(conn)
+    # Reserve the writer before rule reads and per-person savepoints. A scraper
+    # commit between a savepoint's first read and its first write otherwise
+    # makes SQLite reject the upgrade with SQLITE_BUSY_SNAPSHOT.
+    if rows and not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
     # One bulk rule sync is much cheaper than querying rules and tags for every
     # person. If it fails, roll back the whole sync and isolate the bad person
     # below so the rest of the batch can still make progress.

@@ -1,5 +1,6 @@
 """Transient failures recover without duplicating work or committing half a verdict."""
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,32 @@ class RecoveryPathsTest(unittest.TestCase):
             self.assertEqual(server.qualify_batch(self.conn), 3)
         self.assertEqual(sync.call_count, 1)
         self.assertEqual(len(sync.call_args.args[1]), 3)
+
+    def test_qualification_reserves_writer_before_person_reads(self):
+        pid = db.upsert_person(self.conn, {'handle': 'racing', 'bio': 'Shop'})
+        self.conn.commit()
+        other = db.connect(str(Path(self.tmp.name) / 'leads.sqlite'))
+        other.execute('PRAGMA busy_timeout=0')
+        original = server.requalify
+        blocked = []
+
+        def racing(conn, person, me, net):
+            conn.execute('SELECT 1 FROM tags WHERE person_id=?', (pid,)).fetchone()
+            try:
+                other.execute("INSERT INTO settings(key,value) VALUES('race','1')")
+                other.commit()
+            except sqlite3.OperationalError as exc:
+                blocked.append(str(exc))
+                other.rollback()
+            return original(conn, person, me, net)
+
+        try:
+            with patch.object(server, 'requalify', side_effect=racing):
+                self.assertEqual(server.qualify_batch(self.conn), 1)
+            self.assertEqual(blocked, ['database is locked'])
+            self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')
+        finally:
+            other.close()
 
     def test_expired_profile_lease_has_backoff_and_hard_stop(self):
         self.conn.execute("INSERT INTO jobs(kind,handle,created_at) VALUES('profile','slow',?)", (db.now(),))
