@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import re
+import sqlite3
 import ssl
 import threading
 import tempfile
@@ -20,6 +21,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+import usage_ledger
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -125,7 +127,8 @@ class Providers:
     """Provider 'proxy' (no key) first, then one OpenRouter provider per key. State (cooldowns, counters, errors) is keyed
     by the provider id ('proxy' or key_id), so keys can be added or removed while the server runs."""
 
-    def __init__(self, keys=None, models=None, proxy=PROXY, daily_limit=FREE_DAILY, env_keys=(), state_path=None):
+    def __init__(self, keys=None, models=None, proxy=PROXY, daily_limit=FREE_DAILY, env_keys=(), state_path=None,
+                 usage_path=None):
         self.lock = threading.Lock()
         self.proxy = proxy
         self.cool = {}        # (pid, model|'*') -> (until, strikes)
@@ -136,6 +139,8 @@ class Providers:
         self.checked = {}     # pid -> (epoch s, state) from the last test
         self.rr = 0
         self.state_path = Path(state_path) if state_path else None
+        self.usage_path = Path(usage_path) if usage_path else None
+        self.usage_error = None
         self._load_state()
         self.configure(keys, models, daily_limit, env_keys)
 
@@ -194,7 +199,8 @@ class Providers:
     @classmethod
     def load(cls, path=None, proxy=PROXY):
         config_path = Path(path or CONFIG)
-        return cls(proxy=proxy, state_path=config_path.with_name(config_path.stem + '.state.json'), **settings(path))
+        return cls(proxy=proxy, state_path=config_path.with_name(config_path.stem + '.state.json'),
+                   usage_path=config_path.with_name('llm_usage.sqlite'), **settings(path))
 
     def reload(self, path=None):
         self.configure(**settings(path))
@@ -236,7 +242,20 @@ class Providers:
         self.count[(pid, model)] = (_today(), (n if day == _today() else 0) + 1)
         self._save_state()
 
-    def chat(self, messages, models=None, timeout=45, budget=90, max_tokens=400, json_mode=True):
+    def _record_usage(self, pid, model, purpose, batch_size, success, status, started, usage):
+        if self.usage_path is None:
+            return
+        try:
+            usage_ledger.record(pid, model, purpose, batch_size, success, status,
+                                round((time.monotonic() - started) * 1000),
+                                usage.get('input_tokens'), usage.get('output_tokens'), self.usage_path)
+            self.usage_error = None
+        except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as exc:
+            # Accounting failure cannot halt qualification. Status exposes the failure without sensitive data.
+            self.usage_error = type(exc).__name__
+
+    def chat(self, messages, models=None, timeout=45, budget=90, max_tokens=400, json_mode=True,
+             batch_size=1, purpose='qualification'):
         """-> (content, model). Raises Unavailable when no provider/model answered usefully within the budget."""
         deadline = time.monotonic() + budget
         last = 'no provider available'
@@ -253,9 +272,11 @@ class Providers:
                         continue
                     if key:
                         self._bump(pid, model)
+                started, usage = time.monotonic(), {}
                 try:
-                    content = _post(url, key, model, messages, min(timeout, left), max_tokens, json_mode)
+                    content = _post(url, key, model, messages, min(timeout, left), max_tokens, json_mode, usage)
                 except _Http as e:
+                    self._record_usage(pid, model, purpose, batch_size, False, 'http_error', started, usage)
                     last = f'{model}: HTTP {e.code}'
                     with self.lock:
                         self.errors[pid] = last
@@ -268,17 +289,20 @@ class Providers:
                             self._backoff((pid, model), e.retry_after, BACKOFF_BASE, BACKOFF_CAP)
                     continue
                 except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+                    self._record_usage(pid, model, purpose, batch_size, False, 'transport_error', started, usage)
                     last = f'{model}: {type(e).__name__}'
                     with self.lock:
                         self.errors[pid] = last
                         self._backoff((pid, '*'), None, DOWN_BASE, DOWN_CAP)
                     continue
                 except ValueError as e:   # bad / substituted reply: this model, not the provider
+                    self._record_usage(pid, model, purpose, batch_size, False, 'invalid_reply', started, usage)
                     last = f'{model}: invalid provider reply'
                     with self.lock:
                         self.errors[pid] = last
                         self._backoff((pid, model), None, BACKOFF_BASE, BACKOFF_CAP)
                     continue
+                self._record_usage(pid, model, purpose, batch_size, True, 'ok', started, usage)
                 with self.lock:
                     # A concurrent failure may have established a new cooldown while this call ran.
                     if not any(self.cool.get(k, (0, 0))[0] > time.time()
@@ -318,9 +342,11 @@ class Providers:
                         err, state = 'provider is cooling down', 'error'
                         continue
                     self._bump(pid, model)
+            started, usage = time.monotonic(), {}
             try:
-                _post(url, key, model, msgs, timeout, 20, True)
+                _post(url, key, model, msgs, timeout, 20, True, usage)
             except _Http as e:
+                self._record_usage(pid, model, 'provider_test', 1, False, 'http_error', started, usage)
                 if e.code in (401, 403):
                     err, state = f'HTTP {e.code} (key refused)', 'broken' if key else 'error'
                     break
@@ -335,13 +361,16 @@ class Providers:
                                                  ' (proxy could not reach OpenRouter)' if not key and e.code == 502 else ''), 'error'
                 continue
             except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+                self._record_usage(pid, model, 'provider_test', 1, False, 'transport_error', started, usage)
                 with self.lock:
                     self._backoff((pid, '*'), None, DOWN_BASE, DOWN_CAP)
                 err, state = 'not reachable (' + type(e).__name__ + ')', 'unreachable'
                 break
             except ValueError as e:
+                self._record_usage(pid, model, 'provider_test', 1, False, 'invalid_reply', started, usage)
                 err, state = 'invalid provider reply', 'error'
                 continue
+            self._record_usage(pid, model, 'provider_test', 1, True, 'ok', started, usage)
             err, state = None, 'ok'
             break
         with self.lock:
@@ -394,7 +423,8 @@ class Providers:
                             'last_error': self.errors.get(pid), 'state': self.state_of(pid, key, now),
                             'spent_until': _iso(self.spent[pid]) if self.spent.get(pid, 0) > now else None,
                             'checked_at': _iso(self.checked[pid][0]) if pid in self.checked else None})
-            return {'providers': out, 'models': list(self.models), 'daily_limit': self.daily_limit}
+            return {'providers': out, 'models': list(self.models), 'daily_limit': self.daily_limit,
+                    'usage_error': self.usage_error}
 
 
 ORSLOT = Path.home() / '.config' / 'openrouter' / 'slots'
@@ -573,7 +603,7 @@ def _retry_after(v):
     return max(1.0, min(seconds, 24 * 3600))
 
 
-def _post(url, key, model, messages, timeout, max_tokens, json_mode):
+def _post(url, key, model, messages, timeout, max_tokens, json_mode, usage_out=None):
     if not isinstance(model, str) or not MODEL_RX.fullmatch(model) or not free_id(model):
         raise ValueError('only :free models may be requested')
     body = {'model': model, 'messages': messages, 'max_tokens': max_tokens, 'temperature': 0.1,
@@ -596,6 +626,12 @@ def _post(url, key, model, messages, timeout, max_tokens, json_mode):
         raise _Http(code, ra, _error_text(text, key), _reset(h.get('X-RateLimit-Reset') if h else None)) from None
     if not isinstance(data, dict):
         raise ValueError(f'{model}: reply is not an object')
+    if usage_out is not None and isinstance(data.get('usage'), dict):
+        usage = data['usage']
+        for target, source in (('input_tokens', 'prompt_tokens'), ('output_tokens', 'completion_tokens')):
+            value = usage.get(source)
+            if type(value) is int and 0 <= value <= 10**10:
+                usage_out[target] = value
     if data.get('error'):
         err = data['error']
         code = err.get('code') if isinstance(err, dict) else None

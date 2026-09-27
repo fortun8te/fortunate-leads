@@ -957,7 +957,8 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left,
+                                           max_tokens=900 * len(chunk) + 600, batch_size=len(chunk))
         except llm.Unavailable:
             continue
         data = parse_json(text)

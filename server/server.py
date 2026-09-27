@@ -29,6 +29,7 @@ import connection_graph  # noqa: E402
 import db  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
+import usage_ledger  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
 import workflows  # noqa: E402
@@ -1547,7 +1548,18 @@ def api_llm(conn, q, b):
     out['summary'] = counts   # e.g. {'ok': 2, 'spent': 2, 'error': 1}: spent keys are not broken, they return at 00:00 UTC
     out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
                                         'GROUP BY 1').fetchall())
+    out['usage'] = usage_ledger.summary(llm.get().usage_path or usage_ledger.PATH)
     return out
+
+
+def api_llm_usage(conn, q, b):
+    raw = (q.get('days') or ['30'])[0]
+    if not raw.isdigit() or not 1 <= int(raw) <= 365:
+        raise Bad('days must be 1-365')
+    purpose = (q.get('purpose') or ['qualification'])[0]
+    if purpose not in ('qualification', 'website_summary', 'provider_test', 'all'):
+        raise Bad('unknown usage purpose')
+    return usage_ledger.summary(llm.get().usage_path or usage_ledger.PATH, int(raw), purpose)
 
 
 def api_llm_health(conn, q, b):
@@ -1775,7 +1787,8 @@ ROUTES = [
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
     ('GET', r'/api/settings/biofetch', api_biofetch_get), ('POST', r'/api/settings/biofetch', api_biofetch),
-    ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
+    ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/usage', api_llm_usage),
+    ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
     ('GET', r'/api/scout', api_scout), ('POST', r'/api/settings/scout', api_scout_set),
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),

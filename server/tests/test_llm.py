@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import tempfile
 import os
+import sqlite3
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,6 +21,7 @@ class Stub(BaseHTTPRequestHandler):
     """Behaviour per Authorization key (or 'proxy' without one): a list of (status, headers, body) consumed in order."""
     plan = {}
     seen = []
+    usage = None
 
     def log_message(self, *a):
         pass
@@ -30,7 +32,8 @@ class Stub(BaseHTTPRequestHandler):
         Stub.seen.append((who, body['model'], self.headers.get('X-Title'), body.get('response_format')))
         steps = Stub.plan.get(who) or [(200, {}, None)]
         status, headers, content = steps.pop(0) if len(steps) > 1 else steps[0]
-        data = json.dumps({'model': body['model'], 'choices': [{'message': {'content': content or '{"ok": true}'}}]}).encode()
+        data = json.dumps({'model': body['model'], 'choices': [{'message': {'content': content or '{"ok": true}'}}],
+                           'usage': Stub.usage}).encode()
         self.send_response(status)
         for k, v in headers.items():
             self.send_header(k, v)
@@ -46,7 +49,7 @@ class ProviderTest(unittest.TestCase):
         self.url = f'http://127.0.0.1:{self.httpd.server_address[1]}/api/v1/chat/completions'
         self.old = llm.OPENROUTER
         llm.OPENROUTER = self.url   # keys go to the same stub
-        Stub.plan, Stub.seen = {}, []
+        Stub.plan, Stub.seen, Stub.usage = {}, [], None
 
     def tearDown(self):
         llm.OPENROUTER = self.old
@@ -61,6 +64,29 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(p.chat([{'role': 'user', 'content': 'x'}]), ('{"ok": true}', 'm/a:free'))
         who, model, title, fmt = Stub.seen[0]
         self.assertEqual((who, model, title, fmt), ('proxy', 'm/a:free', 'Fortunate Leads', {'type': 'json_object'}))
+
+    def test_durable_usage_counts_retries_batches_and_only_reported_tokens(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'usage.sqlite'
+            key = 'sk-or-aaaa1111'
+            Stub.plan = {'proxy': [(503, {}, None)], key: [(200, {}, None)]}
+            Stub.usage = {'prompt_tokens': 123, 'completion_tokens': 45}
+            p = llm.Providers([key], ('m/a:free',), proxy=self.url, usage_path=path)
+            self.assertEqual(p.chat([{'role': 'user', 'content': 'private prompt'}], batch_size=8),
+                             ('{"ok": true}', 'm/a:free'))
+            report = llm.usage_ledger.summary(path)
+            self.assertEqual((report['requests'], report['successes'], report['failed_attempts']), (2, 1, 1))
+            self.assertEqual((report['items_attempted'], report['input_tokens_reported'],
+                              report['output_tokens_reported'], report['token_reports']), (16, 123, 45, 1))
+            self.assertEqual(report['recording_since'][:10], llm._today())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(b'private prompt', path.read_bytes())
+            self.assertNotIn(key.encode(), path.read_bytes())
+            with sqlite3.connect(path) as db:
+                self.assertEqual([r[0] for r in db.execute('SELECT status FROM attempts ORDER BY id')],
+                                 ['http_error', 'ok'])
+            again = llm.usage_ledger.summary(path)
+            self.assertEqual(again['requests'], 2)
 
     def test_rotation_and_cooldown_on_429(self):
         p = self.prov()   # proxy down: transport error cools the proxy, then the keys take over
