@@ -139,8 +139,8 @@ test('normalize migrates a cross-bucket midnight hold using retained strike hist
   st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit] };
   st.cool.profile = { until: midnight, hits: [hit - 10 * MIN] };
   const normalized = FL.normalize(st, hit + 7 * HOUR);
-  assert.equal(normalized.cool.list.until, hit + 2 * HOUR);
-  assert.equal(normalized.cool.profile.until, hit + 2 * HOUR);
+  assert.equal(normalized.cool.list.until, hit + 20 * MIN);
+  assert.equal(normalized.cool.profile.until, hit);
 });
 test('normalize preserves midnight Retry-After without strike evidence and a recorded retry deadline', () => {
   const hit = new Date(2026, 8, 27, 1, 43).getTime();

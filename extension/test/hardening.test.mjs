@@ -97,41 +97,42 @@ test('pageVerdict: lookup tab outcomes', () => {
   assert.equal(FL.pageVerdict(null).code, 'network');
 });
 
-test('per-bucket cooldowns: a list hit does not stop bios beyond the 5 min lane pause', () => {
+test('a list limit leaves bios available at their normal pace', () => {
   const st = FL.fresh();
+  FL.afterRequest(st, 'list', T0, () => 0);
   FL.applyHit(st, T0, null, 'list');
   assert.equal(st.cool.list.until, T0 + 10 * MIN);
   assert.equal(st.cool.profile.until, 0);
-  assert.equal(st.nextAt, T0 + 5 * MIN);
+  assert.equal(st.nextAt, T0 + 2e3);
   const left = { list: 100, profile: 100 };
-  assert.deepEqual(FL.plan(st, left, T0 + MIN), { kinds: [], wait: 4 * MIN, why: 'pace' });
-  assert.deepEqual(FL.plan(st, left, T0 + 5 * MIN).kinds, ['profile']);
+  assert.deepEqual(FL.plan(st, left, T0 + MIN).kinds, ['profile']);
   assert.deepEqual(FL.plan(st, left, T0 + 11 * MIN).kinds, ['list', 'profile']);
   FL.applyHit(st, T0 + 6 * MIN, null, 'profile');
   assert.equal(st.cool.profile.until, T0 + 16 * MIN); // its own ladder starts at 10 min
+  assert.deepEqual(FL.plan(st, left, T0 + 11 * MIN).kinds, ['list']);
 });
-test('3 hits within an hour across buckets rest both for 2 h', () => {
+test('limits on different request kinds do not combine into a lane-wide hold', () => {
   const st = FL.fresh();
   FL.applyHit(st, T0, null, 'list');
   FL.applyHit(st, T0 + 20 * MIN, null, 'profile');
   assert.equal(st.cool.list.until, T0 + 10 * MIN);
   FL.applyHit(st, T0 + 40 * MIN, null, 'list');
-  assert.equal(st.cool.list.until, T0 + 2 * HOUR + 40 * MIN);
-  assert.equal(st.cool.profile.until, T0 + 2 * HOUR + 40 * MIN);
+  assert.equal(st.cool.list.until, T0 + HOUR);
+  assert.equal(st.cool.profile.until, T0 + 30 * MIN);
   assert.equal(FL.rateOf(st, T0 + 41 * MIN).hits_24h, 3);
-  assert.equal(FL.cooldownUntil(st, T0 + 41 * MIN), T0 + 2 * HOUR + 40 * MIN);
-  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + HOUR).kinds, []);
-  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + 2 * HOUR + 40 * MIN).kinds, ['list', 'profile']);
+  assert.equal(FL.cooldownUntil(st, T0 + 41 * MIN), T0 + HOUR);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + 41 * MIN).kinds, ['profile']);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + HOUR).kinds, ['list', 'profile']);
 });
-test('cross-bucket strikes cannot be cleared by a nearby midnight', () => {
+test('midnight does not turn separate request-kind waits into one hold', () => {
   const midnight = FL.nextMidnight(T0);
   const st = FL.fresh(), last = midnight - 5 * MIN;
   FL.applyHit(st, last - 20 * MIN, null, 'list');
   FL.applyHit(st, last - 10 * MIN, null, 'profile');
   FL.applyHit(st, last, null, 'list');
-  assert.equal(st.cool.list.until, last + 2 * HOUR);
-  assert.equal(st.cool.profile.until, last + 2 * HOUR);
-  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, midnight + MIN).kinds, []);
+  assert.equal(st.cool.list.until, last + 20 * MIN);
+  assert.equal(st.cool.profile.until, last);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, midnight + MIN).kinds, ['profile']);
 });
 test('plan: pacing gaps, profile gap, budgets, cooldown waits', () => {
   const st = FL.fresh(), left = { list: 10, profile: 10 };

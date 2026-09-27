@@ -1,4 +1,4 @@
-# Fortunate Leads extension (3.9.10)
+# Fortunate Leads extension (3.9.11)
 Install: chrome://extensions → Developer mode → remove the old "Follower export" → Load unpacked → this folder (same extension id).
 Needs a logged-in Instagram session and the server on http://127.0.0.1:8777. It uses an open instagram.com tab; if none is left while there is work it reopens one as a pinned background tab (at most once per 10 min), and it wakes a discarded/frozen Instagram tab by reloading it (at most once per 3 min, never the tab you are looking at). The tab it uses is marked not auto-discardable.
 What it does: asks the server for one job at a time (list page or profile read), runs it inside the Instagram tab, posts the result. One request lane; a stored lane marker stops a restarted worker from firing while an earlier request may still be running.
@@ -7,7 +7,7 @@ Bios: /api/v1/users/{pk}/info/ from the tab. No pk: pk cache from passive captur
 Passive: bios Instagram already loads while you browse are sent too (zero extra requests, once per handle per 6 h).
 Pacing: list pages 7–12 s apart, a 90–180 s break every 40–60 pages; profile reads 35–70 s apart. Unknown answers back off 2→5 min, tab/network trouble 30 s→10 min.
 Daily budgets are configurable per account; 0 means no daily cap. List and profile reads still follow their pacing clocks and response-based waits.
-Limits: lists and bios have separate waits after a 429 or soft block, starting at 10 min and doubling up to 6 h. Three hits require at least 2 h for that kind; three hits across both kinds within an hour pause both for at least 2 h. An explicit Instagram Retry-After deadline takes precedence. A one-time migration removes old, identifiable midnight strike holds stored by earlier extension versions.
+Limits: lists and bios have separate waits after a 429 or soft block, starting at 10 min and doubling up to 6 h. Three hits require at least 2 h for that kind. A limit on one kind does not add a wait to the other; normal request spacing and the shared sliding window still apply. An explicit Instagram Retry-After deadline takes precedence. A one-time migration removes old, identifiable midnight strike holds stored by earlier extension versions.
 Security check or logged out → paused with "!" badge until you press Resume in the popup (or Pause→Resume in the workspace).
 Results wait in a local outbox until the server accepts them (survives restarts). Popup: state, last hour, per-bucket status, last error with the raw Instagram answer, "Copy debug" (state + samples + recent events as JSON).
 Tests: node --test extension/test/*.test.mjs
