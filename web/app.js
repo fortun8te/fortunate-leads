@@ -126,11 +126,6 @@ const youLink = (r) => { const tags = r.tags || []; const names = tags.map(tagNa
   return facts.join(' · ');
 };
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
-function connHTML(r) {
-  const n = lists(r), via = viaSeeds(r), you = youLink(r), historical = Math.max(0, (r.history_lists || 0) - n);
-  return `<span class="c1">${r.connection_strength != null ? `Connection ${esc(r.connection_strength)} · ` : ''}${n ? `Observed in ${plural(n, 'list')}` : historical ? 'No recently verified lists' : 'No lists'}${historical ? ` · ${historical} historical/unverified` : ''}${you ? ` · <em>${you}</em>` : ''}</span>${via.length ? `<span class="c2">via ${seedList(via, 2)}</span>` : ''}`;
-}
-
 // ---------- state ----------
 const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
@@ -141,7 +136,7 @@ const S = {
   cur: -1, open: null, person: null, seedCard: null,
   pick: new Set(), anchor: -1, picking: false,
   tagMore: {}, tagFind: '', saving: false,
-  side: store.get('side', true), fmore: store.get('fmore', false),
+  side: false, fmore: store.get('fmore', false),
 };
 
 // ---------- filter <-> query string ----------
@@ -387,7 +382,7 @@ $('#density-btn').onclick = () => applyDensity(document.documentElement.dataset.
 const narrow = () => window.innerWidth <= 900;
 function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
-  S.side = !S.side; store.set('side', S.side);
+  S.side = !S.side;
   $('#view-work').classList.toggle('work-noside', !S.side);
   syncFilterToggle(); renderRows(); M.resize();
 }
@@ -890,6 +885,7 @@ function whyHTML(r) {
   return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
 }
 const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}" title="${esc(SDESC[s])}"><i></i>${slabel(s)}</span>` : '';
+const rowFitHTML = (r) => `<span class="row-fit f-${fitOf(r)}" aria-label="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)}" title="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)} · Priority ${r.score == null ? 'unavailable' : esc(r.score)}"><i></i><b>${r.business_fit == null ? '–' : esc(r.business_fit)}</b></span>`;
 // One-click "open on Instagram": a plain link, so the row / map click underneath never fires.
 const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${encodeURIComponent(h)}/" target="_blank" rel="noopener" title="Open on Instagram (o)" aria-label="Open @${esc(h)} on Instagram"><svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></a>`;
 const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
@@ -900,13 +896,12 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
-    <div class="c-fit">${fitBadge(r)}<small class="priority">Priority ${r.score == null ? '–' : esc(r.score)}</small></div>
-    <div class="conn c-conn">${connHTML(r)}</div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div></div>
     <div class="tags c-tags">${tags.slice(0, 3).map((t) => tagChip(t)).join('')}${tags.length > 3 ? `<span class="more" title="${esc(tags.slice(3).map((t) => t.tag).join(' · '))}">+${tags.length - 3}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
+    <div class="c-fit">${rowFitHTML(r)}</div>
     <span class="c-st">${statHTML(r.status)}</span>
-    <div class="mnum">${fitBadge(r)}<span>Priority ${r.score == null ? '–' : esc(r.score)} · Connection ${r.connection_strength == null ? '–' : esc(r.connection_strength)}</span>${statHTML(r.status)}</div>
+    <div class="mnum"><span class="num">${fmt(r.followers)} followers</span>${rowFitHTML(r)}</div>
   </div>`;
 }
 function renderRows() {
@@ -1264,44 +1259,52 @@ function renderDetail() {
   const quick = (S.tagList || []).filter((t) => t.grp !== 'source' && !have.has(t.tag)).sort((a, b) => b.total - a.total).slice(0, 6);
   const reason = p.reason || v.reason;
   const ev = evidenceOf(v);
-  const you = youLink(p);
+  const you = p.relationship === 'mutual' ? 'You follow each other (seen)' : p.relationship === 'follows' ? 'They follow you (seen)' : p.relationship === 'followed' ? 'You follow them (seen)' : youLink(p);
   const role = p.role || v.role;
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
+  const connections = seedEdges(edges);
+  const connectionText = (seed, directions) => directions.size > 1 ? 'Follow each other (seen)' : directions.has('followers') ? `They follow @${seed} (seen)` : directions.has('following') ? `@${seed} follows them (seen)` : 'Seen in a list';
   panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
+      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
       <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
+    <div class="d-primary">
+      ${p.handle ? `<a class="btn solid d-instagram" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Open Instagram ↗</a>` : ''}
+      <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>
+      ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
+    </div>
     <div class="d-sec d-fit">
-      <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
-      ${p.loading ? '' : `<p class="muted">Business fit ${p.business_fit == null ? 'unavailable' : esc(p.business_fit)} · Connection signal ${p.connection_strength == null ? 'unavailable' : esc(p.connection_strength)} · Priority ${p.score == null ? 'unavailable' : esc(p.score)} (60% connection signal, 40% business fit). A follow or shared list does not prove a personal relationship.</p>`}
-      <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
-      ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}</div>
+      <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}${p.score == null ? '' : `<span class="muted">Priority ${esc(p.score)}</span>`}</div>
+      ${reason ? `<p class="d-reason">${esc(reason)}</p>` : !p.loading ? '<p class="d-reason muted">No qualification yet</p>' : ''}
+    </div>
+    <section class="d-sec d-tags-section"><h4>Tags</h4>
+      <div class="d-tags">${tags.length ? tags.map((t) => `<span class="d-tag-item">${tagChip(t)}${t.source === 'manual' ? `<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button>` : ''}</span>`).join('') : '<span class="muted">No tags yet</span>'}</div>
+      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add tag</button></form>
+      ${quick.length ? `<div class="quick-tags" aria-label="Suggested tags">${quick.slice(0, 4).map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}
+    </section>
+    <section class="d-sec d-status-section"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" aria-label="${esc(slabel(s))}: ${esc(SDESC[s])}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></section>
+    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them or what to do next…">${esc(noteVal)}</textarea></section>
     ${workflowSummaryHTML(p)}
-    ${scoutHTML(p.scout)}
-    <div class="d-sec"><h4>Connections<span class="grow"></span><span class="num">${n ? 'Observed in ' + plural(n, 'list') : ''}</span></h4>
-      ${you ? `<div class="you-line">${you}</div>` : ''}
-      <div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => { const at = edges.filter((e) => e.seed === seed).map((e) => e.observed_at).filter(Boolean).sort().slice(-1)[0]; return `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual follow observed' : d.has('following') ? 'Seed followed them when checked' : d.has('followers') ? 'They followed seed when checked' : ''}${at ? ` · Seen ${esc(at.slice(0, 10))}` : ''}</span></button>`; }).join('') : '<span class="muted">No recently verified follows</span>'}</div>
-      ${oldEdges.length ? `<p class="muted">Earlier list evidence</p><div class="edges">${oldEdges.map((e) => `<button disabled title="Historical list evidence"><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'Seed followed them' : 'They followed seed'} · ${e.state === 'absent' ? `Not found when checked ${esc((e.checked_at || '').slice(0, 10))}` : `Previously seen ${esc((e.first_seen || '').slice(0, 10))}; not reverified`}</span></button>`).join('')}</div>` : ''}</div>
-    <div class="d-sec"><h4>Profile</h4><div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
-      <div class="d-links">
-        ${p.handle ? `<a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>` : ''}
-        ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}</div>
-      <p class="muted profile-freshness">${p.bio_at ? 'Last read ' + esc(new Date(p.bio_at).toLocaleString()) : 'No recorded profile read'}</p>
+    <details class="d-sec d-disclosure" data-detail-section="connections" data-owner="${p.id}" ${view.sections.connections ? 'open' : ''}><summary>Connections <span class="num">${n ? plural(n, 'list') : 'None'}</span></summary>
+      ${you ? `<p class="d-connection-you">${esc(you)}</p>` : ''}
+      <div class="edges">${connections.length ? connections.map(([seed, directions]) => `<button data-seed="${esc(seed)}" title="Filter by @${esc(seed)}"><b>@${esc(seed)}</b><span>${esc(connectionText(seed, directions))}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>'}</div>
+      ${oldEdges.length ? `<p class="muted d-history">${oldEdges.length} earlier list observations are unverified or no longer present.</p>` : ''}
+    </details>
+    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile and evidence</summary>
+      <div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
+      <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
+      ${site && !url ? `<p class="muted">${esc(site)}</p>` : ''}
+      <p class="muted profile-freshness">${p.bio_at ? 'Profile read ' + esc(new Date(p.bio_at).toLocaleDateString()) : 'Profile not read yet'} · ${esc(profile.source)}</p>
       ${profile.message ? `<p class="${profile.failed ? 'bad' : 'muted'} profile-freshness" role="status">${esc(profile.message)}</p>` : ''}
-      <details class="adv d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile details</summary>
-        <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
-        <p class="muted profile-freshness">${esc(profile.source)}</p>
-        ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}</details></div>
-    ${websiteEvidence(p.site)}
-    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
-      <div class="d-tag-edit">
-        <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add tag" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
-        ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div></div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>${workflowHTML(p)}`;
+      ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}
+      ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
+      ${websiteEvidence(p.site)}
+      ${scoutHTML(p.scout)}
+    </details>
+    <details class="d-sec d-disclosure" data-detail-section="activity" data-owner="${p.id}" ${view.sections.activity ? 'open' : ''}><summary>Activity</summary>${workflowHTML(p)}</details>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   wireWorkflow(p);
