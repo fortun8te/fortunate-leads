@@ -2055,7 +2055,7 @@ function renderStatus() {
   const run = sc?.lists?.find((l) => l.state === 'running');
   $('#st-act').textContent = sc && !x.online ? 'Open Chrome with Instagram logged in' : x.activity || (run ? `@${run.seed} ${run.direction}` : x.text || '');
   const t = x.today?.list, b = x.budget?.list;
-  $('#st-today').textContent = t == null ? '–' : `${int(t)}/${b == null ? '–' : int(b)}`;
+  $('#st-today').textContent = t == null ? '–' : b ? `${int(t)}/${int(b)}` : `${int(t)} · no cap`;
   $('#st-meter').style.width = t != null && b ? Math.min(100, (t / b) * 100) + '%' : '0';
   $('#st-pph').textContent = x.rate?.pages_hour != null ? int(Math.round(x.rate.pages_hour)) : '–';
   $('#st-peh').textContent = x.rate?.people_hour != null ? int(Math.round(x.rate.people_hour)) : '–';
@@ -2184,7 +2184,8 @@ function renderScraper() {
     : L.left === 0 && incompleteLists ? 'Incomplete lists need review'
     : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No list entries this minute'
     : L.left > 0 && eta(L.eta_h) ? `Active lists: ${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
-  const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')} · limit ${int(B.per_day)} a day`;
+  const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')}`
+    + (B.per_day ? ` · workspace cap ${int(B.per_day)} a day` : ' · no workspace cap');
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
     ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
   const listLine = `${int(recv)} list entries saved · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
@@ -2203,7 +2204,7 @@ function renderScraper() {
   $('#ext-ver').textContent = x.version ? 'Extension v' + x.version : '';
   const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
   $('#ext-kv').innerHTML = [
-    ['Today', `${int(tl)} of ${int(bl)} list pages, ${int(tp)} of ${int(bp)} bios`],
+    ['Today', `${int(tl)} list pages${bl ? ` of ${int(bl)}` : ' (no cap)'}, ${int(tp)} bios${bp ? ` of ${int(bp)}` : ' (no cap)'}`],
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused', 'partial'].includes(l.state)) };
