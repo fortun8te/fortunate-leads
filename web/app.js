@@ -2254,8 +2254,14 @@ function accountAccess(a) {
   if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
   if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
-  if (a.cooldown_until && Date.parse(a.cooldown_until) > Date.now()) return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
-  if (a.status === 'cooldown') return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
+  const instagramWait = a.cooldown_until && Date.parse(a.cooldown_until) > Date.now();
+  if (a.list_endpoint_until && Date.parse(a.list_endpoint_until) > Date.now()) return {
+    label: 'List API unavailable',
+    detail: instagramWait
+      ? 'Instagram also requested a wait. See the top status bar for the later retry time.'
+      : 'Several public lists returned Instagram’s home page. Bio reads can still run; see the top status bar for retry time.',
+    kind: 'wait' };
+  if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
   return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }

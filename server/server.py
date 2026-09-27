@@ -592,6 +592,8 @@ def ext_heartbeat(conn, q, b):
     if isinstance(b.get('cool'), dict):   # per-bucket cooldowns (3.4+): a list cooldown hands the list to another lane
         fields['list_cool_until'] = clean_iso(b['cool'].get('list'))
         fields['profile_cool_until'] = clean_iso(b['cool'].get('profile'))
+    if 'list_endpoint_until' in b:
+        fields['list_endpoint_until'] = clean_iso(b.get('list_endpoint_until'))
     if 'hold' in b:   # 3.4+ report a login wall / security check here too; older builds only via /api/ext/error
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
@@ -599,7 +601,7 @@ def ext_heartbeat(conn, q, b):
         ready = db.get_setting(conn, 'ext_ready') or {}
         ready[lane] = {k: clean_iso(b['ready'].get(k)) for k in ('list', 'profile')}
         db.set_setting(conn, 'ext_ready', ready)
-    if row['hold'] or row['list_cool_until'] or row['paused']:
+    if row['hold'] or accounts.list_wait_until(row, datetime.now(timezone.utc)) or row['paused']:
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
     return ext_state(conn, row)

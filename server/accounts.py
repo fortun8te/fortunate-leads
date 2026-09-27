@@ -122,10 +122,16 @@ def paused_for(conn, row):
 
 # ---------- health, release, handoff ----------
 
+def account_available(row, now):
+    """Can an in-flight profile lease stay with this signed-in lane?"""
+    return bool(row['last_seen']) and now - utc(row['last_seen']) <= RELEASE_AFTER and not row['hold'] \
+        and not row['paused']
+
+
 def healthy(row, now):
     """May this lane keep (or take) a list?"""
-    return bool(row['last_seen']) and now - utc(row['last_seen']) <= RELEASE_AFTER and not row['hold'] \
-        and not row['paused'] and not later(row['list_cool_until'], now)
+    return account_available(row, now) and not later(row['list_cool_until'], now) \
+        and not later(row['list_endpoint_until'], now)
 
 
 def list_budget_left(conn, row, now):
@@ -204,6 +210,8 @@ def why_released(row, now):
         return 'paused'
     if row['role'] == 'bios' or row['is_main']:
         return 'role'
+    if later(row['list_endpoint_until'], now):
+        return 'list_endpoint'
     if later(row['list_cool_until'], now):
         return 'cooldown'
     return 'offline'
@@ -217,7 +225,7 @@ def release(conn, now, only=None):
     share = list_share(conn, rows.values(), now)
     ok = {k for k, r in rows.items() if keeps_lists(conn, r, now, share)}
     ts = iso(now)
-    fine = {k for k, r in rows.items() if healthy(r, now)}
+    fine = {k for k, r in rows.items() if account_available(r, now)}
     jobs, held = [], set()
     for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL"):
         if only is not None and j['lane'] != only:
@@ -228,7 +236,9 @@ def release(conn, now, only=None):
         # A role/share/pause change cannot undo a request already sent to Instagram. A login wall,
         # list limit, offline lane, or expired lease can be handed off immediately.
         finishing = (row and (j['leased_until'] or '') > ts and not row['hold']
-                     and not later(row['list_cool_until'], now) and (row['paused'] or healthy(row, now)))
+                     and (j['kind'] != 'list' or (not later(row['list_cool_until'], now)
+                                                and not later(row['list_endpoint_until'], now)))
+                     and (row['paused'] or (healthy(row, now) if j['kind'] == 'list' else account_available(row, now))))
         if finishing:
             if j['kind'] == 'list':
                 held.add(j['lane'])
@@ -271,7 +281,8 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)]
+    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)
+            and (k != 'list' or not later(row['list_endpoint_until'], now))]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -357,12 +368,17 @@ def name_of(row):
     return '@' + row['handle'] if row['handle'] else (row['label'] or 'lane ' + row['lane_id'][:8])
 
 
+def list_wait_until(row, now):
+    waits = [v for v in (row['list_cool_until'], row['list_endpoint_until']) if later(v, now)]
+    return max(waits, key=utc) if waits else None
+
+
 def full_cooldown(row, now):
     """An account is resting only when every request type in its role is cooling."""
     role = row['role'] if row['role'] in ROLES else 'both'
     kinds = {'lists': ('list',), 'bios': ('profile',), 'both': ('list', 'profile')}[role]
-    untils = [row['list_cool_until'] if k == 'list' else row['profile_cool_until'] for k in kinds]
-    return min(untils) if untils and all(later(x, now) for x in untils) else None
+    untils = [list_wait_until(row, now) if k == 'list' else row['profile_cool_until'] for k in kinds]
+    return min(untils, key=utc) if untils and all(later(x, now) for x in untils) else None
 
 
 def status_of(row, now, conn=None):
@@ -402,7 +418,8 @@ def out(conn, row, now, include_lists=True):
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
             'healthy': healthy(row, now), 'cooldown_until': full_cooldown(row, now),
-            'cool': {'list': row['list_cool_until'] if later(row['list_cool_until'], now) else None,
+            'list_endpoint_until': row['list_endpoint_until'] if later(row['list_endpoint_until'], now) else None,
+            'cool': {'list': list_wait_until(row, now),
                      'profile': row['profile_cool_until'] if later(row['profile_cool_until'], now) else None},
             'rate': rate, 'last_limit': (rate or {}).get('last_hit_at'), 'last_error': row['last_error'],
             'today': {'list': today.get('list', 0), 'profile': today.get('profile', 0)},
@@ -440,6 +457,9 @@ def alerts(conn, now=None, accts=None):
 
     out_ = []
     for a in accts:
+        if a['list_endpoint_until']:
+            out_.append({'level': 'warn', 'lane_id': a['lane_id'],
+                         'text': f"{a['name']} is getting Instagram home pages instead of public lists. Its list requests will retry later."})
         if a['hold'] == 'login':
             out_.append({'level': 'error', 'lane_id': a['lane_id'],
                          'text': f"{a['name']} logged out — open its Chrome profile and log in{moved(a['lane_id'])}"})

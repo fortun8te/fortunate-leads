@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(j
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
-  list_cool_until TEXT, profile_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+  list_cool_until TEXT, profile_cool_until TEXT, list_endpoint_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
 CREATE TABLE IF NOT EXISTS list_private_denials(seed TEXT NOT NULL COLLATE NOCASE, direction TEXT NOT NULL,
   viewer_ig_id TEXT NOT NULL, denied_at TEXT NOT NULL,
   PRIMARY KEY(seed,direction,viewer_ig_id));
@@ -253,6 +253,7 @@ def init(path):
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
                              ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
+                             ('accounts', 'list_endpoint_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
                              ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),

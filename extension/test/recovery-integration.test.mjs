@@ -159,6 +159,44 @@ test('HTML list redirect without wall quarantines only the target and keeps othe
   assert.equal(lookups, 2);
 });
 
+test('three public home redirects open this account list circuit without claiming a rate limit', async () => {
+  const data = {laneId: 'fixture-lane'};
+  const ctx = worker(data, {
+    page: async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
+      status: 200, contentType: 'text/html', url: 'https://www.instagram.com/', redirected: true, text: '<html></html>'}}),
+    lookup: async (_gen, handle) => ({p: {ig_id: '12', handle, is_private: false},
+      info: {url: `https://www.instagram.com/${handle}/`, privateWall: false}}),
+  });
+  for (const [i, seed] of ['public_one', 'public_two', 'public_three'].entries()) {
+    await ctx.run({...job(), id: 20 + i, seed});
+  }
+  assert.equal(data.st.listRedirects.length, 3);
+  assert.ok(data.st.listEndpointUntil > Date.now());
+  assert.equal(data.st.cool.list.until, 0);
+  assert.ok(data.box.every(x => x.body.reason === 'list_html_home_redirect'));
+  assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['profile']);
+});
+
+test('missing privacy and a failed fresh recheck never count as public redirects', async () => {
+  const page = async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
+    status: 200, contentType: 'text/html', url: 'https://www.instagram.com/', redirected: true, text: '<html></html>'}});
+  for (const mode of ['missing_privacy', 'failed_recheck']) {
+    const data = {laneId: 'fixture-lane'};
+    let lookups = 0;
+    const ctx = worker(data, {page, lookup: async (_gen, handle) => {
+      lookups++;
+      const first = lookups % 2 === 1;
+      return {p: mode === 'failed_recheck' && !first ? null :
+        {ig_id: '12', handle, is_private: mode === 'missing_privacy' ? null : false},
+        info: {url: `https://www.instagram.com/${handle}/`, privateWall: false}};
+    }});
+    for (const [i, seed] of ['one', 'two', 'three'].entries()) await ctx.run({...job(), id: 40 + i, seed});
+    assert.equal(data.st.listRedirects.length, 0, mode);
+    assert.equal(data.st.listEndpointUntil, 0, mode);
+    assert.equal(data.box.length, 3, mode); // target-specific retries still reach the server
+  }
+});
+
 test('recorded errors atomically clear the lease while keeping the backoff', async () => {
   const leased = job();
   const data = {laneId: 'fixture-lane', cur: {job: leased, at: Date.now()}};
