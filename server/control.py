@@ -64,6 +64,7 @@ def set_stage(conn, stage, pause):
 
 
 def stop_all(conn):
+    db.set_setting(conn, 'local_laya', False)
     for s in STAGES:
         set_stage(conn, s, True)
 
@@ -141,8 +142,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         out['minute'] = c['minute']
     if paused:
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
-        if stage == 'ai' and db.get_setting(conn, 'local_laya') and not (
-                stage_paused(conn, 'lists') and stage_paused(conn, 'bios')):
+        if stage == 'ai' and db.get_setting(conn, 'local_laya'):
             return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
         return dict(out, state='paused', now=why)
     if stage == 'ai':

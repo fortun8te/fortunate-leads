@@ -339,16 +339,13 @@ function clearFilters() {
 // ---------- theme / density / sidebar ----------
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  $('#theme-btn').textContent = t === 'dark' ? 'Light' : 'Dark';
   store.set('theme', t);
   syncLook();
   M.draw();
 }
-$('#theme-btn').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 function applyDensity(d) {
   const sc = $('#scroll'), position = sc.scrollTop / rowH();
   document.documentElement.dataset.density = d;
-  $('#density-btn').textContent = d === 'compact' ? 'Comfortable' : 'Compact';
   store.set('density', d);
   syncLook();
   // Resize the scrollable canvas before restoring the same lead and row fraction.
@@ -363,7 +360,6 @@ function syncLook() {
 }
 $('#set-theme').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyTheme(b.dataset.v); };
 $('#set-density').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyDensity(b.dataset.v); };
-$('#density-btn').onclick = () => applyDensity(document.documentElement.dataset.density === 'compact' ? 'comfortable' : 'compact');
 const narrow = () => window.innerWidth <= 900;
 function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
@@ -933,6 +929,7 @@ function mark(id, status) { return serializeMutation(() => markNow(id, status));
 async function markNow(id, status) {
   const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
   const prev = r ? r.status : null;
+  invalidatePersonRead(id);
   patchRow(id, { status });
   try {
     await api.post(`/api/person/${id}/mark`, { status });
@@ -966,18 +963,30 @@ async function openDetail(id, { keyboard = false } = {}) {
   detailAccess.sync();
   await refreshPerson(id);
 }
+const personReads = new Map();
+const notePolls = new Map();
+function invalidatePersonRead(id) { const version = (personReads.get(id) || 0) + 1; personReads.set(id, version); return version; }
 async function refreshPerson(id) {
+  const version = invalidatePersonRead(id);
   try {
     const p = await api.get('/api/person/' + id);
-    if (S.open !== id) return;
-    noteQueue.reconcile(id, p.note || '');
+    if (S.open !== id || personReads.get(id) !== version) return;
+    noteQueue.reconcile(id, p.note || '', p.mark_rev ?? '');
     S.person = p;
+    const poll = notePolls.get(id) || { note: p.note, attempts: 0, timer: null };
+    clearTimeout(poll.timer);
+    if (poll.note !== p.note) { poll.note = p.note; poll.attempts = 0; }
+    if (p.note_interpretation?.state === 'pending' && poll.attempts < 20) {
+      poll.attempts++;
+      poll.timer = setTimeout(() => { if (S.open === id && !document.hidden) refreshPerson(id); }, 3000);
+    }
+    notePolls.set(id, poll);
     const r = S.rows.find((x) => x.id === id);
     if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, business_fit: p.business_fit,
       connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev,
       owner_status: p.owner_status, owner_conflict: p.owner_conflict, reachable: p.reachable, manual_tags: p.manual_tags });
   } catch (e) {
-    if (S.open !== id || !S.person) return;
+    if (S.open !== id || !S.person || personReads.get(id) !== version) return;
     S.person.loading = false; S.person.failed = true;
   }
   renderDetail(); renderRows();
@@ -1009,8 +1018,8 @@ function scoutHTML(sc) {
   const historical = !!sc.overridden_by_owner;
   const label = historical ? 'Earlier research' : sc.stale ? 'Older read · unverified' : !verified ? 'Unverified candidate' : ({ strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict);
   const cls = historical ? '' : sc.stale || !verified || sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
-  return `<div class="d-sec"><h4>Leadscout<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${historical || sc.stale || sc.reachable ? '' : ' · not reachable'}</span></span></h4>
-    ${historical ? '<p class="muted">Your relationship update takes priority over this earlier check.</p>' : sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : !verified ? '<p class="muted">The cited evidence could not be checked. The earlier score remains in place; Leadscout will retry later.</p>' : ''}
+  return `<div class="d-sec"><h4>Website research<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${historical || sc.stale || sc.reachable ? '' : ' · not reachable'}</span></span></h4>
+    ${historical ? '<p class="muted">Your relationship update takes priority over this earlier check.</p>' : sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : !verified ? '<p class="muted">The cited evidence could not be checked. The earlier score remains in place; Research can be checked again later.</p>' : ''}
     <p class="d-reason">${esc(sc.summary || '')}</p>
     ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
 }
@@ -1095,6 +1104,7 @@ function renderDetail() {
       <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>
       ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
     </div>
+    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what you discussed, what matters…">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     <section class="d-sec d-labels-section d-status-section"><h4>Relationship</h4>
       <div class="marks" role="group" aria-label="Relationship">${STATUSES.map((s) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" aria-label="${esc(slabel(s))}: ${esc(SDESC[s])}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
@@ -1103,13 +1113,11 @@ function renderDetail() {
         <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Friend, collaborator…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
       </details>
     </section>
-    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what you discussed, what matters…">${esc(noteVal)}</textarea></section>
+
     ${workflowSummaryHTML(p)}
-    <details class="d-sec d-disclosure" data-detail-section="connections" data-owner="${p.id}" ${view.sections.connections ? 'open' : ''}><summary>Connections <span class="num">${n ? plural(n, 'list') : 'None'}</span></summary>
-      ${you ? `<p class="d-connection-you">${esc(you)}</p>` : ''}
-      ${connectionEvidenceHTML(edges, oldEdges)}
-    </details>
-    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile and evidence</summary>
+    ${you || edges.length ? `<p class="d-sec d-connection-summary">${esc(you || (edges[0].direction === 'followers' ? 'Follows @' + edges[0].seed : edges[0].direction === 'following' ? '@' + edges[0].seed + ' follows them' : 'Seen in @' + edges[0].seed + '’s list'))}</p>` : ''}
+    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">More details</summary>
+      <h4 class="d-more-heading">Profile</h4>
       <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}${p.score == null ? '' : `<span class="muted">Priority ${esc(p.score)}</span>`}</div>
       ${reason ? `<p class="d-reason">${esc(reason)}</p>` : ''}
       ${evidenceTags.length ? `<div class="d-tags d-evidence-tags">${evidenceTags.map((t) => tagChip(t)).join('')}</div>` : ''}
@@ -1123,8 +1131,10 @@ function renderDetail() {
       ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
       ${websiteEvidence(p.site)}
       ${scoutHTML(p.scout)}
-    </details>
-    <details class="d-sec d-disclosure" data-detail-section="activity" data-owner="${p.id}" ${view.sections.activity ? 'open' : ''}><summary>Activity</summary>${workflowHTML(p)}</details>`;
+      <h4 class="d-more-heading">Observed connections${n ? ` · ${plural(n, 'list')}` : ''}</h4>
+      ${connectionEvidenceHTML(edges, oldEdges)}
+      <h4 class="d-more-heading">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
+    </details>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   wireWorkflow(p);
@@ -1135,6 +1145,12 @@ $('#detail').addEventListener('click', async (e) => {
   if (S.seedCard || e.target.closest('[data-sf],[data-only],[data-focus]')) return seedCardClick(e);
   const p = S.person;
   if (!p) return;
+  const resolution = e.target.closest('[data-note-resolution]');
+  if (resolution) {
+    try { await noteQueue.resolve(p.id, resolution.dataset.noteResolution === 'draft'); if (S.person?.id === p.id) { if (resolution.dataset.noteResolution === 'saved') { S.person.note = noteQueue.peek(p.id)?.draft || ''; S.person.mark_rev = noteQueue.peek(p.id)?.revision; } renderDetail(); } }
+    catch { /* The queue keeps the draft and displays the latest conflict. */ }
+    return;
+  }
   const qt = e.target.closest('[data-addtag]');
   if (qt) return editTags(p.id, [qt.dataset.addtag], []);
   const rmt = e.target.closest('[data-rmtag]');
@@ -1167,24 +1183,68 @@ $('#detail').addEventListener('keydown', (e) => {
 });
 const noteQueue = LeadWorkflow.createNoteQueue({
   initial: store.get('note-drafts', {}),
+  requireRevision: true,
   persist: (drafts) => store.set('note-drafts', drafts),
-  save: async (id, note) => {
-    await api.post(`/api/person/${id}/mark`, { note });
+  save: async (id, note, revision) => {
+    invalidatePersonRead(id);
+    let result;
+    try { result = await api.post(`/api/person/${id}/mark`, { note, if_match: revision }); }
+    catch (error) {
+      if (error.status === 409) {
+        try { const latest = await api.get(`/api/person/${id}`); noteQueue.conflict(id, latest.note || '', latest.mark_rev ?? ''); }
+        catch { /* Keep the draft blocked until a successful detail refresh. */ }
+      }
+      throw error;
+    }
+    invalidatePersonRead(id);
     const r = S.rows.find((x) => x.id === id), n = M.byId.get('p:' + id);
-    if (r) r.note = note || null;
+    if (r) { r.note = note || null; r.mark_rev = result.mark_rev; }
     if (n) n.note = note || null;
-    if (S.person?.id === id) { S.person.note = note; refreshActivity(id); }
+    if (S.person?.id === id) {
+      S.person.note = note; S.person.mark_rev = result.mark_rev;
+      S.person.note_interpretation = result.note_interpretation || null;
+      refreshActivity(id);
+      setTimeout(() => { if (S.person?.id === id) refreshPerson(id); }, 0);
+    }
     renderRows();
+    return result;
   },
-  change: (id) => { if (S.person?.id === id && $('#note-st')) $('#note-st').textContent = noteStatus(id); },
+  change: (id) => { if (S.person?.id === id) renderNoteState(id); },
 });
-function noteStatus(id) { const e = noteQueue.peek(id); if (!e) return 'Saves as you type'; return e.error ? 'Not saved — draft kept. Edit to retry.' : e.pending || e.draft !== e.saved ? 'Saving…' : 'Saved'; }
+function noteStatus(id) { const e = noteQueue.peek(id); if (!e) return 'Saves as you type'; return e.conflict || e.error?.status === 409 ? 'Draft kept. Review the saved note.' : e.error ? 'Not saved. Draft kept; edit to retry.' : e.pending || e.draft !== e.saved ? 'Saving…' : 'Saved'; }
+function noteConflictHTML(id) {
+  const e = noteQueue.peek(id);
+  if (!e?.conflict) return '';
+  return `<p>This note changed elsewhere. Your draft is above.</p><p><b>Saved note</b><br>${esc(e.remoteNote || 'Empty note')}</p><div class="workflow-actions"><button class="btn" type="button" data-note-resolution="saved" ${e.pending ? 'disabled' : ''}>Use saved note</button><button class="btn" type="button" data-note-resolution="draft" ${e.pending ? 'disabled' : ''}>Save my draft instead</button></div>`;
+}
+function noteInsightsHTML(p) {
+  const state = p.note_interpretation;
+  const draft = noteQueue.peek(p.id);
+  if (!p.note || !state || draft && (draft.pending || draft.draft !== p.note)) return '';
+  if (state.state === 'disabled') return '<span class="muted">Note saved. Local processing is off.</span>';
+  if (state.state === 'pending') return '<span class="muted">Reading your note locally…</span>';
+  if (state.state === 'unavailable' || state.state === 'failed') return '<span class="muted">Note saved. Local understanding is unavailable.</span>';
+  const relationships = { current_client: 'client', in_conversation: 'talking', not_a_fit: 'no' };
+  const facts = (state.facts || []).filter(f => f.label && typeof f.quote === 'string' && p.note.includes(f.quote) && !(relationships[f.kind] && relationships[f.kind] === p.status));
+  const proposed = new Set(facts.map(f => relationships[f.kind]).filter(Boolean));
+  return state.state === 'ready' && facts.length ? facts.map(f => {
+    const status = relationships[f.kind];
+    const action = status && !p.status && proposed.size === 1 ? ` <button class="btn ghost" type="button" data-s="${status}">Set ${esc(slabel(status))}</button>` : '';
+    return `<p><span class="muted">${esc(f.label)}:</span> “${esc(f.quote)}”${action}</p>`;
+  }).join('') : '';
+}
+function renderNoteState(id) {
+  if ($('#note-st')) $('#note-st').textContent = noteStatus(id);
+  if ($('#note-conflict')) $('#note-conflict').innerHTML = noteConflictHTML(id);
+  if ($('#note-insights') && S.person?.id === id) $('#note-insights').innerHTML = noteInsightsHTML(S.person);
+}
 $('#detail').addEventListener('input', (e) => {
-  if (e.target.id === 'note' && S.person) noteQueue.edit(S.person.id, e.target.value, S.person.note || '');
+  if (e.target.id === 'note' && S.person) noteQueue.edit(S.person.id, e.target.value, S.person.note || '', S.person.mark_rev ?? '');
 });
 window.addEventListener('beforeunload', (e) => { if (noteQueue.dirty()) { noteQueue.flushAll().catch(() => {}); e.preventDefault(); e.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) noteQueue.flushAll().catch(() => {}); });
 async function editTags(id, add, remove) {
+  invalidatePersonRead(id);
   try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || 'Could not save label'); return; }
   await refreshPerson(id);
   loadFacetsSoon();
@@ -1310,6 +1370,7 @@ function acknowledgeWorkflowDraft(id, submitted, fields, closedKey) {
   return result.unchanged;
 }
 function applyWorkflowResponse(id, response) {
+  invalidatePersonRead(id);
   const patch = {};
   if (Object.hasOwn(response, 'follow_up')) patch.follow_up = response.follow_up;
   if (Object.hasOwn(response, 'status')) patch.status = response.status;
@@ -1343,12 +1404,14 @@ async function updateFollowUp(id, body, button) {
   const submitted = snapshotWorkflowDraft(id, $('#followup-form'), ['due', 'action']);
   followUpBusy.add(id); workflowMessage(id, 'followup', 'Saving…');
   try {
+    invalidatePersonRead(id);
     const response = await api.post(`/api/person/${id}/follow-up`, body);
     if (S.person?.id === id) rememberWorkflowForm();
     const untouchedReminder = submitted.due === (baseline && !baseline.completed_at ? baseline.due_on : '') && submitted.action === (baseline && !baseline.completed_at ? baseline.note || '' : '');
     if (!body.action || untouchedReminder) acknowledgeWorkflowDraft(id, submitted, ['due', 'action'], 'followOpen');
     workflowMessage(id, 'followup', body.action === 'complete' ? 'Follow-up completed' : body.action === 'clear' ? 'Follow-up cleared' : 'Follow-up saved');
     applyWorkflowResponse(id, response);
+    if (S.open === id) await refreshPerson(id);
     refreshActivity(id); loadCounts(); loadFacetsSoon(); resetLeads(true);
   } catch (error) {
     workflowMessage(id, 'followup', 'Could not save: ' + error.message + '. Your draft is kept.');
@@ -1374,6 +1437,7 @@ async function saveInteraction(id, form) {
   const baseline = S.person?.id === id ? S.person.follow_up : null;
   activityBusy.add(id); workflowMessage(id, 'activity', 'Saving…');
   try {
+    invalidatePersonRead(id);
     const response = await api.post(`/api/person/${id}/activity`, body);
     if (S.person?.id === id) rememberWorkflowForm();
     const cleared = acknowledgeWorkflowDraft(id, submitted, activityFields, 'activityOpen');
@@ -1381,6 +1445,7 @@ async function saveInteraction(id, form) {
     if (body.follow_up && reminder.due === (baseline && !baseline.completed_at ? baseline.due_on : '') && reminder.action === (baseline && !baseline.completed_at ? baseline.note || '' : '')) acknowledgeWorkflowDraft(id, reminder, ['due', 'action'], 'followOpen');
     workflowMessage(id, 'activity', 'Interaction saved');
     applyWorkflowResponse(id, response);
+    if (S.open === id) await refreshPerson(id);
     if (!Array.isArray(response.rows)) refreshActivity(id);
     if (body.status || body.follow_up) { loadCounts(); loadFacetsSoon(); resetLeads(true); }
   } catch (error) {
@@ -1783,7 +1848,8 @@ function renderStatus() {
   $('#n-queue').textContent = q ? fmt(q) : '';
   const accs = sc?.accounts || [];
   const alerts = (sc?.alerts || []).filter((x) => x.level === 'error').length;
-  $('#n-acc').textContent = alerts ? '!' + alerts : accs.length > 1 ? String(accs.length) : '';
+  $('#n-acc').textContent = alerts ? String(alerts) : '';
+  $('#n-acc').hidden = !alerts;
 }
 async function loadScraper() {
   if (S.scLoading) return;
@@ -2022,7 +2088,7 @@ function accountRow(a) {
   const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
   const work = a.paused ? 'Work paused' : a.status === 'running'
     ? a.job ? jobText(a) : ucf(a.activity || a.text || 'Waiting for work')
-    : `${role} work when available`;
+    : 'Ready for collection';
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
@@ -2031,9 +2097,9 @@ function accountRow(a) {
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-overview">
       <div class="acc-fact"><span class="acc-key">Access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b>${access.kind !== 'ok' ? `<small>${esc(access.detail)}</small>` : ''}</div>
-      <div class="acc-fact"><span class="acc-key">Work · ${esc(role)}</span><b>${esc(work)}</b></div>
+      <div class="acc-fact"><span class="acc-key">Collection</span><b>${esc(work)}</b></div>
     </div>
-    <details class="adv acc-more"><summary>Advanced</summary>
+    <details class="adv acc-more"><summary>Account settings</summary>
     <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
     <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
@@ -2057,15 +2123,16 @@ function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start engine';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local services';
   $('#acc-alerts').innerHTML = alerts.filter((x, i) => x.code !== 'list_endpoint_wait' &&
     alerts.findIndex((y) => y.text === x.text && y.level === x.level) === i)
     .map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
-  const online = accs.filter((a) => a.online).length;
+  const connected = accs.filter((a) => accountAccess(a).kind === 'ok').length;
+  const attention = accs.filter((a) => accountAccess(a).kind === 'bad').length;
   $('#acc-summary').textContent = accs.length
-    ? `${online} of ${accs.length} profiles online · ${int(r.people_last_hour)} people found this hour`
-    : 'No profiles connected yet';
+    ? `${connected} connected${attention ? ` · ${attention} need attention` : ` · ${accs.length} accounts`}`
+    : 'Connect an Instagram account to begin';
   $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
   const list = $('#acc-list');
@@ -2077,7 +2144,7 @@ function renderAccounts() {
   const focusIndex = focused?.matches('button, summary') && focusRow
     ? [...focusRow.querySelectorAll('button, summary')].indexOf(focused) : -1;
   const focusLane = focusIndex >= 0 ? focusRow.dataset.lane : null;
-  list.innerHTML = accs.length ? accs.map(accountRow).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'No account has checked in yet.'}</div>`;
+  list.innerHTML = accs.length ? accs.map(accountRow).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
   for (const row of list.querySelectorAll('[data-lane]')) {
     if (openLanes.has(row.dataset.lane)) row.querySelector('.acc-more').open = true;
     if (row.dataset.lane === focusLane) row.querySelectorAll('button, summary')[focusIndex]?.focus({ preventScroll: true });
@@ -2154,21 +2221,20 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting Laya, opening configured Chrome profiles, and resuming list and bio collection…';
+  status.textContent = 'Starting local services…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
     window.dispatchEvent(new Event('fl:control-changed'));
-    const count = Number.isInteger(result?.profiles_opened) ? result.profiles_opened : null;
     status.dataset.state = 'success';
-    status.textContent = `Engine started${count == null ? '' : ` with ${count} configured Chrome profiles`}. Login checks and Instagram limits still apply.`;
-    toast('Engine started. Login checks and Instagram limits still apply.');
+    status.textContent = 'Local services started. Collection and checking mode are unchanged.';
+    toast('Local services started');
     await loadScraper();
   } catch (e) {
     status.dataset.state = 'error';
-    status.textContent = e.message || 'Could not start engine. Check service and profile setup.';
-    toast(e.message || 'Could not start engine');
+    status.textContent = e.message || 'Could not start local services. Check setup in Settings.';
+    toast(e.message || 'Could not start local services');
   } finally {
     A.starting = false;
     renderAccounts();
@@ -2241,7 +2307,7 @@ function settingsMode(sc) {
 function renderCheckingMode() {
   const mode = S.scStale || S.scError ? null : settingsMode(S.sc);
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : mode === 'local' ? 'Local Laya + rules selected. External AI is off.' : mode === 'external' ? 'External AI is enabled. Bios may be sent to external services.' : mode === 'rules' ? 'Rules only selected. Laya and external AI are off.' : 'Current mode could not be confirmed. Refresh to try again.';
+  if (status) status.textContent = SET.modeBusy ? 'Saving…' : mode === 'local' ? 'Local checks selected. External AI is off.' : mode === 'external' ? 'External AI is enabled. Bios may be sent to external services.' : mode === 'rules' ? 'Rules only. AI checks are off.' : 'Current mode could not be confirmed. Refresh to try again.';
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === mode);
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
@@ -2304,7 +2370,7 @@ function renderServices() {
   const h = SET.health && typeof SET.health === 'object' ? SET.health : null, l = SET.llm;
   const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
   $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
-    + row('Local Laya', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Local checks are selected separately above. Use Start everything to start the local helper.');
+    + row('Local Laya', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Use Start local services on Accounts to start the local helper.');
 }
 function keyStatus(p) {
   if (p.disabled) return { text: 'Refused', cls: 'bad' };
@@ -2489,19 +2555,15 @@ const Q = {
     const s = this.sum || {}, Qp = S.sc?.progress?.qualify || {};
     const known = !S.scStale && !S.scError && typeof S.sc?.qualify === 'boolean';
     const on = known && S.sc.qualify;
-    const pct = s.verdicts ? Math.round((s.ai / s.verdicts) * 100) : 0;
-    const when = !known ? 'Checking status unavailable' : !on ? 'External AI is off' : !Qp.left ? 'Everyone waiting has been checked' : eta(Qp.eta_h) ? eta(Qp.eta_h) + ' left' : 'starting';
-    const kpi = (v, l) => `<div class="tile"><span>${l}</span><b class="num">${v}</b></div>`;
-    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour == null ? '–' : int(Qp.per_hour), 'AI checks per hour')}</div>
-      <div class="ql-pbar"><div class="bar-p ${on && Qp.left ? 'run' : 'done'}"><i style="width:${pct}%"></i></div>
-      <span class="muted">${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ''}</span></div>`;
+    const mode = settingsMode(S.sc);
+    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for review` : 'Review is up to date') : mode === 'local' ? 'Local checks selected' : 'Rules only';
+    $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${int(s.verdicts ?? this.total ?? 0)} people checked</span><span class="muted">${esc(status)}</span></p>`;
     $('#ql-toggle').textContent = 'Checking mode';
     $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
   },
   card(r) {
     const v = r.verdict || {}, ai = v.model && v.model !== 'rules';
     const ev = evidenceOf(v);
-    const aiTags = (r.tags || []).filter((t) => t.grp === 'ai');
     const bio = (r.bio || '').trim();
     const facts = [r.category ? esc(r.category) : '', r.followers != null ? `${fmt(r.followers)} followers` : ''].filter(Boolean).join(' · ');
     const siteHTML = websiteEvidence(r.site);
@@ -2509,18 +2571,15 @@ const Q = {
     return `<article class="ql-card" data-id="${r.id}">
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
-        <div class="ql-score"><b class="num" title="Blended priority">Priority ${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
-      <div class="ql-why"><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
-        ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
-        ${ev.length ? `<details class="ql-extra"><summary>Why this verdict</summary><ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul></details>` : ''}
-        <p class="ql-by">${ai ? 'AI checked' : 'Keyword check'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
+        <div class="ql-score">${fitBadge(r, 'lg')}</div></div>
+      <div class="ql-why"><p>${esc(r.reason || 'No assessment yet.')}</p><p class="ql-by">${ai ? 'AI review' : 'Rule-based review'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
       <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
         ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
-      <div class="ql-network"><h4>Observed follows</h4>${qualificationConnections(r)}</div>
-      ${siteHTML}
-      <div class="ql-acts"><button class="btn${busy ? '' : ' solid'}" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reading…' : 'Dig deeper'}</button>
-        <span class="grow"></span><button class="btn ghost" data-open="${r.id}">Open lead</button>
-        <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a></div>
+      <div class="ql-network">${qualificationConnections(r)}</div>
+      ${ev.length || siteHTML ? `<details class="ql-extra"><summary>Evidence</summary>${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</details>` : ''}
+      <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Open person</button>
+        <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a>
+        <span class="grow"></span>${r.website ? `<button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Check website'}</button>` : ''}</div>
     </article>`;
   },
   render() {
@@ -2529,7 +2588,7 @@ const Q = {
     const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
     const focusId = focusAttr ? focused.getAttribute(focusAttr) : null;
     $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
-      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'Nobody has been checked by AI yet. Press Resume on AI at the top; results appear here.' : 'Nobody matches.'}</div>`;
+      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'No AI reviews yet. Choose a checking mode in Settings.' : 'Nobody matches.'}</div>`;
     if (focusAttr) $(`#ql-list [${focusAttr}="${focusId}"]`)?.focus({ preventScroll: true });
     $('#ql-more').hidden = this.rows.length >= this.total;
   },

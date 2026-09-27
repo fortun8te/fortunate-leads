@@ -58,7 +58,7 @@ class FeedbackLearningTest(unittest.TestCase):
         self.assertNotIn('My own account', text)
         self.assertIn('owner feedback', text.lower())
         person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
-        self.assertIn('Great retention and founder relationship', qualify._packet(person, [], []))
+        self.assertNotIn('Great retention and founder relationship', qualify._packet(person, [], []))
 
     def test_manual_client_tag_without_status_is_a_provenance_labeled_future_example(self):
         self.assertEqual(server.fewshot(self.conn), [])
@@ -84,7 +84,7 @@ class FeedbackLearningTest(unittest.TestCase):
 
         person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
         self.assertIn('manually tagged', qualify._packet(person, [], []))
-        self.assertIn('Private context for this lead only', qualify._packet(person, [], []))
+        self.assertNotIn('Private context for this lead only', qualify._packet(person, [], []))
 
     def test_manual_client_tag_keeps_one_slot_among_eight_marked_examples(self):
         marked = [self.person(f'marked{i}') for i in range(8)]
@@ -110,8 +110,6 @@ class FeedbackLearningTest(unittest.TestCase):
         self.assertEqual(examples[0]['feedback_source'], 'status_mark')
         self.assertNotIn('Client', qualify.fewshot_text(examples))
         server.api_mark(self.conn, {}, {'status': None}, pid)
-        self.assertEqual(server.fewshot(self.conn)[0]['feedback_source'], 'manual_client_tag')
-        server.api_tag_edit(self.conn, {}, {'remove': ['Client']}, pid)
         self.assertEqual(server.fewshot(self.conn), [])
 
     def test_note_stays_local_and_tag_edit_changes_future_prompt_without_mass_rerun(self):
@@ -126,7 +124,7 @@ class FeedbackLearningTest(unittest.TestCase):
         note_only = server.fewshot(self.conn)
         self.assertEqual(qualify.prompt_version(note_only), prior_version)
         person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
-        self.assertIn('Revised reason', qualify._packet(person, [], []))
+        self.assertNotIn('Revised reason', qualify._packet(person, [], []))
         server.api_tag_edit(self.conn, {}, {'add': ['Repeat orders']}, pid)
         second = server.fewshot(self.conn)
         self.assertNotEqual(qualify.prompt_version(second), prior_version)

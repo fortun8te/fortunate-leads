@@ -88,24 +88,23 @@
       failed ? 'A stage needs attention.' : '');
     const all = data.all_paused
       ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. External AI stays off." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
-      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause collection and external AI. Local Laya stays enabled if selected." ${busy || offline ? 'disabled' : ''}>Pause collection &amp; external AI</button>`;
+      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Stop collection, local processing and external AI." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;
     const collection = data.stages.filter((s) => s.id !== 'ai');
     const collectionState = offline ? 'Unknown' : collection.every((s) => s.paused) ? 'Off'
       : collection.some((s) => ['error', 'failed'].includes(s.state)) ? 'Needs attention'
       : collection.some((s) => s.state === 'running') ? 'On'
       : collection.some((s) => s.state === 'waiting') ? 'Waiting' : 'Idle';
     const external = data.stages.find((s) => s.id === 'ai');
-    const externalState = offline || !external ? 'Unknown' : external.paused ? 'Off' : 'On';
-    const localState = offline || typeof data.local_laya !== 'boolean' ? 'Unknown' : data.local_laya ? 'Enabled' : 'Disabled';
+    const mode = offline || !external || typeof data.local_laya !== 'boolean' ? 'Unknown'
+      : !external.paused ? 'External AI' : data.local_laya ? 'Local' : 'Rules';
     el.innerHTML = `<details class="fl-ctl-details"${expanded ? ' open' : ''}>
       <summary class="fl-ctl-summary">
         <span class="fl-ctl-summary-item"><span>Collection</span><b>${collectionState}</b></span>
-        <span class="fl-ctl-summary-item" title="Local Laya setting. Rules also run locally. Enabled does not mean currently processing."><span>Local Laya</span><b>${localState}</b></span>
-        <span class="fl-ctl-summary-item" title="External model calls through Grok or OpenRouter."><span>External AI</span><b>${externalState}</b></span>
+        <span class="fl-ctl-summary-item" title="Selected mode, not current activity. Local models read saved profiles and notes on this Mac."><span>Mode</span><b>${mode}</b></span>
         <span class="fl-ctl-disclosure">Controls <i aria-hidden="true"></i></span>
       </summary>
-      <div class="fl-ctl-panel"><div class="fl-ctl-pills">${pills}</div><div class="fl-ctl-actions"><a href="#/qual">Scoring settings</a><a href="#/scraper">Collection details</a>${all}</div></div>
-    </details>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">Open Scraper for details.</a>' : ''}</span>` : ''}`;
+      <div class="fl-ctl-panel"><div class="fl-ctl-pills">${pills}</div><div class="fl-ctl-actions"><a href="#/settings">Checking mode</a><a href="#/scraper">Collection details</a>${all}</div></div>
+    </details>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">View collection details.</a>' : ''}</span>` : ''}`;
     el.dataset.running = String(running);
     if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
     else if (focusSummary) el.querySelector('summary')?.focus({ preventScroll: true });
@@ -164,8 +163,6 @@
     const b = e.target.closest('button[data-stage]');
     if (!b || b.disabled) return;
     const body = { stage: b.dataset.stage, action: b.dataset.action };
-    if (body.stage === 'all' && body.action === 'pause' &&
-        !confirm('Pause collection and external AI?\n\nLocal Laya stays enabled if selected. Saved leads are kept.')) return;
     send(body);
   });
 

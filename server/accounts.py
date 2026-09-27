@@ -10,6 +10,7 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
     `main_list_share` of the last hour's pages) while another healthy account takes lists; alone, it takes lists too.
 """
 import json
+import secrets
 import re
 from datetime import date, datetime, timedelta, timezone
 
@@ -778,3 +779,66 @@ def remove(conn, lane):
     conn.execute('DELETE FROM accounts WHERE lane_id=?', (lane,))
     release_all(conn, lane)
     return 1
+
+
+# Reuse the extension's minimum spacing across accounts; this is not a safe-rate claim.
+REQUEST_SPACING_SECONDS = 2
+REQUEST_LEASE_SECONDS = 90
+REQUEST_QUEUE_MAX = 64
+
+
+def request_permit(conn, lane, kind=None, token=None, now=None):
+    """FIFO, persisted single-request lease; caller checks workspace controls first."""
+    now = now or datetime.now(timezone.utc)
+    stamp = now.timestamp()
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        state = db.get_setting(conn, 'instagram_request_gate') or {}
+        active = state.get('active')
+        if active and active['until'] <= stamp:
+            active = None
+        queue = [item for item in state.get('queue', []) if item['seen'] > stamp - REQUEST_LEASE_SECONDS]
+        # A paused/disconnected waiting account must not block healthy waiters.
+        live = {row['lane_id'] for row in conn.execute('SELECT * FROM accounts')
+                if not row['paused'] and not row['hold'] and row['last_seen']
+                and utc(row['last_seen']).timestamp() > stamp - REQUEST_LEASE_SECONDS}
+        allowed = {kind for kind, stage in (('list', 'lists'), ('profile', 'bios'))
+                   if not db.get_setting(conn, 'paused') and not db.get_setting(conn, 'paused_' + stage)}
+        queue = [item for item in queue if item['lane'] in live and item['kind'] in allowed]
+        next_at = state.get('next_at', 0)
+        if token is not None:
+            released = bool(active and active['lane'] == lane and active['token'] == token)
+            if released:
+                active = None
+                next_at = max(next_at, stamp + REQUEST_SPACING_SECONDS)
+            result = {'released': released}
+        else:
+            if kind not in ('list', 'profile'):
+                raise ValueError('kind must be list or profile')
+            if lane not in live:
+                result = {'granted': False, 'wait_ms': 15000}
+            elif active and active['lane'] == lane:
+                result = {'granted': False, 'wait_ms': 2000}
+            else:
+                waiting = next((item for item in queue if item['lane'] == lane), None)
+                if waiting:
+                    waiting['seen'] = stamp
+                    waiting['kind'] = kind
+                elif len(queue) < REQUEST_QUEUE_MAX:
+                    queue.append({'lane': lane, 'kind': kind, 'seen': stamp})
+                if not active and stamp >= next_at and queue and queue[0]['lane'] == lane:
+                    queue.pop(0)
+                    active = {'lane': lane, 'kind': kind, 'token': secrets.token_hex(24),
+                              'until': stamp + REQUEST_LEASE_SECONDS}
+                    next_at = stamp + REQUEST_SPACING_SECONDS
+                    result = {'granted': True, 'token': active['token'], 'expires_at': iso(now + timedelta(seconds=REQUEST_LEASE_SECONDS))}
+                else:
+                    wait = REQUEST_SPACING_SECONDS if active else next_at - stamp
+                    result = {'granted': False, 'wait_ms': max(1000, min(15000, int(wait * 1000)))}
+        db.set_setting(conn, 'instagram_request_gate', {'active': active, 'queue': queue, 'next_at': next_at})
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise

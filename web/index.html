@@ -21,18 +21,14 @@
   <aside class="side">
     <a class="brand" href="#/leads"><i>F</i><span>Fortunate</span></a>
     <nav class="tabs" aria-label="Main navigation">
-      <a href="#/leads" data-view="leads" aria-label="Leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads"></span></a>
+      <a href="#/leads" data-view="leads" aria-label="Leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads" hidden></span></a>
       <a href="#/map" data-view="map" aria-label="Connections"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Connections</span></a>
-      <a href="#/qual" data-view="qual" aria-label="Qualification"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Qualification</span><span class="num" id="n-qual"></span></a>
+      <a href="#/qual" data-view="qual" aria-label="Review"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Review</span><span class="num" id="n-qual" hidden></span></a>
       <a href="#/tags" data-view="tags" aria-label="Tags"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg><span>Tags</span></a>
-      <a href="#/scraper" data-view="scraper" aria-label="Scraper"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/></svg><span>Scraper</span><span class="num" id="n-queue"></span></a>
       <a href="#/accounts" data-view="accounts" aria-label="Accounts"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.6"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7M10 6.5h2.5M10 9h2.5"/></svg><span>Accounts</span><span class="num" id="n-acc"></span></a>
       <a href="#/settings" data-view="settings" aria-label="Settings"><svg viewBox="0 0 16 16"><path d="m6.7 1.5.3 1.3a5.5 5.5 0 0 1 2 0l.3-1.3 1.8.8-.6 1.2c.5.4 1 .9 1.3 1.5l1.3-.3.7 1.9-1.2.6a5.4 5.4 0 0 1 0 1.9l1.2.6-.7 1.9-1.3-.3c-.3.6-.8 1.1-1.3 1.5l.6 1.2-1.8.8-.3-1.3a5.5 5.5 0 0 1-2 0l-.3 1.3-1.8-.8.6-1.2a5.7 5.7 0 0 1-1.3-1.5l-1.3.3-.7-1.9 1.2-.6a5.4 5.4 0 0 1 0-1.9l-1.2-.6.7-1.9 1.3.3c.3-.6.8-1.1 1.3-1.5l-.6-1.2z"/><circle cx="8" cy="8" r="2.1"/></svg><span>Settings</span></a>
     </nav>
-    <div class="side-foot">
-      <button class="btn ghost hide-sm" id="density-btn" title="Switch row density (d)">Compact</button>
-      <button class="btn ghost" id="theme-btn">Light</button>
-    </div>
+
   </aside>
 
   <div class="app">
@@ -117,7 +113,7 @@
     <section class="view" id="view-qual">
       <div class="ql">
         <header class="ph">
-          <div class="ph-t"><h1>Qualification</h1><p>Who looks promising, and why.</p></div>
+          <div class="ph-t"><h1>Review</h1><p>Check saved bios and supporting evidence.</p></div>
           <div class="ph-a"><button class="btn" id="ql-toggle">Checking mode</button></div>
         </header>
         <div class="ql-prog" id="ql-prog"></div>
@@ -172,7 +168,7 @@
     <section class="view" id="view-scraper">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Scraper</h1><p>Collects people from Instagram lists. Progress shows what has been collected so far.</p></div>
+          <div class="ph-t"><h1>Collection</h1><p>Add source accounts and follow collection progress.</p></div>
           <div class="ph-a"><button class="btn solid" id="scr-add">Add accounts</button></div>
         </header>
         <div class="now" id="now"></div>
@@ -212,100 +208,95 @@
     <section class="view" id="view-accounts">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Accounts</h1><p>Manage the profiles that collect lists and read bios.</p></div>
-          <div class="ph-a"><button class="btn solid" id="acc-start">Start engine</button><button class="btn" id="acc-add">Add account</button></div>
+          <div class="ph-t"><h1>Instagram accounts</h1><p>Check which accounts can collect leads.</p></div>
+          <div class="ph-a"><button class="btn solid" id="acc-start">Start local services</button><button class="btn" id="acc-add">Connect account</button></div>
         </header>
-        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Opens the configured Chrome profiles, starts Laya, and resumes list and bio collection. Your external AI setting stays as it is.</p>
+        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Starts the local helper. Collection and checking mode stay as selected.</p>
         <div class="alerts" id="acc-alerts"></div>
         <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>
         <div class="panel">
-          <div class="p-head"><h3>Instagram profiles</h3><span class="num muted" id="acc-n"></span></div>
+          <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Collection progress <span class="num" id="n-queue" hidden></span></a></div>
           <div id="acc-list"></div>
         </div>
       </div>
     </section>
 
     <section class="view" id="view-settings">
-      <div class="scr">
-        <header class="ph">
-          <div class="ph-t"><h1>Settings</h1><p>Scraping limits, the AI check and how the app looks.</p></div>
-        </header>
-
-        <section class="sg">
-          <div class="sg-h"><h2>Scraping limits</h2><p>How much each Instagram account reads per day. Lower is safer.</p></div>
+      <div class="scr settings-page">
+        <header class="ph"><div class="ph-t"><h1>Settings</h1></div></header>
+        <section class="sg settings-mode">
+          <div class="sg-h"><h2>Checking mode</h2><p>Choose how saved profiles and notes are checked.</p></div>
           <div class="card">
-            <form class="budget" id="budget" novalidate>
-              <label><span>List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label>
-              <label><span>Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label>
-              <button class="btn" id="b-save">Save</button>
-            </form>
-            <details class="adv">
-              <summary>Advanced</summary>
-              <form class="budget" id="set-share-f" novalidate>
-                <label title="Your own account reads bios only at 0; above 0 it may take this share of list pages"><span>Share of list pages for your main account, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label>
-                <button class="btn">Save</button>
-              </form>
-            </details>
+            <div class="seg" id="set-mode"><button data-mode="local" disabled>Local models + rules</button><button data-mode="rules" disabled>Rules only</button><button data-mode="external" disabled>External AI</button></div>
+            <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
           </div>
         </section>
-
-
         <section class="sg">
-          <div class="sg-h"><h2>Lead checks</h2><p>Choose how bios are checked. Rules remain available in every mode.</p></div>
-          <div class="card">
-            <div class="set-row"><div><b>Checking mode</b><span class="muted" id="set-mode-status" role="status">Loading current mode…</span></div><div class="seg" id="set-mode"><button data-mode="local" disabled>Local Laya + rules</button><button data-mode="rules" disabled>Rules only</button><button data-mode="external" disabled>External AI</button></div></div>
-            <div class="set-row"><div><b>Start after the lists</b><span class="muted">External AI only. Starts when every list is collected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div>
-            <details class="adv">
-              <summary>Advanced</summary>
-              <form class="budget" id="set-q" novalidate>
-                <label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="32" inputmode="numeric"></label>
-                <label title="Combined network and profile score a person needs before the AI reads them"><span>Score needed for an AI check</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label>
-                <label title="Planned bio reads skip people below this first score; Read now still works"><span>Score needed for a bio read</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label>
-                <button class="btn">Save</button>
-              </form>
-              <div class="sub-h"><b>External scoring models</b><span class="muted">Saved order for external AI. Choosing a model does not switch it on.</span><div class="grow"></div><button class="btn solid" id="set-models-save" disabled>Save order</button></div>
-              <ol class="models" id="set-models"></ol>
-              <div class="sub-h"><b>Free on OpenRouter</b><span class="muted" id="set-free-at"></span><div class="grow"></div><button class="btn" id="set-free-refresh">Check now</button></div>
-              <ul class="models" id="set-free"></ul>
-              <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model identifier" placeholder="vendor/model:free" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
-              <div class="sub-h"><b>Local helpers</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div>
-              <div id="set-svc"></div>
-            </details>
-          </div>
-        </section>
-
-        <section class="sg">
-          <div class="sg-h"><h2>OpenRouter keys <span class="num muted" id="set-keys-n" hidden></span></h2><p>Optional access for external AI. Adding a key does not turn it on.</p></div>
-          <div class="card flush">
-            <div class="tbl-wrap"><table class="tbl tg-tbl">
-              <thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead>
-              <tbody id="set-keys"></tbody>
-            </table></div>
-            <div class="set-forms">
-              <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" aria-label="OpenRouter key" placeholder="Paste an OpenRouter key (sk-or-...)" autocomplete="off" spellcheck="false"><button class="btn solid">Add key</button></form>
-              <details class="adv">
-                <summary>Advanced</summary>
-                <form class="set-inline" id="set-limit-f" novalidate><span class="muted">Requests per key and model per day</span><input class="input" id="set-limit" type="number" min="0" inputmode="numeric" aria-label="Requests per key and model per day"><button class="btn">Save</button></form>
-                <span class="muted num" id="set-file"></span>
-              </details>
-            </div>
-          </div>
-        </section>
-
-        <section class="sg">
-          <div class="sg-h"><h2>Extra web checks</h2><p>Optional external AI research for promising leads. Requires External AI mode.</p></div>
-          <div class="card" id="set-scout"><div class="set-row muted">Loading…</div></div>
-        </section>
-
-        <section class="sg">
-          <div class="sg-h"><h2>Appearance</h2><p>Only changes how things look.</p></div>
+          <div class="sg-h"><h2>Appearance</h2></div>
           <div class="card">
             <div class="set-row"><div><b>Theme</b></div><div class="seg" id="set-theme"><button data-v="dark">Dark</button><button data-v="light">Light</button></div></div>
-              <div class="set-row"><div><b>Bios via Meta API</b><span class="muted" id="bf-info">Business and creator accounts only, via your own Meta app. Off by default.</span><input class="input" id="bf-uid" aria-label="Instagram user ID for Meta API" placeholder="IG user id" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" aria-label="Meta API access token" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on" role="switch" aria-checked="false" aria-label="Bios via Meta API"><i></i></button></div>
-            <div class="set-row"><div><b>Rows in Leads</b></div><div class="seg" id="set-density"><button data-v="comfortable">Roomy</button><button data-v="compact">Compact</button></div></div>
+            <div class="set-row"><div><b>Lead rows</b></div><div class="seg" id="set-density"><button data-v="comfortable">Comfortable</button><button data-v="compact">Compact</button></div></div>
           </div>
         </section>
+        <details class="settings-setup" id="external-setup">
+          <summary><span><b>External AI setup</b><small>Models, access keys and optional web research</small></span></summary>
+          <div class="settings-setup-body">
+            <section class="sg">
+              <div class="sg-h"><h2>When to start</h2></div>
+              <div class="card"><div class="set-row"><div><b>After collection finishes</b><span class="muted">Applies only when External AI is selected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div></div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>Web research</h2><p>Optional checks beyond the saved bio.</p></div>
+              <div class="card" id="set-scout"><div class="set-row muted" role="status">Loading research settings…</div></div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>OpenRouter access</h2><p>Adding a key does not enable external AI.</p><span class="num muted" id="set-keys-n" hidden></span></div>
+              <div class="card flush">
+                <div class="tbl-wrap"><table class="tbl tg-tbl"><thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead><tbody id="set-keys"></tbody></table></div>
+                <div class="set-forms">
+                  <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" aria-label="OpenRouter key" placeholder="Paste an OpenRouter key" autocomplete="off" spellcheck="false"><button class="btn">Add key</button></form>
+                  <form class="set-inline" id="set-limit-f" novalidate><label for="set-limit" class="muted">Daily requests per key and model</label><input class="input" id="set-limit" type="number" min="0" inputmode="numeric" aria-label="Requests per key and model per day"><button class="btn">Save limit</button></form>
+                  <span class="muted num" id="set-file"></span>
+                </div>
+              </div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>Model order</h2><p>Try models in this order. Changing it does not start checks.</p></div>
+              <div class="card">
+                <div class="sub-h"><b>Selected models</b><div class="grow"></div><button class="btn" id="set-models-save" disabled>Save order</button></div>
+                <ol class="models" id="set-models"></ol>
+                <div class="sub-h"><b>Available free models</b><span class="muted" id="set-free-at"></span><div class="grow"></div><button class="btn" id="set-free-refresh">Refresh list</button></div>
+                <ul class="models" id="set-free"></ul>
+                <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model identifier" placeholder="Model identifier" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
+              </div>
+            </section>
+          </div>
+        </details>
+        <details class="settings-setup" id="advanced-setup">
+          <summary><span><b>Advanced settings</b><small>Collection limits, check thresholds and integrations</small></span></summary>
+          <div class="settings-setup-body">
+            <section class="sg">
+              <div class="sg-h"><h2>Collection limits</h2><p>Daily limits for each Instagram account.</p></div>
+              <div class="card">
+                <form class="budget" id="budget" novalidate><label><span>List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label><label><span>Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label><button class="btn" id="b-save">Save limits</button></form>
+                <form class="budget" id="set-share-f" novalidate><label title="At 0, your main account reads bios only"><span>Main account's share of list pages, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label><button class="btn">Save share</button></form>
+              </div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>Check thresholds</h2><p>Controls which leads receive further checks.</p></div>
+              <div class="card"><form class="budget" id="set-q" novalidate><label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="32" inputmode="numeric"></label><label><span>Minimum AI check score</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label><label><span>Minimum bio read score</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label><button class="btn">Save thresholds</button></form></div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>Local services</h2></div>
+              <div class="card"><div class="sub-h"><b>Connection status</b><div class="grow"></div><button class="btn" id="set-recheck">Check again</button></div><div id="set-svc"></div></div>
+            </section>
+            <section class="sg">
+              <div class="sg-h"><h2>Meta integration</h2><p>Optional access to business and creator bios.</p></div>
+              <div class="card"><div class="set-row"><div><b>Read bios through Meta</b><span class="muted" id="bf-info">Loading integration status…</span><input class="input" id="bf-uid" aria-label="Instagram user ID for Meta API" placeholder="Instagram user ID" autocomplete="off" spellcheck="false"><input class="input" id="bf-tok" type="password" aria-label="Meta API access token" placeholder="Access token" autocomplete="off"></div><button class="toggle" id="bf-on" role="switch" aria-checked="false" aria-label="Bios via Meta API"><i></i></button></div></div>
+            </section>
+          </div>
+        </details>
       </div>
     </section>
   </main>

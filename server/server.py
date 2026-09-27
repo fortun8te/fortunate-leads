@@ -29,6 +29,7 @@ import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
 import owner  # noqa: E402
+import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
 import meta_network  # noqa: E402
 import laya  # noqa: E402
@@ -124,12 +125,45 @@ def workspace_cooldown(conn, now):
     return value if until and until > now else None
 
 
+def permit_capable(version):
+    parts = str(version or '').split('.')
+    return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 15)
+
+
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
     cooling = workspace_cooldown(conn, datetime.now(timezone.utc))
+    upgrade = row is None or not permit_capable(row['version'])
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
-            'stages': {k: not cooling and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
+            'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
+            **({'upgrade_required': True, 'minimum_version': '3.9.15', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
             **({'cooldown_until': cooling} if cooling else {})}
+
+
+def ext_request(conn, q, b):
+    """One workspace-wide request permit; release only accepts its original lane/token."""
+    lane = accounts.lane_of(q, b)
+    now = datetime.now(timezone.utc)
+    if b.get('action') == 'release':
+        token = b.get('token')
+        if not isinstance(token, str) or not token:
+            raise Bad('request token required')
+        return accounts.request_permit(conn, lane, token=token, now=now)
+    if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
+        raise Bad('request action and kind required')
+    conn.execute('BEGIN IMMEDIATE')
+    row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    if row is None or not permit_capable(row['version']) or accounts.paused_for(conn, row) or workspace_cooldown(conn, now) or b['kind'] in control.paused_kinds(conn):
+        conn.rollback()
+        return {'granted': False, 'wait_ms': 15000}
+    job = conn.execute('SELECT * FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
+    if job is None or stale_lease(conn, job, q, b) or job['kind'] != b['kind'] or not job['leased_until'] or utc(job['leased_until']) <= now:
+        conn.rollback()
+        return {'granted': False, 'stale': True, 'wait_ms': 15000}
+    # Keep a valid job alive while its account waits fairly for the shared request slot.
+    conn.execute('UPDATE jobs SET leased_until=? WHERE id=?',
+                 (iso(now + timedelta(minutes=LEASE_MIN)), job['id']))
+    return dict(accounts.request_permit(conn, lane, kind=b['kind'], now=now), lease_renewed=True)
 
 
 def ext_next(conn, q, b):
@@ -138,7 +172,8 @@ def ext_next(conn, q, b):
     kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
     conn.execute('BEGIN IMMEDIATE')
     # asking for work means no login wall holds it any more
-    row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
+    row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None,
+                         **({'version': b.get('version') or q['version'][0]} if b.get('version') or q.get('version') else {}))
     # An expired tab lease is a transient failure. Handle it before account
     # handoff, which otherwise clears an offline lane's expired lease and loses
     # its retry count.
@@ -153,15 +188,9 @@ def ext_next(conn, q, b):
     accounts.release(conn, now)
     accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
-    version = b.get('version') or (q.get('version') or [None])[0] or (row and row['version'])
-    parts = str(version or '').split('.')
-    version_valid = all(part.isdigit() for part in parts)
-    version_number = tuple(int(part) for part in (parts + ['0', '0'])[:3]) if version_valid else (0, 0, 0)
-    if version:
-        supported = version_number >= (3, 8, 0)
-        if not supported:
-            conn.commit()
-            return dict(st, job=None, upgrade_required=True, minimum_version='3.8.0')
+    if st.get('upgrade_required'):
+        conn.commit()
+        return dict(st, job=None)
 
     if st['paused']:
         conn.commit()
@@ -175,14 +204,10 @@ def ext_next(conn, q, b):
     if not kinds:
         conn.commit()
         return dict(st, job=None)
-    job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=version_number >= (3, 9, 12))
+    job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
     if not job:
         conn.commit()
         return dict(st, job=None)
-    if job['page_size']:
-        if version_number < (3, 9, 12):
-            conn.commit()
-            return dict(st, job=None, upgrade_required=True, minimum_version='3.9.12')
     token = secrets.token_hex(16)
     conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=?, viewer_ig_id=? WHERE id=?",
                  (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, row['ig_id'], job['id']))
@@ -938,7 +963,7 @@ def api_person(conn, q, b, pid):
     return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), edge_history=edge_history_of(conn, pid),
                 verdict=verdict, note=row['note'], site=qual_api.site_row(conn, pid),
                 activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read,
-                scout=deepscout.result(conn, pid))
+                scout=deepscout.result(conn, pid), note_interpretation=owner_notes.result(conn, pid))
 
 
 KEEP = object()   # "leave this field as it is"
@@ -960,6 +985,12 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
     ts = db.now()
     for pid in dict.fromkeys(pids):
         old = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
+        if status is not KEEP and status != 'client':
+            legacy = conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual' "
+                                  "AND lower(trim(tag))='client'", (pid,)).fetchall()
+            for tag in legacy:
+                workflows.event(conn, pid, 'tag', body='Relationship updated', before=tag['tag'])
+            conn.execute("DELETE FROM tags WHERE person_id=? AND source='manual' AND lower(trim(tag))='client'", (pid,))
         for kind, value in (('status', status), ('note', note)):
             before = old[kind] if old else None
             if value is not KEEP and (value or None) != (before or None):
@@ -973,6 +1004,8 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
         conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
     if sets:
         touch(conn, pids)   # status and note feed the qualifier: the person is re-qualified on the next batch
+        for pid in pids:
+            owner_notes.invalidate(conn, pid)
     # A mark changes the yield of shared seeds, and a client's own seed becomes a stronger link.
     # One seed can hold tens of thousands of people: queue their local re-rank for the background
     # drain instead of doing it inside this request's write lock.
@@ -1829,9 +1862,7 @@ def api_control_set(conn, q, b):
 
 
 def api_engine_start(conn, q, b):
-    """Start local services and configured Chrome profiles, then resume collection."""
-    if workspace_cooldown(conn, datetime.now(timezone.utc)):
-        raise Bad('Instagram is on a shared safety hold. Start engine is unavailable until it ends.')
+    """Start local services. Collection keeps its current pause and safety state."""
     try:
         account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
         return engine_start.start(ROOT, account_count)
@@ -1911,7 +1942,7 @@ ROUTES = [
     ('POST', r'/api/settings/accounts', api_account_settings),
     ('GET', r'/api/ext/next', ext_next), ('POST', r'/api/ext/list-page', ext_list_page),
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
-    ('POST', r'/api/ext/heartbeat', ext_heartbeat),
+    ('POST', r'/api/ext/request', ext_request), ('POST', r'/api/ext/heartbeat', ext_heartbeat),
     ('GET', r'/api/control', api_control), ('POST', r'/api/control', api_control_set),
     ('POST', r'/api/engine/start', api_engine_start),
     ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
@@ -2239,7 +2270,7 @@ def with_owner(conn, p):
 
 def requalify(conn, p, me, net=None):
     # Same rule as background_qualify: rule scoring is free and only Stop all holds it.
-    if all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
+    if not db.get_setting(conn, 'local_laya') and all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
         return refresh_network(conn, [p['id']], me=me)
     with_owner(conn, p)
     # Older auto tags treated any follow or @mention as a personal acquaintance.
@@ -2388,10 +2419,7 @@ def rebuild_laya_queue(conn, signature):
 
 
 def laya_allowed(conn):
-    if not control.stage_paused(conn, 'ai'):
-        return True
-    return (bool(db.get_setting(conn, 'local_laya'))
-            and not (control.stage_paused(conn, 'lists') and control.stage_paused(conn, 'bios')))
+    return bool(db.get_setting(conn, 'local_laya')) or not control.stage_paused(conn, 'ai')
 
 
 def laya_step(conn):
@@ -3033,9 +3061,8 @@ def models_step(conn):
 
 def background_qualify(conn):
     refreshed = drain_network_dirty(conn)
-    # Rule scoring is local and free, so it runs with the AI switch off (bio planning needs its prefilter);
-    # only Stop all, which pauses every stage, halts it. Model calls stay behind the AI switch.
-    if all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
+    # Local processing stays independent of Instagram collection and external model calls.
+    if not db.get_setting(conn, 'local_laya') and all(control.stage_paused(conn, s) for s in ('lists', 'bios', 'ai')):
         return bool(refreshed)
     return qualify_batch(conn) or bool(refreshed)
 
@@ -3043,7 +3070,7 @@ def background_qualify(conn):
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
     scouts = deepscout.ScoutPool(CFG['db'])
-    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
+    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (owner_notes.step, 1, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 
@@ -3057,6 +3084,7 @@ def main():
     Path(CFG['db']).parent.mkdir(parents=True, exist_ok=True)
     conn = db.init(CFG['db'])
     deepscout.ensure(conn)
+    owner_notes.ensure(conn)
     conn.commit()
     retag_if_changed(conn)
     refresh_laya_prefilter_if_changed(conn)

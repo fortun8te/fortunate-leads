@@ -19,7 +19,7 @@ const marking = source.slice(source.indexOf('async function markNow('), source.i
 test('saving a relationship waits for full detail readback before finishing', async () => {
   const calls = [];
   let finishRead;
-  const ctx = vm.createContext({S:{rows:[{id:7,status:null}],open:7},patchRow:(_id,p)=>calls.push(['patch',p.status]),api:{post:async()=>calls.push(['saved'])},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>calls.push(['activity']),refreshPerson:()=>new Promise(resolve=>{calls.push(['read']);finishRead=resolve}),toast:()=>{}});
+  const ctx = vm.createContext({S:{rows:[{id:7,status:null}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(['patch',p.status]),api:{post:async()=>calls.push(['saved'])},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>calls.push(['activity']),refreshPerson:()=>new Promise(resolve=>{calls.push(['read']);finishRead=resolve}),toast:()=>{}});
   vm.runInContext(marking, ctx);
   let done=false;
   const pending=ctx.markNow(7,'client').then(()=>{done=true});
@@ -31,8 +31,32 @@ test('saving a relationship waits for full detail readback before finishing', as
 });
 test('failed relationship save restores prior status without starting a detail read', async () => {
   const calls=[];
-  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},toast:()=>calls.push('error')});
+  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},toast:()=>calls.push('error')});
   vm.runInContext(marking,ctx);
   await ctx.markNow(7,'no');
   assert.deepEqual(calls,['no','talking','error']);
+});
+
+const personRefresh = source.slice(source.indexOf('const personReads ='), source.indexOf('function closeDetail()'));
+test('older detail responses cannot restore a pre-save relationship or note', async () => {
+  const requests = [];
+  const ctx = vm.createContext({S:{open:7,person:{id:7},rows:[{id:7}]},Map,setTimeout,clearTimeout,document:{hidden:false},api:{get:()=>new Promise(resolve=>requests.push(resolve))},noteQueue:{reconcile:()=>{}},renderDetail:()=>{},renderRows:()=>{}});
+  vm.runInContext(personRefresh,ctx);
+  const old = ctx.refreshPerson(7);
+  ctx.invalidatePersonRead(7);
+  const fresh = ctx.refreshPerson(7);
+  assert.equal(requests.length,2,'post-save read must make a new request');
+  requests[1]({id:7,status:'client',note:'New note',mark_rev:'r2'}); await fresh;
+  requests[0]({id:7,status:null,note:'Old note',mark_rev:'r1'}); await old;
+  assert.equal(ctx.S.person.status,'client');
+  assert.equal(ctx.S.person.note,'New note');
+});
+test('note suggestions show exact quotes and only offer a non-conflicting relationship',()=>{
+  const ctx=vm.createContext({noteQueue:{peek:()=>null},esc:String,slabel:s=>({client:'Client',talking:'Talking',no:'Not a fit'}[s])});
+  vm.runInContext(source.slice(source.indexOf('function noteInsightsHTML('),source.indexOf('function renderNoteState(')),ctx);
+  const person={id:1,note:'He is my client.',note_interpretation:{state:'ready',facts:[{kind:'current_client',label:'Current client',quote:'He is my client.'}]}};
+  assert.match(ctx.noteInsightsHTML(person),/He is my client.*Set Client/);
+  assert.equal(ctx.noteInsightsHTML({...person,status:'client'}),'');
+  assert.doesNotMatch(ctx.noteInsightsHTML({...person,status:'no'}),/data-s=/);
+  assert.match(ctx.noteInsightsHTML({...person,note_interpretation:{state:'unavailable'}}),/Note saved/);
 });

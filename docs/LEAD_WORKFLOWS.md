@@ -1,37 +1,27 @@
-# Follow-ups, history and exports
+# Working with leads
 
-Open any person in Leads or Map to use these controls. Existing leads and notes remain available after updating; the local database adds the new tables when the server starts.
+Find a person with search, filters or sort, then open their profile. The panel puts your note, relationship and labels first. More details contains profile evidence, observed connections and history.
 
-## Follow up on a lead
+## Relationships and labels
 
-In the detail panel, choose a date under **Follow-up**, optionally describe the next action, then choose **Schedule**. Each person has one current reminder. **Reschedule** changes it, **Complete** marks it done, and **Clear** removes the current reminder. Earlier changes remain in Activity.
+Choose Interested, Contacted, Talking, Client or Not a fit as the person's current relationship. Clicking the selected relationship clears it. Adding Client through the label field sets the same relationship. An old Client label cannot restore a relationship after you change or clear it.
 
-Use the Follow-up filters in the list sidebar:
+Labels describe other useful context, such as Friend or Collaborator. Automatic profile labels remain evidence; your explicit relationship takes precedence when they disagree.
 
-- **Due today or earlier:** all unfinished reminders dated today or before.
-- **Overdue:** unfinished reminders before today.
-- **Scheduled:** all unfinished reminders, including future dates.
-- **Completed:** people whose current reminder is complete.
-- **None:** people without a current reminder.
+## Notes
 
-These filters combine with status, tags, search and the other existing filters. Not a fit stays hidden under the default Open status filter. Select **Follow-up date** in Sort to put the earliest unfinished reminders first. Save a view to reopen the same filter; its meaning updates with the browser's local calendar date.
+Notes save per person, including when switching profiles. A failed draft stays in the browser. If another tab saved a different note, the app keeps your draft and asks which version to use instead of silently overwriting it.
 
-Reminders are an in-app list. They do not send messages, desktop notifications or emails while the app is closed.
+When local processing is enabled, the local note reader extracts suggestions with exact supporting quotes. These suggestions do not automatically change a relationship, score or label. If the model is unavailable, the original note remains saved. Private notes never enter external model prompts.
 
-## Keep relationship history
+## Follow-ups and history
 
-Under **Activity**, choose DM sent, Reply received, Call, Meeting or Note, enter when it happened and add the details. **Log activity** saves it to that person's timeline. The entered time uses your local timezone and is stored as an absolute timestamp. Use **Load older activity** for earlier entries.
+Schedule a date from the person panel. Each person has one current reminder. Reschedule changes it, Complete marks it done, and Clear removes it. Use Follow-up date sorting or the follow-up filters to find due reminders. These are reminders inside the app; they do not send messages or notifications.
 
-Status changes, saved note edits and reminder changes also appear automatically. History starts when this update is installed; it cannot reconstruct past changes that the previous version overwrote. The current Note remains a separate editable summary. Re-saving the same value does not add another change event.
+Saved relationship, note and reminder changes appear in the history under More details. Earlier history remains available. When two records resolve to the same Instagram identity, their history moves to the retained person and conflicting context is preserved.
 
-Notes save independently for each person, including when switching leads. Failed drafts remain in the browser for retry and are never labelled Saved. Export waits for pending notes and reports an error if a note cannot be saved.
+## Profile information and backups
 
-When two records resolve to the same Instagram identity, their history moves to the retained person. An unfinished reminder takes precedence over a completed one, then the earlier date wins; conflicts are recorded in the timeline. Distinct notes are combined when they fit the existing note limit. If they do not, the current note stays editable and the other full note is retained in the merge history.
+More details shows the saved bio and when it was read. Refresh profile queues another read; collection must be enabled and an eligible account available before it can finish. Queueing a read is not proof that it completed.
 
-## Workspace backup
-
-Use the existing database backup procedure or `ops/export_workspace.py` for a complete workspace snapshot. Existing saved-view data remains in the database for recovery. Bulk selection, saved views and in-app CSV downloads were removed from the app.
-
-## Refresh profile information
-
-The Profile section shows when the bio was last read and its source. **Refresh profile** queues another read even when a bio already exists. **Refresh queued** means a read is waiting or in progress. It uses the existing extension queue, account budgets and cooldowns; an online account must be available for the read to finish.
+Database backups remain available through the existing operations tools. Bulk selection, saved views and CSV downloads are no longer part of the app workflow. Existing saved-view data remains stored for recovery.

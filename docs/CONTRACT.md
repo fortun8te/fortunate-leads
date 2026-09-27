@@ -242,13 +242,19 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - Old system stays untouched as backup: `~/ig-follower-export`, `~/Documents/Codex/2026-09-23/here-s-the-full-prompt-with-2/work/`.
 
 ## Owner judgement in qualification (2026-09)
+Legacy manual Client labels are promoted once into an empty relationship. Explicit existing relationships are preserved.
+Changing or clearing that relationship removes its old Client alias and records the change, so the alias cannot restore it.
+Person detail includes `note_interpretation`, with state, model, supporting quotes and advisory facts. It never writes a
+relationship or score. Editing a note invalidates its saved interpretation immediately; replies for older note versions
+are discarded. Local note reads use only the fixed loopback Ollama endpoint and require local processing to be enabled.
+
 Setting a status or note (`/mark`) or a manual tag bumps `people.updated_at`, so the next qualify batch re-derives that
-person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
-`input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
-judgement re-runs the model for that person.
+person. The external LLM packet carries `OWNER'S OWN JUDGEMENT` (status) and hand-set tags, but never the private note. The
+external `input_hash` includes status and manual tags. A note edit invalidates the local interpretation without
+triggering a redundant external model call; an explicit relationship or label change rechecks the model inputs.
 Selected examples carry up to six manual tags into future bulk LLM prompts, labelled as Michael's preferences rather
-than proof about another profile. Automatic tags are excluded. Notes remain in the prompt only when qualifying their
-own person; they do not enter examples shown with other leads. A manual tag edit changes future prompt versions without
+than proof about another profile. Automatic tags are excluded. Notes are interpreted by the local Ollama reader and
+are excluded from all external model packets and examples. A manual tag edit changes future prompt versions without
 re-running every prior verdict. The example tracks the person ID, so a
 transferred handle cannot inherit the old owner's mark. `@fortun8te` is treated as Michael's account even if its seed
 row is missing; it is excluded from Laya, bulk LLM and Leadscout candidates. Leadscout/Hermes still receives only public

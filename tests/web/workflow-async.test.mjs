@@ -100,7 +100,10 @@ function createUI() {
     renderDetail() { vm.runInContext('rememberWorkflowForm()', context); mount(); },
     renderRows() {}, loadCounts() {}, loadFacetsSoon() {}, resetLeads() {},
   });
-  vm.runInContext(helperSource + '\n' + workflowSource, context);
+  context.noteQueue = {reconcile() {}};
+  context.document = {hidden:false};
+  const personRefresh = appSource.slice(appSource.indexOf('const personReads ='), appSource.indexOf('function closeDetail()'));
+  vm.runInContext(helperSource + '\n' + personRefresh + '\n' + workflowSource, context);
   function emit(type, target) {
     const event = { target, submitter: nodes.get(target.id === 'activity-form' ? 'activity-save' : 'followup-save'), preventDefault() {} };
     return Promise.all((handlers.get(type) || []).map((handler) => handler(event)));

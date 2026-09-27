@@ -61,7 +61,7 @@ class LaneTest(Base):
         self.seeds('s1', direction='followers')
         self.seeds('s2', direction='following')
         self.assertEqual(self.nxt('a')['job']['direction'], 'following')   # following lists are small and dense: first
-        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})
         acct = self.call('/api/accounts/lane-b', {'label': 'Scout 2'})[1]['account']
         self.assertEqual((acct['label'], acct['name']), ('Scout 2', '@acct.b'))
         self.assertEqual(self.call('/api/accounts/lane-b', {'label': 'x' * 41})[0], 400)
@@ -107,7 +107,7 @@ class LaneTest(Base):
         self.call(f'/api/person/{pid}/read', {})
         self.seeds('s1')
         self.nxt('a')   # a takes the list
-        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})   # b checks in
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})   # b checks in
         self.call('/api/scraper/pause', {'paused': False})
         self.assertEqual(self.call('/api/accounts/lane-b', {'role': 'lists'})[1]['account']['role'], 'lists')
         self.assertIsNone(self.nxt('b', 'profile')['job'])          # a lists-only lane never reads bios
@@ -123,7 +123,7 @@ class LaneTest(Base):
                          (True, {'list': 3000, 'profile': 20}, True, 'spare', 'paused'))
         self.assertEqual(self.nxt('c'), {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'job': None,
                                          'cooldown_until': None, 'stages': {'list': True, 'profile': True}})
-        hb = self.post('c', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'paused'})[1]
+        hb = self.post('c', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'paused'})[1]
         self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'stages': {'list': True, 'profile': True}})
         self.call('/api/accounts/lane-c', {'budget': None})
         self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})
@@ -202,7 +202,7 @@ class LaneTest(Base):
         self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'soft_block',
                                          'retry_at': longer, 'message': 'feedback_required'})
         self.assertIsNone(self.nxt('b', 'list')['job'])
-        heartbeat = self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})[1]
+        heartbeat = self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})[1]
         self.assertFalse(heartbeat['paused'])
         self.assertEqual(heartbeat['stages'], {'list': False, 'profile': False})
         self.assertEqual(heartbeat['cooldown_until'], db.get_setting(self.conn, 'cooldown'))
@@ -217,7 +217,7 @@ class LaneTest(Base):
         db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
         self.conn.commit()
         self.assertEqual(self.nxt('b', 'list')['job']['seed'], 'second')
-        self.assertEqual(self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})[1]['stages'],
+        self.assertEqual(self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})[1]['stages'],
                          {'list': True, 'profile': True})
 
     def test_home_redirect_holds_all_accounts_but_generic_error_does_not(self):
@@ -279,7 +279,7 @@ class LaneTest(Base):
             self.assertEqual(self.call('/api/ext/next')[0], 400)
             self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 400)
 
-    def test_security_warnings_hold_all_stages_and_block_start_engine(self):
+    def test_security_warnings_block_collection_restart_but_allow_local_services(self):
         from unittest.mock import patch
         self.seeds('first', 'second')
         for code in ('login', 'challenge'):
@@ -291,9 +291,11 @@ class LaneTest(Base):
             self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
             self.assertIsNone(self.nxt('b')['job'])
             self.assertEqual(self.nxt('c')['stages'], {'list': False, 'profile': False})
-            with patch.object(server.engine_start, 'start') as launch:
-                self.assertEqual(self.call('/api/engine/start', {})[0], 400)
-                launch.assert_not_called()
+            with patch.object(server.engine_start, 'start', return_value={'ok': True, 'local_services_started': True, 'profiles_opened': 0}) as launch:
+                self.assertEqual(self.call('/api/engine/start', {})[0], 200)
+                launch.assert_called_once()
+                self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+                self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
 
     def test_legacy_resumes_cannot_clear_security_pause_during_shared_hold(self):
         self.seeds('first', 'second')
@@ -355,7 +357,7 @@ class LaneTest(Base):
     def test_profile_only_cooldown_does_not_mask_list_readiness(self):
         self.nxt('a', 'list')
         future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-        self.post('a', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'cooldown',
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'cooldown',
                                              'cooldown_until': future, 'cool': {'list': None, 'profile': future}})
         row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
         now = datetime.now(timezone.utc)
@@ -400,8 +402,8 @@ class LaneTest(Base):
     def test_main_takes_lists_when_alts_reach_their_budget(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
-        self.post('a', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle'})
-        self.post('b', '/api/ext/heartbeat', {'version': '3.9.0', 'state': 'idle', 'today': {'list': 1}})
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle', 'today': {'list': 1}})
         self.call('/api/accounts/lane-b', {'budget': {'list': 1, 'profile': 300}})
         self.seeds('s1')
         self.assertIsNone(self.nxt('b', 'list')['job'])
@@ -410,8 +412,8 @@ class LaneTest(Base):
     def test_pick_job_rechecks_eligibility_after_pause_and_identity_switch(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
-        self.post('a', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})
-        self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.15', 'state': 'idle'})
         self.seeds('s1')
         now = datetime.now(timezone.utc)
         self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
@@ -421,7 +423,7 @@ class LaneTest(Base):
         self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
         self.call('/api/ext/heartbeat', {'lane_id': 'lane-a',
                   'account': {'ig_id': '999', 'handle': 'newacct'},
-                  'version': '3.9.12', 'state': 'idle'})
+                  'version': '3.9.15', 'state': 'idle'})
         self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['seed'], 's1')
 
     def test_main_takes_followers_when_every_alt_endpoint_is_waiting(self):

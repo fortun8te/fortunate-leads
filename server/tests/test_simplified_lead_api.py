@@ -42,7 +42,7 @@ class SimplifiedLeadApi(Base):
             self.assertEqual(code, 200)
             self.assertEqual(out['converted_to_status'], 'client')
             self.assertEqual(self.conn.execute('SELECT status,note FROM marks').fetchone()[:], ('client', 'Keep my note'))
-            self.assertEqual({r[0] for r in self.conn.execute('SELECT tag FROM tags')}, {'Client', 'New'})
+            self.assertEqual({r[0] for r in self.conn.execute('SELECT tag FROM tags')}, {'New'})
             latest = self.conn.execute("SELECT before_value,after_value FROM activity WHERE kind='status' ORDER BY id DESC LIMIT 1").fetchone()
             self.assertEqual(latest[:], ('"' + status + '"', '"client"'))
 

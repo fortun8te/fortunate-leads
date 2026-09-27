@@ -18,7 +18,7 @@ from owner import owner_status, owner_recommendation
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q8-owner'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
+PROMPT_VERSION = 'q9-private-notes'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 PREFILTER_VERSION = 'p3-owner'  # bump when an existing Laya-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
@@ -596,7 +596,7 @@ READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person s
 RESEARCH_RULES = """Evidence sources must stay separate. A search result can concern someone else with the same name;
 never use search snippets alone to establish this profile's identity, business role, ownership or badges. The website
 linked from the Instagram profile may establish that the linked business sells products, but a founder claim on its
-page does not prove this person founded it. Owner notes and manual tags are first-hand context; interpret who each sentence refers to, including negations, uncertainty and past events. Quote the profile, owner note/tag, linked website or search result exactly; do not present
+page does not prove this person founded it. Manual tags are first-hand context. Private notes are unavailable to this model. Quote the profile, owner tag, linked website or search result exactly; do not present
 an outside source as words from the Instagram profile."""
 
 SCHEMA = """Reply with one compact JSON object only, no prose:
@@ -681,13 +681,10 @@ OWNER_STATUS = {'interested': 'Interested (worth contacting)', 'contacted': 'Con
 
 
 def owner_lines(person):
-    """Michael's own judgement on this person (status, note, his hand-set tags): labelled so the model weighs it above guesses."""
+    """Michael's own judgement on this person (status and his hand-set tags): labelled so the model weighs it above guesses."""
     out = []
     if person.get('status') in OWNER_STATUS:
         out.append(f"OWNER'S OWN JUDGEMENT - status Michael set himself: {OWNER_STATUS[person['status']]}")
-    note = re.sub(r'\s+', ' ', str(person.get('note') or '')).strip()
-    if note:
-        out.append(f"OWNER'S OWN NOTE (Michael wrote this; trust it over the bio): {note[:5000]}")
     if person.get('manual_tags'):
         out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags']))
         if person.get('status') not in ('client', 'no') and any(
@@ -697,7 +694,7 @@ def owner_lines(person):
     if out:
         out.append("(Lines marked OWNER come from Michael himself: follow them. Explicit pipeline status takes precedence over conflicting labels. "
                    "Client and Talking confirm an existing relationship and reachability. Keep business fit evidence-based; "
-                   "a relationship does not prove a business role. Read the whole note, including qualifications and negations.)")
+                   "a relationship does not prove a business role. Private notes are interpreted locally and are never included here.)")
     return out
 
 
@@ -772,7 +769,7 @@ def prompt_version(examples=None):
 SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 {"id": <the id>, "handle": "the exact profile handle", "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
- "evidence": ["up to 3 short exact quotes from the bio, name, OWNER note, manual tags, linked website or WEB RESEARCH lines that support the verdict"],
+ "evidence": ["up to 3 short exact quotes from the bio, name, manual tags, linked website or WEB RESEARCH lines that support the verdict"],
  "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
  "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
 Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
@@ -827,8 +824,7 @@ def _site_is_this_account(person, site):
 def _evidence_sources(v, person):
     # Keep outside text out of bio/name. Source labels survive in persisted evidence
     # and the displayed reason, so a search snippet cannot look like a profile quote.
-    fields = [('Your note', str(person.get('note') or ''))]
-    fields += [('Your tag', str(tag)) for tag in person.get('manual_tags') or []]
+    fields = [('Your tag', str(tag)) for tag in person.get('manual_tags') or []]
     fields += [('Profile', str(person.get(k) or '')) for k in ('bio', 'name')]
     site = _linked_site(person)
     if site:
@@ -894,7 +890,7 @@ def _verdict(v, person, tags, used, version, net=None):
     sourced = _evidence_sources(v, person)
     if not sourced:
         return None
-    owner_source = str(person.get('note') or '') + '\n' + '\n'.join(person.get('manual_tags') or [])
+    owner_source = '\n'.join(person.get('manual_tags') or [])
     owner_person = {'bio': owner_source}
     profile_source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
     site = _linked_site(person)
@@ -1031,6 +1027,5 @@ def input_hash(person: dict, edges=None, net=None) -> str:
     keys = ('handle', 'name', 'bio', 'website', 'category', 'followers', 'following', 'posts',
             'is_private', 'is_verified', 'is_business')
     payload = ['content-v1', PROMPT_VERSION, [person.get(k) for k in keys],
-               [person.get('status'), (person.get('note') or '').strip(),
-                sorted(person.get('manual_tags') or [])]]
+               [person.get('status'), sorted(person.get('manual_tags') or [])]]
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]

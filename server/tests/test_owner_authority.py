@@ -45,13 +45,14 @@ class OwnerAuthority(unittest.TestCase):
         self.assertNotIn('Client', {t['tag'] for t in server.api_person(self.conn, {}, {}, self.pid)['tags']})
         self.assertEqual(self.conn.execute("SELECT source FROM tags WHERE person_id=? AND tag='Client'", (self.pid,)).fetchone()[0], 'manual')
 
-    def test_explicit_no_has_one_clear_owner_conflict_and_blocks_positive_recommendation(self):
+    def test_explicit_no_replaces_legacy_client_relationship(self):
         self.conn.execute("INSERT INTO tags VALUES(?,'Client','signal','manual')", (self.pid,))
         server.set_status(self.conn, [self.pid], status='no')
         server.requalify(self.conn, self.person(), None)
         result = server.api_person(self.conn, {}, {}, self.pid)
         self.assertEqual(result['owner_status'], 'no')
-        self.assertIn('conflicts', result['owner_conflict'])
+        self.assertIsNone(result['owner_conflict'])
+        self.assertNotIn('Client', {t['tag'] for t in result['tags']})
         self.assertEqual(result['score'], 0)
         self.assertEqual(qualify.prefilter(self.person(), [], laya_fit=100), 0)
 
@@ -76,14 +77,12 @@ class OwnerAuthority(unittest.TestCase):
         server.set_status(self.conn, [self.pid], note=note)
         person = self.person()
         self.assertEqual(person['note'], note)
-        self.assertIn('He is founder of a skincare brand.', '\n'.join(qualify.owner_lines(person)))
+        self.assertNotIn('He is founder of a skincare brand.', '\n'.join(qualify.owner_lines(person)))
         before = qualify.input_hash(person)
-        self.assertNotEqual(before, qualify.input_hash(dict(person, note=note + ' We talked yesterday.')))
+        self.assertEqual(before, qualify.input_hash(dict(person, note=note + ' We talked yesterday.')))
         verdict = qualify._verdict({'role': 'buyer', 'fit': 80, 'evidence': ['founder of a skincare brand'],
             'decision_maker': True}, person, [], 'offline-test', 'test')
-        self.assertEqual(verdict['role'], 'buyer')
-        self.assertIn('Your note', verdict['reason'])
-        self.assertIn('Your note', verdict['evidence'][0])
+        self.assertIsNone(verdict)  # Private note cannot support an external verdict.
 
     def test_local_laya_cannot_be_bypassed_by_omitting_flag(self):
         db.set_setting(self.conn, 'qualify', False)

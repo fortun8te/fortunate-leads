@@ -123,6 +123,6 @@ class StatusPipelineTest(Base):
         packet = qualify._packet(after, [], [])
         self.assertIn("OWNER'S OWN JUDGEMENT", packet)
         self.assertIn('Not a fit', packet)
-        self.assertIn('Sells wholesale only', packet)
+        self.assertNotIn('Sells wholesale only', packet)
         self.call(f'/api/person/{pid}/tags', {'add': ['Wholesale']})
         self.assertIn('Wholesale', qualify._packet(p(), [], []))

@@ -24,11 +24,11 @@ const account = (changes = {}) => ({
   today: { list: 12, profile: 3 }, hour: { people: 60 }, ...changes,
 });
 
-test('account card leads with access and work, with counts and controls in Advanced', () => {
+test('account card leads with access and work, with counts and controls in account settings', () => {
   const html = view.accountRow(account());
-  assert.match(html, /Access[\s\S]*Connected[\s\S]*Work · Lists/);
-  assert.ok(html.indexOf('Advanced') > html.indexOf('Work · Lists'));
-  assert.ok(html.indexOf('Today · workspace caps') > html.indexOf('Advanced'));
+  assert.match(html, /Access[\s\S]*Connected[\s\S]*Collection/);
+  assert.ok(html.indexOf('Account settings') > html.indexOf('Collection'));
+  assert.ok(html.indexOf('Today · workspace caps') > html.indexOf('Account settings'));
   assert.match(html, /data-pause>Pause/);
   assert.match(html, /data-role="lists"/);
   assert.match(html, /data-bud/);
@@ -40,7 +40,7 @@ test('account card leads with access and work, with counts and controls in Advan
 test('Accounts uses one concise summary instead of KPI tiles', () => {
   assert.match(html, /id="acc-summary"[^>]*aria-live="polite"/);
   assert.doesNotMatch(html, /id="acc-kpis"/);
-  assert.match(source, /profiles online · .*people found this hour/);
+  assert.match(source, /need attention/);
 });
 
 test('polling keeps each account Advanced state and focused control', () => {
@@ -74,7 +74,7 @@ test('polling keeps each account Advanced state and focused control', () => {
     $, document, A: { starting: false, wiz: null, dismissed: false, renaming: null },
     S: { sc: { accounts: [{ lane_id: 'first', online: true }, { lane_id: 'second', online: true }], alerts: [], rate: { people_last_hour: 12 } }, scStale: false },
     accountRow: (account) => `<section data-lane="${account.lane_id}"></section>`,
-    esc: String, int: String,
+    esc: String, int: String, accountAccess: view.accountAccess,
   });
   vm.runInContext(`${renderSource}\nrenderAccounts()`, context);
   list.rows[0].details.open = true;
@@ -95,14 +95,13 @@ test('navigation uses a settings gear and removes the keyboard help button while
   assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
 
-test('Accounts Start engine opens the configured startup path and reports its progress', () => {
-  assert.match(html, /id="acc-start">Start engine/);
+test('Accounts Start local services opens the configured startup path and reports its progress', () => {
+  assert.match(html, /id="acc-start">Start local services/);
   assert.match(html, /id="acc-start-status"[^>]*role="status"/);
-  assert.match(html, /opens the configured Chrome profiles, starts Laya, and resumes list and bio collection/i);
-  assert.match(html, /Your external AI setting stays as it is/);
+
   assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
   assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
-  assert.match(source, /Engine started.*configured Chrome profiles/);
+  assert.match(source, /Local services started\. Collection and checking mode are unchanged/);
 });
 
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {

@@ -28,7 +28,7 @@ class IngestMapIntegration(unittest.TestCase):
         c = self.conn
         self.assertTrue(db.queue_list(c, 'brandseed', 'following', refresh=refresh))
         c.commit()
-        job = server.ext_next(c, {'lane': ['lane-a']}, {})['job']
+        job = server.ext_next(c, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
         self.assertIsNotNone(job)
         result = server.ext_list_page(c, {'lane': ['lane-a']}, {
             'job_id': job['id'], 'seed': job['seed'], 'direction': job['direction'],
