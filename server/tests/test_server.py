@@ -146,13 +146,14 @@ class ServerTest(Base):
         job = self.call(url)[1]['job']
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
         s = self.call('/api/scraper')[1]
-        self.assertIsNone(s['ext']['cooldown_until'])  # bios are still available
+        self.assertTrue(db.get_setting(self.conn, 'cooldown'))
         self.assertTrue(s['accounts'][0]['cool']['list'].startswith('2099-01-01'))
         self.assertEqual(s['queue']['list'], 1)
         self.assertIsNone(self.call(url)[1]['job'])  # the blocked target does not bounce to another lane
         self.conn.execute("UPDATE jobs SET retry_not_before=NULL WHERE id=?", (job['id'],))
         self.conn.execute("UPDATE accounts SET list_cool_until=NULL WHERE lane_id='default'")
         self.conn.execute("UPDATE account_identity_state SET list_cool_until=NULL WHERE lane_id='default' AND ig_id='99'")
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
         self.conn.commit()
         job = self.call(url)[1]['job']
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'private', 'reason': 'profile_private_wall',
@@ -898,6 +899,7 @@ class AuditTest(Base):
                 # Instagram cooldown elapsing before the next attempt.
                 self.conn.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
                 self.conn.execute("UPDATE accounts SET list_cool_until=NULL WHERE lane_id='default'")
+                db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
                 self.conn.commit()
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'queued')
         job = self.call('/api/ext/next')[1]['job']

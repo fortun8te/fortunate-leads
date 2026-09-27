@@ -114,10 +114,19 @@ def edge_history_of(conn, pid):
 
 # ---------- extension endpoints ----------
 
+def workspace_cooldown(conn, now):
+    """A persisted Instagram warning pauses collection across all browser accounts."""
+    value = clean_iso(db.get_setting(conn, 'cooldown'))
+    until = utc(value) if value else None
+    return value if until and until > now else None
+
+
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
+    cooling = workspace_cooldown(conn, datetime.now(timezone.utc))
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
-            'stages': {k: k not in control.paused_kinds(conn) for k in ('list', 'profile')}}
+            'stages': {k: not cooling and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
+            **({'cooldown_until': cooling} if cooling else {})}
 
 
 def ext_next(conn, q, b):
@@ -151,9 +160,12 @@ def ext_next(conn, q, b):
             conn.commit()
             return dict(st, job=None, upgrade_required=True, minimum_version='3.8.0')
 
-    if st['paused']:  # cooldowns are the extension's job; the server only records them for display
+    if st['paused']:
         conn.commit()
-        return dict(st, job=None, cooldown_until=None)
+        return dict(st, job=None, cooldown_until=st.get('cooldown_until'))
+    if st.get('cooldown_until'):
+        conn.commit()
+        return dict(st, job=None)
     stopped = control.paused_kinds(conn)   # a stage paused on the control strip hands out none of its jobs
     st['stages'] = {'list': 'list' not in stopped, 'profile': 'profile' not in stopped}
     kinds = [k for k in accounts.kinds_for(conn, row, kinds, now) if k not in stopped]
@@ -522,9 +534,19 @@ def ext_error(conn, q, b):
             conn.commit()
             return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
-    if code in ('rate_limit', 'soft_block'):
-        until = clean_iso(b.get('retry_at')) or iso(datetime.now(timezone.utc) + timedelta(minutes=15))
+    home_redirect = code == 'other' and b.get('reason') == 'list_html_home_redirect' and was_list
+    if code in ('rate_limit', 'soft_block') or home_redirect:
+        now = datetime.now(timezone.utc)
+        # Keep the longest known wait. A second account's shorter warning must
+        # never reopen collection while the first one is still cooling.
+        deadlines = [now + timedelta(minutes=30 if home_redirect else 15)]
+        for value in (b.get('retry_at'), b.get('retry_after'), db.get_setting(conn, 'cooldown')):
+            clean = clean_iso(value)
+            if clean:
+                deadlines.append(utc(clean))
+        until = iso(max(deadlines))
         db.set_setting(conn, 'cooldown', until)
+    if code in ('rate_limit', 'soft_block'):
         fields['cooldown_until'] = until
         if was_list:
             fields['list_cool_until'] = until
@@ -1410,9 +1432,10 @@ def map_graph(conn, q):
 
 def ext_aggregate(conn, accts, now):
     """The old single-extension `ext` block, now summed over lanes (one lane: exactly what it reported)."""
+    shared_wait = workspace_cooldown(conn, now)
     if not accts:
         ext = db.get_setting(conn, 'ext') or {}
-        cooldowns = [c for c in (ext.get('cooldown_until'), db.get_setting(conn, 'cooldown')) if c and utc(c) > now]
+        cooldowns = [c for c in (ext.get('cooldown_until'), shared_wait) if c and utc(c) > now]
         return {'online': bool(ext.get('last_seen')) and now - utc(ext['last_seen']) < timedelta(seconds=60),
                 'version': ext.get('version'), 'state': ext.get('state'),
                 'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
@@ -1425,13 +1448,16 @@ def ext_aggregate(conn, accts, now):
     first = (running or sorted(live, key=lambda a: a['last_seen'] or '', reverse=True))[0]
     cools = [a['cooldown_until'] for a in live if a['cooldown_until']]
     all_cool = len(cools) == len(live) and cools
+    wait_until = min(cools) if all_cool else None
+    if shared_wait and (not wait_until or utc(shared_wait) > utc(wait_until)):
+        wait_until = shared_wait
     rate = accounts.aggregate_rate(accts)
     errs = sorted((a for a in accts if a['last_error']), key=lambda a: a['last_seen'] or '')
     prefix = (lambda a, t: f"{a['name']}: {t}" if t and many else t)
     last_error = errs[-1]['last_error'] if errs else (db.get_setting(conn, 'last_error') or {}).get('message')
     return {'online': any(a['online'] for a in accts), 'version': max((a['version'] or '' for a in accts), default=None) or None,
             'state': 'running' if running else first['state'],
-            'cooldown_until': min(cools) if all_cool else None,
+            'cooldown_until': wait_until,
             'today': {k: sum(a['today'][k] for a in accts) for k in ('list', 'profile')},
             'budget': db.get_setting(conn, 'budget'), 'last_seen': max(a['last_seen'] or '' for a in accts) or None,
             'activity': prefix(first, first['activity']), 'text': prefix(first, first['text']),
