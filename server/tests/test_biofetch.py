@@ -36,6 +36,17 @@ class T(unittest.TestCase):
     def row(self, h):
         return self.conn.execute('SELECT * FROM people WHERE handle=?', (h,)).fetchone()
 
+    def test_shared_warning_stops_graph_calls_and_expiry_allows_pending_work(self):
+        biofetch.save(self.conn, {'on': True, 'token': 'tok', 'ig_user_id': '999'})
+        for value in ('2099-01-01T00:00:00Z', 'not-a-date', 42, False):
+            db.set_setting(self.conn, 'cooldown', value)
+            self.assertFalse(biofetch.step(self.conn, self.t))
+            self.assertEqual(self.calls, [])
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.replies = [(200, OK, {})]
+        self.assertTrue(biofetch.step(self.conn, self.t))
+        self.assertEqual(len(self.calls), 1)
+
     def test_off_by_default(self):
         self.assertFalse(biofetch.step(self.conn, self.t))
         self.assertEqual(self.calls, [])
