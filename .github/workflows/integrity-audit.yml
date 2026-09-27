@@ -1,0 +1,46 @@
+name: Integrity audit
+
+on:
+  push:
+    branches: [review/2026-09-27-integrity-audit]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrity-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Record source under review
+        run: |
+          mkdir -p audit-output
+          git rev-parse HEAD > audit-output/commit.txt
+          git archive --format=tar.gz --output=audit-output/source.tar.gz HEAD
+      - name: Retain source for reproducible review
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrity-audit-source
+          path: audit-output/
+          retention-days: 3
+      - name: Python server regression tests
+        run: python3 -m unittest discover -s server/tests -v
+      - name: Sidecar regression tests
+        if: always()
+        run: python3 -m unittest sidecar/test_laya.py -v
+      - name: Extension regression tests
+        if: always()
+        run: node --test extension/test/*.test.mjs
+      - name: Web regression tests
+        if: always()
+        run: |
+          find web -type f -name '*.test.mjs' -print0 | xargs -0 -r node --test
