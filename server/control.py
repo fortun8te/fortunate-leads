@@ -22,9 +22,6 @@ HELP = {
           'Pause stops new model calls; no Instagram requests are involved.',
 }
 KIND = {'lists': 'list', 'bios': 'profile'}
-BREAK_S = 20   # a list clock further out than the longest normal gap (12 s) + slack means the account is on a break
-
-
 def utc(s):
     try:
         d = datetime.fromisoformat(str(s).replace('Z', '+00:00'))
@@ -105,8 +102,6 @@ def lane_wait(conn, row, kind, now):
     u = utc(ready.get(kind)) if ready.get(kind) else None
     if u and u > now:
         sec = int((u - now).total_seconds())
-        if kind == 'list' and sec > BREAK_S:
-            return 'Short break to look human', sec
         return 'Waiting between requests', sec
     return None
 

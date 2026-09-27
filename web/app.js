@@ -126,11 +126,6 @@ const youLink = (r) => { const tags = r.tags || []; const names = tags.map(tagNa
   return facts.join(' · ');
 };
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
-function connHTML(r) {
-  const n = lists(r), via = viaSeeds(r), you = youLink(r), historical = Math.max(0, (r.history_lists || 0) - n);
-  return `<span class="c1">${r.connection_strength != null ? `Connection ${esc(r.connection_strength)} · ` : ''}${n ? `Observed in ${plural(n, 'list')}` : historical ? 'No recently verified lists' : 'No lists'}${historical ? ` · ${historical} historical/unverified` : ''}${you ? ` · <em>${you}</em>` : ''}</span>${via.length ? `<span class="c2">via ${seedList(via, 2)}</span>` : ''}`;
-}
-
 // ---------- state ----------
 const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
@@ -141,7 +136,7 @@ const S = {
   cur: -1, open: null, person: null, seedCard: null,
   pick: new Set(), anchor: -1, picking: false,
   tagMore: {}, tagFind: '', saving: false,
-  side: store.get('side', true), fmore: store.get('fmore', false),
+  side: false, fmore: store.get('fmore', false),
 };
 
 // ---------- filter <-> query string ----------
@@ -387,7 +382,7 @@ $('#density-btn').onclick = () => applyDensity(document.documentElement.dataset.
 const narrow = () => window.innerWidth <= 900;
 function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
-  S.side = !S.side; store.set('side', S.side);
+  S.side = !S.side;
   $('#view-work').classList.toggle('work-noside', !S.side);
   syncFilterToggle(); renderRows(); M.resize();
 }
@@ -852,24 +847,31 @@ const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
 // describe a lead; they are not verdicts and should not all look like warnings.
 const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
 const MAYBE_TAGS = new Set(['Scout: Possible', 'Fit: good']);
-const ROLE_TAGS = new Set(['Founder', 'Brand', 'Store', 'AI: Decision maker']);
-const PLUS_TAGS = new Set(['AI: Runs ads', 'AI: US market', 'Shopify', 'Shop Link', 'US', 'US market', 'DTC']);
+const DECISION_TAGS = new Set(['Founder', 'AI: Decision maker']);
+const ROLE_TAGS = new Set(['Brand', 'Store']);
+const PLUS_TAGS = new Set(['AI: Runs ads', 'Shopify', 'Shop Link', 'DTC']);
+const MARKET_TAGS = new Set(['AI: US market', 'US', 'US market']);
 const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
-const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
+const PARTNER_TAGS = new Set(['Agency', 'Freelancer', 'Creative', 'Supplier']);
+const SOFT_TAGS = new Set(['Creator', 'Coach', 'Personal', 'SaaS', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
   const name = tagName(t);
+  // Personal labels stay neutral; adding one is not an automatic fit verdict.
   if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (FLAG_TAGS.has(name)) return 'flag';
   if (HERO_TAGS.has(name)) return 'hero';
   if (MAYBE_TAGS.has(name)) return 'maybe';
+  if (PARTNER_TAGS.has(name)) return 'partner';
   if (SOFT_TAGS.has(name)) return 'review';
+  if (DECISION_TAGS.has(name)) return 'decision';
   if (ROLE_TAGS.has(name) || t.grp === 'role') return 'role';
+  if (MARKET_TAGS.has(name)) return 'market';
   if (PLUS_TAGS.has(name)) return 'plus';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
 }
-const TIER_ORDER = { hero: 0, flag: 1, maybe: 2, role: 3, plus: 4, own: 5, niche: 6, review: 7, ctx: 8, '': 8, min: 9 };
+const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
@@ -890,6 +892,7 @@ function whyHTML(r) {
   return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
 }
 const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}" title="${esc(SDESC[s])}"><i></i>${slabel(s)}</span>` : '';
+const rowFitHTML = (r) => `<span class="row-fit f-${fitOf(r)}" aria-label="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)}" title="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)} · Priority ${r.score == null ? 'unavailable' : esc(r.score)}"><i></i><b>${r.business_fit == null ? '–' : esc(r.business_fit)}</b></span>`;
 // One-click "open on Instagram": a plain link, so the row / map click underneath never fires.
 const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${encodeURIComponent(h)}/" target="_blank" rel="noopener" title="Open on Instagram (o)" aria-label="Open @${esc(h)} on Instagram"><svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></a>`;
 const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
@@ -900,13 +903,12 @@ function rowHTML(r, i, h) {
   const tags = rowTags(r);
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div></div>
-    <div class="c-fit">${fitBadge(r)}<small class="priority">Priority ${r.score == null ? '–' : esc(r.score)}</small></div>
-    <div class="conn c-conn">${connHTML(r)}</div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div></div>
     <div class="tags c-tags">${tags.slice(0, 3).map((t) => tagChip(t)).join('')}${tags.length > 3 ? `<span class="more" title="${esc(tags.slice(3).map((t) => t.tag).join(' · '))}">+${tags.length - 3}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
+    <div class="c-fit">${rowFitHTML(r)}</div>
     <span class="c-st">${statHTML(r.status)}</span>
-    <div class="mnum">${fitBadge(r)}<span>Priority ${r.score == null ? '–' : esc(r.score)} · Connection ${r.connection_strength == null ? '–' : esc(r.connection_strength)}</span>${statHTML(r.status)}</div>
+    <div class="mnum"><span class="num">${fmt(r.followers)} followers</span>${rowFitHTML(r)}</div>
   </div>`;
 }
 function renderRows() {
@@ -1178,11 +1180,16 @@ function closeDetail() {
   renderRows(); M.resize();
   detailAccess.close();
 }
-// One row per seed; both directions read as mutual.
-function seedEdges(edges) {
-  const m = new Map();
-  for (const e of edges) { if (!m.has(e.seed)) m.set(e.seed, new Set()); if (e.direction) m.get(e.seed).add(e.direction); }
-  return [...m];
+function edgeDay(value) { const date = String(value || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : ''; }
+function connectionEvidenceHTML(current, historical) {
+  const direction = (e) => e.direction === 'followers' ? `They followed @${e.seed}` : e.direction === 'following' ? `@${e.seed} followed them` : 'Seen in a list';
+  const seen = (value, label) => { const day = edgeDay(value); return day ? `<time datetime="${esc(day)}">${label} ${esc(day)}</time>` : `${label} date unavailable`; };
+  const active = current.length ? current.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by @${esc(e.seed)}"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${seen(e.observed_at, 'Seen')}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>';
+  const earlier = historical.length ? `<h4 class="d-history-heading">Earlier observations</h4><div class="edges d-history-edges">${historical.map((e) => {
+    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? ` · ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')} · not reverified`;
+    return `<div class="d-history-row"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${timing}</span></div>`;
+  }).join('')}</div>` : '';
+  return `<div class="edges">${active}</div>${earlier}`;
 }
 const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
 // The Hermes leadscout's final read: verdict, two sentences and the pages it used.
@@ -1264,44 +1271,50 @@ function renderDetail() {
   const quick = (S.tagList || []).filter((t) => t.grp !== 'source' && !have.has(t.tag)).sort((a, b) => b.total - a.total).slice(0, 6);
   const reason = p.reason || v.reason;
   const ev = evidenceOf(v);
-  const you = youLink(p);
+  const you = p.relationship === 'mutual' ? 'You follow each other (seen)' : p.relationship === 'follows' ? 'They follow you (seen)' : p.relationship === 'followed' ? 'You follow them (seen)' : youLink(p);
   const role = p.role || v.role;
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
   panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${p.handle ? igLink(p.handle) : ''}${role ? ' · ' + esc(ucf(role)) : ''}</span>${p.category ? `<span>${esc(p.category)}</span>` : ''}</div>
+      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
       <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
+    <div class="d-primary">
+      ${p.handle ? `<a class="btn solid d-instagram" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Open Instagram ↗</a>` : ''}
+      <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>
+      ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
+    </div>
     <div class="d-sec d-fit">
-      <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}<span class="muted">${esc(modelLabel(v.model))}</span></div>
-      ${p.loading ? '' : `<p class="muted">Business fit ${p.business_fit == null ? 'unavailable' : esc(p.business_fit)} · Connection signal ${p.connection_strength == null ? 'unavailable' : esc(p.connection_strength)} · Priority ${p.score == null ? 'unavailable' : esc(p.score)} (60% connection signal, 40% business fit). A follow or shared list does not prove a personal relationship.</p>`}
-      <p class="d-reason${reason ? '' : ' muted'}">${reason ? esc(reason) : p.loading ? '' : 'No verdict yet'}</p>
-      ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}</div>
+      <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}${p.score == null ? '' : `<span class="muted">Priority ${esc(p.score)}</span>`}</div>
+      ${reason ? `<p class="d-reason">${esc(reason)}</p>` : !p.loading ? '<p class="d-reason muted">No qualification yet</p>' : ''}
+    </div>
+    <section class="d-sec d-tags-section"><h4>Tags</h4>
+      <div class="d-tags">${tags.length ? tags.map((t) => `<span class="d-tag-item">${tagChip(t)}${t.source === 'manual' ? `<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button>` : ''}</span>`).join('') : '<span class="muted">No tags yet</span>'}</div>
+      <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add tag</button></form>
+      ${quick.length ? `<div class="quick-tags" aria-label="Suggested tags">${quick.slice(0, 4).map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}
+    </section>
+    <section class="d-sec d-status-section"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" aria-label="${esc(slabel(s))}: ${esc(SDESC[s])}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></section>
+    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them or what to do next…">${esc(noteVal)}</textarea></section>
     ${workflowSummaryHTML(p)}
-    ${scoutHTML(p.scout)}
-    <div class="d-sec"><h4>Connections<span class="grow"></span><span class="num">${n ? 'Observed in ' + plural(n, 'list') : ''}</span></h4>
-      ${you ? `<div class="you-line">${you}</div>` : ''}
-      <div class="edges">${edges.length ? seedEdges(edges).map(([seed, d]) => { const at = edges.filter((e) => e.seed === seed).map((e) => e.observed_at).filter(Boolean).sort().slice(-1)[0]; return `<button data-seed="${esc(seed)}" title="Filter by this seed"><b>@${esc(seed)}</b><span>${d.size > 1 ? 'Mutual follow observed' : d.has('following') ? 'Seed followed them when checked' : d.has('followers') ? 'They followed seed when checked' : ''}${at ? ` · Seen ${esc(at.slice(0, 10))}` : ''}</span></button>`; }).join('') : '<span class="muted">No recently verified follows</span>'}</div>
-      ${oldEdges.length ? `<p class="muted">Earlier list evidence</p><div class="edges">${oldEdges.map((e) => `<button disabled title="Historical list evidence"><b>@${esc(e.seed)}</b><span>${e.direction === 'following' ? 'Seed followed them' : 'They followed seed'} · ${e.state === 'absent' ? `Not found when checked ${esc((e.checked_at || '').slice(0, 10))}` : `Previously seen ${esc((e.first_seen || '').slice(0, 10))}; not reverified`}</span></button>`).join('')}</div>` : ''}</div>
-    <div class="d-sec"><h4>Profile</h4><div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
-      <div class="d-links">
-        ${p.handle ? `<a class="btn solid" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Instagram <kbd>o</kbd></a>` : ''}
-        ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : site ? `<span class="btn">${esc(site)}</span>` : ''}</div>
-      <p class="muted profile-freshness">${p.bio_at ? 'Last read ' + esc(new Date(p.bio_at).toLocaleString()) : 'No recorded profile read'}</p>
+    <details class="d-sec d-disclosure" data-detail-section="connections" data-owner="${p.id}" ${view.sections.connections ? 'open' : ''}><summary>Connections <span class="num">${n ? plural(n, 'list') : 'None'}</span></summary>
+      ${you ? `<p class="d-connection-you">${esc(you)}</p>` : ''}
+      ${connectionEvidenceHTML(edges, oldEdges)}
+    </details>
+    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile and evidence</summary>
+      ${p.category ? `<p class="d-category">${esc(p.category)}</p>` : ''}
+      <div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
+      <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
+      ${site && !url ? `<p class="muted">${esc(site)}</p>` : ''}
+      <p class="muted profile-freshness">${p.bio_at ? 'Profile read ' + esc(new Date(p.bio_at).toLocaleDateString()) : 'Profile not read yet'} · ${esc(profile.source)}</p>
       ${profile.message ? `<p class="${profile.failed ? 'bad' : 'muted'} profile-freshness" role="status">${esc(profile.message)}</p>` : ''}
-      <details class="adv d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile details</summary>
-        <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
-        <p class="muted profile-freshness">${esc(profile.source)}</p>
-        ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}</details></div>
-    ${websiteEvidence(p.site)}
-    <div class="d-sec"><h4>Tags</h4><div class="d-tags">${tags.length ? tags.map((t) => tagChip(t, t.source === 'manual')).join('') : '<span class="muted">None</span>'}</div>
-      <div class="d-tag-edit">
-        <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add tag" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn">Add <kbd>t</kbd></button></form>
-        ${quick.length ? `<div class="quick-tags">${quick.map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}</div></div>
-    <div class="d-sec"><h4>Status</h4><div class="marks">${STATUSES.map((s, i) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b><span>${esc(SDESC[s])}</span><kbd>${i + 1}</kbd></button>`).join('')}</div></div>
-    <div class="d-sec"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Write anything: how you know them, what to pitch, when to follow up">${esc(noteVal)}</textarea></div>${workflowHTML(p)}`;
+      ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}
+      ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
+      ${websiteEvidence(p.site)}
+      ${scoutHTML(p.scout)}
+    </details>
+    <details class="d-sec d-disclosure" data-detail-section="activity" data-owner="${p.id}" ${view.sections.activity ? 'open' : ''}><summary>Activity</summary>${workflowHTML(p)}</details>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   wireWorkflow(p);
@@ -1651,7 +1664,7 @@ function setHelp(open) {
   } else {
     help.hidden = true;
     if (helpReturnFocus?.isConnected) helpReturnFocus.focus({ preventScroll: true });
-    else $('#help-btn').focus({ preventScroll: true });
+    else $('.tabs a.on')?.focus({ preventScroll: true });
     helpReturnFocus = null;
   }
 }
@@ -1744,7 +1757,6 @@ document.addEventListener('keydown', (e) => {
     if (S.open !== r.id) openDetail(r.id).then(focusTag); else focusTag();
   }
 });
-$('#help-btn').onclick = () => setHelp(true);
 $('#help').onclick = () => setHelp(false);
 
 // ---------- tags manager ----------
@@ -1793,40 +1805,32 @@ const T = {
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
     const fit = auto.filter((t) => ['hero', 'maybe'].includes(tagTier(t)));
-    const roles = auto.filter((t) => tagTier(t) === 'role');
-    const evidence = auto.filter((t) => tagTier(t) === 'plus');
+    const business = auto.filter((t) => ['decision', 'role', 'plus', 'market', 'partner'].includes(tagTier(t)));
     const caution = auto.filter((t) => ['flag', 'review'].includes(tagTier(t)));
-    const highlighted = new Set([...fit, ...roles, ...evidence, ...caution]);
+    const highlighted = new Set([...fit, ...business, ...caution]);
     const rest = auto.filter((t) => !highlighted.has(t));
-    const G = [
-      ['niche', 'Product categories', 'What they make or sell.'],
-      ['signal', 'Other profile clues', 'Hiring, contact details and similar.'],
-      ['size', 'Audience size', 'Follower count bands.'],
-      ['via', 'Where we found them', 'The account whose list they came from.'],
-      ['source', 'Collection and follows', 'In several lists, follows you, you follow them.'],
+    const groups = [
+      ['niche', 'Products'], ['signal', 'Other clues'], ['size', 'Audience size'],
+      ['via', 'Found via'], ['source', 'Collection'],
     ];
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['niche', 'signal', 'size', 'source']);
     const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
-    const sec = (key, title, desc, list, cls = '') => {
+    const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
-      list = [...list].sort((a, b) => (key === 'fit' || key === 'caution' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : key === 'fit' ? 6 : 12;
-      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
-        <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
-          : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
+      list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : 10;
+      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
+        <div class="tg-chips">${list.slice(0, lim).map(chip).join('')}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    const essentials = roles.length || evidence.length ? `<div class="tg-essentials${!roles.length || !evidence.length ? ' single' : ''}">${sec('roles', 'Roles', 'What the account appears to be.', roles)}${sec('evidence', 'Business clues', 'Shop, market and buying signals.', evidence)}</div>` : '';
-    $('#tg-groups').innerHTML = (q && !auto.length ? '<p class="muted">No matching automatic tags.</p>' : '')
-      + sec('fit', 'Fit assessments', 'Generated judgments to verify against the profile.', fit, 'tg-top')
-      + essentials
-      + sec('caution', 'Check before outreach', 'Possible mismatch or a reason to pause.', caution, 'tg-caution')
-      + sec('niche', G[0][1], G[0][2], pick('niche'))
-      // Collection metadata stays one click away from the decision-making labels.
-      + `<details class="adv tg-more"${q ? ' open' : ''}><summary>More tags</summary><div class="tg-rest">${G.slice(1).map(([k, t, d]) => sec(k, t, d, pick(k))).join('')
-        + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>`;
+    $('#tg-groups').innerHTML = (!auto.length ? `<p class="muted tg-empty">${q ? 'No matching automatic tags.' : 'Automatic tags appear as people are qualified.'}</p>` : '')
+      + sec('fit', 'Best prospects', fit, 'tg-top')
+      + sec('business', 'Business signals', business)
+      + sec('caution', 'Needs a look', caution, 'tg-caution')
+      + (rest.length ? `<details class="adv tg-more"${q ? ' open' : ''}><summary>Other automatic tags <span class="num muted">${rest.length}</span></summary><div class="tg-rest">${groups.map(([k, t]) => sec(k, t, pick(k))).join('')}
+        ${sec('other', 'Other', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>` : '');
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
@@ -2250,8 +2254,8 @@ function accountAccess(a) {
   if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
   if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
-  if (a.cooldown_until && Date.parse(a.cooldown_until) > Date.now()) return { label: `Instagram cooldown · ${left(a.cooldown_until)}`, detail: 'This profile waits before its next request.', kind: 'wait' };
-  if (a.status === 'cooldown') return { label: 'Instagram cooldown', detail: 'This profile waits before its next request.', kind: 'wait' };
+  if (a.cooldown_until && Date.parse(a.cooldown_until) > Date.now()) return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
+  if (a.status === 'cooldown') return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
   return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }
@@ -2259,7 +2263,7 @@ function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
   const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
-  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No workspace list cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No workspace bio cap'}`;
+  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div><button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
@@ -2268,8 +2272,7 @@ function accountRow(a) {
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-overview">
       <div class="acc-fact"><span class="acc-key">Instagram access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b><small>${esc(access.detail)}</small></div>
-      <div class="acc-fact"><span class="acc-key">Assigned work</span><b>${esc(role)}</b><small title="${esc(jobText(a))}">${esc(jobText(a))}</small></div>
-      <div class="acc-fact acc-usage"><span class="acc-key">Today</span><b class="num">${int(t.list)} list pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+      <div class="acc-fact acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(role)}${a.job ? ` · ${esc(jobText(a))}` : ''} · ${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
     </div>
     <div class="acc-bottom"><span class="muted">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</span><details class="adv acc-more"><summary>Advanced settings</summary>
     <div class="acc-ctl">
@@ -2293,16 +2296,16 @@ function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all · lists, bios & AI';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all';
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
   const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
   const kpi = (label, val, sub) => `<div class="tile"><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   $('#acc-kpis').innerHTML = [
-    kpi('Accounts online', `${online} of ${accs.length}`, accs.length < 3 ? 'More accounts = faster scraping' : ''),
-    kpi('People per hour', int(r.people_last_hour), 'All accounts together'),
-    kpi('Today', int(pages) + ' pages', plural(bios, 'bio') + ' read'),
+    kpi('Online', `${online}/${accs.length}`, ''),
+    kpi('People this hour', int(r.people_last_hour), ''),
+    kpi('Read today', `${int(pages)} pages · ${int(bios)} bios`, ''),
   ].join('');
   $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
@@ -2628,6 +2631,30 @@ $('#view-settings').addEventListener('click', async (e) => {
 
 // ---------- qualification ----------
 const ROLE_LABEL = { buyer: 'Brand owner', connector: 'Agency or freelancer', collaborator: 'Creative', peer: 'Similar service', supplier: 'Supplier', unrelated: 'Not a business', unclear: 'Unclear' };
+function qualificationConnections(r) {
+  const byHandle = new Map();
+  for (const edge of r.connection_edges || []) {
+    if (!edge?.handle || !['followers', 'following'].includes(edge.direction)) continue;
+    const key = String(edge.handle).toLowerCase();
+    if (!byHandle.has(key)) byHandle.set(key, { handle: edge.handle, dirs: new Set(), isMe: false });
+    const item = byHandle.get(key);
+    item.dirs.add(edge.direction);
+    item.isMe ||= !!edge.is_me;
+  }
+  const observed = [...byHandle.values()].sort((a, b) => Number(b.isMe) - Number(a.isMe) || a.handle.localeCompare(b.handle));
+  const lines = observed.map(({ handle, dirs, isMe }) => {
+    const both = dirs.has('followers') && dirs.has('following');
+    if (isMe) return both ? 'You (@' + handle + ') follow each other' : dirs.has('followers') ? 'They follow you (@' + handle + ')' : 'You (@' + handle + ') follow them';
+    return both ? 'They and @' + handle + ' follow each other' : dirs.has('followers') ? 'They follow @' + handle : '@' + handle + ' follows them';
+  });
+  if (!lines.length && !Array.isArray(r.connection_edges)) {
+    // Older sample payloads have list names but not direction.
+    lines.push(...[...new Set(r.via || [])].map((handle) => 'Seen in @' + handle + "'s list"));
+  }
+  if (!lines.length) return '<p class="muted">No observed follows yet</p>';
+  const row = (line) => `<li>${esc(line)}</li>`;
+  return `<ul class="ql-connections">${lines.slice(0, 3).map(row).join('')}</ul>${lines.length > 3 ? `<details class="ql-extra"><summary>Show ${lines.length - 3} more</summary><ul class="ql-connections">${lines.slice(3).map(row).join('')}</ul></details>` : ''}`;
+}
 const Q = {
   view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0,
   async show() { await this.load(); },
@@ -2661,33 +2688,25 @@ const Q = {
     const v = r.verdict || {}, ai = v.model && v.model !== 'rules';
     const ev = evidenceOf(v);
     const aiTags = (r.tags || []).filter((t) => t.grp === 'ai');
-    const seeds = [...new Set(r.via || [])];
     const bio = (r.bio || '').trim();
-    const based = [
-      bio ? `<li><b>Bio</b><span>${esc(bio.length > 160 ? bio.slice(0, 160) + '…' : bio)}</span>${r.bio_at ? `<em>read ${ago(r.bio_at)} ago</em>` : ''}</li>` : `<li><b>Bio</b><span class="muted">${r.is_private ? 'Private account, cannot be read' : 'Not read yet'}</span></li>`,
-      r.website ? `<li><b>Link in bio</b><span><a href="${esc(safeUrl(r.website) || '#')}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a></span></li>` : '',
-      r.category ? `<li><b>Instagram category</b><span>${esc(r.category)}</span></li>` : '',
-      `<li><b>Network</b><span>${seeds.length ? `In ${plural(seeds.length, 'list')}: ${seedList(seeds, 4)}` : 'Not in any list'}${youLink(r) ? ' · ' + esc(youLink(r)) : ''}</span></li>`,
-      r.followers != null ? `<li><b>Audience</b><span>${fmt(r.followers)} followers${r.posts != null ? ' · ' + fmt(r.posts) + ' posts' : ''}</span></li>` : '',
-    ].join('');
+    const facts = [r.category ? esc(r.category) : '', r.followers != null ? `${fmt(r.followers)} followers` : ''].filter(Boolean).join(' · ');
     const siteHTML = websiteEvidence(r.site);
     const busy = this.busy.has(r.id);
     return `<article class="ql-card" data-id="${r.id}">
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
         <div class="ql-score"><b class="num" title="Blended priority">Priority ${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
-      <div class="ql-body">
-        <div class="ql-why"><h4>Verdict</h4><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
-          ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul>` : ''}
-          ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
-          <p class="ql-by">${ai ? `Checked by AI (${esc(modelLabel(v.model))})` : 'Keyword check only, no AI yet'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
-        <div class="ql-based"><h4>Based on</h4><ul>${based}</ul></div>
-      </div>
+      <div class="ql-why"><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
+        ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
+        ${ev.length ? `<details class="ql-extra"><summary>Why this verdict</summary><ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul></details>` : ''}
+        <p class="ql-by">${ai ? 'AI checked' : 'Keyword check'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
+      <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
+        ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
+      <div class="ql-network"><h4>Observed follows</h4>${qualificationConnections(r)}</div>
       ${siteHTML}
       <div class="ql-acts"><button class="btn${busy ? '' : ' solid'}" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reading…' : 'Dig deeper'}</button>
-        <span class="muted ql-hint">${r.website ? 'Reads the bio again and their website' : 'Reads the bio again (no website in bio)'}</span><span class="grow"></span>
-        <button class="btn ghost" data-open="${r.id}">Open</button>
-        <a class="btn ghost" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram</a></div>
+        <span class="grow"></span><button class="btn ghost" data-open="${r.id}">Open lead</button>
+        <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a></div>
     </article>`;
   },
   render() {
@@ -2728,7 +2747,6 @@ $('#ql-list').addEventListener('click', (e) => {
 
 // ---------- map ----------
 const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
-const JUDGE_COLOR = { good: '#ff8a1f', bad: '#e5484d' };
 // Profile photos for the map, pre-cropped to circles on small canvases.
 const MAP_PIC_LIMIT = 3200;
 const PICS = new Map(); let picsLoading = 0; const picQueue = [];
@@ -2794,7 +2812,7 @@ function mapDots(leads, k, x, y, w, h, important) {
   return dots.concat(priority);
 }
 const M = {
-  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
+  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
   limit: 400, rawData: null, audienceKey: null, dataRev: null,
@@ -2875,7 +2893,7 @@ const M = {
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
       const r = seed ? Math.max(9, Math.min(26, 7 + Math.sqrt(n.degree || 0) * 0.62)) : LEAD_R[Math.min(5, L)];
-      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy } : {});
+      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy, homeX: o.homeX, homeY: o.homeY } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
@@ -2891,6 +2909,8 @@ const M = {
       else pair.set(key, { source: l.source, target: l.target, dir: l.direction || 'followers', state });
     }
     this.links = [...pair.values()].filter((l) => l.state === 'observed');
+    const selfId = this.seeds.find((n) => n.is_me)?.id;
+    this.selfRelation = new Map(this.links.filter((l) => l.source === selfId).map((l) => [l.target, l.dir]));
     this.historyLinks = [...pair.values()].filter((l) => l.state !== 'observed')
       .map((l) => ({ ...l, source: this.byId.get(l.source), target: this.byId.get(l.target) }));
     this.seedLinks = (d.seed_links || []).map((l) => ({ source: sid(l.source), target: sid(l.target), shared: +l.shared || 0 }))
@@ -2908,7 +2928,8 @@ const M = {
     this.overlap = new Map(this.seeds.map((s) => [s.id, []]));
     for (const l of this.seedLinks) { this.overlap.get(l.source).push([l.target, l.shared]); this.overlap.get(l.target).push([l.source, l.shared]); }
     this.overlap.forEach((a) => a.sort((x, y) => y[1] - x[1]));
-    // Initial layout: seeds on a circle ordered by overlap, leads near the centroid of their seeds.
+    // Initial layout follows the actual canvas shape. A circle on a wide map
+    // wastes most horizontal room and crowds labels into its vertical middle.
     const fresh = this.seeds.filter((s) => s.x == null);
     if (fresh.length) {
       const order = [];
@@ -2916,13 +2937,27 @@ const M = {
       let curr = [...this.seeds].sort((a, b) => b.degree - a.degree)[0]?.id;
       while (curr) { order.push(curr); left.delete(curr); curr = (this.overlap.get(curr) || []).find(([id]) => left.has(id))?.[0] || [...left][0]; }
       const R = 140 + this.seeds.length * 26;
-      order.forEach((id, i) => { const s = this.byId.get(id); if (s.x == null) { const a = (i / order.length) * Math.PI * 2; s.x = Math.cos(a) * R; s.y = Math.sin(a) * R; } });
+      const stretch = Math.sqrt(Math.max(1, Math.min(3, this.w / Math.max(1, this.h))));
+      order.forEach((id, i) => {
+        const s = this.byId.get(id);
+        if (s.x != null) return;
+        const a = (i / order.length) * Math.PI * 2;
+        s.x = Math.cos(a) * R * stretch;
+        s.y = Math.sin(a) * R / stretch;
+      });
     }
+    for (const s of this.seeds) { s.homeX ??= s.x; s.homeY ??= s.y; }
+    // A golden-angle spiral spreads dense groups without an all-pairs force.
+    // The 10k view keeps this linear-time placement and a bounded click adjustment.
+    const placedByGroup = new Map();
     for (const n of this.leads) {
       if (n.x != null) continue;
       const ss = this.nbr.get(n.id).map((id) => this.byId.get(id)).filter(Boolean);
       const cx = ss.reduce((a, s) => a + s.x, 0) / (ss.length || 1), cy = ss.reduce((a, s) => a + s.y, 0) / (ss.length || 1);
-      const a = Math.random() * Math.PI * 2, rr = (ss.length > 1 ? 10 : 30) + Math.random() * 60;
+      const group = ss.map((s) => s.id).sort().join('|') || 'unlinked';
+      const i = placedByGroup.get(group) || 0;
+      placedByGroup.set(group, i + 1);
+      const a = i * 2.399963229728653, rr = 38 + Math.sqrt(i) * 14;
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
     }
     const nl = this.leads.length;
@@ -2931,6 +2966,10 @@ const M = {
     const absent = this.historyLinks.filter((l) => l.state === 'absent').length;
     const unverified = this.historyLinks.length - absent;
     $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees. Other matching people may be outside this sample; choose a larger Show setting to see more.`;
+    const me = this.seeds.find((n) => n.is_me);
+    const meButton = $('#map-me');
+    meButton.hidden = !me;
+    if (me) meButton.textContent = `You · @${me.label}`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     this.simulate(old.size ? 0.5 : 1);
@@ -2947,7 +2986,7 @@ const M = {
     this.sim = F.forceSimulation(this.nodes)
       .force('link', F.forceLink(all).id((n) => n.id)
         .distance((l) => l.ss ? 520 - 360 * Math.sqrt(l.shared / this.maxShared) : l.source.r + 26 + (l.target.L > 1 ? 30 : 10) + Math.sqrt(l.source.vis || 1) * 1.6)
-        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : 0.9 / Math.max(1, l.target.L)))
+        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : (huge ? 0.008 : 0.9) / Math.max(1, l.target.L)))
       // The 10k sample already starts in seed-centred clusters. On that scale,
       // all-node charge and collision dominate each tick without adding useful
       // detail at overview zoom; links and the seed force still refine it.
@@ -2963,7 +3002,8 @@ const M = {
         }
       })
       .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 1.8).iterations(1).strength(0.8))
-      .force('x', F.forceX(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004)).force('y', F.forceY(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004))
+      .force('x', F.forceX((n) => n.kind === 'seed' ? n.homeX : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
+      .force('y', F.forceY((n) => n.kind === 'seed' ? n.homeY : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
       .alpha(alpha).alphaDecay(huge ? 0.08 : big ? 0.055 : 0.035).alphaMin(huge ? 0.02 : big ? 0.012 : 0.001).velocityDecay(0.42)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
@@ -3018,12 +3058,12 @@ const M = {
     if (n.kind === 'seed') for (const id of this.nbr.get(n.id) || []) { const m = this.byId.get(id); if (m && m.L === 1 && m.fx == null) { m.x += dx; m.y += dy; m.vx = m.vy = 0; } }
     this.draw();
   },
-  relax(n) {
+  relax(n, frames = 14, limit = 80) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     // Drag release only adjusts the closest neighbours. The old all-pairs
     // loop could lock the tab when thousands of dots shared a small region.
     let list = near().sort((a, b) => (a.x - n.x) ** 2 + (a.y - n.y) ** 2 -
-      ((b.x - n.x) ** 2 + (b.y - n.y) ** 2)).slice(0, 80), frames = 14;
+      ((b.x - n.x) ** 2 + (b.y - n.y) ** 2)).slice(0, limit);
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const step = () => {
       let moved = false;
@@ -3145,12 +3185,12 @@ const M = {
       for (const n of dots) if (filter(n)) circle(n, Math.max(n.r, minPx));
       c.fill();
     };
-    // Tags decide the colour: green = good signs, red = red flags; everyone else stays grey by fit. Judged dots draw on top.
+    // Tag verdicts use the same restrained accents as tag chips in both themes.
     for (const f of [...FITS].reverse()) {
       if (dim) pass((n) => !on(n) && !n.judge && n.fit === f, fitColor[f], 0.18);
       pass((n) => on(n) && !n.judge && n.fit === f, fitColor[f], 1);
     }
-    for (const [j, color] of [['bad', JUDGE_COLOR.bad], ['good', JUDGE_COLOR.good]]) {
+    for (const [j, color] of [['bad', css('--t-caution')], ['good', css('--t-strong')]]) {
       if (dim) pass((n) => !on(n) && n.judge === j, color, 0.2);
       pass((n) => on(n) && n.judge === j, color, 1);
     }
@@ -3184,6 +3224,11 @@ const M = {
       else { c.fillStyle = n.is_me ? bg : fg; c.fill(); }
       c.strokeStyle = n.is_me ? fg : bg; c.lineWidth = n.is_me ? Math.max(3, 3 / k) : 2 / k;
       c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2); c.stroke();
+      if (n.is_me) {
+        c.globalAlpha = 1;
+        c.strokeStyle = fg; c.lineWidth = Math.max(1.4, 1.4 / k);
+        c.beginPath(); c.arc(n.x, n.y, r + 5 / k, 0, Math.PI * 2); c.stroke();
+      }
     }
     c.restore();
     c.globalAlpha = 1;
@@ -3203,16 +3248,19 @@ const M = {
     // Seed squares block labels.
     for (const n of this.seeds) { const r = n.r * k; placed.push([sx(n) - r, sy(n) - r, sx(n) + r, sy(n) + r]); }
     c.textBaseline = 'middle';
-    // Seed labels, always, below the square.
+    // Give your account first choice, then try four sides before hiding a
+    // lower-priority label. This avoids labels crossing nearby source dots.
     c.font = `600 13px ${sans}`;
-    const seedsBy = [...this.seeds].sort((a, b) => b.degree - a.degree);
+    const seedsBy = [...this.seeds].sort((a, b) => Number(b.is_me) - Number(a.is_me) || b.degree - a.degree);
     for (const n of seedsBy) {
       const faded = (hd && !hd.set.has(n.id)) || !n.vis;
-      const t = '@' + n.label + (n.is_me ? ' (you)' : '');
-      const w = c.measureText(t).width + 10, x = sx(n) - w / 2, y = sy(n) + n.r * k + 4;
-      if (x > this.w || x + w < 0 || y > this.h || y + 20 < 0) continue;
-      const mine = hd && hd.n === n;
-      if (!mine && hit(x, y, x + w, y + 20)) continue;
+      const t = n.is_me ? `YOU · @${n.label}` : '@' + n.label;
+      const w = c.measureText(t).width + 10, x0 = sx(n), y0 = sy(n), r = n.r * k;
+      const positions = [[x0 - w / 2, y0 + r + 4], [x0 - w / 2, y0 - r - 24],
+        [x0 + r + 5, y0 - 10], [x0 - r - w - 5, y0 - 10]];
+      const spot = positions.find(([x, y]) => x >= 0 && x + w <= this.w && y >= 0 && y + 20 <= this.h && !hit(x, y, x + w, y + 20));
+      if (!spot) continue;
+      const [x, y] = spot;
       placed.push([x, y, x + w, y + 20]);
       c.globalAlpha = faded ? 0.45 : 1;
       c.fillStyle = bg; c.beginPath(); c.roundRect ? c.roundRect(x, y, w, 20, 10) : c.rect(x, y, w, 20); c.fill();
@@ -3292,18 +3340,33 @@ const M = {
   select(n) {
     this.focus = n;
     // A seed that is also a person opens that person's panel (status, tags, note) with its lists below.
-    if (n.kind === 'seed' && !n.pid) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
+    if (n.kind === 'seed' && (n.is_me || !n.pid)) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
     this.draw();
+    // Opening the panel changes the usable map width. Keep the chosen node
+    // comfortably visible and clear only its immediate neighbours.
+    requestAnimationFrame(() => {
+      if (this.focus !== n || !this.shown) return;
+      this.resize();
+      this.autoFit = false;
+      const marginX = Math.min(110, this.w * 0.22), marginY = Math.min(90, this.h * 0.18);
+      const px = n.x * this.k + this.x, py = n.y * this.k + this.y;
+      this.x += Math.max(marginX - px, Math.min(0, this.w - marginX - px));
+      this.y += Math.max(marginY - py, Math.min(0, this.h - marginY - py));
+      this.relax(n, 5, 32);
+      this.draw();
+    });
   },
 };
 function hoverCard(n) {
   if (n.kind === 'seed') {
     const ov = (M.overlap.get(n.id) || []).slice(0, 3);
-    return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>Seed · ${int(n.degree)} observed people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} observed in both lists with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
+    return `<b>${n.is_me ? 'You · ' : ''}@${esc(n.label)}</b><span>${n.is_me ? 'Your account' : 'Source account'} · ${int(n.degree)} observed people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} observed in both lists with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
   }
   const seeds = (n.seeds || (M.nbr.get(n.id) || []).map((id) => M.byId.get(id)?.label)).filter(Boolean);
-  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(slabel(n.status)) : ''}</span><span>Connection ${n.connection_strength ?? '–'} · Priority ${n.score ?? '–'}</span>
-    ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>Observed in ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
+  const relation = M.selfRelation.get(n.id);
+  const relationText = relation === 'both' ? 'You follow each other' : relation === 'followers' ? 'Follows you' : relation === 'following' ? 'You follow them' : '';
+  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(slabel(n.status)) : ''}</span>
+    ${relationText ? `<span>${relationText} · recorded follow</span>` : ''}${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>In ${plural(n.L, 'source list')}${seeds.length ? ` · via ${seedList(seeds, 2)}` : ''}</span>`;
 }
 function openSeed(n) {
   if (S.open) noteQueue.flush(S.open).catch(() => {});
@@ -3316,9 +3379,9 @@ function renderSeedCard() {
   if (!n) return;
   $('#detail').innerHTML = `
     <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
-      <div class="who"><b>@${esc(n.label)}${String(n.label).includes('~') ? '' : igLink(n.label)}</b><span>${String(n.label).includes('~') ? 'Archived account identity' : n.is_me ? 'You' : 'Seed'}</span></div>
+      <div class="who"><b>${n.is_me ? 'You · ' : ''}@${esc(n.label)}${String(n.label).includes('~') ? '' : igLink(n.label)}</b><span>${String(n.label).includes('~') ? 'Archived account identity' : n.is_me ? 'Your Instagram account' : 'Source account'}</span></div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    <div class="d-sec"><span class="muted">Not read as a person yet, so no status or tags. Its bio is read when a list reaches it.</span></div>
+    ${n.is_me ? '' : '<div class="d-sec"><span class="muted">Profile details appear after this account is read.</span></div>'}
     ${seedBlock(n)}`;
 }
 // The seed part of a panel: shown alone for a seed without a person row, or under that person's own panel.
@@ -3413,6 +3476,7 @@ function seedCardClick(e) {
   }, { passive: false });
 })();
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
+$('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) { M.select(me); M.centerOn(me, 1.4); } };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
 $('#map-labels').onclick = () => M.toggleLabels();
 $('#map-density').onchange = (e) => {

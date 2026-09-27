@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
+const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
 const start = source.indexOf('function accountAccess(a) {');
 const end = source.indexOf('\nfunction renderAccounts()', start);
 assert.ok(start >= 0 && end > start);
@@ -25,15 +26,21 @@ const account = (changes = {}) => ({
 test('account card separates workspace budgets from Instagram access', () => {
   const html = view.accountRow(account());
   assert.match(html, /Instagram access[\s\S]*Connected/);
-  assert.match(html, /Assigned work[\s\S]*Lists/);
-  assert.match(html, /No workspace list cap/);
+  assert.match(html, /Today · workspace caps[\s\S]*Lists/);
+  assert.match(html, /No cap/);
   assert.doesNotMatch(html, /no limit|unlimited/i);
+});
+
+test('navigation uses a settings gear and removes the keyboard help button while keeping the shortcut', () => {
+  assert.match(html, /data-view="settings"[^>]*aria-label="Settings"><svg[^>]*><path/);
+  assert.doesNotMatch(html, /id="help-btn"/);
+  assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
 
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /Instagram cooldown/);
+  })), /Instagram limit active[\s\S]*See the top status bar for the wait time/);
   assert.match(view.accountRow(account({ status: 'needs_login', hold: 'login' })), /Open this Chrome profile and sign in/);
   assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);
   assert.doesNotMatch(view.accountRow(account({ status: 'running' })), /private source|private list/i);

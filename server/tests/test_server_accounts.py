@@ -192,6 +192,17 @@ class LaneTest(Base):
         self.assertEqual(control.lane_wait(self.conn, row, 'profile', now)[0],
                          'Instagram asked us to slow down, resting')
 
+    def test_long_routine_request_gap_is_not_reported_as_an_instagram_limit(self):
+        self.nxt('a', 'list')
+        future = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat()
+        db.set_setting(self.conn, 'ext_ready', {'lane-a': {'list': future}})
+        self.conn.commit()
+        row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        why, seconds = control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))
+        self.assertEqual(why, 'Waiting between requests')
+        self.assertGreater(seconds, 0)
+        self.assertNotIn('Instagram', why)
+
     def test_main_account_protected(self):
         self.conn.execute("INSERT INTO seeds(handle, is_me) VALUES('acct.a', 1)")
         self.conn.commit()

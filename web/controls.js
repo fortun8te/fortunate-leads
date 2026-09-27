@@ -33,18 +33,17 @@
     if (!s.wait || s.wait.seconds == null) return null;
     return s.wait.seconds - (Date.now() - data.got) / 1e3;
   }
-  // Why a stage waits and until when, in plain words: "daily limit · back 00:00", "next request 9 s".
+  // The stage pill is the single compact place for a wait reason and its countdown.
   function waitWord(why, sec, clockFn) {
     why = why || '';
     const back = sec == null ? '' : sec > 3600
       ? ' · back ' + new Date(Date.now() + sec * 1e3).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : ' · ' + clockFn(sec);
-    if (/daily/i.test(why)) return 'daily limit' + back;
-    if (/slow down/i.test(why)) return 'Instagram limit' + back;
+    if (/daily/i.test(why)) return 'daily cap' + back;
+    if (/slow down|instagram limit/i.test(why)) return 'Instagram limit' + back;
     if (/log in/i.test(why)) return 'needs login';
     if (/security check/i.test(why)) return 'security check';
-    if (/break/i.test(why)) return 'short pause' + back;
-    if (/between requests/i.test(why)) return 'next request' + (sec == null ? '' : ' in ' + clockFn(sec));
+    if (/break|between requests/i.test(why)) return 'request gap' + (sec == null ? '' : ' · next in ' + clockFn(sec));
     return 'waiting' + back;
   }
   function word(s) {
@@ -60,7 +59,7 @@
   }
   function tip(s) {
     const minute = s.id === 'ai' ? `Last minute ${n(s.minute)} scores · ` : '';
-    return `${s.label}: ${s.now}\n\n${s.help}\n\n${n(s.queue)} waiting.\n${minute}Last hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
+    return `${s.label}\n\n${s.help}\n\n${n(s.queue)} waiting.\n${minute}Last hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
   }
 
   function render() {
@@ -81,7 +80,7 @@
     const lead = data.stages.find((s) => s.state === 'running') || data.stages.find((s) => s.state === 'waiting');
     const sentence = actionError || (offline ? 'Server offline: showing the last known state.' :
       data.all_paused ? 'Everything is paused. No new work will start. Current requests may still finish.' :
-      lead ? `${lead.label}: ${lead.now}` : 'Nothing is working right now.');
+      lead ? (lead.state === 'waiting' ? `${lead.label} is waiting. See its status above.` : `${lead.label}: ${lead.now}`) : 'Nothing is working right now.');
     const all = data.all_paused
       ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. AI scoring has its own Resume button." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
       : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;

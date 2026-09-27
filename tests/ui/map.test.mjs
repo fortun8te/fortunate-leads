@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
+const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
+const markup = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
 const workflowSource = readFileSync(new URL('../../web/workflow.js', import.meta.url), 'utf8');
 const code = source.slice(source.indexOf('const LEAD_R ='), source.indexOf('function hoverCard('));
 function harness() {
@@ -25,6 +27,26 @@ function harness() {
 }
 const seed = name => ({id:'s:'+name,kind:'seed',label:name,degree:1,pid:null});
 const lead = id => ({id:'p:'+id,kind:'lead',label:'person'+id,lists:1,degree:1});
+test('map accents follow the tag palette with visible contrast in both themes', () => {
+  assert.match(source,/css\('--t-caution'\)/);
+  assert.match(source,/css\('--t-strong'\)/);
+  assert.match(markup,/fdot lg-good/);
+  assert.match(markup,/fdot lg-bad/);
+  assert.doesNotMatch(markup,/background:#ff8a1f|background:#e5484d/);
+  const dark = {}, light = {};
+  for (const block of style.matchAll(/:root(\[data-theme="light"\])?\s*\{([^}]+)\}/g)) {
+    const tokens = block[1] ? light : dark;
+    for (const token of block[2].matchAll(/(--[\w-]+):\s*(#[0-9a-f]{6})/gi)) tokens[token[1]] = token[2];
+  }
+  const luminance = hex => {
+    const channels = [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)/255).map(v => v<=.04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
+    return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722;
+  };
+  for (const tokens of [dark,light]) for (const name of ['--t-strong','--t-caution']) {
+    const a=luminance(tokens[name]), b=luminance(tokens['--bg']);
+    assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05)>=3, `${name} needs visible contrast on ${tokens['--bg']}`);
+  }
+});
 test('overview keeps one useful dot per crowded screen cell and preserves chosen people', () => {
   const {c} = harness();
   const dots = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead',x:i % 100,y:Math.floor(i / 100),r:4,L:1}));
@@ -38,10 +60,11 @@ test('overview keeps one useful dot per crowded screen cell and preserves chosen
 });
 test('initial layout fits immediately without synchronous force ticks', () => {
   const {c,m,simulate} = harness();
-  let ticks = 0, fits = 0; const forces = new Map();
+  let ticks = 0, fits = 0, linkStrength; const forces = new Map();
   const fluent = () => ({id(){return this;},distance(){return this;},strength(){return this;},distanceMax(){return this;},theta(){return this;},radius(){return this;},iterations(){return this;}});
+  const link = () => ({...fluent(), strength(v){linkStrength=v;return this;}});
   const sim = {force(name, value){forces.set(name, value);return this;},alpha(){return this;},alphaDecay(){return this;},alphaMin(){return this;},velocityDecay(){return this;},on(){return this;},stop(){return this;},tick(){ticks++;return this;}};
-  c.window = {d3:{forceSimulation:()=>sim,forceLink:fluent,forceManyBody:fluent,forceCollide:fluent,forceX:fluent,forceY:fluent}};
+  c.window = {d3:{forceSimulation:()=>sim,forceLink:link,forceManyBody:fluent,forceCollide:fluent,forceX:fluent,forceY:fluent}};
   m.fit = () => { fits++; };
   m.nodes = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead'}));
   m.seeds = []; m.leads = m.nodes; m.links = []; m.seedLinks = [];
@@ -50,6 +73,7 @@ test('initial layout fits immediately without synchronous force ticks', () => {
   assert.equal(fits, 1);
   assert.equal(forces.get('charge'), null);
   assert.equal(forces.get('collide'), null);
+  assert.equal(linkStrength({ss:false,target:{L:1}}),0.008,'10k layout keeps spiral spacing during simulation');
 });
 test('map resolves history endpoints but excludes history from neighbours and distinct counts', () => {
   const {m,$} = harness();
@@ -72,6 +96,43 @@ test('map resolves history endpoints but excludes history from neighbours and di
     assert.equal(edge.target,m.byId.get(edge.target.id));
     assert.ok(Number.isFinite(edge.source.x) && Number.isFinite(edge.target.x));
   }
+});
+test('map identifies your account and spaces a dense source group', () => {
+  const {m,$} = harness();
+  const mine = {...seed('fortun8te'), is_me:true, degree:120};
+  const people = Array.from({length:120}, (_, i) => lead(i));
+  m.build({nodes:[mine,...people],total:120,links:people.map((p) => ({
+    source:mine.id,target:p.id,direction:'followers',state:'observed'
+  }))});
+  assert.equal($('#map-me').hidden,false);
+  assert.equal($('#map-me').textContent,'You · @fortun8te');
+  assert.equal(m.selfRelation.get('p:0'),'followers');
+  for (let i=0; i<people.length; i++) for (let j=i+1; j<people.length; j++) {
+    const a=m.byId.get(people[i].id), b=m.byId.get(people[j].id);
+    assert.ok(Math.hypot(a.x-b.x,a.y-b.y)>a.r+b.r, `people ${i} and ${j} overlap`);
+  }
+  m.build({nodes:[seed('other')],total:0,links:[]});
+  assert.equal($('#map-me').hidden,true);
+});
+test('wide map spreads source accounts across the canvas and keeps their anchors on refresh', () => {
+  const {m} = harness();
+  m.w=1500; m.h=600;
+  const sources = Array.from({length:15}, (_, i) => seed('source'+i));
+  const people = Array.from({length:400}, (_, i) => lead(i));
+  const links = people.map((p,i) => ({source:sources[i%sources.length].id,target:p.id,direction:'followers',state:'observed'}));
+  m.build({nodes:[...sources,...people],total:400,links});
+  const nodes=m.seeds;
+  const span=(key)=>Math.max(...nodes.map((n)=>n[key]))-Math.min(...nodes.map((n)=>n[key]));
+  assert.ok(span('x')/span('y')>2.2,'source anchors should use a wide viewport');
+  m.fit();
+  const [x0,,x1]=m.bounds(m.nodes);
+  assert.ok((x1-x0)*m.k > m.w*0.6,'initial map should use most of the available width');
+  const first=nodes[0];
+  const home=[first.homeX,first.homeY];
+  first.x+=35;
+  m.build({nodes:sources.map((n)=>seed(n.label)),total:0,links:[]});
+  assert.equal(m.seeds[0].homeX,home[0]);
+  assert.equal(m.seeds[0].homeY,home[1]);
 });
 test('map reports a bounded sample and search scope', () => {
   const {m,$} = harness();m.scope='all';
