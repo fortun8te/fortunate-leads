@@ -15,9 +15,8 @@ import tempfile
 import threading
 import traceback
 import urllib.request
-from collections import Counter, OrderedDict
+from collections import OrderedDict
 from contextlib import contextmanager
-from itertools import chain, combinations
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1164,11 +1163,17 @@ def seed_links(conn, cacheable=None):
     members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
-    rows = conn.execute('SELECT group_concat(seed) FROM map_seed_member GROUP BY person_id HAVING count(*)>1' if members_ready else
-                        'SELECT group_concat(DISTINCT seed) FROM current_edges GROUP BY person_id HAVING count(DISTINCT seed)>1')
-    pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split(','))), 2) for r in rows))
-    top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
-    links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
+    # Aggregate overlap in SQLite and return only the top pairs. This avoids
+    # grouping every person's source list into strings or materializing every
+    # member in Python on each exact-revision refresh.
+    membership = 'map_seed_member' if members_ready else '(SELECT DISTINCT person_id,seed FROM current_edges)'
+    # Without this hint SQLite scans the seed-first secondary index, making
+    # each person lookup jump across the entire membership table.
+    outer = 'map_seed_member a NOT INDEXED' if members_ready else f'{membership} a'
+    top = conn.execute(f'SELECT a.seed,b.seed,count(*) AS shared FROM {outer} '
+                       f'JOIN {membership} b ON b.person_id=a.person_id AND b.seed>a.seed '
+                       'GROUP BY a.seed,b.seed ORDER BY shared DESC,a.seed,b.seed LIMIT ?', (SEED_LINKS_TOP,))
+    links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for a, b, n in top]
     if cacheable:
         SEED_LINKS[0] = (key, datetime.now().timestamp(), links)
     return links
@@ -1928,11 +1933,16 @@ def network_context(conn, pids, me=None):
     relevant = sorted({seed for n in out.values() for seed, _ in n['seeds']})
     yields = {}
     good_handles = set()
+    members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
     for chunk in chunks(relevant):
         slots = ','.join('?' * len(chunk))
+        membership = 'map_seed_member' if members_ready else 'current_edges'
+        distinct = '' if members_ready else 'DISTINCT '
         for r in conn.execute(
-                f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
-                f"count(DISTINCT e.person_id) FROM current_edges e JOIN marks m ON m.person_id=e.person_id "
+                f"SELECT e.seed, count({distinct}CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
+                f"count({distinct}e.person_id) FROM {membership} e JOIN marks m ON m.person_id=e.person_id "
                 f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
             yields[r[0]] = (r[1], r[2])
         good_handles.update(r[0] for r in conn.execute(

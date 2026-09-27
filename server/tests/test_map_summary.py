@@ -189,6 +189,30 @@ class MapSummaryTest(unittest.TestCase):
         self.assertEqual(hidden['total'], 0)
         self.assertGreater(hidden['rev'], historical['rev'])
 
+    def test_filtered_rank_and_network_yield_match_read_through(self):
+        for pid in range(1, 4):
+            self.edge('sourcea', pid)
+        self.edge('sourceb', 1)
+        self.edge('sourceb', 2, 'following')
+        self.edge('sourceb', 2, 'followers')  # two directions count once
+        self.conn.execute("INSERT INTO verdicts(person_id,score) VALUES(1,50)")
+        self.conn.execute("INSERT INTO verdicts(person_id,score) VALUES(2,70)")
+        self.conn.execute("INSERT INTO marks(person_id,status) VALUES(1,'client')")
+        self.conn.execute("INSERT INTO marks(person_id,status) VALUES(2,'no')")
+        self.conn.commit()
+        query = {'status': ['all'], 'seed': ['sourcea'], 'limit': ['10']}
+        graph = server.map_graph(self.conn, query)
+        self.assertEqual(graph['total'], 3)
+        self.assertEqual([n['id'] for n in graph['nodes'] if n['kind'] == 'lead'], ['p:2', 'p:1', 'p:3'])
+        expected_net = server.network_context(self.conn, [1, 2, 3], me='')
+        self.conn.execute('SAVEPOINT unready_members')
+        self.conn.execute("UPDATE settings SET value='false' WHERE key='map_seed_member_v1'")
+        self.assertEqual(server.network_context(self.conn, [1, 2, 3], me=''), expected_net)
+        self.assertEqual(server.seed_links(self.conn, cacheable=False),
+                         [{'source': 's:sourcea', 'target': 's:sourceb', 'shared': 2}])
+        self.conn.execute('ROLLBACK TO unready_members')
+        self.conn.execute('RELEASE unready_members')
+
     def test_ui_query_uses_indexed_path_and_repeated_poll_uses_cache(self):
         self.edge('sourcea', 1)
         self.conn.commit()

@@ -30,6 +30,7 @@ def build(path, edge_count):
     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'lead_rev_%' OR name LIKE 'map_%')"):
         conn.execute(f'DROP TRIGGER {row[0]}')
     conn.execute("DELETE FROM settings WHERE key LIKE 'map_%_v1'")
+    conn.commit()
     conn.execute('PRAGMA journal_mode=OFF')
     conn.execute('PRAGMA synchronous=OFF')
     stamp = '2026-01-01T00:00:00+00:00'
@@ -120,6 +121,13 @@ def measure_api(path, runs, ui_shaped=False):
         ordered = sorted(values)
         report[name] = {'runs_ms': values, 'p50_ms': statistics.median(values),
                         'p95_nearest_rank_ms': ordered[math.ceil(.95 * runs) - 1]}
+    seed_times = []
+    for _ in range(runs):
+        server.clear_caches()
+        t = time.perf_counter()
+        links = server.seed_links(conn)
+        seed_times.append(round((time.perf_counter() - t) * 1000, 2))
+    report['seed_links_cold'] = {'runs_ms': seed_times, 'pairs': len(links)}
     plan_sql = ('SELECT d.person_id FROM map_person_degree d JOIN people p ON p.id=d.person_id '
                 'WHERE d.hidden=0 AND p.handle NOT IN (SELECT handle FROM map_source_handles) '
                 'ORDER BY d.score IS NULL,d.score DESC,d.degree DESC,d.person_id LIMIT ' + query['limit'][0])
