@@ -10,13 +10,14 @@ import math
 import re
 import time
 import unicodedata
+from urllib.parse import urlsplit
 
 import llm
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q6'   # rubric + evidence + few-shot; the few-shot set is versioned separately (prompt_version)
+PROMPT_VERSION = 'q7'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
 PREFILTER_VERSION = 'p2-laya-cap'  # bump when an existing Laya-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
@@ -587,6 +588,12 @@ READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person s
 - Private or near-empty profiles with no negative signs: category unclear, fit around 40. Michael will judge those himself; do not call them unrelated just for being sparse.
 - Never infer gender, age, ethnicity, nationality or wealth; they are irrelevant to fit. Never invent facts: only use what the evidence shows."""
 
+RESEARCH_RULES = """Evidence sources must stay separate. A search result can concern someone else with the same name;
+never use search snippets alone to establish this profile's identity, business role, ownership or badges. The website
+linked from the Instagram profile may establish that the linked business sells products, but a founder claim on its
+page does not prove this person founded it. Quote the profile, linked website or search result exactly; do not present
+an outside source as words from the Instagram profile."""
+
 SCHEMA = """Reply with one compact JSON object only, no prose:
 {"role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "fit": 0-100,
  "reason": "one plain sentence under 25 words citing concrete evidence from the profile",
@@ -739,7 +746,7 @@ def prompt_version(examples=None):
 SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 {"id": <the id>, "handle": "the exact profile handle", "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
- "evidence": ["up to 3 short exact quotes from the bio, name or WEB RESEARCH lines that support the verdict"],
+ "evidence": ["up to 3 short exact quotes from the bio, name, linked website or WEB RESEARCH lines that support the verdict"],
  "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
  "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
 Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
@@ -750,7 +757,7 @@ def _system(examples, n):
     fmt = SCHEMA_ONE % ', '.join(allowed)
     fmt += ('\nOne profile: reply with that one object.' if n == 1 else
             '\nSeveral profiles: reply {"results": [one object per profile, same ids and exact handles]}.')
-    parts = [BRIEF, READING_INSTAGRAM, RUBRIC, fewshot_text(examples), fmt]
+    parts = [BRIEF, READING_INSTAGRAM, RESEARCH_RULES, RUBRIC, fewshot_text(examples), fmt]
     return '\n\n'.join(p for p in parts if p)
 
 
@@ -760,19 +767,64 @@ ROLE_TAG = {'buyer': 'Brand', 'connector': 'Agency', 'collaborator': 'Creative',
 ROLE_CAP = {'buyer': 100, 'connector': 80, 'collaborator': 65, 'unclear': 65, 'supplier': 55, 'peer': 50, 'unrelated': 40}   # on the fit
 
 
-def _evidence(v, person):
-    # The prompt asks for exact quotes from bio/name. Do not launder an inferred
-    # category, URL or handle into a quote shown as direct profile evidence.
-    fields = [unicodedata.normalize('NFC', str(person.get(k) or '')).casefold() for k in ('bio', 'name')]
+def _linked_site(person):
+    """Only the fetched page at the profile's linked host can support a website claim."""
+    site = str(person.get('web_site') or '').strip()
+    linked = str(person.get('website') or '').strip()
+    if not site or not linked:
+        return ''
+    try:
+        host = (urlsplit(linked if '://' in linked else 'https://' + linked).hostname or '').lower().removeprefix('www.')
+    except ValueError:
+        return ''
+    fetched = site.partition(': ')[0].lower().removeprefix('www.')
+    if not host or not fetched or (fetched != host and not fetched.endswith('.' + host)):
+        return ''
+    return site
+
+
+def _site_is_this_account(person, site):
+    """A linked store describes this account only when its brand name is identifiable."""
+    host = site.partition(': ')[0].lower().removeprefix('www.')
+    labels = [s for s in host.split('.') if s not in ('www', 'shop', 'store', 'co', 'com', 'net', 'org')]
+    brand = re.sub(r'\W', '', labels[0]) if labels else ''
+    if len(brand) < 4:
+        return False
+    identity = [str(person.get(k) or '') for k in ('handle', 'name')]
+    if any(brand == re.sub(r'\W', '', value.lower()) for value in identity):
+        return True
+    profile = ' '.join(str(person.get(k) or '') for k in ('bio', 'name'))
+    return bool(re.search(r'(?<![\w.])@?' + re.escape(brand) + r'(?!\w|\.\w)', re.sub(r'(?<=\w)[.\-_](?=\w)', '', profile), re.I)
+                and (SIGNAL_RX['Founder'].search(profile) or MULTI_FOUNDER.search(profile)))
+
+
+def _evidence_sources(v, person):
+    # Keep outside text out of bio/name. Source labels survive in persisted evidence
+    # and the displayed reason, so a search snippet cannot look like a profile quote.
+    fields = [('Profile', str(person.get(k) or '')) for k in ('bio', 'name')]
+    site = _linked_site(person)
+    if site:
+        fields.append(('Linked website', site))
+    if person.get('web_text'):
+        fields.append(('Search result', str(person['web_text'])))
+    fields = [(label, unicodedata.normalize('NFC', value).casefold()) for label, value in fields]
     quotes = v.get('evidence')
     if not isinstance(quotes, list):
         return []
     out = []
     for q in quotes:
-        if isinstance(q, str) and 2 < len(q.strip()) <= 160 and any(
-                unicodedata.normalize('NFC', q.strip()).casefold() in field for field in fields):
-            out.append(q.strip())
+        if not isinstance(q, str) or not 2 < len(q.strip()) <= 160:
+            continue
+        match = unicodedata.normalize('NFC', q.strip()).casefold()
+        source = next((label for label, field in fields if match in field), None)
+        if source:
+            out.append((q.strip(), source))
     return out[:3]
+
+
+def _evidence(v, person):
+    """Validated exact quotes, before source labels are added for the UI."""
+    return [quote for quote, _ in _evidence_sources(v, person)]
 
 
 AI_STAGE = {'pre-launch': 'AI: Pre-launch', 'early': 'AI: Early stage', 'growing': 'AI: Growing', 'established': 'AI: Established'}
@@ -798,10 +850,6 @@ def ai_tags(v, fit):
 
 
 def _verdict(v, person, tags, used, version, net=None):
-    # Web research (search results, their website) counts as evidence alongside the bio and name.
-    web = str(person.get('web_text') or '').strip()
-    if web:
-        person = dict(person, bio=f"{person.get('bio') or ''}\n{web}")
     if not isinstance(v, dict) or v.get('role') not in ROLES or not isinstance(v.get('fit'), (int, float)) or isinstance(v.get('fit'), bool):
         return None
     if isinstance(v['fit'], float) and not math.isfinite(v['fit']):
@@ -815,35 +863,45 @@ def _verdict(v, person, tags, used, version, net=None):
     for key in ('stage', 'niche', 'brand_handle', 'reason'):
         if v.get(key) is not None and not isinstance(v[key], str):
             return None
-    evidence = _evidence(v, person)
-    if not evidence:
+    sourced = _evidence_sources(v, person)
+    if not sourced:
         return None
-    source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
-    if not str(person.get('bio') or '').strip() and not _buyer_support({'name': person.get('name')}):
+    profile_source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
+    site = _linked_site(person)
+    site_person = {'bio': site} if site and _site_is_this_account(person, site) else None
+    if not str(person.get('bio') or '').strip() and not site and not _buyer_support({'name': person.get('name')}):
         return None
     v = dict(v)
-    if ((v['role'] == 'buyer' and not _buyer_support(person)) or
-            (v['role'] == 'connector' and not _connector_support(source))):
+    if ((v['role'] == 'buyer' and not (_buyer_support(person) or (site_person and _buyer_support(site_person)))) or
+            (v['role'] == 'connector' and not (_connector_support(profile_source) or
+                                               (site_person and _connector_support(site))))):
         fallback = rule_verdict(person, rule_tags(person, [], None))
         v.update(role=fallback['role'], fit=fallback['content_fit'] or 34, decision_maker=False,
                  runs_ads=False, us_market=False, stage=None, niche=None, extra_tags=[], brand_handle=None)
+    if all(label == 'Search result' for _, label in sourced):
+        # A name-matched snippet cannot establish the profile's identity or role.
+        v.update(role='unclear', fit=min(v['fit'], 40), decision_maker=False,
+                 runs_ads=False, us_market=False, stage=None, niche=None, extra_tags=[], brand_handle=None)
     # Claims shown as badges must have their own support, even when the role is valid.
-    decision = SIGNAL_RX['Founder'].search(source) or MULTI_FOUNDER.search(source) or re.search(r'\b(?:head|director) of (?:purchasing|marketing|e-?commerce)\b', source, re.I)
+    decision = SIGNAL_RX['Founder'].search(profile_source) or MULTI_FOUNDER.search(profile_source) or re.search(r'\b(?:head|director) of (?:purchasing|marketing|e-?commerce)\b', profile_source, re.I)
     v['decision_maker'] = v.get('decision_maker') is True and bool(decision)
-    v['runs_ads'] = v.get('runs_ads') is True and bool(re.search(r'\b(?:running|we run|our|spend on)\s+(?:paid |meta |facebook )?ads\b|\bad spend\b', source, re.I))
-    v['us_market'] = v.get('us_market') is True and bool(re.search(r'\b(?:ships?|shipping|selling|sells?)\s+(?:to |in |across |within )?(?:the )?(?:us|usa|united states)\b|\bUS market\b', source, re.I))
+    claim_source = profile_source + '\n' + site
+    v['runs_ads'] = v.get('runs_ads') is True and bool(re.search(r'\b(?:running|we run|our|spend on)\s+(?:paid |meta |facebook )?ads\b|\bad spend\b', claim_source, re.I))
+    v['us_market'] = v.get('us_market') is True and bool(re.search(r'\b(?:ships?|shipping|selling|sells?)\s+(?:to |in |across |within )?(?:the )?(?:us|usa|united states)\b|\bUS market\b', claim_source, re.I))
     stages = {'pre-launch': r'pre[- ]launch|launching soon', 'early': r'just launched|newly launched',
               'growing': r'we are growing|growing our|scaling our', 'established': r'established'}
-    if v.get('stage') not in stages or not re.search(stages[v['stage']], source, re.I):
+    if v.get('stage') not in stages or not re.search(stages[v['stage']], claim_source, re.I):
         v['stage'] = None
-    allowed = [t for t, g in TAXONOMY.items() if g == 'niche' and NICHE_RX[t].search(source)]
+    allowed = [t for t, g in TAXONOMY.items() if g == 'niche' and NICHE_RX[t].search(claim_source)]
     if v.get('niche') not in allowed:
         v['niche'] = None
     fit = int(max(0, min(ROLE_CAP[v['role']], v['fit'])))
     content_fit = min(ROLE_CAP[v['role']], fit)
     score = blend(content_fit, net if net is not None else net_from_tags(tags))
     # Showing the verified quote avoids laundering unsupported generated prose into facts.
-    reason = 'Profile says: "' + evidence[0] + '".'
+    quote, label = sourced[0]
+    reason = label + ' says: "' + quote + '".'
+    evidence = [quote if label == 'Profile' else label + ': "' + quote + '"' for quote, label in sourced]
     extra = [t for t in (v.get('extra_tags') or []) if t in allowed]
     if v.get('niche') in allowed:
         extra.insert(0, v['niche'])
@@ -858,7 +916,7 @@ def _verdict(v, person, tags, used, version, net=None):
     new += [(t, 'ai') for t in ai_tags(v, fit) if t not in have]
     brand = v.get('brand_handle')
     brand = brand.strip() if isinstance(brand, str) and re.fullmatch(r'@?[\w.]{2,30}', brand.strip()) else None
-    if brand and not (v['role'] == 'buyer' and decision and re.search(r'(?<![\w.])@' + re.escape(brand.lstrip('@')) + r'(?!\w|\.\w)', source, re.I)):
+    if brand and not (v['role'] == 'buyer' and decision and re.search(r'(?<![\w.])@' + re.escape(brand.lstrip('@')) + r'(?!\w|\.\w)', profile_source, re.I)):
         brand = None
     return {'score': score, 'content_fit': content_fit, 'role': v['role'], 'reason': reason,
             'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
