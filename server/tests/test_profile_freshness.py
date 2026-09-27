@@ -49,7 +49,7 @@ class ProfileFreshness(unittest.TestCase):
         server.api_read(self.conn, {}, {}, self.pid if pid is None else pid)
 
     def lease(self):
-        return server.ext_next(self.conn, {'kinds': ['profile']}, {'version': '3.9.15'})['job']
+        return server.ext_next(self.conn, {'kinds': ['profile']}, {'version': '3.9.16'})['job']
 
     def token(self, jid):
         # The extension echoes the lease token it was handed with the job.

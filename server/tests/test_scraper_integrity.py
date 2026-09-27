@@ -25,7 +25,7 @@ class CollectionIntegrityTest(unittest.TestCase):
     def job(self, seed='seed', lane='lane-a'):
         db.queue_list(self.conn, seed, 'following')
         self.conn.commit()
-        return server.ext_next(self.conn, {'lane': [lane]}, {'version': '3.9.15'})['job']
+        return server.ext_next(self.conn, {'lane': [lane]}, {'version': '3.9.16'})['job']
 
     def page(self, job, handles, **extra):
         body = dict(job_id=job['id'], seed=job['seed'], direction=job['direction'],
@@ -45,7 +45,7 @@ class CollectionIntegrityTest(unittest.TestCase):
         job = self.job()
         self.page(job, ['alice', 'bob'], done=False, next_cursor='next', total=3,
                   requested_count=25, http_status=200)
-        job = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
+        job = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
         self.page(job, ['alice', 'carol'], total=3, requested_count=25, http_status=200)
         rows = self.conn.execute('SELECT returned_count,new_links,requested_count,http_status '
                                  'FROM collector_events ORDER BY id').fetchall()
@@ -75,7 +75,7 @@ class CollectionIntegrityTest(unittest.TestCase):
         old = server.ext_next(self.conn, {'lane': ['lane-old'], 'version': ['3.9.11']}, {})
         self.assertIsNone(old['job'])
         self.assertTrue(old['upgrade_required'])
-        job = server.ext_next(self.conn, {'lane': ['lane-a'], 'version': ['3.9.15']}, {})['job']
+        job = server.ext_next(self.conn, {'lane': ['lane-a'], 'version': ['3.9.16']}, {})['job']
         self.assertEqual((job['id'], job['page_size']), (job_id, 50))
         body = dict(job_id=job_id, seed='experiment', direction='followers', lease_token=job['lease_token'],
                     requested_cursor=None, next_cursor='second', done=False, total=2, total_source='current_run',
@@ -87,20 +87,20 @@ class CollectionIntegrityTest(unittest.TestCase):
         server.ext_list_page(self.conn, {'lane': ['lane-a']}, body)
         self.conn.execute("UPDATE lists SET lane=NULL WHERE seed='experiment'")
         self.conn.commit()
-        handed = server.ext_next(self.conn, {'lane': ['lane-b'], 'version': ['3.9.15']}, {})['job']
+        handed = server.ext_next(self.conn, {'lane': ['lane-b'], 'version': ['3.9.16']}, {})['job']
         self.assertEqual((handed['id'], handed['page_size'], handed['cursor']), (job_id, 50, 'second'))
 
     def test_page_promising_more_cannot_remove_existing_follower(self):
         db.queue_list(self.conn, 'seed', 'followers')
         self.conn.commit()
-        first = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
+        first = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
         server.ext_list_page(self.conn, {'lane': ['lane-a']}, dict(
             job_id=first['id'], seed='seed', direction='followers', lease_token=first['lease_token'],
             requested_cursor=None, users=[{'handle': 'alice'}], done=True, has_more=False,
             total=1, total_source='current_run'))
         self.assertTrue(db.queue_list(self.conn, 'seed', 'followers', refresh=True))
         self.conn.commit()
-        second = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
+        second = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
         with self.assertRaisesRegex(server.Bad, 'promises more'):
             server.ext_list_page(self.conn, {'lane': ['lane-a']}, dict(
                 job_id=second['id'], seed='seed', direction='followers', lease_token=second['lease_token'],
@@ -125,7 +125,7 @@ class CollectionIntegrityTest(unittest.TestCase):
         self.assertFalse(db.queue_list(self.conn, 'seed', 'following'))
         self.assertTrue(db.queue_list(self.conn, 'seed', 'following', refresh=True))
         self.conn.commit()
-        second = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
+        second = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
         self.assertNotEqual(first['id'], second['id'])
         self.page(second, ['bob'], done=False, next_cursor='c2', total=3)
         self.assertFalse(db.queue_list(self.conn, 'seed', 'following', refresh=True))
@@ -163,7 +163,7 @@ class CollectionIntegrityTest(unittest.TestCase):
     def test_stalled_page_keeps_new_members_and_marks_partial(self):
         job = self.job()
         self.page(job, ['alice'], done=False, next_cursor='same', total=10)
-        job = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
+        job = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
         result = self.page(job, ['bob'], done=False, next_cursor='same', total=10)
         self.assertTrue(result['stalled'])
         row = self.conn.execute('SELECT state,received,error FROM lists').fetchone()
@@ -199,26 +199,26 @@ class CollectionIntegrityTest(unittest.TestCase):
         self.conn.commit()
         main = {'lane': ['lane-a'], 'handle': ['me'], 'ig_id': ['101']}
         other = {'lane': ['lane-b'], 'handle': ['other'], 'ig_id': ['102']}
-        first = server.ext_next(self.conn, main, {'version': '3.9.15'})['job']
+        first = server.ext_next(self.conn, main, {'version': '3.9.16'})['job']
         self.assertEqual(first['seed'], 'seed')
 
         # A second account changes who gets future list work. The page already
         # in flight must still be accepted under the original lease token.
-        self.assertIsNone(server.ext_next(self.conn, other, {'version': '3.9.15'})['job'])
+        self.assertIsNone(server.ext_next(self.conn, other, {'version': '3.9.16'})['job'])
         lease = self.conn.execute('SELECT state,lane,lease_token FROM jobs WHERE id=?', (first['id'],)).fetchone()
         self.assertEqual(tuple(lease), ('leased', 'lane-a', first['lease_token']))
         body = dict(job_id=first['id'], lease_token=first['lease_token'], seed='seed', direction='following',
                     requested_cursor=None, next_cursor='next', done=False, total=2, total_source='current_run',
                     users=[{'handle': 'alice'}, {'handle': 'bob'}])
         self.assertEqual(server.ext_list_page(self.conn, main, body)['received'], 2)
-        resumed = server.ext_next(self.conn, other, {'version': '3.9.15'})['job']
+        resumed = server.ext_next(self.conn, other, {'version': '3.9.16'})['job']
         self.assertEqual((resumed['id'], resumed['cursor'], resumed['received']), (first['id'], 'next', 2))
 
     def test_role_change_keeps_in_flight_list_but_cooldown_hands_it_off(self):
         db.queue_list(self.conn, 'seed', 'following')
         self.conn.commit()
-        first = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.15'})['job']
-        server.ext_next(self.conn, {'lane': ['lane-b']}, {'version': '3.9.15'})
+        first = server.ext_next(self.conn, {'lane': ['lane-a']}, {'version': '3.9.16'})['job']
+        server.ext_next(self.conn, {'lane': ['lane-b']}, {'version': '3.9.16'})
 
         self.conn.execute("UPDATE accounts SET role='bios' WHERE lane_id='lane-a'")
         accounts.release(self.conn, datetime.now(timezone.utc))
@@ -229,7 +229,7 @@ class CollectionIntegrityTest(unittest.TestCase):
         self.conn.execute('UPDATE accounts SET list_cool_until=? WHERE lane_id=?', (until, 'lane-a'))
         accounts.release(self.conn, datetime.now(timezone.utc))
         self.conn.commit()
-        handed = server.ext_next(self.conn, {'lane': ['lane-b']}, {'version': '3.9.15'})['job']
+        handed = server.ext_next(self.conn, {'lane': ['lane-b']}, {'version': '3.9.16'})['job']
         self.assertEqual(handed['id'], first['id'])
         self.assertNotEqual(handed['lease_token'], first['lease_token'])
 

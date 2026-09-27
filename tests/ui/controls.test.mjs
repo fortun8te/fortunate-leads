@@ -215,3 +215,39 @@ test('processing mode remains a configuration label when collection is paused', 
   h.poll(); local.local_laya = false; h.respond(1, local); await settle();
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Rules<\/b>/);
 });
+
+for (const initiallyPaused of [true, false]) {
+  test(`direct collection ${initiallyPaused ? 'start' : 'pause'} stays outside disclosure and sends only the collection action`, async () => {
+    const h = harness();
+    const initial = state(); initial.local_laya = true;
+    for (const s of initial.stages) if (s.id !== 'ai') { s.paused = initiallyPaused; s.state = initiallyPaused ? 'paused' : 'running'; }
+    h.respond(0, initial); await settle();
+    assert.match(h.el.innerHTML, new RegExp(`</details><button[^>]+data-stage="collection"[^>]*>${initiallyPaused ? 'Start' : 'Pause'} collection</button>`));
+    assert.doesNotMatch(h.el.innerHTML, /data-stage="all"/);
+    h.click('collection');
+    assert.deepEqual(JSON.parse(h.requests[1].options.body), { stage: 'collection', action: initiallyPaused ? 'resume' : 'pause' });
+    assert.equal(h.button('collection').disabled, true);
+    h.click('collection');
+    assert.equal(h.requests.length, 2, 'in-flight click cannot send another request');
+    const result = structuredClone(initial);
+    for (const s of result.stages) if (s.id !== 'ai') { s.paused = !initiallyPaused; s.state = initiallyPaused ? 'running' : 'paused'; }
+    h.respond(1, result); await settle(); h.respond(2, result); await settle();
+    assert.equal(h.button('collection').disabled, false);
+    assert.equal(h.button('collection').dataset.action, initiallyPaused ? 'pause' : 'resume');
+    assert.equal(h.button('ai').dataset.action, 'pause', 'external configuration is unchanged');
+    assert.match(h.el.innerHTML, /<b>External AI<\/b>/);
+    assert.equal(h.document.activeElement, h.button('collection'));
+  });
+}
+
+test('persisted Instagram attention stays visible while collection is paused', async () => {
+  const h=harness(); const initial=state();
+  for (const s of initial.stages) if (s.id!=='ai') { s.paused=true; s.state='paused'; }
+  h.respond(0,initial); await settle();
+  h.poll();
+  const held={...initial, instagram_request_attention:{message:'An Instagram request is unconfirmed. Check the account before continuing.'}};
+  h.respond(1,held); await settle();
+  assert.match(h.el.innerHTML, /<b>Needs attention<\/b>/);
+  assert.match(h.el.innerHTML, /role="alert"[^>]*>An Instagram request is unconfirmed/);
+  assert.match(h.el.innerHTML, /href="#\/accounts">Check accounts/);
+});

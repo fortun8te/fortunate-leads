@@ -495,6 +495,11 @@
     const secs = Math.max(0, Math.round((scraper.nextAt - Date.now()) / 1000));
     const page = l ? Math.floor(l.received / (l.direction === 'following' ? 50 : 25)) + 1 : 0;
     const w = (k) => ({ pages: Math.round(342 / k), people: Math.round(11280 / k), new_people: Math.round(6400 / k), profiles: 0 });
+    const listViews = scraper.lists.map(x => ({...x, saved_entries:x.received, saved_current_run:x.received, expected:x.total ?? null, expected_source:x.total == null ? 'unknown' : 'current_run', completion:x.state === 'done' ? 'complete' : x.state === 'running' ? 'collecting' : x.state === 'partial' ? 'partial' : 'waiting'}));
+    const coverage = {lists:{saved_entries:listViews.reduce((n,x)=>n+x.saved_entries,0),expected_entries:listViews.reduce((n,x)=>n+(x.expected||0),0),known_targets:listViews.filter(x=>x.expected!=null).length,unknown_targets:listViews.filter(x=>x.expected==null).length,complete_lists:listViews.filter(x=>x.completion==='complete').length,partial_lists:listViews.filter(x=>x.completion==='partial').length,total_lists:listViews.length}};
+
+    const eligible = people.filter(p => p.bio).length;
+    coverage.local = {enabled:settings.local_laya,eligible_profiles:eligible,processed_profiles:eligible,pending_profiles:0,state:settings.local_laya ? 'complete' : 'off',reason:settings.local_laya ? 'Saved profiles are up to date.' : 'Local review is off.',sampled_at:now()};
     return {
       ext: { online: true, version: '3.9.0', state: scraper.paused ? 'paused' : 'running', cooldown_until: null, today: scraper.today, budget: scraper.budget,
         last_seen: now(), last_error: null,
@@ -502,7 +507,7 @@
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
-      people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
+      people_today: scraper.peopleToday, lists: listViews, coverage, stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       progress: {
         lists: { left: scraper.lists.filter((l) => l.state === 'queued' || l.state === 'running').reduce((n, l) => n + Math.max(0, (l.total || 1000) - l.received), 0), per_hour: 11280, eta_h: 3.4 },
@@ -566,10 +571,10 @@
           a.status = statusOf(a);
           return controlView();
         }
-        if (!['all', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
+        if (!['all', 'collection', 'lists', 'bios', 'ai'].includes(body?.stage)) return { ok: false, error: 'Choose a stage and action' };
         if (scraper.paused) { stagePaused.lists = true; stagePaused.bios = true; scraper.paused = false; }
         // Resume all restarts collection; AI keeps its own explicit switch.
-        const ids = body.stage === 'all' ? (pause ? ['lists', 'bios', 'ai'] : ['lists', 'bios']) : [body.stage];
+        const ids = body.stage === 'collection' ? ['lists', 'bios'] : body.stage === 'all' ? (pause ? ['lists', 'bios', 'ai'] : ['lists', 'bios']) : [body.stage];
         for (const id of ids) {
           if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; else settings.local_laya = false; }
           else stagePaused[id] = pause;
@@ -706,8 +711,8 @@
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/status') {
-      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue } = scraperView();
-      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue };
+      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue, stages } = scraperView();
+      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue, stages };
     }
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
     if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }

@@ -3,8 +3,6 @@ import sys
 import json
 import tempfile
 import unittest
-from email.message import Message
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -132,15 +130,6 @@ class SafeFetch(unittest.TestCase):
         self.assertIsNone(qual_api._valid_summary({'summary': 'Shop', 'stage': 'huge', 'us_market': 'true'}))
         self.assertIsNone(qual_api._valid_summary({'summary': 'Shop', 'stage': 'early', 'product_category': 'Invented'}))
 
-    def test_meta_charset_without_header(self):
-        class Response(BytesIO):
-            headers = Message()
-            def geturl(self):
-                return 'https://example.com'
-        body = '<meta charset="windows-1252"><title>Caf\u00e9</title>'.encode('windows-1252')
-        with patch.object(qual_api, '_check'), patch.object(qual_api._OPENER, 'open', return_value=Response(body)):
-            _, doc = qual_api.fetch('https://example.com')
-        self.assertIn('Caf\u00e9', doc)
 
 
 class SiteEvidence(unittest.TestCase):

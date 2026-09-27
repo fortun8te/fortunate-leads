@@ -28,3 +28,9 @@ test('qualification does not infer a follow from a source-only legacy list', () 
   assert.match(show({ connection_edges: [], via: ['alice'] }), /No observed follows yet/);
   assert.match(show({ connection_edges: [{ handle: '<bad&', direction: 'followers' }] }), /@&lt;bad&amp;/);
 });
+
+test('review keeps every observed connection visible without a disclosure', () => {
+  const html = show({connection_edges:['a','b','c','d'].map(handle=>({handle,direction:'followers'}))});
+  assert.match(html, /They follow @d/);
+  assert.doesNotMatch(html, /details|summary|Show.*more/);
+});

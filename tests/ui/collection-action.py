@@ -1,0 +1,17 @@
+"""Direct collection control roundtrip; isolated browser mock only."""
+exec(open('tests/ui/helpers.py').read())
+new_tab(base+'/?mock=1#/leads'); wait_for_load(); settle()
+check('Uses mock mode', 'location.search.includes("mock=1")')
+js('''(async()=>{window.collectionBefore=await fetch('/api/control').then(r=>r.json());window.collectionPosts=[];const original=window.fetch;window.fetch=(u,o)=>{if(String(u)==='/api/control' && o?.method==='POST')collectionPosts.push(JSON.parse(o.body));return original(u,o)}})()''')
+for width in [1440,320]:
+    cdp('Emulation.setDeviceMetricsOverride',width=width,height=1000,deviceScaleFactor=1,mobile=width<500);settle()
+    check(f'{width}: direct action visible without opening controls','(()=>{const e=document.querySelector(".fl-ctl-direct"),b=e.getBoundingClientRect();return !e.closest("details") && b.width>0 && b.right<=innerWidth && !document.querySelector(".fl-ctl-details").open})()')
+    shot(f'collection-direct-{width}')
+click_node('button','Pause collection')
+check('Pausing exposes Start collection', 'document.querySelector(".fl-ctl-direct").textContent==="Start collection"')
+click_node('button','Start collection')
+check('Both actions target collection only', 'JSON.stringify(collectionPosts)===JSON.stringify([{stage:"collection",action:"pause"},{stage:"collection",action:"resume"}])')
+check('Checking modes and account pause settings survive roundtrip','''(async()=>{const after=await fetch('/api/control').then(r=>r.json()),before=collectionBefore;return after.local_laya===before.local_laya && after.stages.find(s=>s.id==='ai').paused===before.stages.find(s=>s.id==='ai').paused && JSON.stringify(after.accounts.map(a=>a.paused))===JSON.stringify(before.accounts.map(a=>a.paused))})()''')
+check('Actions do not open secondary controls','!document.querySelector(".fl-ctl-details").open')
+(out/'collection-action.json').write_text(json.dumps(checks,indent=2))
+print(json.dumps({'passed':len(checks),'total':len(checks),'output':str(out)}))

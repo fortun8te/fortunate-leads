@@ -52,13 +52,13 @@
     toggle.setAttribute('aria-expanded', String(open));
     toggle.classList.toggle('on', open);
     mapPane?.classList.toggle('comparing', open);
-    toggle.textContent = open ? 'Explore map' : 'Compare profiles';
+    toggle.textContent = open ? 'Back to map' : 'Compare profiles';
     if (notify) {
       window.dispatchEvent(new CustomEvent('connections-viewchange'));
       if (open) inputs[1].focus();
     }
   }
-  setComparison(true, false);
+  setComparison(false, false);
   toggle.addEventListener('click', () => setComparison(panel.hidden));
 
   function evidenceDetails(links, nodes) {

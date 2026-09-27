@@ -796,8 +796,17 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
     try:
         state = db.get_setting(conn, 'instagram_request_gate') or {}
         active = state.get('active')
-        if active and active['until'] <= stamp:
+        matching_release = bool(token is not None and active and active['lane'] == lane and active['token'] == token)
+        if active and active['until'] <= stamp and not matching_release:
+            # Expiry proves the worker stopped reporting, not that its browser stopped.
+            # Pause new collection until the owner checks the tab and explicitly resumes.
+            message = 'Collection paused: an Instagram request did not confirm completion. Check the account tab before resuming collection.'
+            db.set_setting(conn, 'paused_lists', True)
+            db.set_setting(conn, 'paused_bios', True)
+            db.set_setting(conn, 'instagram_request_attention', {'lane': active['lane'], 'at': iso(now), 'message': message})
+            conn.execute('UPDATE accounts SET last_error=? WHERE lane_id=?', (message, active['lane']))
             active = None
+            state['queue'] = []
         queue = [item for item in state.get('queue', []) if item['seen'] > stamp - REQUEST_LEASE_SECONDS]
         # A paused/disconnected waiting account must not block healthy waiters.
         live = {row['lane_id'] for row in conn.execute('SELECT * FROM accounts')
@@ -816,7 +825,12 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
         else:
             if kind not in ('list', 'profile'):
                 raise ValueError('kind must be list or profile')
-            if lane not in live:
+            cooling = db.get_setting(conn, 'cooldown')
+            try:
+                cooldown = utc(cooling) if cooling else None
+            except (ValueError, TypeError, AttributeError):
+                cooldown = None
+            if lane not in live or kind not in allowed or (cooling and (cooldown is None or cooldown > now)):
                 result = {'granted': False, 'wait_ms': 15000}
             elif active and active['lane'] == lane:
                 result = {'granted': False, 'wait_ms': 2000}
@@ -829,6 +843,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
                     queue.append({'lane': lane, 'kind': kind, 'seen': stamp})
                 if not active and stamp >= next_at and queue and queue[0]['lane'] == lane:
                     queue.pop(0)
+                    db.set_setting(conn, 'instagram_request_attention', None)
                     active = {'lane': lane, 'kind': kind, 'token': secrets.token_hex(24),
                               'until': stamp + REQUEST_LEASE_SECONDS}
                     next_at = stamp + REQUEST_SPACING_SECONDS

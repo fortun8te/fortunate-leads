@@ -38,17 +38,16 @@ const text = node => [node.textContent || '', ...node.children.map(text)].join('
 test('requires explicit comparison and demo never fetches fabricated data', async () => {
   const ui = mount('?mock=1');
   assert.equal(ui.calls.length, 0);
-  assert.equal(ui.panel.hidden, false);
-  assert.equal(ui.mapPane.classes.has('comparing'), true);
-  assert.equal(ui.toggle.textContent, 'Explore map');
-  assert.equal(ui.form.children[0].children[0].value, 'fortun8te');
-  ui.toggle.events.click();
   assert.equal(ui.panel.hidden, true);
   assert.equal(ui.mapPane.classes.has('comparing'), false);
   assert.equal(ui.toggle.textContent, 'Compare profiles');
+  assert.equal(ui.form.children[0].children[0].value, 'fortun8te');
   ui.toggle.events.click();
   assert.equal(ui.panel.hidden, false);
+  assert.equal(ui.toggle.textContent, 'Back to map');
   assert.equal(ui.form.children[1].children[0].focused, true);
+  ui.toggle.events.click();
+  assert.equal(ui.panel.hidden, true);
   assert.deepEqual(ui.events, ['connections-viewchange', 'connections-viewchange']);
   await ui.submit('@Alice', 'Bob');
   assert.equal(ui.calls.length, 0);

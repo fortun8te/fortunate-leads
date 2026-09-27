@@ -21,7 +21,7 @@ try:
         key('Enter', 'Enter', '\r')
     click_node('button', 'Rules only')
     check('Rules mode saves without enabling external AI', 'S.sc.local_laya===false && S.sc.qualify===false')
-    click_node('button', 'Local Laya + rules')
+    click_node('button', 'Local models + rules')
     check('Local mode saves without enabling external AI', 'S.sc.local_laya===true && S.sc.qualify===false')
     click_node('button', 'Light')
     check('Theme control remains usable from Settings', 'document.documentElement.dataset.theme==="light"')

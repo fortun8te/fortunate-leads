@@ -1,0 +1,32 @@
+/* Connections owns one compact toolbar; the canvas remains the main surface. */
+#pane-map .map-toolbar { padding: 10px 14px; gap: 8px; min-height: 54px; }
+#pane-map #map-q { width: min(260px, 32vw); min-width: 130px; }
+#pane-map .map-toolbar .btn, #pane-map .map-toolbar .select { min-height: 32px; }
+#pane-map #map-count { position: absolute; bottom: 19px; left: 124px; z-index: 1; font-size: 11px; pointer-events: none; color: var(--fg3); }
+#pane-map .stage > .map-density { position: absolute; bottom: 10px; left: 12px; z-index: 1; }
+#pane-map .stage > .map-density select { min-width: 102px; height: 30px; font-size: 11px; background: var(--bg1); }
+#pane-map .map-toolbar > .btn:is(#map-me, #map-fit) { width: 34px; height: 34px; padding: 8px; }
+#pane-map .map-toolbar > .btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+#pane-map .map-me { max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pane-map .zoom { bottom: 12px; }
+#pane-map.comparing .map-toolbar > :not(#connections-toggle) { display: none; }
+#pane-map .connections-panel { max-width: 850px; }
+@media (max-width: 680px) {
+  #pane-map .map-toolbar { padding: 8px; gap: 6px; }
+  #pane-map #map-q { flex: 1; width: 120px; }
+  #pane-map .map-density { font-size: 0; }
+  #pane-map .map-density select { min-width: 92px; max-width: 100px; font-size: 11px; }
+  #pane-map .map-me { display: none; }
+  #pane-map #connections-toggle { font-size: 11px; }
+  #pane-map #map-fit { padding-inline: 9px; }
+}
+#pane-map .map-search { display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--line2); border-radius: var(--r); height: 34px; background: var(--bg1); color: var(--fg3); }
+#pane-map .map-search svg { fill: none; stroke: currentColor; stroke-width: 1.5; flex: none; }
+#pane-map #map-q { border: 0; background: transparent; outline: none; padding: 0; color: var(--fg); font: inherit; }
+#pane-map .map-search:focus-within { border-color: var(--fg3); }
+#pane-map .zoom { top: auto; }
+@media (max-width: 680px) {
+  #pane-map .map-search { flex: 1 1 135px; min-width: 120px; }
+  #pane-map #map-q { width: 100%; min-width: 0; }
+  #pane-map #connections-toggle { margin-left: auto; }
+}

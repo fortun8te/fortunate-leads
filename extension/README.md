@@ -1,4 +1,4 @@
-# Fortunate Leads extension (3.9.15)
+# Fortunate Leads extension (3.9.16)
 Install: chrome://extensions → Developer mode → remove the old "Follower export" → Load unpacked → this folder (same extension id).
 Needs a logged-in Instagram session and the server on http://127.0.0.1:8777. It uses an open instagram.com tab; if none is left while there is work it reopens one as a pinned background tab (at most once per 10 min), and it wakes a discarded/frozen Instagram tab by reloading it (at most once per 3 min, never the tab you are looking at). The tab it uses is marked not auto-discardable.
 What it does: asks the server for one job at a time (list page or profile read), runs it inside the Instagram tab, posts the result. One request lane; a stored lane marker stops a restarted worker from firing while an earlier request may still be running.
@@ -14,16 +14,16 @@ Tests: node --test extension/test/*.test.mjs
 Benchmark: `python3 ops/collection_benchmark.py --db data/leads.sqlite --hours 24` reports new saved links separately from returned page rows, current complete/partial coverage, and errors by account and request type. Account error history starts with this version; earlier errors cannot be reconstructed. `ops/assign_page_experiment.py` dry-runs a matched 25/50 comparison and creates only new follower jobs after `--apply`, with no pacing changes.
 In-page widget (widget.js): bottom-right on instagram.com, collapses to a round pill (remembered), shows online dot, current step, today's counts, Pause/Resume and Open workspace. Closed Shadow DOM, data from the service worker only.
 
-## Upgrade to 3.9.15
+## Upgrade to 3.9.16
 
-Keep both collection stages paused while upgrading. Update the folder each Chrome profile actually loaded, then open `chrome://extensions` in each profile and click Reload on Fortunate Leads. Verify version 3.9.15 on each extension card and in the Accounts page heartbeat before resuming anything. Starting local services does not reload browser extensions.
+Keep both collection stages paused while upgrading. Update the folder each Chrome profile actually loaded, then open `chrome://extensions` in each profile and click Reload on Fortunate Leads. Verify version 3.9.16 on each extension card and in the Accounts page heartbeat before resuming anything. Starting local services does not reload browser extensions.
 
 The worker has an explicit `selfUpdate()` check: it reads the on-disk manifest during a heartbeat and calls `chrome.runtime.reload()` when the version differs. This can reload an active worker automatically after the loaded folder changes; a sleeping worker, a different loaded folder, or a failed check may prevent that. Saving files alone is not verification. Reload each profile explicitly and verify its reported version. Reloading the extension does not clear saved server pauses or the shared hold.
 
 ## Shared request coordination
 
-Each collector must obtain a server permit before an API fetch, profile lookup, tab opening, or reload. Permits are queued fairly across accounts, reserve one request at a time, and reuse the existing two-second minimum spacing across those collectors. Existing per-account windows remain unchanged; no shared hourly quota is invented. A worker that crashes cannot retain a permit indefinitely: its reservation expires after 90 seconds. Valid jobs are renewed while waiting; stale/reassigned jobs are rejected before a request.
+Each collector must obtain a server permit before an API fetch, profile lookup, tab opening, or reload. Permits are queued fairly across accounts, reserve one request at a time, and reuse the existing two-second minimum spacing across those collectors. Existing per-account windows remain unchanged; no shared hourly quota is invented. If a request has not confirmed completion after 90 seconds, collection pauses across accounts. Check the account tab, then explicitly resume collection; local processing remains available. A confirmed completion releases its permit normally. Valid jobs are renewed while waiting; stale/reassigned jobs are rejected before a request.
 
 This coordinates collector actions, not every background request a browser page may make. A loading page can outlive its reservation, and requests already started cannot always be cancelled. Separate server-side Meta workers obey the shared safety hold but are not part of the extension permit queue. These controls reduce bursts; they do not guarantee account or IP safety or make unauthorized collection permitted.
 
-Start local services now starts only the server and local helper. It neither opens Instagram profiles nor resumes collection. Connect an account explicitly from Accounts when needed, then use the collection controls deliberately. Older extensions receive an upgrade notice and cannot obtain new work until reloaded to 3.9.15.
+Start local services now starts only the server and local helper. It neither opens Instagram profiles nor resumes collection. Connect an account explicitly from Accounts when needed, then use the collection controls deliberately. Older extensions receive an upgrade notice and cannot obtain new work until reloaded to 3.9.16.

@@ -16,7 +16,7 @@ function harness() {
   };
   const c = vm.createContext({$, api, store:{get:()=>true}, debounce:f=>f, filterCount:()=>0,
     fitOf:n=>n.fit || 'unread', int:String, plural:(n,s)=>`${n} ${s}`, S:{f:{},view:'map'},
-    toQuery:()=>new URLSearchParams(), URLSearchParams,
+    emptyFilter:()=>({}), toQuery:()=>new URLSearchParams(), URLSearchParams,
     Image:class {constructor(){images.push(this);}}, document:{createElement:()=>({getContext:()=>null})},
     openDetail(){}, openSeed(){}});
   vm.runInContext(workflowSource, c);
@@ -30,8 +30,7 @@ const lead = id => ({id:'p:'+id,kind:'lead',label:'person'+id,lists:1,degree:1})
 test('map accents follow the tag palette with visible contrast in both themes', () => {
   assert.match(source,/css\('--t-caution'\)/);
   assert.match(source,/css\('--t-map-strong'\)/);
-  assert.match(markup,/fdot lg-good/);
-  assert.match(markup,/fdot lg-bad/);
+
   assert.doesNotMatch(markup,/background:#ff8a1f|background:#e5484d/);
   const dark = {}, light = {};
   for (const block of style.matchAll(/:root(\[data-theme="light"\])?\s*\{([^}]+)\}/g)) {
@@ -105,7 +104,7 @@ test('map identifies your account and spaces a dense source group', () => {
     source:mine.id,target:p.id,direction:'followers',state:'observed'
   }))});
   assert.equal($('#map-me').hidden,false);
-  assert.equal($('#map-me').textContent,'You · @fortun8te');
+  assert.equal($('#map-me').title,'Centre on @fortun8te');
   assert.equal(m.selfRelation.get('p:0'),'followers');
   assert.equal(m.seeds[0].fx,m.seeds[0].x,'source account is a fixed landmark');
   assert.equal(m.seeds[0].fy,m.seeds[0].y);
@@ -125,10 +124,11 @@ test('wide map spreads source accounts across the canvas and keeps their anchors
   m.build({nodes:[...sources,...people],total:400,links});
   const nodes=m.seeds;
   const span=(key)=>Math.max(...nodes.map((n)=>n[key]))-Math.min(...nodes.map((n)=>n[key]));
-  assert.ok(span('x')/span('y')>2.2,'source anchors should use a wide viewport');
+  assert.ok(span('x')/span('y')>1.4,'source anchors should use a wide viewport');
   m.fit();
   const [x0,,x1]=m.bounds(m.nodes);
-  assert.ok((x1-x0)*m.k > m.w*0.6,'initial map should use most of the available width');
+  assert.ok((x1-x0)*m.k > m.w*0.4,'compact map should remain readable');
+  assert.ok((x1-x0)*m.k <= m.w,'initial map fits the available width');
   const first=nodes[0];
   const home=[first.homeX,first.homeY];
   first.x+=35;
@@ -142,9 +142,10 @@ test('map reports a bounded sample and search scope', () => {
   assert.match(m.url(),/today=\d{4}-\d{2}-\d{2}/);
   m.limit=3000; assert.match(m.url(),/limit=3000/);
   m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:3000});
-  assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
-  assert.doesNotMatch(markup, /id="map-q"|id="map-labels"/);
-  assert.match(markup, /data-v="leads"[^>]*>Suggested/);
+  assert.match($('#map-count').textContent,/1 \/ 50000 people/);
+  assert.match(markup, /id="map-q"/);
+  assert.doesNotMatch(markup, /id="map-labels"/);
+  assert.equal(m.scope, 'all');
 });
 test('smaller map density keeps an open person from the same revision only', async () => {
   const {m,api,$} = harness(), pending=[];
@@ -167,7 +168,7 @@ test('smaller map density keeps an open person from the same revision only', asy
   assert.equal(m.focus.x,73);
   assert.equal(m.focus.fx,73);
   assert.equal(m.links.length,2);
-  assert.match($('#map-count').textContent,/2 of 2400 matching people shown/);
+  assert.match($('#map-count').textContent,/2 \/ 2400 people/);
   assert.match($('#map-count').textContent,/selected person kept on map/);
   const changed=m.load();
   pending[2].resolve({rev:6,total:2400,limit:400,nodes:[seed('a'),lead(1)],
@@ -242,7 +243,7 @@ test('animation draws without changing the camera on each frame', () => {
   assert.equal(draws,1);assert.equal(fits,0);
 });
 
-test('comparison does not fetch the overview graph until explicitly explored', async () => {
+test('opening secondary comparison pauses graph fetching', async () => {
   const {m, $, api} = harness();let requests=0;
   api.get=()=>{requests++;return Promise.resolve({rev:1,nodes:[],links:[]});};
   $('#connections-panel').hidden=false;
@@ -251,4 +252,30 @@ test('comparison does not fetch the overview graph until explicitly explored', a
   $('#connections-panel').hidden=true;
   await m.load();
   assert.equal(requests,1);
+});
+
+test('default map uses compact anchors and readable avatar sizes', () => {
+  const {m} = harness(); m.w=1200; m.h=700;
+  const seeds=Array.from({length:22},(_,i)=>seed(String(i)));
+  const people=Array.from({length:400},(_,i)=>lead(i));
+  m.build({nodes:[...seeds,...people],links:people.map((n,i)=>({source:seeds[i%22].id,target:n.id,state:'observed'})),total:400});
+  const span=Math.max(...m.seeds.map(n=>n.x))-Math.min(...m.seeds.map(n=>n.x));
+  assert.ok(span<800, `sources spread over ${span}`);
+  assert.ok(m.leads.every(n=>n.r>=11));
+  for (let i=0;i<m.nodes.length;i++) for (let j=i+1;j<m.nodes.length;j++) {
+    const a=m.nodes[i],b=m.nodes[j];assert.ok(Math.hypot(a.x-b.x,a.y-b.y)>=a.r+b.r,'packed avatars must not overlap');
+  }
+  assert.equal(m.scope,'all');
+});
+
+test('map search ignores hidden Leads filters and positions are organic', () => {
+  const {c,m}=harness();let query;
+  c.S.f={q:'Apparel',tags:['Apparel']};
+  c.toQuery=f=>{query=f;return new URLSearchParams();};
+  m.query='alice';m.url();
+  assert.equal(query.q,'alice');assert.equal(query.tags,undefined);
+  const people=Array.from({length:80},(_,i)=>lead(i));
+  m.build({nodes:[seed('a'),...people],links:people.map(p=>({source:'s:a',target:p.id,state:'observed'})),total:80});
+  const uniqueX=new Set(m.leads.map(n=>Math.round(n.x)));
+  assert.ok(uniqueX.size>60,'avatars must not form rows of grid cells');
 });

@@ -14,6 +14,7 @@ import ssl
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import urllib.request
 from collections import OrderedDict
@@ -127,7 +128,7 @@ def workspace_cooldown(conn, now):
 
 def permit_capable(version):
     parts = str(version or '').split('.')
-    return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 15)
+    return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 16)
 
 
 def ext_state(conn, row=None):
@@ -136,7 +137,7 @@ def ext_state(conn, row=None):
     upgrade = row is None or not permit_capable(row['version'])
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
             'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
-            **({'upgrade_required': True, 'minimum_version': '3.9.15', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
+            **({'upgrade_required': True, 'minimum_version': '3.9.16', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
             **({'cooldown_until': cooling} if cooling else {})}
 
 
@@ -1468,6 +1469,8 @@ def ext_aggregate(conn, accts, now):
 def api_scraper(conn, q, b):
     now = datetime.now(timezone.utc)
     accts = accounts.listing(conn, now)
+    lists, coverage = list_coverage(conn)
+    stages = control.snapshot(conn, ai_left(conn))['stages']
     return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts, 'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
             'paused': bool(db.get_setting(conn, 'paused')),
@@ -1475,9 +1478,10 @@ def api_scraper(conn, q, b):
             'local_laya': bool(db.get_setting(conn, 'local_laya')),
             'llm': api_llm(conn, q, b),
             'soak': soak(conn, now), 'progress': progress(conn, accts),
+            'coverage': {'lists': coverage, 'local': local_coverage(conn)},
+            'stages': stages,
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
-            'lists': [dict(r) for r in conn.execute('SELECT seed, direction, state, received, total, updated_at, error FROM lists '
-                                                    'ORDER BY updated_at DESC')],
+            'lists': lists,
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
 
@@ -1486,6 +1490,7 @@ def api_scraper_status(conn, q, b):
     """Small poll for the navigation strip; the full scraper report is for its page."""
     now = datetime.now(timezone.utc)
     accts = accounts.listing(conn, now, include_lists=False)
+    stages = control.snapshot(conn, ai_left(conn))['stages']
     return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts,
             'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
@@ -1493,6 +1498,7 @@ def api_scraper_status(conn, q, b):
             'qualify': bool(db.get_setting(conn, 'qualify')),
             'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
             'local_laya': bool(db.get_setting(conn, 'local_laya')),
+            'stages': stages,
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
 
@@ -1597,6 +1603,130 @@ def progress(conn, accts):
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
                     'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
     }
+
+
+def list_coverage(conn):
+    """Current attempt entries and target provenance, using indexed joins rather than an edge scan.
+
+    Entries in different seed lists can name the same person. A prior run's positive
+    edges remain saved when a short list is retried, but they do not certify the
+    current attempt and must not inflate its numerator.
+    """
+    rows = conn.execute("""SELECT l.seed,l.direction,l.state,l.cursor,l.received,l.total,l.error,l.updated_at,
+        l.run_job_id,l.released_why,r.member_count,r.first_page_seen,r.total AS run_total,r.total_source,
+        CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END AS profile_total
+        FROM lists l LEFT JOIN list_runs r ON r.job_id=l.run_job_id
+        LEFT JOIN people p ON p.handle=l.seed ORDER BY l.updated_at DESC""").fetchall()
+    out = []
+    total = {'saved_entries': 0, 'tracked_saved_entries': 0, 'expected_entries': 0,
+             'saved_entries_known_targets': 0, 'saved_entries_unknown_targets': 0,
+             'missing_entries': 0, 'known_targets': 0, 'unknown_targets': 0,
+             'current_run_targets': 0, 'estimated_targets': 0,
+             'complete_lists': 0, 'partial_lists': 0, 'blocked_lists': 0,
+             'active_lists': 0, 'total_lists': len(rows)}
+    for row in rows:
+        tracked = row['member_count'] if row['run_job_id'] is not None else None
+        saved = tracked if tracked is not None else max(0, row['received'] or 0)
+        current_total = (row['run_total'] if row['total_source'] == 'current_run'
+                         and isinstance(row['run_total'], int) and row['run_total'] >= 0 else None)
+        estimate = next((v for v in (row['total'], row['profile_total'])
+                         if isinstance(v, int) and v >= 0), None)
+        expected = current_total if current_total is not None else estimate
+        source = 'current_run' if current_total is not None else 'estimate' if estimate is not None else 'unknown'
+        proved = (row['state'] == 'done' and row['cursor'] is None and row['run_job_id'] is not None
+                  and db.list_run_complete(conn, row['run_job_id']))
+        if proved:
+            completion = 'complete'
+            reason = None
+        elif row['state'] == 'done':
+            completion = 'unverified'
+            reason = 'Completion proof is missing; this list needs review.'
+        elif row['state'] == 'partial':
+            completion = 'partial'
+            reason = list_completion_reason(row['error']) or 'Only part of this list was saved.'
+        elif row['state'] in ('private', 'error'):
+            completion = 'blocked'
+            reason = list_completion_reason(row['error']) or ('Access to this list was denied.' if row['state'] == 'private' else 'Collection stopped with an error.')
+        elif row['state'] == 'running':
+            completion, reason = 'collecting', None
+        else:
+            completion, reason = 'waiting', None
+        item = {'seed': row['seed'], 'direction': row['direction'], 'state': row['state'],
+                'received': row['received'], 'total': row['total'], 'updated_at': row['updated_at'],
+                'error': row['error'], 'saved_entries': saved, 'saved_current_run': tracked,
+                'saved_source': 'tracked_run' if tracked is not None else 'legacy_unverified',
+                'expected': expected, 'expected_source': source,
+                'missing': max(expected - saved, 0) if expected is not None else None,
+                'completion': completion, 'completion_reason': reason}
+        out.append(item)
+        total['saved_entries'] += saved
+        if tracked is not None:
+            total['tracked_saved_entries'] += tracked
+        if expected is None:
+            total['unknown_targets'] += 1
+            total['saved_entries_unknown_targets'] += saved
+        else:
+            total['known_targets'] += 1
+            total['current_run_targets' if source == 'current_run' else 'estimated_targets'] += 1
+            total['expected_entries'] += expected
+            total['saved_entries_known_targets'] += saved
+            if completion != 'complete':
+                total['missing_entries'] += max(expected - saved, 0)
+        total[{'complete': 'complete_lists', 'partial': 'partial_lists',
+               'unverified': 'partial_lists', 'blocked': 'blocked_lists',
+               'collecting': 'active_lists', 'waiting': 'active_lists'}[completion]] += 1
+    return out, total
+
+
+def list_completion_reason(error):
+    """Keep a readable reason; raw error samples may contain an entire HTML page."""
+    if not error:
+        return None
+    if error.startswith('Instagram limited this list;'):
+        return 'Instagram limited this list.'
+    if 'list_html_home_redirect' in error:
+        return 'Instagram returned its home page instead of list data.'
+    return error.split(' | ', 1)[0][:240]
+
+
+_local_coverage_lock = threading.Lock()
+_local_coverage_cache = {}
+
+
+def local_coverage(conn):
+    """Count current local profile reviews from the durable, signature-checked work queue.
+
+    Queue rebuilds run in bounded worker batches. Until one finishes, old cache
+    rows cannot prove how many profiles still need the current model policy.
+    """
+    enabled = bool(db.get_setting(conn, 'local_laya'))
+    if db.get_setting(conn, 'laya_queue_signature') != laya.cache_signature():
+        return {'enabled': enabled, 'eligible_profiles': None, 'processed_profiles': None,
+                'pending_profiles': None, 'state': 'rebuilding',
+                'reason': 'Checking which saved profiles need local review.'}
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    cache_key = (path, laya.cache_signature())
+    with _local_coverage_lock:
+        cached = _local_coverage_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 30:
+            eligible, pending, sampled_at = cached[1:]
+        else:
+            eligible = conn.execute(f"SELECT count(*) FROM people p WHERE instr(p.handle,'~')=0 AND {NOT_ME}").fetchone()[0]
+            pending = conn.execute('SELECT count(*) FROM laya_queue').fetchone()[0]
+            sampled_at = db.now()
+            _local_coverage_cache.clear()
+            _local_coverage_cache[cache_key] = (time.monotonic(), eligible, pending, sampled_at)
+    processed = max(eligible - pending, 0)
+    health = laya.last_known()
+    state = ('off' if not enabled else 'complete' if pending == 0 else
+             'running' if health is True else 'waiting' if health is False else 'pending')
+    reason = ('Local review is off.' if not enabled else
+              'All saved profiles have a current local review.' if pending == 0 else
+              'Reviewing saved profiles on this computer.' if state == 'running' else
+              'Waiting for the local reader.' if state == 'waiting' else
+              'Saved profiles still need local review.')
+    return {'enabled': enabled, 'eligible_profiles': eligible, 'processed_profiles': processed,
+            'pending_profiles': pending, 'state': state, 'reason': reason, 'sampled_at': sampled_at}
 
 
 def soak(conn, now):
@@ -1845,9 +1975,9 @@ def require_collection_resume(conn):
 
 
 def api_control_set(conn, q, b):
-    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
+    """{"stage": collection|lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
     if (b.get('action') == 'start_all' or
-            b.get('action') == 'resume' and (b.get('stage') in ('lists', 'bios', 'all') or
+            b.get('action') == 'resume' and (b.get('stage') in ('collection', 'lists', 'bios', 'all') or
                                           b.get('stage') is None and isinstance(b.get('account'), str))):
         require_collection_resume(conn)
     try:
@@ -2048,6 +2178,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api(fn, parse_qs(url.query), args, method == 'POST' or '/ext/' in url.path)
         if method == 'GET' and url.path.startswith('/img/'):
             return self.image(url.path[5:])
+        if method == 'GET' and url.path == '/api/local-font/areal':
+            return self.local_font()
         if method == 'GET' and not url.path.startswith('/api/'):
             return self.static(url.path)
         self.send(404, {'ok': False, 'error': 'not found'})
@@ -2088,6 +2220,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'ok': False, 'error': 'no image'})
         ctype = 'image/png' if data[:4] == b'\x89PNG' else 'image/webp' if data[8:12] == b'WEBP' else 'image/jpeg'
         self.send(200, data, ctype, {'Cache-Control': 'no-cache'})
+
+    def local_font(self):
+        # Use the owner's installed font without distributing it in the public repository.
+        font = Path.home() / 'Library' / 'Fonts' / 'ABCArealSuperfamilyVariable.ttf'
+        if not font.is_file():
+            return self.send(404, b'Font not installed', 'text/plain')
+        self.send(200, font.read_bytes(), 'font/ttf', {'Cache-Control': 'private, max-age=86400'})
 
     def static(self, path):
         f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
