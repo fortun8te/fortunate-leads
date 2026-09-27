@@ -68,8 +68,8 @@
 
   // Empty list pages: Instagram's quiet way of blocking (RESEARCH.md §3).
   // ctx = {cursor, total, totalSource, received, emptyAt}.
-  // emptyAt = the cursor ('' for page 1) at which an empty-page block already happened once; the same empty page
-  // again after the cooldown is reported as 'other' so one broken list can't stop the scraper day after day.
+  // emptyAt tracks the cursor that already returned an empty page. A repeat with
+  // has_more is an error; a repeat terminal empty page is saved as partial coverage.
   function listCheck(json, ctx, out) {
     const users = usersOf(json);
     if (!users) return out('other', 'no_users_field');
