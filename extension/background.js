@@ -76,8 +76,32 @@ async function whoami(force) {
     else { const ids = (await get('ids')) || {}; a.handle = Object.keys(ids).find((h) => ids[h].ig_id === a.ig_id) || null; }
   }
   const next = { ...a, at: now };
-  if (!acc || acc.ig_id !== next.ig_id || acc.handle !== next.handle) { await trail('account', { ig_id: next.ig_id, handle: next.handle }); mem.lastBeat = 0; }
-  await set({ account: next });
+  // Keep pacing state per Instagram id. A switch must neither replay the old
+  // account's limits on the new one nor erase them if the old account returns.
+  // The active state stays in `st`; inactive states live in `accountStates`.
+  const { changed, switched } = await locked(async () => {
+    const current = await get('account'), stored = await get('st');
+    const owner = stored?.accountIgId || current?.ig_id || null;
+    const switched = !!next.ig_id && owner !== next.ig_id;
+    const values = { account: next };
+    if (switched) {
+      const states = (await get('accountStates')) || {};
+      if (owner && stored) states[owner] = { st: { ...stored, accountIgId: owner }, at: now };
+      const saved = states[next.ig_id];
+      delete states[next.ig_id];
+      values.accountStates = states;
+      values.st = { ...(saved ? FL.normalize(saved.st, now) : FL.fresh()), accountIgId: next.ig_id };
+      values.cur = null;
+      values.prog = {};
+      values.seen = {};
+    } else if (stored && owner && stored.accountIgId !== owner) {
+      values.st = { ...stored, accountIgId: owner };
+    }
+    await set(values);
+    return { switched, changed: !current || current.ig_id !== next.ig_id || current.handle !== next.handle };
+  });
+  if (switched) { ++mem.gen; mem.looping = false; mem.job = null; mem.label = ''; }
+  if (changed) { await trail('account', { ig_id: next.ig_id, handle: next.handle }); mem.lastBeat = 0; }
   return next;
 }
 // First request after a quiet spell (browser start, install, > 30 min without a request): wait this lane's own offset.
@@ -159,10 +183,14 @@ async function queue(path, body) {
 }
 // Enqueue a job's result and clear `cur` in one storage write, so a worker restarted after this point never
 // re-runs a request whose result is already stored (step() flushes the outbox before leasing again).
-async function queueDone(path, body, success = true) {
+async function queueDone(path, body, success = true, gen = mem.gen) {
+  if (gen !== mem.gen) throw new Superseded();
   body = await tagged(body);
-  await locked(async () => set({ box: FL.enqueue(await get('box'), path, body), cur: null }));
-  if (success) await editSt((st) => FL.succeeded(st));
+  await locked(async () => {
+    if (gen !== mem.gen) throw new Superseded();
+    await set({ box: FL.enqueue(await get('box'), path, body), cur: null });
+  });
+  if (success) await editSt((st) => { if (gen === mem.gen) FL.succeeded(st); });
   await flushBox();
 }
 async function applyServer(j) {
@@ -188,13 +216,13 @@ async function heartbeat(force) {
   if (!force && Date.now() - mem.lastBeat < 25e3) return;
   mem.lastBeat = Date.now();
   if (await selfUpdate()) return;
-  await whoami().catch(() => {});
+  await whoami(true).catch(() => {});
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
   const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
   try {
     const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null, cool,
       hold: st.hold ? st.hold.code : null, list_endpoint_until: st.listEndpointUntil > now ? iso(st.listEndpointUntil) : null,
-      today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
+      day: FL.dayKey(now), today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
       rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) } }, 10e3);
     if (r.status !== 200 || typeof r.json?.paused !== 'boolean') throw new Error('Control state unavailable');
@@ -314,8 +342,9 @@ async function igRequest(gen, tab, url, kind, ctx) {
   } finally {
     await set({ lane: keepLane ? { until: Date.now() + 60e3, url, after: 'timeout' } : null });
   }
+  if (gen !== mem.gen) throw new Superseded();
   const now = Date.now();
-  if (res.sent) await editSt((st) => FL.afterRequest(st, kind, now));
+  if (res.sent) await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.afterRequest(st, kind, now); });
   if (res.tabError) mem.badTab = { id: tab.id, until: now + 2 * FL.MIN };
   const bad = FL.classify(res, kind, now, ctx);
   await trail(kind + ' ' + url.replace(IG, '').replace(/\?.*/, ''), { status: res.status, ms: res.ms, code: bad ? bad.code : 'ok', reason: bad ? bad.reason : undefined });
@@ -325,13 +354,15 @@ async function igRequest(gen, tab, url, kind, ctx) {
 const HOLD_MSG = { challenge: 'Instagram security check: complete it in the Instagram tab, then Resume',
   login: 'Log in to Instagram, then Resume' };
 // Records a failed job step. Local codes (network, unsupported, busy) keep the job for a retry and tell the server nothing.
-async function fail(job, bad, what, res, bucket, publicTarget = false) {
+async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem.gen) {
+  if (gen !== mem.gen) throw new Superseded();
   const now = Date.now(), sample = res ? FL.sampleOf(res, 1500) : '';
   const local = bad.code === 'network' || bad.code === 'unsupported' || bad.code === 'busy';
   const homeRedirect = bad.reason === 'list_html_home_redirect';
   const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what +
     (homeRedirect ? ': Instagram returned its home page for the list API; target will retry later.' : '');
   const st = await editSt((st) => {
+    if (gen !== mem.gen) throw new Superseded();
     if (homeRedirect) FL.recordListRedirect(st, job.seed, job.direction, publicTarget, now);
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt, bucket);
     else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now };
@@ -353,7 +384,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false) {
     direction: job.direction || null, http_status: res ? res.status : 0,
     retry_after: bad.retryAt ? iso(bad.retryAt) : null,
     reason: bad.reason || null,
-    message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
+    message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false, gen);
   if (homeRedirect && st.listEndpointUntil > now) await heartbeat(true);
 }
 // Waits for the pace gap while keeping heartbeats going; false if paused, blocked or superseded meanwhile.
@@ -389,7 +420,10 @@ async function done(job) { await set({ cur: null }); await editSt((st) => FL.suc
 // ---- list pages --------------------------------------------------------------
 // prog[seed/direction] = {cursor (last requested), next, received, pages, total, emptyAt}: local progress, so a
 // restarted worker knows where the crawl is and the empty-page guard can tell a repeat from a first block.
-const editProg = (key, fn) => edit('prog', (all) => { all = all || {}; all[key] = fn(all[key] || {}); return all; });
+const editProg = (key, fn, gen = mem.gen) => edit('prog', (all) => {
+  if (gen !== mem.gen) throw new Superseded();
+  all = all || {}; all[key] = fn(all[key] || {}); return all;
+});
 async function runList(gen, job, tab) {
   const key = job.seed.toLowerCase() + '/' + job.direction, cursor = job.cursor || null;
   let prog = FL.listProgress(job, ((await get('prog')) || {})[key]);
@@ -403,13 +437,13 @@ async function runList(gen, job, tab) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
     if (FL.privateWall(r.info, job.seed, r.p))
-      return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list');
-    if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
+      return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list', false, gen);
+    if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list', false, gen);
     igId = r.p.ig_id;
     total = FL.count(job.direction === 'followers' ? r.p.followers : r.p.following);
     totalSource = total == null ? 'unknown' : 'current_run';
     prog = { ...prog, jobId: job.id, total, totalSource, countAttempted: true };
-    await editProg(key, () => prog);
+    await editProg(key, () => prog, gen);
     if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return; // job stays in `cur` and resumes
   }
   const requestedCount = job.direction === 'following' ? 50 : job.page_size === 50 ? 50 : 25;
@@ -422,7 +456,7 @@ async function runList(gen, job, tab) {
     if (bad.reason === 'empty_page_before_total') {
       // Keep this lease and cursor. The request already advanced the normal list
       // clock; a second empty terminal page is sent to the server as partial.
-      await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }));
+      await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }), gen);
       return;
     }
     if (bad.code === 'private' || bad.reason === 'list_html_home_redirect' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
@@ -430,23 +464,24 @@ async function runList(gen, job, tab) {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
       if (FL.privateWall(proof.info, job.seed, proof.p))
-        return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list');
+        return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list', false, gen);
       if (bad.reason === 'list_html_home_redirect') {
         const p = proof.p;
         const publicTarget = !!p && p.is_private === false && p.handle?.toLowerCase() === job.seed.toLowerCase();
-        return fail(job, bad, mem.label, res, 'list', publicTarget);
+        return fail(job, bad, mem.label, res, 'list', publicTarget, gen);
       }
     }
-    if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }));
-    return fail(job, bad, mem.label, res, 'list');
+    if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }), gen);
+    return fail(job, bad, mem.label, res, 'list', false, gen);
   }
   const freshTotal = FL.pageTotal(res.json);
   if (freshTotal != null) { total = freshTotal; totalSource = 'current_run'; }
   const page = FL.parsePage(res.json), now = Date.now();
   const stalled = !!(cursor && page.next_cursor === cursor && !page.done);
   await editProg(key, (p) => ({ ...(cursor && p.jobId === job.id ? p : {}), jobId: job.id, cursor, next: page.next_cursor, received: ctx.received + page.users.length,
-    pages: (cursor ? p.pages || 0 : 0) + 1, total, totalSource, countAttempted: !!prog.countAttempted, emptyAt: null, limited: page.limited, at: now }));
+    pages: (cursor ? p.pages || 0 : 0) + 1, total, totalSource, countAttempted: !!prog.countAttempted, emptyAt: null, limited: page.limited, at: now }), gen);
   await editSt((st) => {
+    if (gen !== mem.gen) throw new Superseded();
     FL.logPage(FL.tally(st, now, page.users.length, 0), now, page.users.length);
     if (page.limited) st.note = '@' + job.seed + ' ' + job.direction + ' capped by Instagram; kept what it returned and moved on';
     if (stalled) st.note = '@' + job.seed + ' ' + job.direction + ' repeated its page cursor; saved the returned people, but the list is partial';
@@ -455,7 +490,7 @@ async function runList(gen, job, tab) {
   if (stalled) await trail('list cursor repeated', { seed: job.seed, direction: job.direction, cursor });
   await queueDone('/api/ext/list-page', { job_id: job.id, lease_token: job.lease_token, requested_cursor: job.cursor || null, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
     next_cursor: page.next_cursor, done: page.done, total, total_source: totalSource, limited: page.limited || undefined,
-    has_more: page.has_more, requested_count: requestedCount, http_status: res.status });
+    has_more: page.has_more, requested_count: requestedCount, http_status: res.status }, true, gen);
 }
 
 // ---- profile reads (bios) ----------------------------------------------------
@@ -468,17 +503,17 @@ async function runProfile(gen, job, tab) {
   let p;
   if (pk && !(st.infoOffUntil > Date.now())) {
     const { res, bad } = await igRequest(gen, tab, IG + '/api/v1/users/' + encodeURIComponent(pk) + '/info/', 'profile');
-    if (bad) return fail(job, bad, mem.label, res, 'profile');
+    if (bad) return fail(job, bad, mem.label, res, 'profile', false, gen);
     p = FL.mapProfile(FL.userOf(res.json));
   } else {
     const r = await lookupViaPage(gen, job.handle, 'profile', tab);
-    if (!r.p) return fail(job, r.bad, mem.label + ' (page)', r.res, 'profile');
+    if (!r.p) return fail(job, r.bad, mem.label + ' (page)', r.res, 'profile', false, gen);
     p = r.p;
   }
   await remember(p);
   await markSeen(p.handle);
-  await editSt((st) => FL.tally(st, Date.now(), 0, 1));
-  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p });
+  await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.tally(st, Date.now(), 0, 1); });
+  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p }, true, gen);
 }
 
 // ---- the loop ----------------------------------------------------------------
@@ -595,10 +630,12 @@ async function lookupViaPage(gen, handle, kind, near) {
     const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
     const where = near ? { windowId: near.windowId, index: near.index + 1 } : {};
     tab = await chrome.tabs.create({ url, active: false, ...where });
+    if (gen !== mem.gen) throw new Superseded();
     mem.lookups.add(tab.id);
     await set({ lookupTab: tab.id });
-    await editSt((st) => FL.afterRequest(st, kind, Date.now()));
+    await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.afterRequest(st, kind, Date.now()); });
     const p = await got;
+    if (gen !== mem.gen) throw new Superseded();
     if (p) {
       const info = await checkedProfileDom(tab.id, handle, p);
       await trail(kind + ' page /' + handle + '/', { ms: Date.now() - t0, code: 'ok' });
@@ -622,6 +659,7 @@ async function lookupViaPage(gen, handle, kind, near) {
 async function passive(user) {
   const p = FL.mapProfile(user);
   if (!p || !p.ig_id) return;
+  const beforeAccount = (await get('account'))?.ig_id || null;
   await remember(p);
   const me = await get('account'); // our own profile went by: now we know this account's handle
   if (me && me.ig_id === p.ig_id && me.handle !== p.handle.toLowerCase()) { await set({ account: { ...me, handle: p.handle.toLowerCase() } }); mem.lastBeat = 0; }
@@ -631,6 +669,7 @@ async function passive(user) {
   // Passive data from browsing is a new bio import. Respect the current stage
   // control even though this path makes no extra Instagram request.
   await heartbeat(true);
+  if (beforeAccount !== ((await get('account'))?.ig_id || null)) return;
   if (!FL.controlAllows(mem, 'profile') || await get('localPaused') || (await loadSt()).hold) return;
   if (!(await markSeen(p.handle))) return;
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));

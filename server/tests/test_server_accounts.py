@@ -323,13 +323,162 @@ class LaneTest(Base):
         self.assertEqual(s['extension_id'], 'fgdbghllamedgihmdcolaggnbhnakjnf')
 
     def test_same_account_twice(self):
-        self.nxt('a')
+        self.seeds('s1', 's2')
+        first = self.nxt('a', 'list')['job']
         ACCT['z'] = ('lane-z', '101', 'acct.a')
         try:
-            self.nxt('z')
+            self.assertIsNone(self.nxt('z', 'list')['job'])
+            self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
+            self.conn.commit()
+            self.assertIsNone(self.nxt('z', 'profile')['job'])
+            self.assertEqual(self.nxt('b', 'list')['job']['seed'], 's2' if first['seed'] == 's1' else 's1')
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs WHERE state='leased' AND lane='lane-z'").fetchone()[0], 0)
         finally:
             del ACCT['z']
         self.assertTrue(any('logged in on 2 Chrome profiles' in x['text'] for x in self.call('/api/accounts')[1]['alerts']))
+
+    def test_duplicate_account_takes_over_after_owner_offline(self):
+        self.seeds('s1')
+        first = self.nxt('a', 'list')['job']
+        ACCT['z'] = ('lane-z', '101', 'acct.a')
+        try:
+            self.assertIsNone(self.nxt('z', 'list')['job'])
+            self.age('lane-a', 11)
+            self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (first['id'],))
+            self.conn.commit()
+            replacement = self.nxt('z', 'list')['job']
+            self.assertEqual(replacement['id'], first['id'])
+            self.assertEqual(self.conn.execute('SELECT lane FROM lists WHERE seed=?', (first['seed'],)).fetchone()[0], 'lane-z')
+        finally:
+            del ACCT['z']
+
+    def test_duplicate_account_cannot_bypass_cooldown_or_budget(self):
+        self.seeds('s1')
+        ACCT['z'] = ('lane-z', '101', 'acct.a')
+        try:
+            self.nxt('a', 'profile')
+            self.nxt('z', 'profile')
+            future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+            self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'cooldown',
+                      'cool': {'list': future, 'profile': None}, 'today': {'list': 1}})
+            self.call('/api/accounts/lane-a', {'budget': {'list': 1, 'profile': 300}})
+            self.age('lane-a', 11)
+            self.assertIsNone(self.nxt('z', 'list')['job'])
+            self.conn.execute("UPDATE accounts SET list_cool_until=NULL WHERE lane_id='lane-a'")
+            self.conn.commit()
+            self.assertIsNone(self.nxt('z', 'list')['job'])
+        finally:
+            del ACCT['z']
+
+    def test_duplicate_identity_ownership_respects_roles(self):
+        self.seeds('s1')
+        self.nxt('a', 'profile')
+        self.call('/api/accounts/lane-a', {'role': 'bios'})
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
+        self.conn.commit()
+        ACCT['z'] = ('lane-z', '101', 'acct.a')
+        try:
+            self.post('z', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle'})
+            self.call('/api/accounts/lane-z', {'role': 'lists'})
+            old_job = self.nxt('a', 'profile')['job']
+            self.assertEqual(old_job['handle'], 'someone')
+            self.assertIsNone(self.nxt('z', 'list')['job'])
+            self.assertIsNone(self.nxt('a', 'list')['job'])
+            self.assertIsNone(self.nxt('z', 'profile')['job'])
+            alerts = [x['text'] for x in self.call('/api/accounts')[1]['alerts']]
+            self.assertTrue(any('Set one profile to both' in text for text in alerts), alerts)
+            self.call('/api/accounts/lane-z', {'role': 'both'})
+            self.assertIsNone(self.nxt('z', 'list')['job'])  # wait for the old lane's live lease
+            self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (old_job['id'],))
+            self.conn.commit()
+            self.assertEqual(self.nxt('z', 'list')['job']['seed'], 's1')
+            self.assertFalse(any('Set one profile to both' in x['text'] for x in self.call('/api/accounts')[1]['alerts']))
+        finally:
+            del ACCT['z']
+
+    def test_identity_change_clears_previous_account_limits(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'cooldown',
+                  'cooldown_until': future, 'cool': {'list': future, 'profile': future},
+                  'list_endpoint_until': future, 'today': {'list': 3, 'profile': 5}})
+        self.assertTrue(self.conn.execute("SELECT is_main FROM accounts WHERE lane_id='lane-a'").fetchone()[0])
+        # The extension reports fresh state for the newly signed-in identity.
+        self.call('/api/ext/heartbeat', {'lane_id': 'lane-a', 'account': {'ig_id': '999', 'handle': 'newacct'},
+                  'version': '3.9.6', 'state': 'idle', 'cooldown_until': None,
+                  'cool': {'list': None, 'profile': None}, 'list_endpoint_until': None,
+                  'today': {'list': 0, 'profile': 0}})
+        row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual((row['ig_id'], row['handle'], row['is_main']), ('999', 'newacct', 0))
+        self.assertEqual(accounts.jload(row['today']), {'list': 0, 'profile': 0})
+        self.assertTrue(all(row[k] is None for k in ('rate', 'cooldown_until', 'list_cool_until',
+                                                   'profile_cool_until', 'list_endpoint_until')))
+        self.seeds('s1')
+        self.assertEqual(self.call('/api/ext/next?lane=lane-a&ig_id=999&handle=newacct&kinds=list')[1]['job']['seed'], 's1')
+
+    def test_switching_back_restores_daily_usage_before_next_lease(self):
+        self.seeds('s1')
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle',
+                                             'today': {'list': 1, 'profile': 0}})
+        self.call('/api/accounts/lane-a', {'budget': {'list': 1, 'profile': 300}})
+        self.call('/api/ext/next?lane=lane-a&ig_id=999&handle=newacct&kinds=profile')
+        self.assertIsNone(self.call('/api/ext/next?lane=lane-a&ig_id=101&handle=acct.a&kinds=list')[1]['job'])
+        self.assertEqual((accounts.jload(self.conn.execute("SELECT today FROM accounts WHERE lane_id='lane-a'").fetchone()[0]) or {})['list'], 1)
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle',
+                                             'today': {'list': 0, 'profile': 0}})
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+
+    def test_identity_switch_releases_old_lease_and_list_owner(self):
+        self.seeds('s1')
+        job = self.nxt('a', 'list')['job']
+        self.call('/api/ext/next?lane=lane-a&ig_id=999&handle=newacct&kinds=profile')
+        lease = self.conn.execute('SELECT state,lane,lease_token FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        self.assertEqual(tuple(lease), ('queued', None, None))
+        owner = self.conn.execute("SELECT lane,prev_lane,released_why FROM lists WHERE seed='s1'").fetchone()
+        self.assertEqual(tuple(owner), (None, 'lane-a', 'identity_changed'))
+
+    def test_switching_back_restores_cooldown_before_next_lease(self):
+        self.seeds('s1')
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'cooldown',
+                                             'cool': {'list': future, 'profile': None}})
+        self.call('/api/ext/next?lane=lane-a&ig_id=999&handle=newacct&kinds=profile')
+        self.assertIsNone(self.call('/api/ext/next?lane=lane-a&ig_id=101&handle=acct.a&kinds=list')[1]['job'])
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle',
+                                             'cool': {'list': None, 'profile': None}})
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        self.assertGreater(datetime.fromisoformat(self.conn.execute(
+            "SELECT list_cool_until FROM account_identity_state WHERE lane_id='lane-a' AND ig_id='101'").fetchone()[0]),
+            datetime.now(timezone.utc))
+
+    def test_identity_switch_merges_fresh_heartbeat_with_saved_state(self):
+        today = datetime.now().date()
+        client_day = f'{today.year}-{today.month}-{today.day}'
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle', 'day': client_day,
+                                             'today': {'list': 1, 'profile': 0}})
+        self.call('/api/ext/next?lane=lane-a&ig_id=999&handle=newacct&kinds=profile')
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.call('/api/ext/heartbeat', {'lane_id': 'lane-a', 'account': {'ig_id': '101', 'handle': 'acct.a'},
+                  'version': '3.9.6', 'state': 'cooldown', 'day': client_day,
+                  'today': {'list': 2, 'profile': 0}, 'cool': {'list': future, 'profile': None}})
+        row = self.conn.execute("SELECT today,list_cool_until FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual(accounts.jload(row['today'])['list'], 2)
+        self.assertGreater(datetime.fromisoformat(row['list_cool_until']), datetime.now(timezone.utc))
+
+    def test_local_day_rollover_does_not_keep_yesterdays_budget(self):
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        old_day = f'{yesterday.year}-{yesterday.month}-{yesterday.day}'
+        new_day = f'{today.year}-{today.month}-{today.day}'
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle', 'day': old_day,
+                                             'today': {'list': 3, 'profile': 0}})
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle', 'day': new_day,
+                                             'today': {'list': 0, 'profile': 0}})
+        row = self.conn.execute("SELECT today FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual(accounts.jload(row['today'])['list'], 0)
+        saved = self.conn.execute("SELECT day,today FROM account_identity_state WHERE lane_id='lane-a' AND ig_id='101'").fetchone()
+        self.assertEqual((saved['day'], accounts.jload(saved['today'])['list']), (today.isoformat(), 0))
 
 
 class MigrationTest(unittest.TestCase):
@@ -373,6 +522,23 @@ class MigrationTest(unittest.TestCase):
             conn.rollback()
             self.assertEqual((job['seed'], job['owner']), ('s1', None))
             conn.close()
+
+    def test_existing_account_usage_seeds_identity_ledger_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'existing.sqlite')
+            conn = db.init(path)
+            seen = datetime.now(timezone.utc).isoformat()
+            conn.execute('INSERT INTO accounts(lane_id,ig_id,first_seen,last_seen,today) VALUES(?,?,?,?,?)',
+                         ('lane-a', '101', seen, seen, '{"list": 4, "profile": 2}'))
+            conn.commit()
+            conn.close()
+            for _ in range(2):
+                conn = db.init(path)
+                saved = conn.execute("SELECT day,today FROM account_identity_state WHERE lane_id='lane-a' AND ig_id='101'").fetchone()
+                self.assertEqual((saved['day'], accounts.jload(saved['today'])),
+                                 (datetime.now().date().isoformat(), {'list': 4, 'profile': 2}))
+                self.assertEqual(conn.execute('SELECT count(*) FROM account_identity_state').fetchone()[0], 1)
+                conn.close()
 
 
 if __name__ == '__main__':

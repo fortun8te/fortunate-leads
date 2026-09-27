@@ -152,6 +152,7 @@ class ServerTest(Base):
         self.assertIsNone(self.call(url)[1]['job'])  # the blocked target does not bounce to another lane
         self.conn.execute("UPDATE jobs SET retry_not_before=NULL WHERE id=?", (job['id'],))
         self.conn.execute("UPDATE accounts SET list_cool_until=NULL WHERE lane_id='default'")
+        self.conn.execute("UPDATE account_identity_state SET list_cool_until=NULL WHERE lane_id='default' AND ig_id='99'")
         self.conn.commit()
         job = self.call(url)[1]['job']
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'private', 'reason': 'profile_private_wall',

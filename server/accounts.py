@@ -11,7 +11,7 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
 """
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import db
 
@@ -23,6 +23,7 @@ RELEASE_AFTER = timedelta(minutes=10)   # offline this long: its list moves on
 ONLINE_FOR = timedelta(seconds=90)      # heartbeats come every <= 30 s
 BUDGET_MAX = {'list': 3000, 'profile': 5000}   # per day; 0 = no daily limit
 HANDOFFS_KEEP = 30
+IDENTITY_WAITS = ('cooldown_until', 'list_cool_until', 'profile_cool_until', 'list_endpoint_until')
 
 
 def utc(s):
@@ -85,27 +86,102 @@ def is_me(conn, handle):
     return bool(handle) and bool(conn.execute('SELECT 1 FROM seeds WHERE is_me=1 AND handle=?', (handle,)).fetchone())
 
 
+def local_day(value=None):
+    return (value or datetime.now(timezone.utc)).astimezone().date().isoformat()
+
+
+def client_day(value):
+    """Extension dayKey is local YYYY-M-D; store an unambiguous ISO date."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', value)
+    if not match:
+        return None
+    try:
+        return date(*map(int, match.groups())).isoformat()
+    except ValueError:
+        return None
+
+
+def merged_counts(a, b):
+    left, right = jload(a, {}) or {}, jload(b, {}) or {}
+    return json.dumps({kind: max(left.get(kind, 0) if type(left.get(kind)) is int else 0,
+                                 right.get(kind, 0) if type(right.get(kind)) is int else 0)
+                       for kind in ('list', 'profile')})
+
+
+def active_wait(a, b, now):
+    active = [value for value in (a, b) if later(value, now)]
+    return iso(max(map(utc, active))) if active else None
+
+
+def remember_identity(conn, row, now, day=None):
+    """Persist the maximum reported usage and active waits for this lane/IG ID."""
+    if not row['ig_id']:
+        return None
+    saved = conn.execute('SELECT * FROM account_identity_state WHERE lane_id=? AND ig_id=?',
+                         (row['lane_id'], row['ig_id'])).fetchone()
+    row_day = day or (saved['day'] if saved else local_day(utc(row['last_seen'])) if row['last_seen'] else local_day(now))
+    old_day = (saved['day'] or '') if saved else ''
+    day = max(row_day, old_day)
+    today = (merged_counts(saved['today'], row['today']) if saved and old_day == row_day else
+             saved['today'] if old_day > row_day else row['today'])
+    waits = [active_wait(saved[k] if saved else None, row[k], now) for k in IDENTITY_WAITS]
+    conn.execute('INSERT INTO account_identity_state VALUES(?,?,?,?,?,?,?,?) '
+                 'ON CONFLICT(lane_id,ig_id) DO UPDATE SET day=excluded.day,today=excluded.today,'
+                 'cooldown_until=excluded.cooldown_until,list_cool_until=excluded.list_cool_until,'
+                 'profile_cool_until=excluded.profile_cool_until,list_endpoint_until=excluded.list_endpoint_until',
+                 (row['lane_id'], row['ig_id'], day, today, *waits))
+    return conn.execute('SELECT * FROM account_identity_state WHERE lane_id=? AND ig_id=?',
+                        (row['lane_id'], row['ig_id'])).fetchone()
+
+
 def touch(conn, lane, acct=None, **fields):
     """Upsert the lane's row as seen now; `fields` are column values to set. Returns the row."""
     ts = db.now()
+    day = client_day(fields.pop('identity_day', None)) or local_day(utc(ts))
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
     if not row:
         conn.execute('INSERT INTO accounts(lane_id, first_seen, last_seen) VALUES(?,?,?)', (lane, ts, ts))
         row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    now = utc(ts)
+    previous = remember_identity(conn, row, now)
     sets = dict(fields, last_seen=ts)
     if acct and 'ig_id' in acct and not acct['ig_id']:
         sets['hold'] = 'login'   # the profile has no Instagram session at all
     elif acct:
         if acct.get('ig_id'):
-            if row['ig_id'] and row['ig_id'] != acct['ig_id'] and not acct.get('handle'):
-                sets['handle'] = None   # another account logged in; its handle follows
+            if row['ig_id'] and row['ig_id'] != acct['ig_id']:
+                # These counters and waits belong to the previous Instagram identity,
+                # even if this Chrome lane and its extension storage are unchanged.
+                release_all(conn, lane, why='identity_changed')
+                saved = conn.execute('SELECT * FROM account_identity_state WHERE lane_id=? AND ig_id=?',
+                                     (lane, acct['ig_id'])).fetchone()
+                prior_today = saved['today'] if saved and saved['day'] == day else None
+                incoming_today = sets.get('today') if 'today' in fields else None
+                sets.update(handle=None, is_main=0,
+                            today=merged_counts(prior_today, incoming_today) if prior_today or incoming_today else None,
+                            rate=None, last_error=None, activity=None, hold=None)
+                sets.update({key: active_wait(saved[key] if saved else None, fields.get(key), now)
+                             for key in IDENTITY_WAITS})
             sets['ig_id'] = acct['ig_id']
         if acct.get('handle'):
             sets['handle'] = acct['handle']
-            if not row['handle'] and is_me(conn, acct['handle']):
+            if (row['ig_id'] != acct.get('ig_id') or not row['handle']) and is_me(conn, acct['handle']):
                 sets['is_main'] = 1   # Michael's own account: protected by default
+    if previous and sets.get('ig_id', row['ig_id']) == row['ig_id']:
+        # A stale heartbeat must not lower today's count or shorten an active
+        # cooldown that was already observed for this identity.
+        if previous['day'] == day:
+            sets['today'] = merged_counts(previous['today'], sets.get('today', row['today']))
+        else:
+            sets['today'] = sets.get('today') if 'today' in fields else None
+        for key in IDENTITY_WAITS:
+            sets[key] = active_wait(previous[key], sets.get(key, row[key]), now)
     conn.execute(f"UPDATE accounts SET {', '.join(k + '=?' for k in sets)} WHERE lane_id=?", (*sets.values(), lane))
-    return conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    updated = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    remember_identity(conn, updated, now, day)
+    return updated
 
 
 def budget_of(conn, row):
@@ -133,16 +209,68 @@ def healthy(row, now):
     return account_available(row, now) and not later(row['list_cool_until'], now)
 
 
+def role_allows(row, kind):
+    role = row['role'] if row['role'] in ROLES else 'both'
+    return role == 'both' or (kind == 'list' and role == 'lists') or (kind == 'profile' and role == 'bios')
+
+
+def identity_owner(conn, row, now):
+    """One active Chrome lane per Instagram identity, regardless of job kind.
+
+    Prefer an available `both` lane so one profile can serve both queues.
+    Otherwise the oldest available lane wins until it pauses, hits a login
+    wall, or misses the normal 10-minute handoff window.
+    """
+    if not row['ig_id']:
+        return True
+    peers = conn.execute('SELECT * FROM accounts WHERE ig_id=?', (row['ig_id'],)).fetchall()
+    available = [peer for peer in peers if account_available(peer, now)]
+    both = [peer for peer in available if peer['role'] == 'both']
+    if both:
+        available = both
+    return not available or min(available, key=lambda peer: (peer['first_seen'] or '', peer['lane_id']))['lane_id'] == row['lane_id']
+
+
+def identity_handoff_pending(conn, row, now):
+    """Wait for a previous lane's live request before the new owner starts."""
+    if not row['ig_id']:
+        return False
+    return bool(conn.execute(
+        "SELECT 1 FROM jobs j JOIN accounts a ON a.lane_id=j.lane "
+        "WHERE a.ig_id=? AND j.lane!=? AND j.state='leased' AND j.leased_until>? LIMIT 1",
+        (row['ig_id'], row['lane_id'], iso(now))).fetchone())
+
+
+def identity_cooling(conn, row, kind, now):
+    """A second browser profile cannot evade this Instagram identity's cooldown."""
+    field = 'list_cool_until' if kind == 'list' else 'profile_cool_until'
+    if not row['ig_id']:
+        return later(row[field], now)
+    return any(later(peer[0], now) for peer in conn.execute(
+        f'SELECT {field} FROM accounts WHERE ig_id=? UNION ALL '
+        f'SELECT {field} FROM account_identity_state WHERE ig_id=?', (row['ig_id'], row['ig_id'])))
+
+
 def list_budget_left(conn, row, now):
     return request_budget_left(conn, row, 'list', now)
 
 
 def request_budget_left(conn, row, kind, now):
-    limit = budget_of(conn, row).get(kind, 0)
-    if not limit:
+    peers = conn.execute('SELECT * FROM accounts WHERE ig_id=?', (row['ig_id'],)).fetchall() if row['ig_id'] else [row]
+    # Respect the strictest configured budget when one identity moves between profiles.
+    limits = [budget_of(conn, peer).get(kind, 0) for peer in peers]
+    limits = [limit for limit in limits if limit > 0]  # zero means unlimited
+    if not limits:
         return True
-    today = jload(row['today'], {}) or {}
-    used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
+    limit = min(limits)
+    day = local_day(now)
+    by_lane = {saved['lane_id']: (jload(saved['today'], {}) or {}).get(kind, 0)
+               for saved in conn.execute('SELECT lane_id,today FROM account_identity_state WHERE ig_id=? AND day=?',
+                                         (row['ig_id'], day))} if row['ig_id'] else {}
+    for peer in peers:
+        if peer['last_seen'] and local_day(utc(peer['last_seen'])) == day:
+            by_lane[peer['lane_id']] = max(by_lane.get(peer['lane_id'], 0), (jload(peer['today'], {}) or {}).get(kind, 0))
+    used = sum(by_lane.values())
     return used < limit
 
 
@@ -152,14 +280,16 @@ def list_share(conn, rows, now):
     share = float(db.get_setting(conn, 'main_list_share') or 0)
     if share > 0:
         return share
-    others = [r for r in rows if not r['is_main'] and healthy(r, now) and list_budget_left(conn, r, now)
+    others = [r for r in rows if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
+              and not identity_cooling(conn, r, 'list', now) and list_budget_left(conn, r, now)
               and (r['role'] or 'both') in ('lists', 'both')]
     return 0.0 if others else 1.0
 
 
 def keeps_lists(conn, row, now, share=0.0):
     """Healthy and allowed to work lists (role, main-account protection)."""
-    return healthy(row, now) and list_budget_left(conn, row, now) and (row['role'] or 'both') in ('lists', 'both') \
+    return healthy(row, now) and identity_owner(conn, row, now) and not identity_cooling(conn, row, 'list', now) \
+        and list_budget_left(conn, row, now) and (row['role'] or 'both') in ('lists', 'both') \
         and (not row['is_main'] or share > 0)
 
 
@@ -177,14 +307,17 @@ def viewer_may_access_list(conn, row, seed, direction):
 
 def eligible_for_list(conn, row, seed, direction, now):
     """The viewer can take this list right now."""
-    return healthy(row, now) and not (direction == 'followers' and later(row['list_endpoint_until'], now)) \
+    return healthy(row, now) and identity_owner(conn, row, now) and role_allows(row, 'list') \
+        and not identity_cooling(conn, row, 'list', now) \
+        and not (direction == 'followers' and later(row['list_endpoint_until'], now)) \
         and list_budget_left(conn, row, now) and viewer_may_access_list(
         conn, row, seed, direction)
 
 
 def reopen_private_for_viewer(conn, row, now):
     """A newly usable identity reopens only lists stopped after access denials; keep the saved prefix."""
-    if not row['ig_id'] or not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+    if not row['ig_id'] or not healthy(row, now) or not identity_owner(conn, row, now) \
+            or (row['role'] or 'both') not in ('lists', 'both'):
         return
     for lst in conn.execute("SELECT DISTINCT l.seed,l.direction FROM list_private_denials seen "
                             "JOIN lists l ON l.seed=seen.seed AND l.direction=seen.direction WHERE "
@@ -223,7 +356,7 @@ def release(conn, now, only=None):
     share = list_share(conn, rows.values(), now)
     ok = {k for k, r in rows.items() if keeps_lists(conn, r, now, share)}
     ts = iso(now)
-    fine = {k for k, r in rows.items() if account_available(r, now)}
+    fine = {k for k, r in rows.items() if account_available(r, now) and identity_owner(conn, r, now)}
     jobs, held = [], set()
     for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL"):
         if only is not None and j['lane'] != only:
@@ -253,13 +386,13 @@ def release(conn, now, only=None):
     return len(jobs) + len(lists)
 
 
-def release_all(conn, lane):
+def release_all(conn, lane, why=None):
     """Everything this lane holds, now (login wall, challenge, removed)."""
     ts = db.now()
     n = conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, lease_token=NULL, attempts=max(attempts-1, 0) "
                      "WHERE state='leased' AND lane=?", (lane,)).rowcount
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
-    why = why_released(row, db.utc_now())
+    why = why or why_released(row, db.utc_now())
     return n + conn.execute("UPDATE lists SET lane=NULL, prev_lane=?, released_at=?, released_why=?, "
                             "state=CASE WHEN state='running' THEN 'queued' ELSE state END "
                             "WHERE lane=? AND state NOT IN ('done','private','error','partial')", (lane, ts, why, lane)).rowcount
@@ -274,12 +407,15 @@ def note_handoff(conn, seed, direction, frm, to, why):
 # ---------- leasing ----------
 
 def kinds_for(conn, row, kinds, now):
+    if identity_handoff_pending(conn, row, now):
+        return []
     role = row['role'] if row['role'] in ROLES else 'both'
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)
-            and not later(row['list_cool_until'] if k == 'list' else row['profile_cool_until'], now)]
+    return [k for k in kinds if k in allowed and identity_owner(conn, row, now)
+            and request_budget_left(conn, row, k, now)
+            and not identity_cooling(conn, row, k, now)]
 
 
 def pick_job(conn, lane, kinds, now, allow_page_size=True):
@@ -289,11 +425,14 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     accts = conn.execute('SELECT * FROM accounts').fetchall()
     share = list_share(conn, accts, now)
     ok = [r['lane_id'] for r in accts if keeps_lists(conn, r, now, share)]
-    marks = ','.join('?' * len(kinds))
     okm = ','.join('?' * len(ok)) or "''"
     row = next((r for r in accts if r['lane_id'] == lane), None)
-    if not row:
+    if not row or identity_handoff_pending(conn, row, now):
         return None
+    kinds = [kind for kind in kinds if role_allows(row, kind) and identity_owner(conn, row, now)]
+    if not kinds:
+        return None
+    marks = ','.join('?' * len(kinds))
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
     follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if later(row['list_endpoint_until'], now) else ''
@@ -334,7 +473,8 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     if row['is_main'] and not regular_main:
         # Drive this exceptional lookup from the small set of denied lists,
         # rather than scanning every ordinary queued list on each poll.
-        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now) and list_budget_left(conn, r, now)
+        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
+                   and not identity_cooling(conn, r, 'list', now) and list_budget_left(conn, r, now)
                    and (r['role'] or 'both') in ('lists', 'both') and r['ig_id']]
         denied_alts = ''.join(" AND EXISTS(SELECT 1 FROM list_private_denials a "
                               "WHERE a.seed=j.seed AND a.direction=j.direction AND a.viewer_ig_id=?)"
@@ -357,7 +497,8 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
         # An alternate can still read following while its follower endpoint is
         # redirecting. If all alternates are in that state, the main account is
         # the only available follower viewer despite the ordinary zero share.
-        follower_alts = [r for r in accts if not r['is_main'] and healthy(r, now)
+        follower_alts = [r for r in accts if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
+                         and not identity_cooling(conn, r, 'list', now)
                          and list_budget_left(conn, r, now)
                          and (r['role'] or 'both') in ('lists', 'both')
                          and not later(r['list_endpoint_until'], now)]
@@ -453,7 +594,9 @@ def out(conn, row, now, include_lists=True):
         if include_lists else []
     rate = jload(row['rate'])
     today = jload(row['today']) or {}
-    if not (row['last_seen'] or '').startswith(iso(now)[:10]):
+    saved = conn.execute('SELECT day FROM account_identity_state WHERE lane_id=? AND ig_id=?',
+                         (row['lane_id'], row['ig_id'])).fetchone() if row['ig_id'] else None
+    if (saved['day'] if saved else local_day(utc(row['last_seen'])) if row['last_seen'] else None) != local_day(now):
         today = {}
     own_budget = jload(row['budget'])
     return {'lane_id': row['lane_id'], 'ig_id': row['ig_id'], 'handle': row['handle'], 'label': row['label'], 'name': name_of(row),
@@ -523,6 +666,13 @@ def alerts(conn, now=None, accts=None):
         if len(same) > 1:
             out_.append({'level': 'warn', 'lane_id': same[1]['lane_id'],
                          'text': f"{same[0]['name']} is logged in on {len(same)} Chrome profiles — log the extra ones into other accounts"})
+            available = [a for a in same if a['last_seen'] and now - utc(a['last_seen']) <= RELEASE_AFTER
+                         and not a['paused'] and not a['hold']]
+            roles = {a['role'] for a in available}
+            if 'both' not in roles and {'lists', 'bios'} <= roles:
+                out_.append({'level': 'warn', 'lane_id': available[0]['lane_id'],
+                             'text': f"{same[0]['name']} has lists and bios split across Chrome profiles. "
+                                     'Set one profile to both so this Instagram account can do both stages safely.'})
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='list' AND state IN ('queued','leased')").fetchone()[0]
     live = [a for a in accts if a['online'] and not a['paused'] and not a['hold']]
     if queued and live and not any(a['role'] in ('lists', 'both') for a in live):

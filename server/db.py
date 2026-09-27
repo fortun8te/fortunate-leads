@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
   list_cool_until TEXT, profile_cool_until TEXT, list_endpoint_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+-- A Chrome lane can switch Instagram identities and later switch back. Keep
+-- each identity's same-day usage and active waits outside the mutable lane row.
+CREATE TABLE IF NOT EXISTS account_identity_state(lane_id TEXT NOT NULL, ig_id TEXT NOT NULL,
+  day TEXT, today TEXT, cooldown_until TEXT, list_cool_until TEXT, profile_cool_until TEXT,
+  list_endpoint_until TEXT, PRIMARY KEY(lane_id,ig_id));
+CREATE INDEX IF NOT EXISTS account_identity_ig ON account_identity_state(ig_id);
 CREATE TABLE IF NOT EXISTS list_private_denials(seed TEXT NOT NULL COLLATE NOCASE, direction TEXT NOT NULL,
   viewer_ig_id TEXT NOT NULL, denied_at TEXT NOT NULL,
   PRIMARY KEY(seed,direction,viewer_ig_id));
@@ -271,6 +277,10 @@ def init(path):
                 # Existing tracked prefixes already have members. Backfill once
                 # before triggers start maintaining the exact count.
                 conn.execute('UPDATE list_runs SET member_count=(SELECT count(*) FROM list_members WHERE job_id=list_runs.job_id)')
+    conn.execute('INSERT OR IGNORE INTO account_identity_state '
+                 '(lane_id,ig_id,day,today,cooldown_until,list_cool_until,profile_cool_until,list_endpoint_until) '
+                 "SELECT lane_id,ig_id,date(last_seen,'localtime'),today,cooldown_until,list_cool_until,profile_cool_until,list_endpoint_until "
+                 'FROM accounts WHERE ig_id IS NOT NULL')
     # Earlier collectors called a terminal page "done" even when the saved
     # list was capped or short. Correct only the job still identified as that
     # partial run; a later refresh may have superseded older job evidence.
