@@ -19,7 +19,7 @@
     return Number.isNaN(d.getTime()) ? 'unknown' : d.toLocaleString();
   };
   const heading = el('h2', 'Compare profiles');
-  const intro = el('p', 'See direct follows and shared accounts in the lists collected so far. A follow does not prove friendship or willingness to introduce you. Comparison uses all collected lists; overview filters do not apply.', 'connections-note');
+  const intro = el('p', 'Check who follows whom and which accounts appear on both sides. Evidence comes from collected lists, not personal relationships. Uses all collected lists.', 'connections-note');
   const form = el('form', undefined, 'connections-form');
   const inputs = ['Starting profile', 'Target profile'].map((title, i) => {
     const label = el('label', title);
@@ -27,6 +27,7 @@
     input.id = i ? 'connection-target' : 'connection-source';
     input.name = i ? 'target' : 'source';
     input.placeholder = i ? '@target' : '@startingprofile';
+    if (!i) input.value = 'fortun8te';
     input.required = true;
     input.maxLength = 31;
     input.autocomplete = 'off';
@@ -39,21 +40,26 @@
   const submit = el('button', 'Compare', 'btn solid');
   submit.type = 'submit';
   form.append(submit);
-  const status = el('p', 'Enter two handles to compare collected evidence.', 'connections-note');
+  const status = el('p', 'Start with @fortun8te and enter a target to see recorded follow paths.', 'connections-note');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const results = el('div', undefined, 'connections-results');
   panel.append(heading, intro, form, status, results);
   let request = 0;
   let controller;
-  toggle.addEventListener('click', () => {
-    panel.hidden = !panel.hidden;
-    toggle.setAttribute('aria-expanded', String(!panel.hidden));
-    toggle.classList.toggle('on', !panel.hidden);
-    mapPane?.classList.toggle('comparing', !panel.hidden);
-    toggle.textContent = panel.hidden ? 'Compare profiles' : 'Back to overview';
-    if (!panel.hidden) inputs[0].focus();
-  });
+  function setComparison(open, notify = true) {
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.classList.toggle('on', open);
+    mapPane?.classList.toggle('comparing', open);
+    toggle.textContent = open ? 'Explore map' : 'Compare profiles';
+    if (notify) {
+      window.dispatchEvent(new CustomEvent('connections-viewchange'));
+      if (open) inputs[1].focus();
+    }
+  }
+  setComparison(true, false);
+  toggle.addEventListener('click', () => setComparison(panel.hidden));
 
   function evidenceDetails(links, nodes) {
     const details = el('details', undefined, 'connections-evidence');

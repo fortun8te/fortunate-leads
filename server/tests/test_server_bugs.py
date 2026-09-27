@@ -23,7 +23,7 @@ class BugTest(Base):
     def test_non_object_json_body_is_400(self):
         for body in ([], 'x', 3):
             self.assertEqual(self.call('/api/ext/profile', body)[0], 400)
-            self.assertEqual(self.call('/api/people/bulk', body)[0], 400)
+            self.assertEqual(self.call('/api/scraper/pause', body)[0], 400)
 
     def test_bad_heartbeat_cooldown_does_not_break_scraper(self):
         self.call('/api/ext/heartbeat', {'version': '1', 'state': 'cooldown', 'cooldown_until': 'soon', 'today': {}})

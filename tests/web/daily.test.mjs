@@ -32,7 +32,7 @@ function queryApp() {
   vm.runInContext([
     appPart('const TIER_FIT =', 'const isFitTag ='),
     appPart('function toQuery(', 'const modeOf ='),
-    appPart('function applyQuery(', 'async function saveView('),
+    appPart('function applyQuery(', 'function setDrawer('),
   ].join('\n'), context);
   const functions = vm.runInContext('({ toQuery, fromQuery, applyQuery })', context);
   return { ...functions, state, select, changes };

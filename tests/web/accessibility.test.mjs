@@ -372,11 +372,9 @@ test('mobile details block background shortcuts and Escape exits the editor befo
   assert.equal(firstEscape.stopped, true);
   assert.equal(h.state.open, 7);
   assert.equal(h.document.activeElement, h.title);
-  h.state.pick.add(7);
   h.filters.classList.add('show');
   h.key('Escape');
   assert.equal(h.state.open, null);
-  assert.equal(h.state.pick.has(7), true, 'closing a modal must preserve selection');
   assert.equal(h.filters.classList.contains('show'), true, 'the dialog closes before a background drawer');
   assert.equal(h.document.activeElement, h.opener);
   assert.deepEqual(h.calls, [['closeDetail']]);
@@ -384,7 +382,7 @@ test('mobile details block background shortcuts and Escape exits the editor befo
 
 test('Escape dismisses the active context one step at a time', () => {
   const h = fixture({ mobile: false, globals: true });
-  h.state.open = 7; h.state.pick.add(7); h.filters.classList.add('show'); h.help.hidden = false;
+  h.state.open = 7; h.filters.classList.add('show'); h.help.hidden = false;
   h.key('Escape', h.document.body);
   assert.equal(h.help.hidden, true); assert.deepEqual(h.calls, []); assert.equal(h.state.open, 7);
   h.fallback.focus(); h.key('Escape');
@@ -392,14 +390,12 @@ test('Escape dismisses the active context one step at a time', () => {
   h.key('Escape', h.document.body);
   assert.deepEqual(h.calls, [['setDrawer', false]]); assert.equal(h.state.open, 7);
   h.key('Escape', h.document.body);
-  assert.equal(h.state.open, null); assert.equal(h.state.pick.size, 1);
-  h.key('Escape', h.document.body);
-  assert.equal(h.state.pick.size, 0); assert.equal(h.state.cur, 0);
+  assert.equal(h.state.open, null);
   h.key('Escape', h.document.body);
   assert.equal(h.state.cur, -1);
-  h.state.view = 'map'; h.map.focus = { id: 7 }; h.state.pick.add(7);
+  h.state.view = 'map'; h.map.focus = { id: 7 };
   h.key('Escape', h.document.body);
-  assert.equal(h.map.focus, null); assert.equal(h.state.pick.size, 1);
+  assert.equal(h.map.focus, null);
 });
 
 test('disposing focus management releases the page and removes focus and resize listeners', () => {
@@ -409,4 +405,15 @@ test('disposing focus management releases the page and removes focus and resize 
   assert.equal(h.document.activeElement, h.opener);
   assert.equal(h.document.listeners.get('focusin').size, 0);
   assert.equal(h.window.listeners.get('resize').size, 0);
+});
+
+test('removed selection and saved-view shortcuts cannot trigger hidden workflows', () => {
+  const h = fixture({ mobile: false, globals: true });
+  for (const key of ['x', 'A', 'v']) h.key(key, h.document.body);
+  assert.deepEqual(h.calls, []);
+  h.key('J', h.document.body, {shiftKey:true});
+  assert.deepEqual(h.calls, [['select', 1]]);
+  assert.equal(h.state.pick.size, 0);
+  h.key('1', h.document.body);
+  assert.deepEqual(h.calls.at(-1), ['mark', 8, 'new']);
 });

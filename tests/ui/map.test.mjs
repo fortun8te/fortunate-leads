@@ -107,6 +107,8 @@ test('map identifies your account and spaces a dense source group', () => {
   assert.equal($('#map-me').hidden,false);
   assert.equal($('#map-me').textContent,'You · @fortun8te');
   assert.equal(m.selfRelation.get('p:0'),'followers');
+  assert.equal(m.seeds[0].fx,m.seeds[0].x,'source account is a fixed landmark');
+  assert.equal(m.seeds[0].fy,m.seeds[0].y);
   for (let i=0; i<people.length; i++) for (let j=i+1; j<people.length; j++) {
     const a=m.byId.get(people[i].id), b=m.byId.get(people[j].id);
     assert.ok(Math.hypot(a.x-b.x,a.y-b.y)>a.r+b.r, `people ${i} and ${j} overlap`);
@@ -141,10 +143,8 @@ test('map reports a bounded sample and search scope', () => {
   m.limit=3000; assert.match(m.url(),/limit=3000/);
   m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:3000});
   assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
-  $('#map-q').value='person';m.search();
-  assert.equal($('#map-hits').textContent,'1 displayed');
-  $('#map-q').value='not loaded';m.search();
-  assert.equal($('#map-hits').textContent,'0 displayed');
+  assert.doesNotMatch(markup, /id="map-q"|id="map-labels"/);
+  assert.match(markup, /data-v="leads"[^>]*>Suggested/);
 });
 test('smaller map density keeps an open person from the same revision only', async () => {
   const {m,api,$} = harness(), pending=[];
@@ -214,4 +214,41 @@ test('newer map revision wins a same-URL race and refresh preserves selection la
   assert.equal(m.byId.get('p:1').fx,82);
   assert.equal(m.focus,m.byId.get('p:1'));
   assert.equal(m.hover,m.byId.get('p:1'));
+});
+
+test('metadata refresh stays still while changed follow evidence gets a small settle', () => {
+  const {m} = harness(), alphas=[];
+  m.simulate = alpha => alphas.push(alpha);
+  const data = () => ({nodes:[seed('a'),lead(1)],total:1,links:[{source:'s:a',target:'p:1',direction:'followers',state:'observed'}]});
+  m.build(data());
+  m.byId.get('p:1').x=123; m.byId.get('p:1').y=456;
+  const updated=data();updated.nodes[1].status='contacted';
+  m.build(updated);
+  assert.equal(alphas.at(-1),0,'status updates must not reheat the graph');
+  assert.equal(m.byId.get('p:1').x,123);
+  assert.equal(m.byId.get('p:1').y,456);
+  const changed=data();changed.links[0].direction='following';
+  m.build(changed);
+  assert.equal(alphas.at(-1),0.12,'new follow evidence receives a bounded settle');
+});
+
+test('animation draws without changing the camera on each frame', () => {
+  const {c,m} = harness();let draws=0,fits=0,frame;
+  c.requestAnimationFrame=fn=>{frame=fn;return 1;};
+  const schedule=code.slice(code.indexOf('  schedule() {'),code.indexOf('  status(t) {'));
+  vm.runInContext('this.schedule = ({'+schedule+'}).schedule',c);
+  m.draw=()=>draws++;m.fit=()=>fits++;m.autoFit=true;
+  c.schedule.call(m);frame();
+  assert.equal(draws,1);assert.equal(fits,0);
+});
+
+test('comparison does not fetch the overview graph until explicitly explored', async () => {
+  const {m, $, api} = harness();let requests=0;
+  api.get=()=>{requests++;return Promise.resolve({rev:1,nodes:[],links:[]});};
+  $('#connections-panel').hidden=false;
+  await m.load();
+  assert.equal(requests,0);
+  $('#connections-panel').hidden=true;
+  await m.load();
+  assert.equal(requests,1);
 });

@@ -13,6 +13,7 @@ from test_server import Base  # noqa: E402  (installs the qualify stub first)
 import accounts  # noqa: E402
 import control  # noqa: E402
 import db  # noqa: E402
+import server  # noqa: E402
 
 ACCT = {'a': ('lane-a', '101', 'acct.a'), 'b': ('lane-b', '102', 'acct.b'), 'c': ('lane-c', '103', 'acct.c')}
 
@@ -134,7 +135,12 @@ class LaneTest(Base):
         self.page('a', ja, 4, 'c1')
         self.nxt('a')   # a resumes its list...
         self.post('a', '/api/ext/error', {'job_id': ja['id'], 'code': 'login', 'retry_at': None, 'message': 'login_required'})
-        jb = self.nxt('b')['job']     # ...and b takes over from the saved cursor right away
+        self.assertIsNone(self.nxt('b')['job'])
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertIsNone(self.nxt('b')['job'])  # expiry alone cannot resume security-paused collection
+        self.assertEqual(self.call('/api/control', {'action': 'resume', 'stage': 'all'})[0], 200)
+        jb = self.nxt('b')['job']     # explicit operator resume after shared hold expires
         self.assertEqual((jb['id'], jb['cursor'], jb['received']), (ja['id'], 'c1', 4))
         self.page('b', jb, 3, 'c2')
         self.assertEqual(self.conn.execute("SELECT received, lane FROM lists WHERE seed='s1'").fetchone()[:], (7, 'lane-b'))
@@ -160,7 +166,7 @@ class LaneTest(Base):
         texts = [x['text'] for x in self.call('/api/accounts')[1]['alerts']]
         self.assertTrue(any(t.startswith('@acct.a offline for 11m — open its Chrome profile; its list moved to @acct.b') for t in texts), texts)
 
-    def test_list_cooldown_is_per_lane(self):
+    def test_rate_limit_holds_all_lanes_until_workspace_wait_expires(self):
         self.seeds('s1', 's2', 's3')
         ja, jb = self.nxt('a')['job'], self.nxt('b')['job']
         self.page('a', ja, 2, 'c1')
@@ -168,13 +174,17 @@ class LaneTest(Base):
         self.post('a', '/api/ext/error', {'job_id': ja['id'], 'code': 'rate_limit', 'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
         s = self.call('/api/scraper')[1]
         by = {a['lane_id']: a for a in s['accounts']}
-        self.assertEqual(by['lane-a']['status'], 'online')  # its bios can still run
-        self.assertEqual(by['lane-b']['status'], 'running')   # b still holds its own list
-        self.assertIsNone(s['ext']['cooldown_until'])   # one lane cooling is not the whole scraper cooling
+        self.assertEqual(by['lane-a']['status'], 'online')  # account-level status remains separate from shared hold
+        self.assertEqual(by['lane-b']['status'], 'running')   # b still holds its in-flight lease
+        self.assertTrue(db.get_setting(self.conn, 'cooldown'))
         self.page('b', jb, 2, None, done=True)
-        jb2 = self.nxt('b')['job']                     # b keeps working on an unrelated list
-        self.assertEqual(jb2['seed'], 's3')
+        self.assertIsNone(self.nxt('b')['job'])
         self.assertIsNone(self.nxt('c', 'profile')['job'])
+        self.assertEqual(self.nxt('b')['stages'], {'list': False, 'profile': False})
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        jb2 = self.nxt('b')['job']                     # b can take unrelated work after the wait
+        self.assertEqual(jb2['seed'], 's3')
         blocked = self.conn.execute('SELECT retry_not_before FROM jobs WHERE id=?', (ja['id'],)).fetchone()[0]
         self.assertGreater(datetime.fromisoformat(blocked), datetime.now(timezone.utc))
         self.assertIsNone(self.nxt('c', 'list')['job'])
@@ -183,6 +193,132 @@ class LaneTest(Base):
         self.page('b', jb2, 1, None, done=True)
         resumed = self.nxt('b')['job']
         self.assertEqual((resumed['seed'], resumed['cursor']), (ja['seed'], 'c1'))
+
+    def test_workspace_wait_is_shared_persistent_and_cannot_be_shortened(self):
+        self.seeds('first', 'second')
+        job = self.nxt('a', 'list')['job']
+        longer = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        shorter = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'soft_block',
+                                         'retry_at': longer, 'message': 'feedback_required'})
+        self.assertIsNone(self.nxt('b', 'list')['job'])
+        heartbeat = self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})[1]
+        self.assertFalse(heartbeat['paused'])
+        self.assertEqual(heartbeat['stages'], {'list': False, 'profile': False})
+        self.assertEqual(heartbeat['cooldown_until'], db.get_setting(self.conn, 'cooldown'))
+        self.post('b', '/api/ext/error', {'code': 'rate_limit', 'kind': 'profile',
+                                         'retry_at': shorter, 'message': '429'})
+        self.assertGreaterEqual(datetime.fromisoformat(db.get_setting(self.conn, 'cooldown')),
+                                datetime.fromisoformat(longer))
+        # The hold is read from SQLite, so a new connection sees it too.
+        with db.connect(server.CFG['db']) as fresh:
+            self.assertEqual(server.workspace_cooldown(fresh, datetime.now(timezone.utc)),
+                             db.get_setting(self.conn, 'cooldown'))
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertEqual(self.nxt('b', 'list')['job']['seed'], 'second')
+        self.assertEqual(self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})[1]['stages'],
+                         {'list': True, 'profile': True})
+
+    def test_home_redirect_holds_all_accounts_but_generic_error_does_not(self):
+        self.seeds('first', 'second', 'third')
+        db.set_setting(self.conn, 'paused_bios', True)
+        self.conn.commit()
+        first = self.nxt('a', 'list')['job']
+        self.post('a', '/api/ext/error', {'job_id': first['id'], 'code': 'other',
+                                         'reason': 'list_html_home_redirect', 'message': 'home page'})
+        hold = datetime.fromisoformat(db.get_setting(self.conn, 'cooldown'))
+        self.assertGreater(hold, datetime.now(timezone.utc) + timedelta(minutes=29))
+        self.assertIsNone(self.nxt('b', 'list')['job'])
+        self.assertEqual(self.nxt('b')['stages'], {'list': False, 'profile': False})
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        resumed = self.nxt('b', 'list')
+        self.assertEqual(resumed['stages'], {'list': True, 'profile': False})
+        second = resumed['job']
+        self.post('b', '/api/ext/error', {'job_id': second['id'], 'code': 'other',
+                                         'reason': 'http_500', 'message': 'temporary response'})
+        self.assertIsNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+        self.assertEqual(self.nxt('c', 'list')['job']['seed'], 'third')
+
+    def test_stale_home_redirect_still_holds_other_accounts(self):
+        self.seeds('first', 'second')
+        job = self.nxt('a', 'list')['job']
+        self.conn.execute("UPDATE jobs SET state='done', lane=NULL WHERE id=?", (job['id'],))
+        self.conn.commit()
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'kind': 'list', 'code': 'other',
+                                        'reason': 'list_html_home_redirect'})
+        self.assertIsNotNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+        self.assertIsNone(self.nxt('b')['job'])
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'done')
+
+    def test_reported_kind_cannot_turn_profile_error_into_home_redirect_hold(self):
+        self.nxt('a', 'profile')
+        self.conn.execute("INSERT INTO jobs(kind,handle,state,created_at) VALUES('profile','person','done',?)", (db.now(),))
+        jid = self.conn.execute('SELECT max(id) FROM jobs').fetchone()[0]
+        self.conn.commit()
+        response = self.post('a', '/api/ext/error', {'job_id': jid, 'kind': 'list', 'code': 'other',
+                                        'reason': 'list_html_home_redirect'})
+        self.assertEqual(response[0], 200)
+        self.assertTrue(response[1]['stale'])
+        self.assertIsNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+
+    def test_start_all_succeeds_after_hold_expires(self):
+        db.set_setting(self.conn, 'paused_lists', True)
+        db.set_setting(self.conn, 'paused_bios', True)
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 200)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_invalid_stored_hold_fails_closed(self):
+        for raw in ('not-a-date', 42, False):
+            db.set_setting(self.conn, 'cooldown', raw)
+            self.conn.commit()
+            self.assertEqual(self.call('/api/ext/next')[0], 400)
+            self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 400)
+
+    def test_security_warnings_hold_all_stages_and_block_start_engine(self):
+        from unittest.mock import patch
+        self.seeds('first', 'second')
+        for code in ('login', 'challenge'):
+            self.post('a', '/api/ext/error', {'kind': 'profile', 'code': code})
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertEqual(self.call('/api/control', {'action': 'start_all'})[0], 400)
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertIsNone(self.nxt('b')['job'])
+            self.assertEqual(self.nxt('c')['stages'], {'list': False, 'profile': False})
+            with patch.object(server.engine_start, 'start') as launch:
+                self.assertEqual(self.call('/api/engine/start', {})[0], 400)
+                launch.assert_not_called()
+
+    def test_legacy_resumes_cannot_clear_security_pause_during_shared_hold(self):
+        self.seeds('first', 'second')
+        self.nxt('b')
+        self.call('/api/accounts/lane-b', {'paused': True})
+        for code in ('login', 'challenge'):
+            self.post('a', '/api/ext/error', {'kind': 'profile', 'code': code})
+            for stage in ('lists', 'bios', 'all'):
+                self.assertEqual(self.call('/api/control', {'stage': stage, 'action': 'resume'})[0], 400)
+                self.assertEqual(self.call('/api/ext/control', {'stage': stage, 'action': 'resume'})[0], 400)
+            self.assertEqual(self.call('/api/control', {'account': 'lane-b', 'action': 'resume'})[0], 400)
+            self.assertEqual(self.call('/api/accounts/lane-b', {'paused': False})[0], 400)
+            self.assertEqual(self.call('/api/scraper/pause', {'paused': False})[0], 400)
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertEqual(self.conn.execute("SELECT paused FROM accounts WHERE lane_id='lane-b'").fetchone()[0], 1)
+            # Expiring the timer must not undo the security pause.
+            db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+            self.conn.commit()
+            self.assertIsNone(self.nxt('c')['job'])
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+        self.assertEqual(self.call('/api/control', {'stage': 'all', 'action': 'resume'})[0], 200)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_bios'))
 
     def test_profile_rate_limit_quarantines_same_handle_across_lanes(self):
         self.nxt('a', 'profile')
@@ -195,6 +331,9 @@ class LaneTest(Base):
         self.assertEqual(job['handle'], 'hot')
         self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit',
                                            'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
+        self.assertIsNone(self.nxt('b', 'profile')['job'])
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
         following = self.nxt('b', 'profile')['job']
         self.assertEqual(following['handle'], 'other')
         blocked = self.conn.execute("SELECT retry_not_before FROM jobs WHERE handle='hot'").fetchall()

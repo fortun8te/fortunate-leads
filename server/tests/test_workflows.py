@@ -1,6 +1,4 @@
-"""Workflow regression tests use isolated databases; one integration test covers CSV HTTP routing."""
-import csv
-import io
+"""Workflow regression tests use isolated databases; one integration test covers HTTP routing."""
 import json
 import os
 import sys
@@ -72,8 +70,6 @@ class Workflows(unittest.TestCase):
         self.assertEqual(server.api_counts(self.conn, query, {})['open'], 2)
         graph = server.api_map(self.conn, query, {})
         self.assertEqual({int(n['id'][2:]) for n in graph['nodes'] if n['kind'] == 'lead'}, {self.pid, p2})
-        exported = self.parse_export({'query': 'follow_up=due&today=2026-09-26'})
-        self.assertEqual({int(r['id']) for r in exported}, {self.pid, p2})
         before = server.data_rev(self.conn)
         facets = server.api_tags(self.conn, query, {})
         self.schedule(action='complete')
@@ -103,11 +99,11 @@ class Workflows(unittest.TestCase):
             with self.assertRaises(ValueError):
                 workflows.history(self.conn, self.pid, q)
 
-    def test_activity_changes_bulk_and_stable_pagination(self):
+    def test_activity_changes_and_stable_pagination(self):
         server.api_mark(self.conn, {}, {'status': 'contacted', 'note': 'First'}, self.pid)
         server.api_mark(self.conn, {}, {'status': 'contacted', 'note': 'First'}, self.pid)
         self.assertEqual(len(workflows.history(self.conn, self.pid)['rows']), 2)
-        server.api_bulk(self.conn, {}, {'ids': [self.pid], 'status': 'talking'})
+        server.api_mark(self.conn, {}, {'status': 'talking'}, self.pid)
         for i in range(5):
             workflows.api_interaction(self.conn, {}, {'kind': 'dm', 'body': str(i), 'happened_at': '2026-01-01T15:00:00+02:00'}, self.pid)
         seen, cursor = [], None
@@ -126,30 +122,7 @@ class Workflows(unittest.TestCase):
         event = next(r for r in seen if r['kind'] == 'status' and r['after_value'] == 'talking')
         self.assertEqual(event['before_value'], 'contacted')
 
-    def parse_export(self, body):
-        out = workflows.api_export(self.conn, {}, body)
-        return list(csv.DictReader(io.StringIO(out.data.decode('utf-8-sig'))))
 
-    def test_export_all_pages_exact_selection_and_formula_escaping(self):
-        for i in range(601):
-            db.upsert_person(self.conn, {'handle': 'test' + str(i), 'name': '=HYPERLINK("x")' if i == 0 else 'Normal, "quoted"\nline'})
-        self.conn.commit()
-        server.api_mark(self.conn, {}, {'status': 'no', 'note': '\x01  +danger'}, self.pid)
-        rows = self.parse_export({'query': 'q=test&limit=2&offset=100&sort=recent'})
-        self.assertEqual(len(rows), 601)
-        self.assertTrue(next(r for r in rows if r['handle'] == 'test0')['name'].startswith("'="))
-        self.assertEqual(next(r for r in rows if r['handle'] == 'test1')['name'], 'Normal, "quoted"\nline')
-        self.assertEqual(len(self.parse_export({'query': ''})), 601)
-        selected = self.parse_export({'ids': [self.pid, self.pid]})
-        self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0]['handle'], 'alice')
-        self.assertTrue(selected[0]['note'].startswith("'"))
-        for body in ({}, {'ids': []}, {'ids': [True]}, {'ids': [999999]}, {'query': '', 'ids': [self.pid]}, {'query': 'follow_up=bogus'}):
-            with self.assertRaises(ValueError):
-                self.parse_export(body)
-        for value in ('=1', '+1', '-1', '@SUM(1)', '\t=1', '  =1', '\ufeff=1', '\x00=1'):
-            self.assertTrue(workflows.safe_cell(value).startswith("'"))
-        self.assertEqual(workflows.safe_cell(-1), -1)
 
     def test_profile_refresh_uses_existing_queue_and_freshness(self):
         self.conn.execute("UPDATE people SET bio='Already read',bio_at='2026-01-01',bio_src='tab' WHERE id=?", (self.pid,))
@@ -193,7 +166,7 @@ class Workflows(unittest.TestCase):
         self.assertEqual(merged['before_value']['note'], 'B' * 4000)
         server.api_mark(self.conn, {}, {'note': detail['note'] + '!'}, self.pid)
 
-    def test_http_routes_csv_headers_origin_and_errors(self):
+    def test_http_routes_origin_and_errors(self):
         saved = dict(server.CFG)
         server.CFG['db'] = self.path
         httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
@@ -212,14 +185,7 @@ class Workflows(unittest.TestCase):
             with response:
                 return response.status, response.headers, response.read()
         try:
-            code, headers, body = request('/api/leads/export', {'ids': [self.pid]})
-            self.assertEqual(code, 200)
-            self.assertEqual(headers['Content-Type'], 'text/csv; charset=utf-8')
-            self.assertIn('attachment', headers['Content-Disposition'])
-            self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
-            self.assertIn(b'alice', body)
-            self.assertEqual(request('/api/leads/export', {'query': ''}, origin=False)[0], 403)
-            self.assertEqual(request('/api/leads/export', {'ids': []})[0], 400)
+            self.assertEqual(request(f'/api/person/{self.pid}/follow-up', {'due_on': '2026-09-26'}, origin=False)[0], 403)
             self.assertEqual(request(f'/api/person/{self.pid}/follow-up', {'due_on': '2026-09-26'})[0], 200)
             self.assertEqual(request('/api/person/999999/follow-up', {'due_on': '2026-09-26'})[0], 404)
             self.assertEqual(request(f'/api/person/{self.pid}/activity', {'kind': 'call', 'body': 'Spoke today'})[0], 200)

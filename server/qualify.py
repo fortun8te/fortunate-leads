@@ -13,13 +13,14 @@ import unicodedata
 from urllib.parse import urlsplit
 
 import llm
+from owner import owner_status, owner_recommendation
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
 MODELS = llm.MODELS
-PROMPT_VERSION = 'q7'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
+PROMPT_VERSION = 'q8-owner'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
 TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
-PREFILTER_VERSION = 'p2-laya-cap'  # bump when an existing Laya-scored prefilter needs reblending
+PREFILTER_VERSION = 'p3-owner'  # bump when an existing Laya-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
 # ---------------------------------------------------------------- taxonomy
@@ -258,6 +259,8 @@ def blend(content, net) -> int:
 
 def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
     """0-100 before any bio: the network blended with handle/name signals; Laya (optional) is one soft weighted signal."""
+    if owner_status(person) == 'no':
+        return 0
     if net is None:
         net = {'lists': len({s.lower().lstrip('@') for s in seeds or [] if s})}
     base = blend(_profile_signals(person), net)
@@ -267,6 +270,8 @@ def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
         base = min(base, 35)
     if too_big(person.get('followers'), net) or other_market(person):
         base = min(base, 15)   # no bio read or model call for people there is no way in with
+    if owner_status(person) in ('client', 'talking'):
+        base = max(base, 65)  # existing relationship overrides audience/reachability gates
     return _clamp(base)
 
 
@@ -516,8 +521,8 @@ def rule_verdict(person: dict, tags, net=None) -> dict:
         score = min(score, 20)
     profile_signal = _clamp(score)
     score = blend(profile_signal, net if net is not None else net_from_tags(tags))
-    return {'score': score, 'content_fit': profile_signal if has_bio else None, 'role': role,
-            'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)}
+    return owner_recommendation(person, {'score': score, 'content_fit': profile_signal if has_bio else None, 'role': role,
+            'reason': _reason(role, first, g, has_bio, text), 'tier': _tier(score, has_bio)})
 
 
 NOUN = {'Brand': 'brand', 'Store': 'online store', 'Agency': 'agency', 'Freelancer': 'freelancer', 'Creative': 'creative',
@@ -591,7 +596,7 @@ READING_INSTAGRAM = """How to read Instagram profiles (be as sharp as a person s
 RESEARCH_RULES = """Evidence sources must stay separate. A search result can concern someone else with the same name;
 never use search snippets alone to establish this profile's identity, business role, ownership or badges. The website
 linked from the Instagram profile may establish that the linked business sells products, but a founder claim on its
-page does not prove this person founded it. Quote the profile, linked website or search result exactly; do not present
+page does not prove this person founded it. Owner notes and manual tags are first-hand context; interpret who each sentence refers to, including negations, uncertainty and past events. Quote the profile, owner note/tag, linked website or search result exactly; do not present
 an outside source as words from the Instagram profile."""
 
 SCHEMA = """Reply with one compact JSON object only, no prose:
@@ -682,16 +687,17 @@ def owner_lines(person):
         out.append(f"OWNER'S OWN JUDGEMENT - status Michael set himself: {OWNER_STATUS[person['status']]}")
     note = re.sub(r'\s+', ' ', str(person.get('note') or '')).strip()
     if note:
-        out.append(f"OWNER'S OWN NOTE (Michael wrote this; trust it over the bio): {note[:500]}")
+        out.append(f"OWNER'S OWN NOTE (Michael wrote this; trust it over the bio): {note[:5000]}")
     if person.get('manual_tags'):
-        out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags'][:12]))
+        out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags']))
         if person.get('status') not in ('client', 'no') and any(
                 str(tag).casefold() == 'client' for tag in person['manual_tags']):
-            out.append("Michael manually tagged this profile Client. Use it as a preference signal; "
-                       "no Client status was set, and the profile still needs its own fit evidence.")
+            out.append("Michael manually tagged this profile Client. Treat the existing client relationship as an owner fact; "
+                       "the profile still needs its own business-fit evidence.")
     if out:
-        out.append("(Lines marked OWNER come from Michael himself: follow them. Not a fit means fit under 15; Interested, "
-                   "Talking or Client means he wants them, so keep fit high unless his note says otherwise.)")
+        out.append("(Lines marked OWNER come from Michael himself: follow them. Explicit pipeline status takes precedence over conflicting labels. "
+                   "Client and Talking confirm an existing relationship and reachability. Keep business fit evidence-based; "
+                   "a relationship does not prove a business role. Read the whole note, including qualifications and negations.)")
     return out
 
 
@@ -732,14 +738,14 @@ def fewshot_text(examples):
         value = f"- @{e.get('handle')}" + (f" ({e['name']})" if e.get('name') else '')
         value += ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]
         if e.get('feedback_source') == 'manual_client_tag':
-            value += ' | Michael manually tagged Client (preference signal, not a confirmed Client status)'
+            value += ' | Michael manually tagged Client (legacy relationship record; pipeline stage was not set)'
             if e.get('status') in OWNER_STATUS:
                 value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
         elif e.get('status') in OWNER_STATUS:
             value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
             if e['status'] in ('interested', 'talking') and any(
                     str(tag).casefold() == 'client' for tag in e.get('manual_tags') or []):
-                value += ' | also manually tagged Client (not a Client status)'
+                value += ' | also has a legacy Client relationship label'
         if e.get('manual_tags'):
             value += ' | Michael\'s manual tags: ' + ', '.join(
                 json.dumps(str(t)[:64], ensure_ascii=False) for t in e['manual_tags'][:FEWSHOT_TAG_MAX])
@@ -766,7 +772,7 @@ def prompt_version(examples=None):
 SCHEMA_ONE = """Reply with JSON only, no prose. For each profile:
 {"id": <the id>, "handle": "the exact profile handle", "role": "buyer|connector|collaborator|peer|supplier|unrelated|unclear", "niche": "one of: %s, or null",
  "brand_handle": "@handle of the brand they run, or null", "decision_maker": true|false, "fit": 0-100,
- "evidence": ["up to 3 short exact quotes from the bio, name, linked website or WEB RESEARCH lines that support the verdict"],
+ "evidence": ["up to 3 short exact quotes from the bio, name, OWNER note, manual tags, linked website or WEB RESEARCH lines that support the verdict"],
  "reason": "one plain sentence under 25 words citing concrete evidence", "extra_tags": ["product niches from the list above the evidence clearly shows"],
  "stage": "pre-launch|early|growing|established|unknown (brands only)", "runs_ads": true|false|null, "us_market": true|false|null}
 Use true only when the profile explicitly states the claim. US shipping supports us_market; a city alone does not. Running paid ads supports runs_ads; publicity does not. Otherwise null."""
@@ -821,7 +827,9 @@ def _site_is_this_account(person, site):
 def _evidence_sources(v, person):
     # Keep outside text out of bio/name. Source labels survive in persisted evidence
     # and the displayed reason, so a search snippet cannot look like a profile quote.
-    fields = [('Profile', str(person.get(k) or '')) for k in ('bio', 'name')]
+    fields = [('Your note', str(person.get('note') or ''))]
+    fields += [('Your tag', str(tag)) for tag in person.get('manual_tags') or []]
+    fields += [('Profile', str(person.get(k) or '')) for k in ('bio', 'name')]
     site = _linked_site(person)
     if site:
         fields.append(('Linked website', site))
@@ -886,14 +894,16 @@ def _verdict(v, person, tags, used, version, net=None):
     sourced = _evidence_sources(v, person)
     if not sourced:
         return None
+    owner_source = str(person.get('note') or '') + '\n' + '\n'.join(person.get('manual_tags') or [])
+    owner_person = {'bio': owner_source}
     profile_source = unicodedata.normalize('NFC', ' '.join(str(person.get(k) or '') for k in ('bio', 'name')))
     site = _linked_site(person)
     site_person = {'bio': site} if site and _site_is_this_account(person, site) else None
-    if not str(person.get('bio') or '').strip() and not site and not _buyer_support({'name': person.get('name')}):
+    if not str(person.get('bio') or '').strip() and not site and not owner_source.strip() and not _buyer_support({'name': person.get('name')}):
         return None
     v = dict(v)
-    if ((v['role'] == 'buyer' and not (_buyer_support(person) or (site_person and _buyer_support(site_person)))) or
-            (v['role'] == 'connector' and not (_connector_support(profile_source) or
+    if ((v['role'] == 'buyer' and not (_buyer_support(person) or _buyer_support(owner_person) or (site_person and _buyer_support(site_person)))) or
+            (v['role'] == 'connector' and not (_connector_support(profile_source) or _connector_support(owner_source) or
                                                (site_person and _connector_support(site))))):
         fallback = rule_verdict(person, rule_tags(person, [], None))
         v.update(role=fallback['role'], fit=fallback['content_fit'] or 34, decision_maker=False,
@@ -904,8 +914,9 @@ def _verdict(v, person, tags, used, version, net=None):
                  runs_ads=False, us_market=False, stage=None, niche=None, extra_tags=[], brand_handle=None)
     # Claims shown as badges must have their own support, even when the role is valid.
     decision = SIGNAL_RX['Founder'].search(profile_source) or MULTI_FOUNDER.search(profile_source) or re.search(r'\b(?:head|director) of (?:purchasing|marketing|e-?commerce)\b', profile_source, re.I)
+    decision = decision or SIGNAL_RX['Founder'].search(owner_source) or MULTI_FOUNDER.search(owner_source)
     v['decision_maker'] = v.get('decision_maker') is True and bool(decision)
-    claim_source = profile_source + '\n' + site
+    claim_source = profile_source + '\n' + site + '\n' + owner_source
     v['runs_ads'] = v.get('runs_ads') is True and bool(re.search(r'\b(?:running|we run|our|spend on)\s+(?:paid |meta |facebook )?ads\b|\bad spend\b', claim_source, re.I))
     v['us_market'] = v.get('us_market') is True and bool(re.search(r'\b(?:ships?|shipping|selling|sells?)\s+(?:to |in |across |within )?(?:the )?(?:us|usa|united states)\b|\bUS market\b', claim_source, re.I))
     stages = {'pre-launch': r'pre[- ]launch|launching soon', 'early': r'just launched|newly launched',
@@ -938,9 +949,9 @@ def _verdict(v, person, tags, used, version, net=None):
     brand = brand.strip() if isinstance(brand, str) and re.fullmatch(r'@?[\w.]{2,30}', brand.strip()) else None
     if brand and not (v['role'] == 'buyer' and decision and re.search(r'(?<![\w.])@' + re.escape(brand.lstrip('@')) + r'(?!\w|\.\w)', profile_source, re.I)):
         brand = None
-    return {'score': score, 'content_fit': content_fit, 'role': v['role'], 'reason': reason,
+    return owner_recommendation(person, {'score': score, 'content_fit': content_fit, 'role': v['role'], 'reason': reason,
             'tier': _tier(score, bool(str(person.get('bio') or '').strip())),
-            'model': used, 'fit': fit, 'tags': new, 'evidence': evidence, 'brand_handle': brand, 'prompt': version}
+            'model': used, 'fit': fit, 'tags': new, 'evidence': evidence, 'brand_handle': brand, 'prompt': version})
 
 
 def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget: float = LLM_BUDGET) -> list:

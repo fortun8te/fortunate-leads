@@ -15,9 +15,9 @@ Options:
 
 ## Lanes (`--lanes N`)
 
-N emulated Chrome profiles, each with its own storage, tabs, alarms and service worker running the real extension, all against one server. Each profile is logged in to its own fake Instagram account (`X-Sim-Account`; the home page names the viewer so the extension can detect it) with its own failures, counted per account: lane 1 gets a 429 on its 200th list request, lane 2 is logged out on its 20th (Michael logs it back in 45 min later), lane 3 a soft block on its 45th, lane 4 "please wait" on its 60th. No harness faults. 10 lists, 16.9k connections; the run stops when every list is done (cap 12 simulated hours).
+N emulated Chrome profiles, each with its own storage, tabs, alarms and service worker running the real extension, all against one server. Each profile is logged in to its own fake Instagram account (`X-Sim-Account`; the home page names the viewer so the extension can detect it) with its own failures, counted per account: lane 1 gets a 429 on its 200th list request, lane 2 is logged out on its 20th (Michael logs it back in 45 min later), lane 3 a soft block on its 45th, lane 4 "please wait" on its 60th. After resolving popup login/security holds, the simulated operator waits until every account is resolved and the shared deadline has passed, then explicitly resumes collection. It retries this operator action if a warning extends the deadline. No harness faults. 10 lists, 16.9k connections; the run stops when every list is done (cap 12 simulated hours).
 
-Checks: every list complete with edges equal to what the fake served, no page fetched twice across lanes and none posted twice, a list is never requested by a second lane while the lane that had it is still working it, the logged-out lane's list moves to another lane from its saved cursor (and the server records the handoff), no lane requests anything inside its own cooldown while the other lanes keep going, the server knows each lane's account, every outbox ends empty.
+Checks: every list complete with edges equal to what the fake served, no page fetched twice across lanes and none posted twice, a list is never requested by a second lane while the lane that had it is still working it, a logged-out lane's list moves to another lane from its saved cursor after explicit resume (a particular recovered lane may legally reclaim its own list) (and the server records the handoff), no lane requests inside its own cooldown, a shared warning stops list and profile requests across other lanes, the server knows each lane's account, every outbox ends empty.
 
 ```
 lanes  time to 10k connections  all lists done
@@ -62,7 +62,7 @@ Harness faults come from `FAULT` in `driver.mjs`:
 - an idle worker stopped by Chrome and woken by the alarm
 - the server offline for 4 min
 
-The operator resumes holds 12 to 15 min after they appear, following `HOLD_POLICY` (workspace, popup, workspace).
+The operator resolves local holds after 12 to 15 minutes, following `HOLD_POLICY` (workspace, popup, workspace), waits for the shared deadline, and explicitly resumes collection. Rejected early resumes are retried after the deadline; no production hold is bypassed.
 
 ## Checks
 

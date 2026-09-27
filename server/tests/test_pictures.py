@@ -15,6 +15,26 @@ class PictureTest(Base):
         super().setUp()
         server._pfp_check_id = 0
 
+    def test_collection_stop_preserves_pending_picture_without_network(self):
+        pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
+        for settings in ({'paused': True}, {'paused_lists': True, 'paused_bios': True},
+                         {'cooldown': '2099-01-01T00:00:00Z'}, {'cooldown': 'broken'}, {'cooldown': False}):
+            with self.subTest(settings=settings):
+                for key in ('paused', 'paused_lists', 'paused_bios'):
+                    db.set_setting(self.conn, key, False)
+                db.set_setting(self.conn, 'cooldown', None)
+                for key, value in settings.items():
+                    db.set_setting(self.conn, key, value)
+                self.conn.commit()
+                with mock.patch.object(server, 'fetch_pic') as fetch:
+                    self.assertFalse(server.pfp_step(self.conn))
+                    fetch.assert_not_called()
+                self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        with mock.patch.object(server, 'fetch_pic', return_value=JPEG) as fetch:
+            self.assertTrue(server.pfp_step(self.conn))
+            fetch.assert_called_once()
+
     def test_changed_url_invalidates_success_and_failure_but_same_url_does_not(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
         self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))

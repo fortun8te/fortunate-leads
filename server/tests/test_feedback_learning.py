@@ -21,6 +21,12 @@ class FeedbackLearningTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.init(str(Path(self.tmp.name) / 'leads.sqlite'))
 
+    def legacy_client_tag(self, pid):
+        # Compatibility fixture: new edits use the relationship field.
+        self.conn.execute("INSERT OR REPLACE INTO tags VALUES(?,'Client','signal','manual')", (pid,))
+        server.touch(self.conn, [pid])
+        self.conn.commit()
+
     def tearDown(self):
         self.conn.close()
         self.tmp.cleanup()
@@ -61,7 +67,7 @@ class FeedbackLearningTest(unittest.TestCase):
         self.conn.execute("INSERT INTO tags VALUES(?, 'Client', 'signal', 'auto')", (auto,))
         self.conn.commit()
         server.api_mark(self.conn, {}, {'note': 'Private context for this lead only'}, pid)
-        server.api_tag_edit(self.conn, {}, {'add': ['cLiEnT']}, pid)
+        self.legacy_client_tag(pid)
 
         examples = server.fewshot(self.conn)
         self.assertEqual(len(examples), 1)
@@ -72,7 +78,7 @@ class FeedbackLearningTest(unittest.TestCase):
         self.assertIsNone(self.conn.execute('SELECT status FROM marks WHERE person_id=?', (pid,)).fetchone()[0])
         prompt = qualify.fewshot_text(examples)
         self.assertIn('manually tagged', prompt)
-        self.assertIn('not a confirmed Client status', prompt)
+        self.assertIn('legacy relationship record', prompt)
         self.assertNotIn('Private context for this lead only', prompt)
         self.assertNotIn('@autotagged', prompt)
 
@@ -84,10 +90,10 @@ class FeedbackLearningTest(unittest.TestCase):
         marked = [self.person(f'marked{i}') for i in range(8)]
         for pid in marked:
             server.api_mark(self.conn, {}, {'status': 'client'}, pid)
-            server.api_tag_edit(self.conn, {}, {'add': ['Client']}, pid)
+            self.legacy_client_tag(pid)
         self.assertEqual(len(server.fewshot(self.conn)), 8)
         tagged = self.person('taggedclient')
-        server.api_tag_edit(self.conn, {}, {'add': ['Client']}, tagged)
+        self.legacy_client_tag(tagged)
         examples = server.fewshot(self.conn)
         self.assertEqual(len(examples), 8)
         self.assertIn(tagged, {e['person_id'] for e in examples})
@@ -95,7 +101,7 @@ class FeedbackLearningTest(unittest.TestCase):
 
     def test_explicit_no_mark_overrides_manual_client_tag_and_removal_drops_example(self):
         pid = self.person('taggedclient')
-        server.api_tag_edit(self.conn, {}, {'add': ['Client']}, pid)
+        self.legacy_client_tag(pid)
         self.assertEqual(server.fewshot(self.conn)[0]['label'], 'good')
         server.api_mark(self.conn, {}, {'status': 'no'}, pid)
         examples = server.fewshot(self.conn)

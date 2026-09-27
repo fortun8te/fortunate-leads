@@ -18,7 +18,7 @@ test('small scraper status refresh preserves detailed progress and lists', async
     renderStatus() {}, renderAccounts() {}, renderScraper() {}, renderSettings() {},
     Q: { renderProg() {} },
   });
-  vm.runInContext(between('async function loadScraper()', "$('#pause-btn').onclick"), c);
+  vm.runInContext(between('async function loadScraper()', 'let listFilter'), c);
   await c.loadScraperStatus();
   assert.equal(c.S.sc.paused, true);
   assert.equal(c.S.sc.lists, full.lists);

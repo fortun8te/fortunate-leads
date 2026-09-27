@@ -1,6 +1,6 @@
 // Dev-only mock backend. Loaded only when the page URL has ?mock=1.
 // Implements the full UI API (see docs/CONTRACT.md) in memory, including shared filters,
-// tag facets, bulk edits, tag rules, saved views and the seed map.
+// tag facets, tag rules and the seed map.
 (function () {
   let seed = 11;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
@@ -329,14 +329,6 @@
     if (fit) t.push({ tag: fit, grp: 'signal', source: 'auto' });
   });
 
-  // Saved views.
-  let viewId = 4;
-  const views = [
-    { id: 1, name: 'Brands in 2+ lists', query: 'any=Brand,Store&min_lists=2' },
-    { id: 2, name: 'Founders, no agencies', query: 'tags=Founder&not=Agency,Freelancer' },
-    { id: 3, name: 'Contacted', query: 'status=contacted' },
-  ];
-
   const row = (p) => ({
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
@@ -423,7 +415,7 @@
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
-    paused: false, qualify: false, qualify_auto: true, budget: { list: 3000, profile: 300 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
+    paused: false, qualify: false, qualify_auto: false, budget: { list: 3000, profile: 300 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
     lists: SEED_LIST.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
       const total = Math.floor(400 + rnd() * 6000);
       const st = i < 6 ? 'done' : i === 6 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
@@ -472,7 +464,8 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
-  const settings = { main_list_share: 0 };
+  const settings = { main_list_share: 0, local_laya: true };
+  const scout = { on: false, available: true, model: 'grok', workers: 2, done_today: 0, done: 0, waiting: 0, usage: [], models: [{ id: 'grok', label: 'Grok' }, { id: 'space-bunny', label: 'Space Bunny' }] };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
   function controlView() {
@@ -485,7 +478,7 @@
         hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
         today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
     });
-    return { stages, accounts, all_paused: stages.every((s) => s.paused), at: now() };
+    return { stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
   }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
@@ -508,7 +501,7 @@
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
-      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
+      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       progress: {
@@ -526,16 +519,19 @@
   }
   function editTags(id, add, remove) {
     validateTags(add, remove);
+    const client = (add || []).some((t) => t.trim().toLowerCase() === 'client');
     const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source !== 'manual');
     (add || []).forEach((a) => {
       a = a.replace(/\s+/g, ' ').trim();
-      if (!a) return;
+      if (!a || a.toLowerCase() === 'client') return;
       const i = t.findIndex((x) => x.tag === a);
       if (i >= 0 && t[i].source !== 'manual') t.splice(i, 1);
       if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'custom', source: 'manual' });
     });
     tags.set(id, t);
+    if (client) { setMark(id, {status:'client'}); markRevs.set(id, new Date(Date.now() + bump()).toISOString()); }
     applyRules(); bump();
+    return client ? {converted_to_status:'client', status:'client', mark_rev:markRevs.get(id)} : {};
   }
 
   function route(method, url, body) {
@@ -549,28 +545,6 @@
       if (!/^[+-]?\d+$/.test(raw.trim())) fail(key + ' must be a whole number');
       return Math.min(hi, Math.max(lo, Number(raw) || fallback));
     };
-    if (path === '/api/leads/export' && method === 'POST') {
-      if (('ids' in body) === ('query' in body)) invalid('provide either ids or query');
-      if ('ids' in body) {
-        if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 5000 || body.ids.some((id) => !Number.isInteger(id) || id < 1)) invalid('ids must be 1-5000 positive ids');
-        if (body.ids.some((id) => !people[id - 1])) invalid('some selected people no longer exist; refresh your selection');
-      } else if (typeof body.query !== 'string' || body.query.length > 16000) invalid('query must be a URL query string');
-      const p = new URLSearchParams(body.query || '');
-      const chosen = Array.isArray(body.ids) ? people.filter((x) => body.ids.includes(x.id)) : sorted(filtered(p), p.get('sort') || 'score');
-      const columns = ['id', 'handle', 'name', 'instagram_url', 'bio', 'website', 'followers', 'following', 'posts', 'tier', 'score', 'role', 'status', 'note', 'tags', 'sources', 'bio_at', 'bio_src', 'follow_up_due', 'follow_up_note', 'follow_up_completed_at'];
-      const cell = (v) => {
-        let text = String(v ?? '');
-        if (typeof v !== 'number' && (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) text = "'" + text;
-        return '"' + text.replace(/"/g, '""') + '"';
-      };
-      const lines = [columns, ...chosen.map((p) => {
-        const r = row(p), f = r.follow_up || {};
-        Object.assign(r, { instagram_url: `https://www.instagram.com/${r.handle}/`, tags: r.tags.map((t) => t.tag).join('; '), sources: r.via.join('; '),
-          follow_up_due: f.due_on, follow_up_note: f.note, follow_up_completed_at: f.completed_at });
-        return columns.map((k) => r[k]);
-      })];
-      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"', 'Cache-Control': 'no-store' } });
-    }
     if (path === '/api/control') {
       if (method === 'POST') {
         if (body?.action === 'start_all' && body?.stage == null) {
@@ -597,7 +571,7 @@
         // Resume all restarts collection; AI keeps its own explicit switch.
         const ids = body.stage === 'all' ? (pause ? ['lists', 'bios', 'ai'] : ['lists', 'bios']) : [body.stage];
         for (const id of ids) {
-          if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; }
+          if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; else settings.local_laya = false; }
           else stagePaused[id] = pause;
         }
       }
@@ -640,6 +614,7 @@
     if (path === '/api/tags/rename') {
       const from = String(body.from || ''), to = String(body.to || '').trim();
       if (!from || !to) return { ok: false, error: 'from and to required' };
+      if (to.toLowerCase() === 'client') fail('Use the Client relationship status instead of adding a Client label.');
       let renamed = 0;
       tags.forEach((t, id) => {
         if (!t.some((x) => x.tag === from && x.source === 'manual')) return;
@@ -653,17 +628,6 @@
       let deleted = 0;
       tags.forEach((t, id) => { const n = t.filter((x) => !(x.tag === body.tag && x.source === 'manual')); if (n.length !== t.length) { deleted++; tags.set(id, n); } });
       bump(); return { deleted };
-    }
-    if (path === '/api/people/bulk') {
-      if (!Array.isArray(body.ids) || body.ids.length > 500) fail('ids must contain at most 500 people');
-      if ('status' in body) body = { ...body, status: validStatus(body.status) };
-      validateTags(body.add, body.remove);
-      const ids = [...new Set(body.ids.map(Number).filter((id) => tags.has(id)))];
-      ids.forEach((id) => {
-        if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) { setMark(id, { status: body.status }); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + bump()).toISOString() : ''); }
-      });
-      return { ok: true, changed: ids.length };
     }
     if (path === '/api/tag-rules' && method === 'GET') return rules.map((r) => ({ ...r }));
     if (path === '/api/tag-rules/preview') { try { return { hits: ruleHits(q.get('field') || 'any', q.get('match')).length }; } catch (e) { return { ok: false, error: 'bad match: ' + e.message }; } }
@@ -679,16 +643,6 @@
       const i = rules.findIndex((r) => r.id === +m[1]);
       if (i >= 0) rules.splice(i, 1);
       applyRules();
-      return { ok: true };
-    }
-    if (path === '/api/views' && method === 'GET') return views.map((v) => ({ ...v }));
-    if (path === '/api/views' && method === 'POST') {
-      const v = { id: viewId++, name: String(body.name || 'View').trim(), query: String(body.query || '') };
-      views.push(v); return { ok: true, id: v.id };
-    }
-    if ((m = path.match(/^\/api\/views\/(\d+)\/delete$/))) {
-      const i = views.findIndex((v) => v.id === +m[1]);
-      if (i >= 0) views.splice(i, 1);
       return { ok: true };
     }
     if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
@@ -723,7 +677,7 @@
         setFollowUp(id, followUpInput(body));
         return { ok: true, follow_up: followups.get(id) || null };
       }
-      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
+      if (m[3] === 'tags') return { ok: true, ...editTags(id, body.add, body.remove) };
       if (m[3] === 'read') {
         if (!['queued', 'reading'].includes(reads.get(id))) reads.set(id, 'queued');
         readQueue.add(id);
@@ -752,11 +706,19 @@
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/status') {
-      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue } = scraperView();
-      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue };
+      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue } = scraperView();
+      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue };
     }
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
     if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
+    if (path === '/api/scout') return { ...scout };
+    if (path === '/api/settings/scout') {
+      if ('on' in body && typeof body.on !== 'boolean') fail('on must be true or false');
+      if ('model' in body && !scout.models.some(m => m.id === body.model)) fail('unknown model');
+      if ('workers' in body && (!Number.isInteger(body.workers) || body.workers < 1 || body.workers > 8)) fail('workers must be 1-8');
+      for (const key of ['on', 'model', 'workers']) if (key in body) scout[key] = body[key];
+      return { ...scout };
+    }
     if (path === '/api/llm') return llmView();
     if (path === '/api/llm/health') return { proxy: { url: 'http://127.0.0.1:18741', up: false }, laya: { url: 'http://127.0.0.1:18742', up: true } };
     if (path === '/api/llm/keys') {
@@ -811,10 +773,15 @@
     }
     if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; stagePaused.lists = stagePaused.bios = body.paused; return { ok: true }; }
     if (path === '/api/settings/qualify') {
-      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); scraper.qualify = body.on; if (!body.on) scraper.qualify_auto = false; }
-      if ('auto' in body) scraper.qualify_auto = !!body.auto;
+      for (const key of ['on', 'auto', 'local_laya']) if (key in body && typeof body[key] !== 'boolean') fail(key + ' must be true or false');
+      const local = body.local_laya ?? settings.local_laya;
+      if (local && (body.on ?? scraper.qualify)) fail('turn external AI off to use local-only Laya');
+      if (local && body.auto) fail('automatic external AI cannot run in local-only mode');
+      if ('on' in body) { scraper.qualify = body.on; if (!body.on) scraper.qualify_auto = false; else settings.local_laya = false; }
+      if ('auto' in body) scraper.qualify_auto = body.auto;
+      if ('local_laya' in body) { settings.local_laya = body.local_laya; if (body.local_laya) scraper.qualify_auto = false; }
       for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
-      return { ok: true, qualify: scraper.qualify };
+      return { ok: true, qualify: scraper.qualify, ...('local_laya' in body ? { local_laya: settings.local_laya } : {}) };
     }
     if (path === '/api/scraper/budget') { for (const [k, cap] of [['list',10000],['profile',2000]]) if (k in body && (!Number.isInteger(body[k]) || body[k] < 0 || body[k] > cap)) fail(k + ' budget must be a whole number within its limit'); scraper.budget = {...scraper.budget, ...body}; return { ok: true }; }
     if (path === '/api/scraper/snowball') {
@@ -849,7 +816,6 @@
       if (failure === 500) console.warn('mock', s, e);
       res = { ok: false, error: e.message || 'mock error', ...e.detail };
     }
-    if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;
     return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: failure || (!res ? 404 : bad ? 400 : 200), headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };

@@ -29,7 +29,9 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import db
+import owner
 import qualify
+import meta_network
 
 SCOUT_MIN = 60          # bulk AI fit needed before an agent looks
 TIMEOUT = 240           # seconds per lead
@@ -245,6 +247,8 @@ def _fetch_cited_page(url, p):
         if parsed.port not in (None, port):
             raise ValueError('nonstandard cited URL port')
         host = parsed.hostname
+        if meta_network.is_meta_host(host):
+            raise ValueError('Meta pages are not fetched as websites; use saved profile evidence')
         address = _public_address(host, port)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -388,6 +392,19 @@ def tags_of(row):
     return [VERDICT_TAG[row['verdict']]] + extra
 
 
+def _owner(conn, pid):
+    mark = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
+    return {'status': mark['status'] if mark else None,
+            'note': mark['note'] if mark else None,
+            'manual_tags': [r[0] for r in conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual'", (pid,))]}
+
+
+def _overridden(conn, pid, row):
+    status = owner.owner_status(_owner(conn, pid))
+    return ((status in ('client', 'talking') and (row['verdict'] == 'no' or not row['reachable']))
+            or (status == 'no' and row['verdict'] != 'no'))
+
+
 def retag(conn, pid):
     """Put the scout tags back after a rule or model pass rewrote the automatic tags."""
     row = _row(conn, pid)
@@ -402,7 +419,7 @@ def result(conn, pid):
     row = _row(conn, pid)
     if not row:
         return None
-    return {'stale': not _fresh(conn, row), 'verified': bool(row['verified']),
+    return {'overridden_by_owner': _overridden(conn, pid, row), 'stale': not _fresh(conn, row), 'verified': bool(row['verified']),
             'verification_reason': row['verification_reason'], 'verdict': row['verdict'],
             'reachable': bool(row['reachable']), 'summary': row['summary'],
             'tags': json.loads(row['tags'] or '[]'), 'sources': json.loads(row['sources'] or '[]'), 'at': row['at']}
@@ -446,7 +463,7 @@ def apply(conn, p, data, verification=None):
                   *(_value(p, field) for field in PROFILE_FIELDS), int(verified), reason, retry_after))
     if verified:
         reapply(conn, p)
-    conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout'", (p['id'],))
+    conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout' AND source='auto'", (p['id'],))
     if verified:
         retag(conn, p['id'])
     return verified
@@ -455,7 +472,7 @@ def apply(conn, p, data, verification=None):
 def reapply(conn, p, net=None):
     """Restore the saved scout's final verdict after a later rule pass on this person."""
     row = _row(conn, p['id'])
-    if not row or not row['verified'] or not _fresh(conn, row, p):
+    if not row or not row['verified'] or not _fresh(conn, row, p) or _overridden(conn, p['id'], row):
         return False
     v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     if not v:

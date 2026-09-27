@@ -114,17 +114,5 @@ class LeadApiReview(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(server.Bad):
                 server.api_leads(self.conn, {key: ['9' * 100]}, {})
 
-    def test_saved_view_preserves_query_and_identity(self):
-        query = 'q=A%26B%2B%25&tags=Founder%2CAI%3A+Shop&sort=fit&has_bio=1'
-        first = server.api_view_save(self.conn, {}, {'name': 'Search', 'query': query})
-        second = server.api_view_save(self.conn, {}, {'name': 'search', 'query': '?'+query})
-        self.assertEqual(first['id'], second['id'])
-        self.assertEqual(server.api_views(self.conn, {}, {})[0]['query'], query)
-        for bad in ('https://example.org', 'q=x&q=y', 'sort=invalid', 'has_bio=maybe', 'status=all,invalid', 'followers_min=-1'):
-            with self.subTest(query=bad), self.assertRaises(server.Bad):
-                server.api_view_save(self.conn, {}, {'name': 'Invalid', 'query': bad})
-        self.assertEqual(len(server.api_views(self.conn, {}, {})), 1)
-
-
 if __name__ == '__main__':
     unittest.main()

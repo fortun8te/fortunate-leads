@@ -22,6 +22,7 @@ from html.parser import HTMLParser
 
 import db
 import control
+import meta_network
 import llm
 import qualify
 
@@ -67,6 +68,8 @@ def _check(url):
     u = urllib.parse.urlsplit(url)
     if u.scheme not in ('http', 'https') or not u.hostname or u.port not in (None, 80, 443):
         raise ValueError('only normal web links can be read')
+    if meta_network.is_meta_host(u.hostname):
+        raise ValueError('Meta pages are not fetched as websites; use saved profile evidence')
     if not _public(u.hostname):
         raise ValueError('that address is not a public website')
     return u

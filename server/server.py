@@ -28,7 +28,9 @@ import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
+import owner  # noqa: E402
 import engine_start  # noqa: E402
+import meta_network  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
 import usage_ledger  # noqa: E402
@@ -55,7 +57,6 @@ READ_PRIORITY = 10000
 LEASE_MIN = 10
 PROFILE_MAX_ATTEMPTS = 8   # expired profile leases get delayed retries, then stop after this many attempts
 QUALIFY_MAX_ATTEMPTS = 5
-BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
 PLAN_BATCH = 200   # profile jobs kept queued at a time when the profile budget is unlimited
 
@@ -113,10 +114,22 @@ def edge_history_of(conn, pid):
 
 # ---------- extension endpoints ----------
 
+def workspace_cooldown(conn, now):
+    """A persisted Instagram warning pauses collection across all browser accounts."""
+    raw = db.get_setting(conn, 'cooldown')
+    value = clean_iso(raw)
+    if raw is not None and raw != '' and value is None:
+        raise Bad('Stored safety hold is invalid. Collection remains stopped until it is repaired.')
+    until = utc(value) if value else None
+    return value if until and until > now else None
+
+
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
+    cooling = workspace_cooldown(conn, datetime.now(timezone.utc))
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
-            'stages': {k: k not in control.paused_kinds(conn) for k in ('list', 'profile')}}
+            'stages': {k: not cooling and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
+            **({'cooldown_until': cooling} if cooling else {})}
 
 
 def ext_next(conn, q, b):
@@ -150,9 +163,12 @@ def ext_next(conn, q, b):
             conn.commit()
             return dict(st, job=None, upgrade_required=True, minimum_version='3.8.0')
 
-    if st['paused']:  # cooldowns are the extension's job; the server only records them for display
+    if st['paused']:
         conn.commit()
-        return dict(st, job=None, cooldown_until=None)
+        return dict(st, job=None, cooldown_until=st.get('cooldown_until'))
+    if st.get('cooldown_until'):
+        conn.commit()
+        return dict(st, job=None)
     stopped = control.paused_kinds(conn)   # a stage paused on the control strip hands out none of its jobs
     st['stages'] = {'list': 'list' not in stopped, 'profile': 'profile' not in stopped}
     kinds = [k for k in accounts.kinds_for(conn, row, kinds, now) if k not in stopped]
@@ -208,7 +224,6 @@ def stale_lease(conn, job, q, b):
     if job['lane'] and job['lane'] != lane:
         return True
     return bool(job['lease_token'] and b.get('lease_token') != job['lease_token'])
-
 
 
 def ext_list_page(conn, q, b):
@@ -495,12 +510,11 @@ def ext_error(conn, q, b):
     if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
         conn.commit()
         return {'duplicate': True}
-    # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
-    # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
-    # Per lane: a login wall hands that account's lists to the other lanes now; a list limit hands its list on.
+    # Security and login warnings also stop other accounts sharing this workspace.
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
     was_list = bool(job and job['kind'] == 'list')
+    reported_job = job or conn.execute('SELECT kind FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
     if code == 'private' and was_list and not stale:
         viewer_id = job['viewer_ig_id']
         if not viewer_id or b.get('reason') != 'profile_private_wall':
@@ -515,15 +529,31 @@ def ext_error(conn, q, b):
                  'VALUES(?,?,?,?,?,?,?,?,?)',
                  (event_id, ts, lane, job['id'] if job else None, kind, direction, str(code or 'other')[:40],
                   str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599)))
+    home_redirect = (code == 'other' and b.get('reason') == 'list_html_home_redirect'
+                     and ((reported_job and reported_job['kind'] == 'list')
+                          or (not b.get('job_id') and b.get('kind') == 'list')))
     if stale:
         job = None  # account-level waits still apply, but the old callback cannot change a released job
-        if code not in ('rate_limit', 'soft_block'):
+        if code not in ('rate_limit', 'soft_block', 'login', 'challenge') and not home_redirect:
             conn.commit()
             return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
-    if code in ('rate_limit', 'soft_block'):
-        until = clean_iso(b.get('retry_at')) or iso(datetime.now(timezone.utc) + timedelta(minutes=15))
+    if code in ('rate_limit', 'soft_block', 'login', 'challenge') or home_redirect:
+        now = datetime.now(timezone.utc)
+        # Keep the longest known wait. A second account's shorter warning must
+        # never reopen collection while the first one is still cooling.
+        deadlines = [now + timedelta(minutes=30 if home_redirect else 15)]
+        for value in (b.get('retry_at'), b.get('retry_after'), db.get_setting(conn, 'cooldown')):
+            clean = clean_iso(value)
+            if clean:
+                deadlines.append(utc(clean))
+        until = iso(max(deadlines))
         db.set_setting(conn, 'cooldown', until)
+    if code in ('login', 'challenge'):
+        # The timed wait must not silently restart collection after a security warning.
+        db.set_setting(conn, 'paused_lists', True)
+        db.set_setting(conn, 'paused_bios', True)
+    if code in ('rate_limit', 'soft_block'):
         fields['cooldown_until'] = until
         if was_list:
             fields['list_cool_until'] = until
@@ -701,7 +731,7 @@ def lead_rows(conn, rows):
         via.setdefault(e['person_id'], []).append(e['seed'])
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         history_via.setdefault(e['person_id'], []).append(e['seed'])
-    return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
+    result = [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
              'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'],
              'business_fit': round(r['content_fit']) if r['content_fit'] is not None else None,
@@ -712,6 +742,14 @@ def lead_rows(conn, rows):
              'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
              'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
+    for person in result:
+        person['manual_tags'] = [t['tag'] for t in person['tags'] if t['source'] == 'manual']
+        person['owner_status'] = owner.owner_status(person)
+        person['reachable'] = True if person['owner_status'] in ('client', 'talking') else None
+        person['owner_conflict'] = owner.owner_conflict(person)
+        person['tags'] = owner.visible_tags(person, person['tags'])
+        person.update(owner.owner_recommendation(person, person))
+    return result
 
 
 def csv(q, key):
@@ -745,12 +783,14 @@ def lead_filter(q, status_default=True):
         if any(t not in ('hot', 'warm', 'cold', 'unread') for t in tiers):
             raise Bad('bad tier')
         within("coalesce(v.tier,'unread') IN ({})", tiers)
+    effective_tags = ('SELECT t.person_id FROM tags t LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE '
+                      + owner.visible_tag_sql() + ' AND ')
     for t in dict.fromkeys(csv(q, 'tags')):  # all of
-        within('p.id IN (SELECT person_id FROM tags WHERE tag={})', [t])
+        within('p.id IN (' + effective_tags + 't.tag={})', [t])
     if csv(q, 'any'):  # at least one of
-        within('p.id IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'any'))
+        within('p.id IN (' + effective_tags + 't.tag IN ({}))', csv(q, 'any'))
     if csv(q, 'not'):  # none of
-        within('p.id NOT IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'not'))
+        within('p.id NOT IN (' + effective_tags + 't.tag IN ({}))', csv(q, 'not'))
     statuses = csv(q, 'status')
     if any(status_in(s) not in (*STATUSES, 'none', 'all') for s in statuses):
         raise Bad('bad status')
@@ -841,9 +881,13 @@ def tag_facets(conn, q):
     where, args = lead_filter(q)
     counts = dict(((r[0], r[1]), r[2]) for r in conn.execute(
         f"""WITH f AS MATERIALIZED (SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)})
-        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id GROUP BY t.tag, t.source""", args))
+        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id
+        LEFT JOIN marks tm ON tm.person_id=t.person_id
+        WHERE {owner.visible_tag_sql()} GROUP BY t.tag, t.source""", args))
     out = [{'tag': r[0], 'grp': r[2], 'source': r[1], 'count': counts.get((r[0], r[1]), 0), 'total': r[3]}  # totals: covering index
-           for r in conn.execute('SELECT tag, source, min(grp), count(*) FROM tags GROUP BY tag, source')]
+           for r in conn.execute(f'SELECT t.tag, t.source, min(t.grp), count(*) FROM tags t '
+                                 f'LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE {owner.visible_tag_sql()} '
+                                 'GROUP BY t.tag, t.source')]
     return sorted(out, key=lambda f: (-f['count'], -f['total'], f['tag'], f['source']))
 
 
@@ -883,6 +927,9 @@ def api_person(conn, q, b, pid):
         except ValueError:
             ev = []
         verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
+    owner_facts = with_owner(conn, dict(row))
+    if verdict:
+        verdict = owner.owner_recommendation(owner_facts, verdict)
     # Active work takes precedence over history; otherwise show the latest request for this profile.
     job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? AND state!='cancelled' "
                        "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
@@ -971,6 +1018,13 @@ def clean_tag(t):
     return t
 
 
+def manual_tag(t):
+    tag = clean_tag(t)
+    if tag.casefold() == 'client':
+        raise Bad('Use the Client relationship status instead of adding a Client label.')
+    return tag
+
+
 def tag_group(conn, tag, default='signal'):
     row = conn.execute("SELECT grp FROM tags WHERE tag=? ORDER BY source='manual' DESC LIMIT 1", (tag,)).fetchone()
     return row[0] if row else default
@@ -989,22 +1043,34 @@ def add_manual(conn, pids, tags):
 
 
 def api_tag_edit(conn, q, b, pid):
-    person_row(conn, pid)
     for key in ('add', 'remove'):
         if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
             raise Bad(f'{key} must be a list of tags')
-    add_manual(conn, [pid], [clean_tag(t) for t in b.get('add') or []])
-    for t in b.get('remove') or []:
-        if isinstance(t, str):
+    additions = [clean_tag(t) for t in b.get('add') or []]
+    client = any(t.casefold() == 'client' for t in additions)
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        person_row(conn, pid)
+        add_manual(conn, [pid], [t for t in additions if t.casefold() != 'client'])
+        for t in b.get('remove') or []:
             conn.execute("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", (pid, t))
-    rules.sync(conn, [pid])
-    touch(conn, [pid])
-    conn.commit()
-    return {}
+        rules.sync(conn, [pid])
+        if client:
+            set_status(conn, [pid], status='client')
+        touch(conn, [pid])
+        result = {}
+        if client:
+            updated = person_row(conn, pid)
+            result = {'converted_to_status': 'client', 'status': 'client', 'mark_rev': updated['mark_rev']}
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def api_tag_rename(conn, q, b):
-    src, dst = clean_tag(b.get('from')), clean_tag(b.get('to'))
+    src, dst = clean_tag(b.get('from')), manual_tag(b.get('to'))
     if src == dst:
         return {'renamed': 0}
     pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (src,))]
@@ -1027,39 +1093,7 @@ def api_tag_delete(conn, q, b):
     return {'deleted': len(pids)}
 
 
-def api_bulk(conn, q, b):
-    ids = b.get('ids')
-    if not isinstance(ids, list) or len(ids) > BULK_MAX or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
-        raise Bad(f'ids must be a list of up to {BULK_MAX} ids')
-    for key in ('add', 'remove'):
-        if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
-            raise Bad(f'{key} must be a list of tags')
-    add = [clean_tag(t) for t in b.get('add') or []]
-    remove = [t for t in b.get('remove') or [] if isinstance(t, str)]
-    status = b.get('status')
-    status = status_in(status) if isinstance(status, str) else status
-    if 'status' in b and status is not None and status not in STATUSES:
-        raise Bad('bad status')
-    conn.execute('BEGIN IMMEDIATE')
-    try:
-        pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
-                for r in conn.execute(f"SELECT id FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
-        add_manual(conn, pids, add)
-        conn.executemany("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", [(p, t) for p in pids for t in remove])
-        rules.sync(conn, pids)
-        if 'status' in b:  # absent = leave marks alone; null = clear the status (a note is kept)
-            set_status(conn, pids, status=status)
-        touch(conn, pids)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    found = set(pids)
-    return {'updated': len(pids), 'updated_ids': pids,
-            'missing_ids': [pid for pid in dict.fromkeys(ids) if pid not in found]}
-
-
-# ---------- tag rules and saved views ----------
+# ---------- tag rules ----------
 
 def rule_out(conn, r):
     hits = conn.execute("SELECT count(*) FROM tags WHERE tag=? AND source='rule'", (r['tag'],)).fetchone()[0]
@@ -1122,38 +1156,6 @@ def api_rule_delete(conn, q, b, rid):
         rules.write_rule_tags(conn, other, pids)
     conn.commit()
     return {'deleted': 1}
-
-
-def api_views(conn, q, b):
-    return [dict(r) for r in conn.execute('SELECT id, name, query FROM saved_views ORDER BY name COLLATE NOCASE, id')]
-
-
-def api_view_save(conn, q, b):
-    name, query = b.get('name'), b.get('query')
-    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
-        raise Bad('name must be 1-80 characters')
-    if not isinstance(query, str) or len(query) > 4000:
-        raise Bad('query must be a URL query string')
-    name, query = name.strip(), query.strip().lstrip('?')
-    try:
-        parsed = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=50)
-    except ValueError:
-        raise Bad('query must be a URL query string') from None
-    if any(len(values) != 1 for values in parsed.values()):
-        raise Bad('query fields must not repeat')
-    lead_filter(parsed)
-    if parsed.get('sort', ['score'])[0] not in SORTS:
-        raise Bad('bad sort')
-    conn.execute('INSERT INTO saved_views(name, query, created_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET query=excluded.query',
-                 (name, query, db.now()))
-    conn.commit()
-    return {'id': conn.execute('SELECT id FROM saved_views WHERE name=?', (name,)).fetchone()[0], 'name': name, 'query': query}
-
-
-def api_view_delete(conn, q, b, vid):
-    n = conn.execute('DELETE FROM saved_views WHERE id=?', (vid,)).rowcount
-    conn.commit()
-    return {'deleted': n}
 
 
 def api_read(conn, q, b, pid):
@@ -1353,6 +1355,9 @@ def map_graph(conn, q):
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
     links, seeds_of, tags, alltags = [], {}, {}, {}
+    map_owners = {r['id']: dict(r) for r in people}
+    map_owners.update({s['pid']: dict(s) for s in seeds if s['pid']})
+    raw_tags = {}
     for chunk in chunks(node_of):
         marks = ','.join('?' * len(chunk))
         for e in conn.execute(f'SELECT e.*,v.active,v.observed_at,v.checked_at FROM edges e '
@@ -1363,10 +1368,14 @@ def map_graph(conn, q):
                           'observed_at': e['observed_at'], 'checked_at': e['checked_at']})
             if e['active'] == 1 and e['seed'] not in seeds_of.setdefault(e['person_id'], []):
                 seeds_of[e['person_id']].append(e['seed'])
-        for t in conn.execute(f'SELECT t.person_id, t.tag FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
-            alltags.setdefault(t['person_id'], set()).add(t['tag'])
-            if len(tags.setdefault(t['person_id'], [])) < MAP_TAGS:
-                tags[t['person_id']].append(t['tag'])
+        for t in conn.execute(f'SELECT t.* FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
+            raw_tags.setdefault(t['person_id'], []).append(dict(t))
+    for pid, person in map_owners.items():
+        raw = raw_tags.get(pid, [])
+        person['manual_tags'] = [t['tag'] for t in raw if t['source'] == 'manual']
+        visible = owner.visible_tags(person, raw)
+        alltags[pid] = {t['tag'] for t in visible}
+        tags[pid] = [t['tag'] for t in visible[:MAP_TAGS]]
     nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
@@ -1380,14 +1389,20 @@ def map_graph(conn, q):
                'tags': tags.get(r['id'], []), 'judge': judge(alltags.get(r['id'], set())),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
+    for node in nodes:
+        pid = node.get('pid') if node['kind'] == 'seed' else int(node['id'].split(':', 1)[1])
+        facts = map_owners.get(pid, {})
+        node['owner_status'] = owner.owner_status(facts)
+        node.update(owner.owner_recommendation(facts, node))
     return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
 
 
 def ext_aggregate(conn, accts, now):
     """The old single-extension `ext` block, now summed over lanes (one lane: exactly what it reported)."""
+    shared_wait = workspace_cooldown(conn, now)
     if not accts:
         ext = db.get_setting(conn, 'ext') or {}
-        cooldowns = [c for c in (ext.get('cooldown_until'), db.get_setting(conn, 'cooldown')) if c and utc(c) > now]
+        cooldowns = [c for c in (ext.get('cooldown_until'), shared_wait) if c and utc(c) > now]
         return {'online': bool(ext.get('last_seen')) and now - utc(ext['last_seen']) < timedelta(seconds=60),
                 'version': ext.get('version'), 'state': ext.get('state'),
                 'cooldown_until': iso(max(map(utc, cooldowns))) if cooldowns else None,
@@ -1400,13 +1415,16 @@ def ext_aggregate(conn, accts, now):
     first = (running or sorted(live, key=lambda a: a['last_seen'] or '', reverse=True))[0]
     cools = [a['cooldown_until'] for a in live if a['cooldown_until']]
     all_cool = len(cools) == len(live) and cools
+    wait_until = min(cools) if all_cool else None
+    if shared_wait and (not wait_until or utc(shared_wait) > utc(wait_until)):
+        wait_until = shared_wait
     rate = accounts.aggregate_rate(accts)
     errs = sorted((a for a in accts if a['last_error']), key=lambda a: a['last_seen'] or '')
     prefix = (lambda a, t: f"{a['name']}: {t}" if t and many else t)
     last_error = errs[-1]['last_error'] if errs else (db.get_setting(conn, 'last_error') or {}).get('message')
     return {'online': any(a['online'] for a in accts), 'version': max((a['version'] or '' for a in accts), default=None) or None,
             'state': 'running' if running else first['state'],
-            'cooldown_until': min(cools) if all_cool else None,
+            'cooldown_until': wait_until,
             'today': {k: sum(a['today'][k] for a in accts) for k in ('list', 'profile')},
             'budget': db.get_setting(conn, 'budget'), 'last_seen': max(a['last_seen'] or '' for a in accts) or None,
             'activity': prefix(first, first['activity']), 'text': prefix(first, first['text']),
@@ -1579,7 +1597,7 @@ def api_qualify(conn, q, b):
         raise Bad('auto must be true or false')
     if 'local_laya' in b and not isinstance(b['local_laya'], bool):
         raise Bad('local_laya must be true or false')
-    if b.get('local_laya') and b.get('on', db.get_setting(conn, 'qualify')):
+    if b.get('local_laya', db.get_setting(conn, 'local_laya')) and b.get('on', db.get_setting(conn, 'qualify')):
         raise Bad('turn external AI off to use local-only Laya')
     if b.get('auto') and b.get('local_laya', db.get_setting(conn, 'local_laya')):
         raise Bad('automatic external AI cannot run in local-only mode')
@@ -1763,6 +1781,8 @@ def api_seeds(conn, q, b):
 def api_pause(conn, q, b):
     if not isinstance(b.get('paused'), bool):
         raise Bad('paused must be an explicit boolean')
+    if b['paused'] is False:
+        require_collection_resume(conn)
     db.set_setting(conn, 'paused', b['paused'])
     conn.commit()
     return {}
@@ -1779,17 +1799,39 @@ def api_control(conn, q, b):
     return control.snapshot(conn, ai_left(conn))
 
 
+def require_collection_resume(conn):
+    # Serialize the check with the subsequent resume so a warning cannot land between them.
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        if workspace_cooldown(conn, datetime.now(timezone.utc)):
+            raise Bad('Instagram is on a shared safety hold. Collection remains paused.')
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def api_control_set(conn, q, b):
     """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
+    if (b.get('action') == 'start_all' or
+            b.get('action') == 'resume' and (b.get('stage') in ('lists', 'bios', 'all') or
+                                          b.get('stage') is None and isinstance(b.get('account'), str))):
+        require_collection_resume(conn)
     try:
         control.apply(conn, b)
     except LookupError:
+        conn.rollback()
         raise NotFound('no such account') from None
+    except Exception:
+        conn.rollback()
+        raise
     return api_control(conn, q, b)
 
 
 def api_engine_start(conn, q, b):
     """Start local services and configured Chrome profiles, then resume collection."""
+    if workspace_cooldown(conn, datetime.now(timezone.utc)):
+        raise Bad('Instagram is on a shared safety hold. Start engine is unavailable until it ends.')
     try:
         account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
         return engine_start.start(ROOT, account_count)
@@ -1832,6 +1874,8 @@ def api_account_settings(conn, q, b):
 
 def api_account_edit(conn, q, b, lane):
     conn.execute('BEGIN IMMEDIATE')
+    if b.get('paused') is False:
+        require_collection_resume(conn)
     try:
         row = accounts.edit(conn, lane, b)
     except LookupError:
@@ -1873,10 +1917,8 @@ ROUTES = [
     ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
     ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
-    ('POST', r'/api/people/bulk', api_bulk),
     ('GET', r'/api/tag-rules', api_rules), ('POST', r'/api/tag-rules', api_rule_add), ('GET', r'/api/tag-rules/preview', api_rule_preview),
     ('POST', r'/api/tag-rules/(\d+)/delete', api_rule_delete),
-    ('GET', r'/api/views', api_views), ('POST', r'/api/views', api_view_save), ('POST', r'/api/views/(\d+)/delete', api_view_delete),
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
@@ -2002,8 +2044,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             return self.send(500, {'ok': False, 'error': 'Internal server error'})
-        if isinstance(out, workflows.CsvResponse):
-            return self.send(200, out.data, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="fortunate-leads.csv"', 'Cache-Control': 'no-store'})
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):
@@ -2147,7 +2187,7 @@ def refresh_network(conn, pids, prior=None, me=None, nets=None):
                     previous, before['edges'], before['net']))
         if not valid:
             continue
-        score = qualify.blend(old['content_fit'], nets[pid])
+        score = owner.owner_recommendation(p, {'score': qualify.blend(old['content_fit'], nets[pid])})['score']
         _, lfit = laya_row(conn, pid)
         pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), nets[pid], lfit)
         if (score, pre, hashed, p['updated_at']) != (old['score'], old['prefilter'], old['input_hash'], old['updated_at']):
@@ -2910,12 +2950,16 @@ def repair_pfp_cache(conn):
 
 
 def pfp_step(conn):
+    if meta_network.blocked(conn):
+        return False
     repaired = repair_pfp_cache(conn)
     r = conn.execute('SELECT p.id, p.pic_url FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                      'WHERE p.pic_url IS NOT NULL AND p.pic_file IS NULL '
                      'ORDER BY p.updated_at DESC LIMIT 1').fetchone()
     if not r:
         return repaired
+    if meta_network.blocked(conn):
+        return False
     data = fetch_pic(r['pic_url'])
     if data:
         directory = pfp_dir()

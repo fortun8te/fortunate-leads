@@ -1,16 +1,15 @@
-// Control strip: always on top of every page. Shows what each stage (Collect lists, Read bios, AI scoring) is doing right
-// now in one sentence, with a pause/resume button per stage and a "Stop all". Self-contained: reads GET /api/control every
-// 5 s, writes POST /api/control. It lives inside the existing status area and never touches app.js state.
+// Compact status with collection controls available on demand.
+// Reads GET /api/control and writes POST /api/control without touching app.js state.
 (() => {
   if (window.__flControls) return;
   window.__flControls = true;
   const POLL = 5e3;
   const n = (v) => Math.round(v || 0).toLocaleString('en-US');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
+  const SHORT = { lists: 'Lists', bios: 'Bios', ai: 'External AI' };
   const PER = { lists: 'people', bios: 'bios', ai: 'scores' };
   let data = null, busy = false, offline = false, timer = 0, tick = 0;
-  let requestVersion = 0, actionError = '';
+  let requestVersion = 0, actionError = '', expanded = false;
 
   const el = document.createElement('div');
   el.className = 'fl-ctl';
@@ -52,7 +51,7 @@
   }
   function word(s) {
     if (offline) return 'last known: ' + s.state;
-    if (s.state === 'paused') return 'paused';
+    if (s.state === 'paused') return s.id === 'ai' ? 'off' : 'paused';
     if (s.state === 'waiting') {
       return waitWord(s.wait?.why, left(s), clock);
     }
@@ -62,7 +61,7 @@
     return 'running' + (s.hour ? ' · ' + n(s.hour) + '/h' : '');
   }
   function tip(s) {
-    const minute = s.id === 'ai' ? `Last minute ${n(s.minute)} scores · ` : '';
+    const minute = s.id === 'ai' ? `External model calls through Grok or OpenRouter. Local Laya has its own setting. Last minute ${n(s.minute)} scores · ` : '';
     return `${s.label}\n\n${s.help}\n\n${n(s.queue)} waiting.\n${minute}Last hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
   }
 
@@ -70,14 +69,17 @@
     mount();
     const active = el.contains(document.activeElement) ? document.activeElement : null;
     const focusStage = active?.dataset.stage;
+    const focusSummary = active?.tagName === 'SUMMARY';
+    const details = el.querySelector('details');
+    if (details) expanded = details.open;
     if (!data) { el.innerHTML = `<span class="fl-ctl-msg">${offline ? 'Server offline, controls unavailable.' : 'Loading controls…'}</span>`; return; }
     const pills = data.stages.map((s) => {
       const on = !offline && s.state === 'running';
       const act = s.paused ? 'resume' : 'pause';
-      const what = s.paused ? `Resume ${s.label.toLowerCase()}` : `Pause ${s.label.toLowerCase()}`;
+      const what = s.id === 'ai' ? `Turn external AI ${s.paused ? 'on' : 'off'}` : s.paused ? `Resume ${s.label.toLowerCase()}` : `Pause ${s.label.toLowerCase()}`;
       return `<div class="fl-ctl-pill ${esc(s.state)}" role="group" aria-label="${esc(s.label + ': ' + word(s) + '. ' + tip(s).replace(/\n+/g, ' '))}" title="${esc(tip(s))}">
         <i class="fl-ctl-dot${on ? ' on' : ''}"></i><b>${SHORT[s.id]}</b><span class="fl-ctl-word">${esc(word(s))}</span>
-        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" aria-label="${esc(what)}" title="${esc(what + '. ' + s.help)}" ${busy || offline ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
+        <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" aria-label="${esc(what)}" title="${esc(what + '. ' + s.help)}" ${busy || offline ? 'disabled' : ''}>${s.id === 'ai' ? (s.paused ? 'Turn on' : 'Turn off') : (s.paused ? 'Resume' : 'Pause')}</button>
       </div>`;
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
@@ -85,11 +87,28 @@
     const notice = actionError || (offline ? 'Server offline: showing the last known state.' :
       failed ? 'A stage needs attention.' : '');
     const all = data.all_paused
-      ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. AI scoring has its own Resume button." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
-      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;
-    el.innerHTML = `<div class="fl-ctl-pills">${pills}</div>${all}${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">Open Scraper for details.</a>' : ''}</span>` : ''}`;
+      ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. External AI stays off." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
+      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause collection and external AI. Local Laya stays enabled if selected." ${busy || offline ? 'disabled' : ''}>Pause collection &amp; external AI</button>`;
+    const collection = data.stages.filter((s) => s.id !== 'ai');
+    const collectionState = offline ? 'Unknown' : collection.every((s) => s.paused) ? 'Off'
+      : collection.some((s) => ['error', 'failed'].includes(s.state)) ? 'Needs attention'
+      : collection.some((s) => s.state === 'running') ? 'On'
+      : collection.some((s) => s.state === 'waiting') ? 'Waiting' : 'Idle';
+    const external = data.stages.find((s) => s.id === 'ai');
+    const externalState = offline || !external ? 'Unknown' : external.paused ? 'Off' : 'On';
+    const localState = offline || typeof data.local_laya !== 'boolean' ? 'Unknown' : data.local_laya ? 'Enabled' : 'Disabled';
+    el.innerHTML = `<details class="fl-ctl-details"${expanded ? ' open' : ''}>
+      <summary class="fl-ctl-summary">
+        <span class="fl-ctl-summary-item"><span>Collection</span><b>${collectionState}</b></span>
+        <span class="fl-ctl-summary-item" title="Local Laya setting. Rules also run locally. Enabled does not mean currently processing."><span>Local Laya</span><b>${localState}</b></span>
+        <span class="fl-ctl-summary-item" title="External model calls through Grok or OpenRouter."><span>External AI</span><b>${externalState}</b></span>
+        <span class="fl-ctl-disclosure">Controls <i aria-hidden="true"></i></span>
+      </summary>
+      <div class="fl-ctl-panel"><div class="fl-ctl-pills">${pills}</div><div class="fl-ctl-actions"><a href="#/qual">Scoring settings</a><a href="#/scraper">Collection details</a>${all}</div></div>
+    </details>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">Open Scraper for details.</a>' : ''}</span>` : ''}`;
     el.dataset.running = String(running);
     if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
+    else if (focusSummary) el.querySelector('summary')?.focus({ preventScroll: true });
   }
 
   function countdown() {   // only the words change between polls, so a button under the pointer is never replaced
@@ -103,7 +122,7 @@
       if (!r.ok) throw new Error(r.status);
       const j = await r.json();
       if (!Array.isArray(j.stages)) throw new Error('Invalid status');
-      const key = JSON.stringify(j.stages) + j.all_paused;
+      const key = JSON.stringify(j.stages) + j.all_paused + j.local_laya;
       if (version !== requestVersion) return;
       const same = data && !offline && key === data.key;   // unchanged: keep the buttons, just count down
       data = Object.assign(j, { got: Date.now(), key });
@@ -146,7 +165,7 @@
     if (!b || b.disabled) return;
     const body = { stage: b.dataset.stage, action: b.dataset.action };
     if (body.stage === 'all' && body.action === 'pause' &&
-        !confirm('Stop everything?\n\nNo more list pages, no more bios, no more AI scoring until you resume. Nothing is deleted.')) return;
+        !confirm('Pause collection and external AI?\n\nLocal Laya stays enabled if selected. Saved leads are kept.')) return;
     send(body);
   });
 

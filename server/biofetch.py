@@ -4,9 +4,8 @@ Off by default. Needs a Meta app, an Instagram professional account linked to a 
 with instagram_basic + pages_read_engagement (Settings -> Bios via Meta API). One Graph call per handle; only business and
 creator accounts answer (personal accounts return an error and are marked tried, the extension still reads them).
 
-Pacing: at most one call per `gap` seconds (default 1.5 s, about 40/min). Meta's published budget is
-4800 x impressions per 24 h for the professional account; the worker slows down when the `x-business-use-case-usage`
-header passes 75 % and stops on any throttling code, doubling the pause 10 min -> 4 h. It never touches the IG session.
+Pacing: at most one call per `gap` seconds (default 1.5 s, about 40/min). The worker uses official API usage headers,
+slows down when the reported usage passes 75 % and stops on any throttling code, doubling the pause 10 min -> 4 h. It never touches the IG session.
 """
 import json
 import time
@@ -17,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import db
 import control
+import meta_network
 
 GRAPH = 'https://graph.facebook.com/v23.0/'
 FIELDS = 'username,name,biography,website,followers_count,follows_count,media_count,profile_picture_url,id'
@@ -109,7 +109,7 @@ def _cool(conn, st, why, now):
 
 def step(conn, now=None):
     """One handle. Returns True when it made a call (the worker then waits `gap`)."""
-    if control.stage_paused(conn, 'bios'):
+    if meta_network.blocked(conn, now=now, stage='bios'):
         return False
     s, st = settings(conn), state(conn)
     now = now or datetime.now(timezone.utc)
@@ -125,6 +125,8 @@ def step(conn, now=None):
         return False
     h = row['handle']
     q = urllib.parse.urlencode({'fields': f'business_discovery.username({h}){{{FIELDS}}}', 'access_token': s['token']})
+    if meta_network.blocked(conn, now=now, stage='bios'):
+        return False
     status, body, headers = FETCH[0](GRAPH + urllib.parse.quote(s['ig_user_id']) + '?' + q)
     ts = db.now()
     day = now.date().isoformat()

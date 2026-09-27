@@ -14,12 +14,6 @@ function base(extra={}) {
     int:v=>v==null?'–':String(v),esc:String,ucf:String,plural:(n,s)=>`${n} ${s}`,slabel:String,
     setTimeout,clearTimeout, ...extra});
 }
-test('bulk tag change offers no destructive inverse undo',async()=>{
-  const messages=[];const c=base({api:{post:async()=>({updated:2})},toast:(...args)=>messages.push(args)});
-  c.S.rows=[{id:1,tags:[{tag:'Founder',source:'manual'}]},{id:2,tags:[]}];
-  vm.runInContext('let bulkKey="";'+section('async function bulk(', '// ---------- marking'),c);
-  await c.bulk({add:['Founder']},[1,2]);assert.equal(messages[0][1],undefined);assert.match(messages[0][0],/Undo unavailable/);assert.equal(c.S.rows[0].tags.length,1);
-});
 test('running list with unknown total never renders Done; unknown bio metrics remain unknown',()=>{
   const c=base({document:{activeElement:null},ago:()=>'',eta:()=>null, ST_LABEL:{},ST_DOT:{},LIST_STATE:{},listFilter:'all',listsAll:false});
   c.S.sc={ext:{online:true}, lists:[{state:'running',seed:'test',received:100,total:null}], soak:{'1h':{pages:1}}, progress:{lists:{left:5000,estimate:true,eta_h:null}}};
@@ -52,7 +46,7 @@ test('scraper separates active work from incomplete and capped list coverage',()
   assert.doesNotMatch(legacy,/entries missing|capped list|people collected/);
 });
 test('controls expose failed action and disable stale controls',async()=>{
-  const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],contains:()=>false};
+  const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null,contains:()=>false};
   let offline=false,postFail=false;
   const data={all_paused:false,stages:[{id:'lists',label:'Lists',state:'running',paused:false,now:'Reading',help:'Pause lists'}]};
   let code=readFileSync(new URL('../../web/controls.js',import.meta.url),'utf8');
