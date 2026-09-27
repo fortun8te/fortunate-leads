@@ -103,9 +103,9 @@ def usage_pct(headers):
 
 def pick(conn):
     return conn.execute("""SELECT p.id,p.ig_id,p.handle,p.first_seen,p.updated_at,p.bio_at,p.bd_at FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
-        WHERE p.bio_at IS NULL AND p.bd_at IS NULL AND coalesce(p.is_private,0)=0)=0 AND instr(p.handle,'~')=0
+        WHERE p.bio_at IS NULL AND p.bd_at IS NULL AND coalesce(p.is_private,0)=0 AND instr(p.handle,'~')=0
           AND p.handle NOT IN (SELECT handle FROM seeds)
-        ORDER BY coalesce(v.prefilter,0) DESC, p.id LIMIT 1""".replace('coalesce(p.is_private,0)=0)=0', 'coalesce(p.is_private,0)=0')).fetchone()
+        ORDER BY coalesce(v.prefilter,0) DESC, p.id LIMIT 1""").fetchone()
 
 
 def _cool(conn, st, why, now):
