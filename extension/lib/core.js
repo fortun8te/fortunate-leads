@@ -116,7 +116,18 @@
     if (json && /not authorized to view|private/.test(msg)) return out('private', 'private');
     if (!status) return out('network', res.aborted ? 'timeout' : res.tabError ? 'tab' : 'fetch');
     if (!ok) return out('other', 'http_' + status);
-    if (!json) return /login|password/.test(raw) ? out('login', 'html_login') : out('other', 'not_json');
+    if (!json) {
+      if (res.env?.uid === false && /html/i.test(res.contentType || '')) return out('login', 'html_logged_out');
+      // A list API fetch can finish with HTTP 200 after Instagram redirects it to its HTML home page.
+      // This says nothing about access to the target until the viewer's profile page is checked.
+      if (kind === 'list' && /html/i.test(res.contentType || '')) {
+        try {
+          const u = new URL(res.url);
+          if (u.hostname === 'www.instagram.com' && u.pathname === '/') return out('other', 'list_html_home_redirect');
+        } catch {}
+      }
+      return /login|password/.test(raw) ? out('login', 'html_login') : out('other', 'not_json');
+    }
     if (json.status && json.status !== 'ok') return out('other', 'status_' + String(json.status).slice(0, 20));
     if (kind === 'list') return listCheck(json, ctx || {}, out);
     if (kind === 'profile' && !mapProfile(userOf(json))) return out('other', 'no_user');
@@ -136,7 +147,9 @@
   }
 
   function privateWall(info, handle, profile) {
-    if (!profile || !profile.is_private || !info || !info.privateWall) return false;
+    // The database's is_private flag is not viewer access proof. Require two live wall observations
+    // on this handle's actual profile page; an explicitly public live profile is contradictory.
+    if (!info || !info.privateWall || !info.privateWallRechecked || profile?.is_private === false) return false;
     try {
       const u = new URL(info.url);
       return u.hostname === 'www.instagram.com' && u.pathname.toLowerCase() === '/' + String(handle).toLowerCase() + '/';
@@ -478,6 +491,8 @@
       else if (s.state === 'waiting' && s.wait) {
         word = waitWord(s.wait.why, s.wait.seconds != null ? Math.max(0, s.wait.seconds - age) : null, stageClock);
       } else if (s.state === 'idle') word = /no instagram account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
+      else if (s.id === 'ai') word = 'running · ' + Math.round(s.minute || 0).toLocaleString('en-US') + '/min · '
+        + Math.round(s.hour || 0).toLocaleString('en-US') + '/h';
       else word = 'running' + (s.hour ? ' · ' + Math.round(s.hour).toLocaleString('en-US') + '/h' : '');
       return { id: s.id, name: STAGE_SHORT[s.id] || s.label, label: s.label, word, on: s.state === 'running' || s.state === 'waiting',
         paused: !!s.paused, action: s.paused ? 'resume' : 'pause', now: s.now || '', help: s.help || '' };

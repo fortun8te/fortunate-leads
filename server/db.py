@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS saved_views(id INTEGER PRIMARY KEY, name TEXT NOT NUL
   created_at TEXT);
 CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TEXT, reason TEXT,
   model TEXT, input_hash TEXT, updated_at TEXT);
+-- One committed model verdict per row. Profile revisions and rule rescoring never alter this history.
+CREATE TABLE IF NOT EXISTS ai_scoring_events(id INTEGER PRIMARY KEY, person_id INT NOT NULL, scored_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ai_scoring_events_at ON ai_scoring_events(scored_at);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS followups(person_id INTEGER PRIMARY KEY, due_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', completed_at TEXT, updated_at TEXT NOT NULL);

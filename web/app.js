@@ -2135,7 +2135,7 @@ function renderScraper() {
     stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go · ${minuteRate(L.per_minute, 'list entries')}`,
       listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
-    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
+    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time · ${int(Q.per_minute || 0)} per minute · ${int(Q.per_hour || 0)} per hour`
       : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
       Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
   ].join('');
@@ -2650,7 +2650,7 @@ const Q = {
     const pct = s.verdicts ? Math.round((s.ai / s.verdicts) * 100) : 0;
     const when = !on ? 'AI scoring is off' : !Qp.left ? 'Everyone waiting has been checked' : eta(Qp.eta_h) ? eta(Qp.eta_h) + ' left' : 'starting';
     const kpi = (v, l) => `<div class="tile"><span>${l}</span><b class="num">${v}</b></div>`;
-    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour ? int(Qp.per_hour) : '–', 'AI checks per hour')}</div>
+    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour == null ? '–' : int(Qp.per_hour), 'AI checks per hour')}</div>
       <div class="ql-pbar"><div class="bar-p ${on && Qp.left ? 'run' : 'done'}"><i style="width:${pct}%"></i></div>
       <span class="muted">${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ''}</span></div>`;
     $('#ql-toggle').textContent = on ? 'Pause AI checks' : 'Start AI checks';
@@ -2738,7 +2738,8 @@ function mapPic(url) {
   else {
     // Keep the cache and pending work bounded across filters and refreshes.
     if (PICS.size >= MAP_PIC_LIMIT) {
-      const victim = [...PICS].find(([, entry]) => entry.state !== 'loading');
+      let victim;
+      for (const pair of PICS) if (pair[1].state !== 'loading') { victim = pair; break; }
       if (!victim) return null;
       PICS.delete(victim[0]);
       const queued = picQueue.indexOf(victim[0]);
@@ -2774,6 +2775,24 @@ function pumpPics() {
   }
 }
 const MARKED = new Set(['interested', 'contacted', 'talking', 'client']);
+// At overview scale several people can occupy the same few screen pixels. Keep
+// the most useful dot in each cell; search, hover and selection remain visible.
+function mapDots(leads, k, x, y, w, h, important) {
+  const dense = leads.length > 1500 && k < 0.85;
+  const dots = [], priority = [], cells = dense ? new Map() : null;
+  for (const n of leads) {
+    const px = n.x * k + x, py = n.y * k + y, r = Math.max(n.r * k, 2.2);
+    if (px + r < -20 || px - r > w + 20 || py + r < -20 || py - r > h + 20) continue;
+    if (!dense) { dots.push(n); continue; }
+    if (important.has(n.id)) { priority.push(n); continue; }
+    const key = `${Math.floor(px / 4)},${Math.floor(py / 4)}`;
+    const prior = cells.get(key);
+    const rank = (n.L || 0) * 10 + (MARKED.has(n.status) ? 25 : 0) + (n.judge ? 15 : 0);
+    if (!prior || rank >= prior.rank) cells.set(key, { n, rank });
+  }
+  if (cells) for (const { n } of cells.values()) dots.push(n);
+  return dots.concat(priority);
+}
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
@@ -2861,6 +2880,7 @@ const M = {
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
     this.leads = this.nodes.filter((n) => n.kind !== 'seed');
+    this.drawnLeads = null;
     // One line per seed-person pair and evidence state. Historical lines never count as current neighbours.
     const pair = new Map();
     for (const l of d.links || []) {
@@ -2928,7 +2948,10 @@ const M = {
       .force('link', F.forceLink(all).id((n) => n.id)
         .distance((l) => l.ss ? 520 - 360 * Math.sqrt(l.shared / this.maxShared) : l.source.r + 26 + (l.target.L > 1 ? 30 : 10) + Math.sqrt(l.source.vis || 1) * 1.6)
         .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : 0.9 / Math.max(1, l.target.L)))
-      .force('charge', F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -14).distanceMax(huge ? 120 : big ? 200 : 300).theta(huge ? 1.3 : big ? 1.1 : 0.9))
+      // The 10k sample already starts in seed-centred clusters. On that scale,
+      // all-node charge and collision dominate each tick without adding useful
+      // detail at overview zoom; links and the seed force still refine it.
+      .force('charge', huge ? null : F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -14).distanceMax(big ? 200 : 300).theta(big ? 1.1 : 0.9))
       .force('seeds', (alpha) => {
         // Seeds repel only each other, so leads can sit close to their seeds.
         const ss = this.seeds;
@@ -2939,16 +2962,14 @@ const M = {
           a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
         }
       })
-      .force('collide', F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 1.8).iterations(1).strength(0.8))
+      .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 1.8).iterations(1).strength(0.8))
       .force('x', F.forceX(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004)).force('y', F.forceY(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004))
       .alpha(alpha).alphaDecay(huge ? 0.08 : big ? 0.055 : 0.035).alphaMin(huge ? 0.02 : big ? 0.012 : 0.001).velocityDecay(0.42)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
-    if (alpha >= 1) {
-      const t0 = performance.now();
-      for (let i = 0; i < 160 && performance.now() - t0 < 450; i++) this.sim.tick();
-      this.fit();
-    }
+    // The seed-centroid layout is usable immediately. D3 settles in later
+    // frames; a synchronous tick loop could block input for hundreds of ms.
+    if (alpha >= 1) this.fit();
     if (!this.shown) this.sim.stop();
   },
   schedule() {
@@ -2999,7 +3020,10 @@ const M = {
   },
   relax(n) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
-    let list = near(), frames = 14;
+    // Drag release only adjusts the closest neighbours. The old all-pairs
+    // loop could lock the tab when thousands of dots shared a small region.
+    let list = near().sort((a, b) => (a.x - n.x) ** 2 + (a.y - n.y) ** 2 -
+      ((b.x - n.x) ** 2 + (b.y - n.y) ** 2)).slice(0, 80), frames = 14;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const step = () => {
       let moved = false;
@@ -3053,7 +3077,17 @@ const M = {
     const on = (n) => hd ? hd.set.has(n.id) : match && match.size ? match.has(n.id) : true;
     // Viewport culling bounds in world coords.
     const vx0 = -this.x / k - 20, vy0 = -this.y / k - 20, vx1 = (this.w - this.x) / k + 20, vy1 = (this.h - this.y) / k + 20;
-    const inView = (n) => n.x + n.r > vx0 && n.x - n.r < vx1 && n.y + n.r > vy0 && n.y - n.r < vy1;
+    const selected = (S.open && this.byId.get('p:' + S.open)) || this.focus;
+    const important = new Set(match || []);
+    if (selected) important.add(selected.id);
+    if (this.hover) important.add(this.hover.id);
+    const dots = mapDots(this.leads, k, this.x, this.y, this.w, this.h, important);
+    this.drawnLeads = dots;
+    const visibleEdge = (l) => Math.max(l.source.x, l.target.x) >= vx0 && Math.min(l.source.x, l.target.x) <= vx1 &&
+      Math.max(l.source.y, l.target.y) >= vy0 && Math.min(l.source.y, l.target.y) <= vy1;
+    const shownEdge = (l) => visibleEdge(l) && (!overview || !hd || l.source === hd.n || l.target === hd.n);
+    const drawnLinks = overview && !hd ? [] : this.links.filter(shownEdge);
+    const drawnHistory = overview && !hd ? [] : this.historyLinks.filter(shownEdge);
 
     // Seed overlap edges, weighted by shared people.
     for (const l of overview && !hd ? this.seedLinks.slice(0, 12) : this.seedLinks) {
@@ -3068,7 +3102,7 @@ const M = {
     const historicalPass = (state, alpha, dash) => {
       c.globalAlpha = alpha;
       c.setLineDash(dash); c.beginPath();
-      for (const l of this.historyLinks) if (l.state === state &&
+      for (const l of drawnHistory) if (l.state === state &&
           (!overview || (hd && (l.source === hd.n || l.target === hd.n)))) {
         c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
       }
@@ -3083,7 +3117,7 @@ const M = {
       c.globalAlpha = alpha;
       for (const dashed of [false, true]) {
         c.setLineDash(dashed ? [3 / k, 3 / k] : []); c.beginPath();
-        for (const l of this.links) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed &&
+        for (const l of drawnLinks) if ((l.target.L > 1) === multi && (l.dir === 'following') === dashed &&
             (!selectedOnly || l.source === hd.n || l.target === hd.n)) {
           c.moveTo(l.source.x, l.source.y); c.lineTo(l.target.x, l.target.y);
         }
@@ -3108,7 +3142,7 @@ const M = {
     const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
     const pass = (filter, fill, alpha) => {
       c.globalAlpha = alpha; c.fillStyle = fill; c.beginPath();
-      for (const n of this.leads) if (inView(n) && filter(n)) circle(n, Math.max(n.r, minPx));
+      for (const n of dots) if (filter(n)) circle(n, Math.max(n.r, minPx));
       c.fill();
     };
     // Tags decide the colour: green = good signs, red = red flags; everyone else stays grey by fit. Judged dots draw on top.
@@ -3121,8 +3155,8 @@ const M = {
       pass((n) => on(n) && n.judge === j, color, 1);
     }
     // Photos on top of the dots once they are big enough to read.
-    for (const n of this.leads) {
-      if (!n.pic || !inView(n)) continue;
+    for (const n of dots) {
+      if (!n.pic) continue;
       const r = Math.max(n.r, minPx);
       if (r * k < 6) continue;
       const img = mapPic(n.pic);
@@ -3132,14 +3166,13 @@ const M = {
     }
     // Marked rings.
     c.globalAlpha = 1; c.strokeStyle = fg; c.lineWidth = 1.4 / k; c.beginPath();
-    for (const n of this.leads) {
-      if (!n.status || !MARKED.has(n.status) || !inView(n) || !on(n)) continue;
+    for (const n of dots) {
+      if (!n.status || !MARKED.has(n.status) || !on(n)) continue;
       circle(n, Math.max(n.r, minPx) + 2.2 / k + 1);
     }
     c.stroke();
     // Open / focused node.
-    const sel = (S.open && this.byId.get('p:' + S.open)) || this.focus;
-    if (sel) { c.strokeStyle = fg; c.lineWidth = 2 / k; c.beginPath(); circle(sel, sel.r + 6 / k); c.stroke(); }
+    if (selected) { c.strokeStyle = fg; c.lineWidth = 2 / k; c.beginPath(); circle(selected, selected.r + 6 / k); c.stroke(); }
     // Seeds.
     for (const n of this.seeds) {
       const r = n.r;
@@ -3217,8 +3250,8 @@ const M = {
       c.globalAlpha = 1; c.fillStyle = big ? fg : fg2; c.fillText(t, box[0] + 4, y + 0.5);
     }
   },
-  // Hit test against what is drawn (dot radius with the on-screen minimum, photo, ring), always on the live node list:
-  // a cached quadtree went stale after reloads (new people could not be clicked) and its fixed 8-unit search radius
+  // Hit test against the current drawn dots (or live nodes before first draw).
+  // A cached quadtree went stale after reloads (new people could not be clicked) and its fixed 8-unit search radius
   // missed the edge of big photo nodes. Seeds are drawn on top, so they win; then the node the pointer is most inside.
   at(px, py) {
     const k = this.k, x = (px - this.x) / k, y = (py - this.y) / k, minPx = 2.4 / k, pad = 7 / k;
@@ -3227,7 +3260,7 @@ const M = {
       if (Math.hypot(n.x - x, n.y - y) <= n.r + 3 / k) return n;
     }
     let best = null, bestScore = Infinity;
-    for (const n of this.leads) {
+    for (const n of this.drawnLeads || this.leads) {
       if (n.x == null) continue;
       const r = Math.max(n.r, minPx), reach = Math.max(r + 3 / k, pad);  // tiny dots get a 7 px target
       const dx = n.x - x, dy = n.y - y;

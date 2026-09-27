@@ -158,9 +158,9 @@ def keeps_lists(conn, row, now, share=0.0):
         and (not row['is_main'] or share > 0)
 
 
-def eligible_for_list(conn, row, seed, direction, now):
-    """A viewer can take a private list only if this Instagram identity has not been denied."""
-    if not healthy(row, now) or not list_budget_left(conn, row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+def viewer_may_access_list(conn, row, seed, direction):
+    """Access is unknown until this viewer is denied, even while offline or cooling."""
+    if (row['role'] or 'both') not in ('lists', 'both'):
         return False
     if not row['ig_id']:
         return not conn.execute('SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? LIMIT 1',
@@ -168,6 +168,12 @@ def eligible_for_list(conn, row, seed, direction, now):
     return not conn.execute(
         'SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? AND viewer_ig_id=?',
         (seed, direction, row['ig_id'])).fetchone()
+
+
+def eligible_for_list(conn, row, seed, direction, now):
+    """The viewer can take this list right now."""
+    return healthy(row, now) and list_budget_left(conn, row, now) and viewer_may_access_list(
+        conn, row, seed, direction)
 
 
 def reopen_private_for_viewer(conn, row, now):

@@ -325,11 +325,13 @@ const HOLD_MSG = { challenge: 'Instagram security check: complete it in the Inst
 async function fail(job, bad, what, res, bucket) {
   const now = Date.now(), sample = res ? FL.sampleOf(res, 1500) : '';
   const local = bad.code === 'network' || bad.code === 'unsupported' || bad.code === 'busy';
-  const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what;
+  const homeRedirect = bad.reason === 'list_html_home_redirect';
+  const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what +
+    (homeRedirect ? ': Instagram returned its home page for the list API; profile wall unconfirmed, target will retry shortly. Check this viewer follows the target.' : '');
   const st = await editSt((st) => {
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt, bucket);
     else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now };
-    else if (bad.code === 'other') FL.backoff(st, now, 'other');
+    else if (bad.code === 'other' && !homeRedirect) FL.backoff(st, now, 'other');
     else if (bad.code === 'network') FL.backoff(st, now, 'net');
     else if (bad.code === 'unsupported') st.infoOffUntil = now + 6 * FL.HOUR;
     if (bad.code !== 'busy') st.lastError = hhmmss(now).slice(0, 5) + ' ' + line + (sample ? ' | ' + sample.slice(0, 300) : '');
@@ -391,9 +393,9 @@ async function runList(gen, job, tab) {
   if (!igId || !prog.countAttempted) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
-    if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
     if (FL.privateWall(r.info, job.seed, r.p))
       return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list');
+    if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
     igId = r.p.ig_id;
     total = FL.count(job.direction === 'followers' ? r.p.followers : r.p.following);
     totalSource = total == null ? 'unknown' : 'current_run';
@@ -408,7 +410,7 @@ async function runList(gen, job, tab) {
   const ctx = FL.listContext(job, prog, total);
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
-    if (bad.code === 'private' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
+    if (bad.code === 'private' || bad.reason === 'list_html_home_redirect' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
         (bad.code === 'other' && /^empty_/.test(bad.reason || ''))) {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
@@ -545,6 +547,22 @@ async function tabDom(tabId) {
     return (r && r.result) || { url: tab.url, title: tab.title };
   } catch { try { const tab = await chrome.tabs.get(tabId); return { url: tab.url, title: tab.title }; } catch { return null; } }
 }
+// Instagram's profile UI can render after the passive profile data arrives. A wall only counts
+// when two separate DOM reads on the exact target URL agree for this viewer.
+async function checkedProfileDom(tabId, handle, profile) {
+  let previous = await tabDom(tabId);
+  for (let i = 0; i < 2; i++) {
+    if (i && !previous?.privateWall) break;
+    if (!previous?.privateWall && profile && !profile.is_private) break;
+    await sleep(300);
+    const current = await tabDom(tabId);
+    if (FL.privateWall({ ...previous, privateWallRechecked: true }, handle, profile) &&
+        FL.privateWall({ ...current, privateWallRechecked: true }, handle, profile))
+      return { ...current, privateWallRechecked: true };
+    previous = current;
+  }
+  return previous;
+}
 async function lookupViaPage(gen, handle, kind, near) {
   await assertControl(kind);
   if (gen !== mem.gen) throw new Superseded();
@@ -561,18 +579,14 @@ async function lookupViaPage(gen, handle, kind, near) {
     await editSt((st) => FL.afterRequest(st, kind, Date.now()));
     const p = await got;
     if (p) {
-      let info = await tabDom(tab.id);
-      if (p.is_private && info && !info.privateWall) {
-        await sleep(300);
-        info = await tabDom(tab.id);
-      }
+      const info = await checkedProfileDom(tab.id, handle, p);
       await trail(kind + ' page /' + handle + '/', { ms: Date.now() - t0, code: 'ok' });
       return { p, info, res: { status: 0, url: info && info.url, text: info && info.text, ms: Date.now() - t0 } };
     }
-    const info = await tabDom(tab.id), bad = FL.pageVerdict(info);
+    const info = await checkedProfileDom(tab.id, handle, null), bad = FL.pageVerdict(info);
     const res = { status: 0, url: info && info.url, text: info ? 'title: ' + info.title + ' | ' + (info.text || '') : 'lookup tab closed', ms: Date.now() - t0 };
     await trail(kind + ' page /' + handle + '/', { ms: res.ms, code: bad.code, reason: bad.reason });
-    return { p: null, bad, res };
+    return { p: null, info, bad, res };
   } catch (e) {
     if (e instanceof Superseded) throw e;
     return { p: null, bad: { code: 'network', reason: 'lookup_tab' }, res: { status: 0, text: String((e && e.message) || e) } };

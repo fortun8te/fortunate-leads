@@ -18,12 +18,39 @@ function harness() {
     Image:class {constructor(){images.push(this);}}, document:{createElement:()=>({getContext:()=>null})},
     openDetail(){}, openSeed(){}});
   vm.runInContext(workflowSource, c);
-  vm.runInContext(code + '\nthis.map = M; this.cache = PICS; this.queue = picQueue;', c);
+  vm.runInContext(code + '\nthis.map = M; this.cache = PICS; this.queue = picQueue; this.mapDots = mapDots;', c);
+  const simulate = c.map.simulate;
   c.map.simulate = () => {}; c.map.draw = () => {}; c.map.schedule = () => {};
-  return {c, $, images, m:c.map, api};
+  return {c, $, images, m:c.map, api, simulate};
 }
 const seed = name => ({id:'s:'+name,kind:'seed',label:name,degree:1,pid:null});
 const lead = id => ({id:'p:'+id,kind:'lead',label:'person'+id,lists:1,degree:1});
+test('overview keeps one useful dot per crowded screen cell and preserves chosen people', () => {
+  const {c} = harness();
+  const dots = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead',x:i % 100,y:Math.floor(i / 100),r:4,L:1}));
+  dots[23].L = 5;
+  const shown = c.mapDots(dots, 0.2, 0, 0, 800, 600, new Set(['p:19']));
+  assert.ok(shown.length < 100, `${shown.length} dots still drawn in a 20×20 px cluster`);
+  assert.ok(shown.includes(dots[23]), 'higher-degree dot represents its cell');
+  assert.ok(shown.includes(dots[19]), 'chosen person remains visible');
+  assert.equal(c.mapDots(dots, 1, 0, 0, 800, 600, new Set()).length, 10000);
+  assert.equal(c.mapDots(dots, 1, -1000, 0, 800, 600, new Set()).length, 0);
+});
+test('initial layout fits immediately without synchronous force ticks', () => {
+  const {c,m,simulate} = harness();
+  let ticks = 0, fits = 0; const forces = new Map();
+  const fluent = () => ({id(){return this;},distance(){return this;},strength(){return this;},distanceMax(){return this;},theta(){return this;},radius(){return this;},iterations(){return this;}});
+  const sim = {force(name, value){forces.set(name, value);return this;},alpha(){return this;},alphaDecay(){return this;},alphaMin(){return this;},velocityDecay(){return this;},on(){return this;},stop(){return this;},tick(){ticks++;return this;}};
+  c.window = {d3:{forceSimulation:()=>sim,forceLink:fluent,forceManyBody:fluent,forceCollide:fluent,forceX:fluent,forceY:fluent}};
+  m.fit = () => { fits++; };
+  m.nodes = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead'}));
+  m.seeds = []; m.leads = m.nodes; m.links = []; m.seedLinks = [];
+  simulate.call(m, 1);
+  assert.equal(ticks, 0);
+  assert.equal(fits, 1);
+  assert.equal(forces.get('charge'), null);
+  assert.equal(forces.get('collide'), null);
+});
 test('map resolves history endpoints but excludes history from neighbours and distinct counts', () => {
   const {m,$} = harness();
   m.build({nodes:[seed('a'),seed('b'),seed('c'),lead(1)],total:1,limit:3000, links:[
@@ -68,11 +95,13 @@ test('smaller map density keeps an open person from the same revision only', asy
       {source:'s:a',target:'p:2',direction:'following',state:'observed'}],seed_links:[]});
   await first;
   m.focus=m.byId.get('p:2'); m.focus.x=73; m.focus.fx=73;
+  m.drawnLeads=[m.focus];
   m.limit=400;
   const smaller=m.load();
   pending[1].resolve({rev:5,total:2400,limit:400,nodes:[seed('a'),lead(1)],
     links:[{source:'s:a',target:'p:1',direction:'followers',state:'observed'}],seed_links:[]});
   await smaller;
+  assert.equal(m.drawnLeads,null,'reload clears the previous screen sample');
   assert.equal(m.focus,m.byId.get('p:2'));
   assert.equal(m.focus.x,73);
   assert.equal(m.focus.fx,73);

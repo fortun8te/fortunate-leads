@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,6 +78,40 @@ class PipelineTest(Base):
         self.conn.commit()
         progress = server.progress(self.conn, [])
         self.assertEqual((progress['lists']['per_minute'], progress['bios']['per_minute']), (0, 0))
+
+    def test_model_write_records_score_time_and_durable_rate(self):
+        ids = self.people({'scored': ('founder', [('s1', 'followers')])})
+        server.qualify_batch(self.conn)
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
+        server.qualify.llm_verdicts = lambda items, examples: [
+            {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'model', 'model': 'm'} for _ in items]
+        try:
+            rows = self.conn.execute('SELECT * FROM people WHERE id=?', (ids['scored'],)).fetchall()
+            self.assertEqual(server.run_llm(self.conn, rows, {}), 1)
+        finally:
+            del server.qualify.llm_verdicts
+        event = self.conn.execute('SELECT person_id,scored_at FROM ai_scoring_events').fetchone()
+        self.assertEqual(event['person_id'], ids['scored'])
+        self.assertLess((datetime.now(timezone.utc) - datetime.fromisoformat(event['scored_at'])).total_seconds(), 10)
+        self.assertEqual(server.progress(self.conn, [])['qualify']['per_hour'], 1)
+        self.assertEqual(server.control.snapshot(self.conn)['stages'][2]['minute'], 1)
+
+    def test_existing_verdicts_do_not_get_invented_score_times_on_upgrade(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = str(Path(root) / 'existing.sqlite')
+            conn = db.init(path)
+            pid = db.upsert_person(conn, {'handle': 'oldscore', 'bio': 'founder'})
+            conn.execute("INSERT INTO verdicts(person_id,model,updated_at) VALUES(?,'llm','2020-01-01')", (pid,))
+            conn.execute('DROP TABLE ai_scoring_events')
+            conn.commit()
+            conn.close()
+            conn = db.init(path)
+            try:
+                self.assertEqual(conn.execute('SELECT count(*) FROM ai_scoring_events').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'llm')
+            finally:
+                conn.close()
 
     def test_network_context(self):
         ids = self.people({'good1': ('x', [('s1', 'followers')]), 'good2': ('x', [('s1', 'followers')]), 'no1': ('x', [('s2', 'followers')]),

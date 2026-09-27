@@ -2,9 +2,7 @@ import argparse
 import biofetch
 import deepscout
 import websearch
-import collections
 from concurrent.futures import ThreadPoolExecutor
-import time
 import json
 import mimetypes
 import os
@@ -17,9 +15,8 @@ import tempfile
 import threading
 import traceback
 import urllib.request
-from collections import Counter, OrderedDict
+from collections import OrderedDict
 from contextlib import contextmanager
-from itertools import chain, combinations
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -493,11 +490,16 @@ def ext_error(conn, q, b):
             conn.execute('INSERT OR IGNORE INTO list_private_denials(seed,direction,viewer_ig_id,denied_at) VALUES(?,?,?,?)',
                          (job['seed'], job['direction'], viewer_id, ts))
             candidates = conn.execute('SELECT * FROM accounts').fetchall()
-            remaining = any(accounts.eligible_for_list(conn, a, job['seed'], job['direction'], datetime.now(timezone.utc))
+            # A cooling or offline account may still follow this private target later.
+            # Its temporary availability must not turn an access denial into a final result.
+            remaining = any(accounts.viewer_may_access_list(conn, a, job['seed'], job['direction'])
                             for a in candidates)
             final = not remaining
         else:
-            final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
+            # A home-page HTML redirect does not prove that this list is unavailable.
+            # Keep trying this target after its delay while other lists can run.
+            final = code in ('private', 'not_found') or (code == 'other' and b.get('reason') != 'list_html_home_redirect'
+                                                       and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
         if code in ('rate_limit', 'soft_block'):
@@ -1164,11 +1166,17 @@ def seed_links(conn, cacheable=None):
     members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
-    rows = conn.execute('SELECT group_concat(seed) FROM map_seed_member GROUP BY person_id HAVING count(*)>1' if members_ready else
-                        'SELECT group_concat(DISTINCT seed) FROM current_edges GROUP BY person_id HAVING count(DISTINCT seed)>1')
-    pairs = Counter(chain.from_iterable(combinations(sorted(set(r[0].split(','))), 2) for r in rows))
-    top = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:SEED_LINKS_TOP]
-    links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for (a, b), n in top]
+    # Aggregate overlap in SQLite and return only the top pairs. This avoids
+    # grouping every person's source list into strings or materializing every
+    # member in Python on each exact-revision refresh.
+    membership = 'map_seed_member' if members_ready else '(SELECT DISTINCT person_id,seed FROM current_edges)'
+    # Without this hint SQLite scans the seed-first secondary index, making
+    # each person lookup jump across the entire membership table.
+    outer = 'map_seed_member a NOT INDEXED' if members_ready else f'{membership} a'
+    top = conn.execute(f'SELECT a.seed,b.seed,count(*) AS shared FROM {outer} '
+                       f'JOIN {membership} b ON b.person_id=a.person_id AND b.seed>a.seed '
+                       'GROUP BY a.seed,b.seed ORDER BY shared DESC,a.seed,b.seed LIMIT ?', (SEED_LINKS_TOP,))
+    links = [{'source': f's:{a}', 'target': f's:{b}', 'shared': n} for a, b, n in top]
     if cacheable:
         SEED_LINKS[0] = (key, datetime.now().timestamp(), links)
     return links
@@ -1448,7 +1456,9 @@ def progress(conn, accts):
     q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
-    q_rate = POOL[0].rate() if POOL[0] else None
+    q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
+    q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                          (iso(now - timedelta(hours=1)),)).fetchone()[0]
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
         'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
@@ -1461,7 +1471,10 @@ def progress(conn, accts):
                  'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
                                           1, bio_lanes, 'profile', now),
                  'estimate': not bios_h},
-        'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
+        'qualify': {'left': q_left, 'per_hour': q_hour, 'per_minute': conn.execute(
+                    'SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                    (iso(now - timedelta(minutes=1)),)).fetchone()[0],
+                    'eta_h': eta_hours(q_left, q_rate),
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
                     'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
     }
@@ -1923,11 +1936,16 @@ def network_context(conn, pids, me=None):
     relevant = sorted({seed for n in out.values() for seed, _ in n['seeds']})
     yields = {}
     good_handles = set()
+    members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
     for chunk in chunks(relevant):
         slots = ','.join('?' * len(chunk))
+        membership = 'map_seed_member' if members_ready else 'current_edges'
+        distinct = '' if members_ready else 'DISTINCT '
         for r in conn.execute(
-                f"SELECT e.seed, count(DISTINCT CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
-                f"count(DISTINCT e.person_id) FROM current_edges e JOIN marks m ON m.person_id=e.person_id "
+                f"SELECT e.seed, count({distinct}CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
+                f"count({distinct}e.person_id) FROM {membership} e JOIN marks m ON m.person_id=e.person_id "
                 f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
             yields[r[0]] = (r[1], r[2])
         good_handles.update(r[0] for r in conn.execute(
@@ -2367,6 +2385,8 @@ def run_llm(conn, rows, skip):
                          v.get('prompt'), json.dumps(v.get('evidence') or []),
                          v.get('content_fit', min(getattr(qualify, 'ROLE_CAP', {}).get(v['role'], 100), v['fit']) if v.get('fit') is not None else None),
                          p['id'], p['updated_at'])).rowcount:
+            conn.execute('INSERT INTO ai_scoring_events(person_id,scored_at) VALUES(?,?)',
+                         (p['id'], db.now()))
             conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
             conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')",
                              [(p['id'], t, g) for t, g in it['fresh_auto'] + (v.get('tags') or [])])
@@ -2405,7 +2425,6 @@ class LLMPool:
         self.running = 0
         self.skip = {}
         self.batch = batch
-        self.done = collections.deque(maxlen=2000)   # (time, verdicts written) for the ETA
 
     def step(self, conn):
         if not db.get_setting(conn, 'qualify'):
@@ -2430,21 +2449,10 @@ class LLMPool:
             threading.Thread(target=self._work, args=(g,), daemon=True).start()
         return True
 
-    def rate(self, window=900):
-        """Verdicts per hour over the last `window` seconds (None until there is data)."""
-        now = time.time()
-        recent = [(t, n) for t, n in list(self.done) if now - t <= window]
-        if not recent:
-            return None
-        span = max(60, now - recent[0][0])
-        return sum(n for _, n in recent) * 3600 / span
-
     def _work(self, rows):
         conn = db.connect(CFG['db'])
         try:
-            n = run_llm(conn, rows, self.skip)
-            if n:
-                self.done.append((time.time(), n))
+            run_llm(conn, rows, self.skip)
         except Exception:
             traceback.print_exc()
         finally:

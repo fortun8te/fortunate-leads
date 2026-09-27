@@ -55,10 +55,12 @@
     }
     if (s.state === 'idle') return /no instagram account/i.test(s.now) ? 'no account online' : /paused or offline/i.test(s.now) ? 'no account free' : 'nothing to do';
     if (s.state !== 'running') return ({off: 'off', error: 'needs attention', failed: 'failed', starting: 'starting'})[s.state] || 'status unavailable';
+    if (s.id === 'ai') return `running · ${n(s.minute)}/min · ${n(s.hour)}/h`;
     return 'running' + (s.hour ? ' · ' + n(s.hour) + '/h' : '');
   }
   function tip(s) {
-    return `${s.label}: ${s.now}\n\n${s.help}\n\n${n(s.queue)} waiting.\nLast hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
+    const minute = s.id === 'ai' ? `Last minute ${n(s.minute)} scores · ` : '';
+    return `${s.label}: ${s.now}\n\n${s.help}\n\n${n(s.queue)} waiting.\n${minute}Last hour ${n(s.hour)} ${PER[s.id]} · today ${n(s.today)}.`;
   }
 
   function render() {

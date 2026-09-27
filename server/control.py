@@ -116,9 +116,11 @@ def counts(conn, now):
 
     def two(sql):
         return {'hour': conn.execute(sql, (hour,)).fetchone()[0], 'today': conn.execute(sql, (day,)).fetchone()[0]}
+    ai = two('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?')
+    ai['minute'] = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                                (iso(now - timedelta(minutes=1)),)).fetchone()[0]
     return {'lists': two('SELECT count(*) FROM edges WHERE first_seen>=?'),
-            'bios': two('SELECT count(*) FROM people WHERE bio_at>=?'),
-            'ai': two("SELECT count(*) FROM verdicts WHERE model IS NOT NULL AND model!='rules' AND updated_at>=?")}
+            'bios': two('SELECT count(*) FROM people WHERE bio_at>=?'), 'ai': ai}
 
 
 UNIT = {'lists': 'people', 'bios': 'bios', 'ai': 'scores'}
@@ -128,6 +130,8 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     paused = stage_paused(conn, stage)
     out = {'id': stage, 'label': LABEL[stage], 'help': HELP[stage], 'paused': paused, 'unit': UNIT[stage],
            'hour': c['hour'], 'today': c['today'], 'wait': None, 'queue': queue}
+    if stage == 'ai':
+        out['minute'] = c['minute']
     if paused:
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
         return dict(out, state='paused', now=why)
