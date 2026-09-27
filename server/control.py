@@ -113,6 +113,14 @@ def lane_wait(conn, row, kind, now):
     return None
 
 
+def lane_blocked(row, kind, now):
+    """A hard Instagram wait, even if an old job lease still appears active."""
+    if row['hold']:
+        return True
+    fields = ('list_cool_until', 'list_endpoint_until') if kind == 'list' else ('profile_cool_until',)
+    return any((until := utc(row[field])) is not None and until > now for field in fields)
+
+
 def counts(conn, now):
     hour, day = iso(now - timedelta(hours=1)), iso(now)[:10]
 
@@ -145,7 +153,8 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     # accounts that could do this stage: online, not paused, role allows it
     role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
     able = [a for a in accts if a['online'] and not a['paused'] and (a['role'] or 'both') in role_ok]
-    working = [a for a in able if not a['hold'] and a['job'] and a['job']['kind'] == kind]
+    working = [a for a in able if a['job'] and a['job']['kind'] == kind
+               and not lane_blocked(rows[a['lane_id']], kind, now)]
     if not accts or not any(a['online'] for a in accts):
         return dict(out, state='waiting' if queue else 'idle', now=f'No Instagram account is online. {queue:,} jobs waiting. Open Chrome with the extension.')
     if not able:
@@ -179,6 +188,10 @@ def account_out(conn, a, row, now, all_paused):
         return dict(base, state='waiting', wait={'why': why, 'seconds': sec}, now=why + '.')
     if a['job']:
         j = a['job']
+        if lane_blocked(row, j['kind'], now):
+            why, sec = lane_wait(conn, row, j['kind'], now)
+            return dict(base, state='waiting', wait={'why': why, 'seconds': sec},
+                        now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
         what = f"@{j['seed']}'s {j['direction']}" if j['kind'] == 'list' else f"the bio of @{j['handle']}"
         return dict(base, state='running', now=f'Reading {what}.')
     if all_paused:
