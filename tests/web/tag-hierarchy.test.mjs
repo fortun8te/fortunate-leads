@@ -29,7 +29,7 @@ function mount() {
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
   vm.runInContext(section('function tagItem(', 'function tagSection('), context);
   vm.runInContext(section('function rowHTML(', 'function renderRows()'), context);
-  const ui = vm.runInContext('({ tagTier, tagHue, tagChip, tagItem, rowHTML, rowTagSelection })', context);
+  const ui = vm.runInContext('({ tagTier, tagChip, tagItem, rowHTML, rowTagSelection })', context);
   return { context, groupNode, ui };
 }
 
@@ -57,22 +57,40 @@ test('dense lead rows show distinct evidence and preserve the rest in the count 
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.ok(desktopTags, 'desktop tag cell is present');
   assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 3);
-  assert.match(desktopTags, /data-tag="Warm intro"[\s\S]*data-tag="Jewelry"[\s\S]*data-tag="Shop Link"/);
-  assert.match(desktopTags, /title="Founder · Brand"\>\+2/);
+  assert.match(desktopTags, /data-tag="Founder"[\s\S]*data-tag="Brand"[\s\S]*data-tag="Shop Link"/);
+  assert.match(desktopTags, /title="Warm intro · Jewelry"\>\+2/);
   assert.doesNotMatch(html, /data-tag="Fit: strong"|data-tag="via @seed"/);
+});
+
+test('client, relationship and caution outrank fit and niche; synonymous decisions use one slot', () => {
+  const { ui } = mount();
+  const dense = ui.rowTagSelection({ score: 91, tags: [
+    tag('AI: Skincare', 'niche'), tag('Scout: Strong'), tag('Too big'),
+    tag('Client', 'custom', 'manual'), tag('follows you', 'source'),
+    tag('Founder', 'role'), tag('AI: Decision maker', 'ai'),
+  ] });
+  assert.deepEqual(Array.from(dense.shown, (t) => t.tag), ['Client', 'follows you', 'Too big']);
+  assert.equal(dense.hidden.length, 4);
+
+  const decision = ui.rowTagSelection({ tags: [
+    tag('AI: Skincare', 'niche'), tag('Shop Link'), tag('Founder', 'role', 'manual'),
+    tag('AI: Decision maker', 'ai'), tag('Scout: Strong'), tag('Too big'),
+  ] });
+  assert.deepEqual(Array.from(decision.shown, (t) => t.tag), ['Too big', 'Scout: Strong', 'Founder']);
+  assert.deepEqual(Array.from(decision.hidden, (t) => t.tag), ['AI: Decision maker', 'Shop Link', 'AI: Skincare']);
 });
 
 test('near-synonymous fit and identity chips cannot fill a lead row', () => {
   const { ui } = mount();
-  const row = { id: 8, handle: 'founder', tags: [
+  const row = { id: 8, handle: 'founder', score: 90, tags: [
     tag('AI: Top fit', 'ai'), tag('AI: Decision maker', 'ai'), tag('Founder', 'role'),
     tag('AI: Skincare', 'niche'), tag('AI: Runs ads', 'ai'),
     tag('client', 'custom', 'manual'), tag('follows you', 'source'),
   ] };
   const html = ui.rowHTML(row, 0, 64);
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
-  assert.match(desktopTags, /data-tag="client"[\s\S]*data-tag="follows you"[\s\S]*data-tag="AI: Skincare"/);
-  assert.doesNotMatch(desktopTags, /data-tag="Founder"|data-tag="AI: Decision maker"|data-tag="AI: Top fit"/);
+  assert.match(desktopTags, /data-tag="client"[\s\S]*data-tag="follows you"[\s\S]*data-tag="Founder"/);
+  assert.doesNotMatch(desktopTags, /data-tag="AI: Decision maker"|data-tag="AI: Top fit"|data-tag="AI: Skincare"/);
   assert.match(desktopTags, /\+4/);
   assert.match(ui.tagChip(tag('AI: Skincare', 'niche'), false), /data-tag="AI: Skincare"[^>]*title="AI: Skincare · auto"[^>]*><span>Skincare<\/span>/);
 
@@ -89,7 +107,7 @@ test('generic profile access and a repeated fit verdict stay out of informative 
     tag('AI: Supplements', 'niche'), tag('Shop Link', 'signal'),
   ] };
   const selected = ui.rowTagSelection(row);
-  assert.deepEqual(Array.from(selected.shown, (t) => t.tag), ['AI: Supplements', 'Shop Link', 'AI: Decision maker']);
+  assert.deepEqual(Array.from(selected.shown, (t) => t.tag), ['AI: Decision maker', 'Shop Link', 'AI: Supplements']);
   assert.deepEqual(Array.from(selected.hidden, (t) => t.tag).sort(), ['AI: Top fit', 'Instagram link', 'you follow'].sort());
   const accessOnly = ui.rowTagSelection({ tags: [tag('Instagram link', 'source')] });
   assert.equal(accessOnly.shown[0].tag, 'Instagram link');
@@ -97,27 +115,20 @@ test('generic profile access and a repeated fit verdict stay out of informative 
     tag('Supplements', 'niche'), tag('AI: Supplements', 'ai'),
     tag('Founder', 'role'), tag('you follow', 'source'), tag('Verified'),
   ] });
-  assert.deepEqual(Array.from(repeatedNiche.shown, (t) => t.tag), ['Supplements', 'Founder']);
+  assert.deepEqual(Array.from(repeatedNiche.shown, (t) => t.tag), ['Founder', 'Supplements']);
   assert.deepEqual(Array.from(repeatedNiche.hidden, (t) => t.tag).sort(), ['AI: Supplements', 'Verified', 'you follow'].sort());
 });
 
-test('niche families keep the same color across chips and filters', () => {
+test('niche chips and filters use one neutral tier without product hues', () => {
   const { ui } = mount();
-  const families = [
-    ['Beauty', 'h-beauty'], ['AI: Skincare', 'h-beauty'],
-    ['Coffee', 'h-food'], ['Apparel', 'h-style'], ['AI: Jewelry', 'h-style'],
-    ['Supplements', 'h-wellness'], ['Fitness', 'h-wellness'],
-    ['Home', 'h-lifestyle'], ['AI: Pets', 'h-lifestyle'],
-  ];
-  for (const [name, hue] of families) {
+  const names = ['Beauty', 'AI: Skincare', 'Coffee', 'Apparel', 'AI: Jewelry', 'Supplements', 'Fitness', 'Home', 'AI: Pets'];
+  for (const name of names) {
     const niche = tag(name, name.startsWith('AI: ') ? 'ai' : 'niche');
-    assert.equal(ui.tagHue(niche), hue);
-    assert.match(ui.tagChip(niche), new RegExp(`class="tag [^\"]*${hue}`));
-    assert.match(ui.tagItem({ ...niche, sources: ['auto'], count: 1 }), new RegExp(`class="fi [^\"]*${hue}`));
+    assert.equal(ui.tagTier(niche), 'niche');
+    assert.match(ui.tagChip(niche), /class="tag [^"]* t-niche"/);
+    assert.match(ui.tagItem({ ...niche, sources: ['auto'], count: 1 }), /class="fi t-niche"/);
   }
-  assert.equal(ui.tagHue(tag('Outdoor', 'niche')), '');
-  assert.equal(ui.tagHue(tag('Beauty', 'niche', 'manual')), '');
-  assert.equal(ui.tagHue(tag('Founder', 'role')), '');
+  assert.equal(ui.tagTier(tag('Beauty', 'niche', 'manual')), 'own');
 });
 
 test('mobile overflow counts hidden same-facet tags with one visible chip', () => {
@@ -136,7 +147,7 @@ test('Tags overview shows three decision groups and folds context tags', () => {
   const html = groupNode.innerHTML;
   assert.doesNotMatch(html, /Best prospects/);
   assert.match(html, /Business signals[\s\S]*Needs a look[\s\S]*Other automatic tags[\s\S]*Products/);
-  assert.match(html, /tchip t-niche h-style/);
+  assert.match(html, /tchip t-niche/);
   assert.match(html, /tchip t-flag[^>]*>\<span\>Too big/);
   assert.match(html, /tchip t-review[^>]*>\<span\>Creator/);
 });

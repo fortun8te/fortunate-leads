@@ -903,8 +903,12 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   check(!dupPages, 'no page fetched twice (across all lanes)', `${seenPage.size} pages, ${dupPages} repeats`);
   check(!counters.dupResponses, 'no page posted twice', `${counters.dupResponses} duplicate posts`);
   // lanes and accounts
+  const workingLanes = new Set(igLog.filter((e) => e.kind === 'list').map((e) => e.lane));
+  // One list belongs to one lane until handoff. With more accounts than lists,
+  // healthy extra accounts may correctly remain idle throughout the run.
+  check(workingLanes.size >= Math.min(N, LANE_SEEDS.length), 'enough lanes worked available lists',
+    `${workingLanes.size} lanes for ${LANE_SEEDS.length} lists`);
   for (const [i, L] of lanes.entries()) {
-    check(igLog.some((e) => e.lane === L.name && e.kind === 'list'), 'every lane worked lists', L.name);
     const own = igLog.filter((e) => e.lane === L.name && e.kind !== 'nav');
     let peak = 0;
     for (let x = 0, y = 0; x < own.length; x++) { while (own[x].t - own[y].t >= FL.PACE.window) y++; peak = Math.max(peak, x - y + 1); }

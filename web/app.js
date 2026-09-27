@@ -459,9 +459,8 @@ const swatch = (kind, extra = '', grp = '') => `<i class="sw ${KIND[kind] ?? ''}
 function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
-  const hue = tagHue(t);
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi t-${tagTier(t)}${hue ? ' ' + hue : ''}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -875,26 +874,12 @@ function tagTier(t) {
   return 'ctx';
 }
 const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, client: 8, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
-// Color belongs to a stable product family, never the individual tag text or
-// where it happens to appear. Manual labels retain their own visual priority.
-const NICHE_HUES = {
-  Beauty: 'h-beauty', Skincare: 'h-beauty',
-  'Food & Drink': 'h-food', Coffee: 'h-food',
-  Apparel: 'h-style', Jewelry: 'h-style', Accessories: 'h-style',
-  Supplements: 'h-wellness', Fitness: 'h-wellness', Wellness: 'h-wellness',
-  Home: 'h-lifestyle', Pets: 'h-lifestyle',
-};
-function tagHue(t) {
-  if (tagTier(t) !== 'niche') return '';
-  return NICHE_HUES[tagName(t).replace(/^AI: /, '')] || '';
-}
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = tagLabel(t.tag);
   const tier = tagTier(t);
-  const hue = tagHue(t);
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${hue ? ' ' + hue : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 // The source stays in the tooltip and filter value; the visible chip says what
 // the label means. Repeating "AI:" on every chip hides the actual distinction.
@@ -910,21 +895,23 @@ const ROW_COMMERCE = new Set(['AI: Runs ads', 'AI: Ad tracking detected', 'AI: H
 // Show different kinds of evidence in a short row. A founder/decision-maker
 // pair, for example, takes one slot; the full set remains on the lead detail.
 function rowTagFacet(t) {
-  if (t.source === 'manual') return 'manual:' + t.tag.toLowerCase();
+  if (t.source === 'manual' && /^(client|customer)$/i.test(t.tag)) return 'client';
   if (ROW_RELATIONSHIP.has(t.tag)) return 'relationship';
   if (t.tag === 'you follow') return 'outgoing';
   if (t.tag === 'Instagram link') return 'link';
-  if (t.grp === 'niche' || tagTier(t) === 'niche') return 'niche';
-  if (ROW_COMMERCE.has(t.tag)) return 'commerce';
   if (FLAG_TAGS.has(t.tag)) return 'caution';
-  if (PARTNER_TAGS.has(t.tag)) return 'partner';
-  if (MARKET_TAGS.has(t.tag)) return 'market';
-  if (DECISION_TAGS.has(t.tag) || ROLE_TAGS.has(t.tag) || t.grp === 'role') return 'role';
   if (HERO_TAGS.has(t.tag) || MAYBE_TAGS.has(t.tag)) return 'verdict';
+  if (DECISION_TAGS.has(t.tag)) return 'decision';
+  if (ROLE_TAGS.has(t.tag) || t.grp === 'role' && !PARTNER_TAGS.has(t.tag)) return 'role';
+  if (ROW_COMMERCE.has(t.tag)) return 'commerce';
+  if (PARTNER_TAGS.has(t.tag)) return 'partner';
+  if (t.source === 'manual') return 'manual:' + t.tag.toLowerCase();
+  if (MARKET_TAGS.has(t.tag)) return 'market';
   if (/^AI: (Pre-launch|Early stage|Growing|Established)$/.test(t.tag)) return 'stage';
+  if (t.grp === 'niche' || tagTier(t) === 'niche') return 'niche';
   return 'other:' + (t.grp || 'custom');
 }
-const ROW_FACET_ORDER = { manual: 0, relationship: 1, niche: 2, commerce: 3, caution: 4, partner: 5, market: 6, role: 7, verdict: 8, stage: 9, outgoing: 10, other: 11, link: 12 };
+const ROW_FACET_ORDER = { client: 0, relationship: 1, caution: 2, verdict: 3, decision: 4, role: 5, commerce: 6, partner: 7, manual: 8, market: 9, stage: 10, niche: 11, other: 12, outgoing: 13, link: 14 };
 const rowFacetRank = (t) => ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
 // Tags that describe the person, not ordinary source/size metadata or a fit
 // badge already shown elsewhere in the row.
@@ -1876,10 +1863,7 @@ const T = {
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['niche', 'signal', 'size', 'source']);
-    const chip = (t) => {
-      const hue = tagHue(t);
-      return `<button class="tchip t-${tagTier(t) || 'mid'}${hue ? ' ' + hue : ''}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
-    };
+    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
     const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
       list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));

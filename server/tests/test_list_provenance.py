@@ -3,6 +3,7 @@ import os
 os.environ.setdefault('FL_NO_ORSLOT', '1')
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import db
@@ -85,6 +86,83 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
         self.assertIsNone(self.next())
         self.assertEqual(db.repair_lists(self.conn, dry=True)['requeued'], 0)
+
+    def test_partial_repair_waits_and_retries_in_small_bounded_batches(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        for i in range(4):
+            seed = f'partial{i}'
+            db.queue_list(self.conn, seed, 'followers')
+            job = self.conn.execute('SELECT id FROM jobs WHERE seed=?', (seed,)).fetchone()[0]
+            db.upsert_person(self.conn, {'handle': f'member{i}'})
+            self.conn.execute("UPDATE jobs SET state='partial' WHERE id=?", (job,))
+            self.conn.execute("UPDATE lists SET state='partial',received=1,total=100,run_job_id=?,"
+                              "error='Instagram ended the list early; coverage is partial.',updated_at=?,lane='old-lane' "
+                              "WHERE seed=? AND direction='followers'", (job, old, seed))
+        self.conn.commit()
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 2)
+        db.repair_lists(self.conn)
+        self.conn.commit()
+        retried = self.conn.execute("SELECT count(*) FROM lists WHERE seed LIKE 'partial%' AND direction='followers' "
+                                         "AND state='queued'").fetchone()[0]
+        self.assertEqual(retried, 2)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs WHERE kind='list' AND seed LIKE 'partial%' "
+                                           "AND direction='followers' AND state='queued'").fetchone()[0], 2)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM lists WHERE seed LIKE 'partial%' AND direction='followers' "
+                                           "AND state='queued' AND lane IS NULL").fetchone()[0], 2)
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 2)
+
+    def test_partial_retry_budget_and_cooldown_preserve_positive_evidence(self):
+        first = self.start('followers')
+        self.page(first, ['alice'], total=100)
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
+        old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        for attempt in range(db.REOPEN_MAX):
+            self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed' AND direction='followers'", (old,))
+            self.conn.commit()
+            self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 1)
+            db.repair_lists(self.conn)
+            self.conn.commit()
+            self.assertEqual(self.active('followers'), {'alice'})
+            self.assertEqual(self.row('followers')['received'], 0)
+            job = self.next()
+            if job['direction'] != 'followers':
+                self.page(job, [], total=0)
+                job = self.next()
+            self.page(job, ['alice'], total=100)
+        self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed' AND direction='followers'", (old,))
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
+        self.assertEqual(self.active('followers'), {'alice'})
+
+    def test_explicit_instagram_cap_remains_parked_after_cooldown(self):
+        first = self.start('followers')
+        self.page(first, ['alice'], limited=True, total=1000000)
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed' AND direction='followers'", (old,))
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
+        self.assertEqual(self.row('followers')['state'], 'partial')
+        self.assertEqual(self.active('followers'), {'alice'})
+
+    def test_repair_resumes_terminal_partial_with_saved_cursor(self):
+        first = self.start('followers')
+        self.page(first, ['alice'], done=False, next_cursor='next', total=2)
+        job = self.next()
+        server.ext_error(self.conn, self.q, dict(job_id=job['id'], lease_token=job['lease_token'],
+                                                 code='other', message='Temporary failure'))
+        self.conn.execute("UPDATE jobs SET state='partial' WHERE id=?", (job['id'],))
+        old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        self.conn.execute("UPDATE lists SET state='partial',updated_at=? WHERE seed='seed' AND direction='followers'", (old,))
+        self.conn.commit()
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 1)
+        db.repair_lists(self.conn)
+        self.conn.commit()
+        resumed = self.next()
+        if resumed['direction'] != 'followers':
+            self.page(resumed, [], total=0)
+            resumed = self.next()
+        self.assertEqual((resumed['cursor'], resumed['received']), ('next', 1))
+        self.page(resumed, ['bob'], total=None, total_source='cached')
+        self.assertEqual(self.row('followers')['state'], 'done')
+        self.assertEqual(self.active('followers'), {'alice', 'bob'})
 
     def test_cursor_cycle_saves_last_page_and_stops(self):
         self.page(self.start(), ['alice'], done=False, next_cursor='a', total=4)
@@ -192,6 +270,9 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertEqual((self.row()['state'], self.row()['received'], self.row()['cursor']), ('partial', 1, 'a'))
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
         self.assertEqual(self.active(), {'alice'})
+        old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed' AND direction='following'", (old,))
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
 
     def test_opening_old_db_corrects_only_current_partial_job(self):
         current = self.start('followers')

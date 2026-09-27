@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
 SCHEMA = """
@@ -1105,22 +1105,28 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None)
     return True
 
 
-REOPEN_MAX = 2          # a list that keeps ending short (hidden accounts, IG caps) is reopened at most this often
+REOPEN_MAX = 2          # bound automatic retries of unverified/short lists
 SHORT_RATIO = 0.95      # done with received below this share of the known total = ended early
 SHORT_MIN = 20          # ... and at least this many people missing
+PARTIAL_RETRY_DELAY = timedelta(days=1)
+PARTIAL_RETRY_BATCH = 2  # repair runs every 15 minutes; do not flood Instagram with old partials
 
 
 def repair_lists(conn, dry=False):
     """Make sure every seed has both lists queued until they are really complete. Returns counts; caller commits.
     - a seed without a followers/following list row gets one (queued);
     - a list in state paused/error/queued/running without a live job gets a job again (cursor kept: it resumes);
-    - a list marked done without a complete tracked run is reopened from the start,
-      at most REOPEN_MAX times per list. Cached profile totals never certify coverage."""
+    - a list marked done without a complete tracked run is reopened from the start;
+    - recoverable terminal partials wait a day and retry in small batches, at most
+      REOPEN_MAX times. Explicit Instagram caps and access denials stay parked.
+    Cached profile totals never certify coverage."""
     ts = now()
     out = {'added': 0, 'requeued': 0, 'reopened': 0, 'seed_bios': 0, 'partial': 0}
     reopened = get_setting(conn, 'lists_reopened') or {}
     live = {(r[0].lower(), r[1]) for r in conn.execute(
         "SELECT seed, direction FROM jobs WHERE kind='list' AND state IN ('queued','leased')")}
+    private_denials = {(r[0].lower(), r[1]) for r in conn.execute(
+        'SELECT DISTINCT seed,direction FROM list_private_denials')}
     # a list without a total borrows it from the seed's profile (its followers / following count)
     if not dry:
         conn.execute("UPDATE lists SET total=(SELECT CASE lists.direction WHEN 'followers' THEN p.followers ELSE p.following END "
@@ -1135,6 +1141,7 @@ def repair_lists(conn, dry=False):
         for s in blind - have:
             conn.execute('INSERT INTO jobs(kind, handle, priority, created_at) VALUES(?,?,?,?)', ('profile', s, 10000, ts))
     todo = []
+    partial_candidates = []
     for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0"):
         for d in ('followers', 'following'):
             r = rows.get((s.lower(), d))
@@ -1152,6 +1159,21 @@ def repair_lists(conn, dry=False):
                 else:
                     out['partial'] += 1
                     todo.append((r['seed'], d, 'partial'))
+            elif r['state'] == 'partial' and (s.lower(), d) not in live and (
+                    (s.lower(), d) not in private_denials and r['released_why'] != 'private' and
+                    not (r['error'] or '').startswith('Instagram limited this list;') and
+                    reopened.get(f'{s}|{d}', 0) < REOPEN_MAX):
+                try:
+                    updated = datetime.fromisoformat(r['updated_at'])
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                except (TypeError, ValueError):
+                    continue  # uncertain age must not trigger automatic Instagram requests
+                if utc_now() - updated >= PARTIAL_RETRY_DELAY:
+                    partial_candidates.append((updated, r['seed'], d))
+    for _, s, d in sorted(partial_candidates)[:PARTIAL_RETRY_BATCH]:
+        out['reopened'] += 1
+        todo.append((s, d, 'retry_partial'))
     if dry:
         return out
     for s, d, what in todo:
@@ -1161,10 +1183,23 @@ def repair_lists(conn, dry=False):
         if what == 'add':
             conn.execute('INSERT OR IGNORE INTO lists(seed, direction, state, updated_at) VALUES(?,?,?,?)', (s, d, 'queued', ts))
         else:
-            if what == 'reopen':
+            if what in ('reopen', 'retry_partial'):
                 reopened[f'{s}|{d}'] = reopened.get(f'{s}|{d}', 0) + 1
-                conn.execute('UPDATE lists SET cursor=NULL,run_job_id=NULL,received=0 WHERE seed=? AND direction=?', (s, d))
-            conn.execute("UPDATE lists SET state='queued', error=NULL, lane=NULL, updated_at=? WHERE seed=? AND direction=?", (ts, s, d))
+                row = rows[(s.lower(), d)]
+                # An interrupted cursor chain can continue with its tracked prefix.
+                # A terminal short list or a cursor cycle needs a fresh first page.
+                run = (conn.execute('SELECT first_page_seen FROM list_runs WHERE job_id=?',
+                                    (row['run_job_id'],)).fetchone() if row['run_job_id'] is not None else None)
+                tracked_prefix = bool(run and run[0])
+                resume = (what == 'retry_partial' and row['cursor'] is not None and tracked_prefix and
+                          not (row['error'] or '').startswith(('Instagram repeated its page cursor.',
+                                                                'Earlier pages lack first-page tracking;',
+                                                                'The page history does not prove')))
+                if not resume:
+                    conn.execute('UPDATE lists SET cursor=NULL,run_job_id=NULL,received=0 WHERE seed=? AND direction=?', (s, d))
+            conn.execute("UPDATE lists SET state='queued', error=NULL, prev_lane=coalesce(lane,prev_lane), "
+                         "lane=NULL, released_at=?, released_why='repair', updated_at=? WHERE seed=? AND direction=?",
+                         (ts, ts, s, d))
         if (s.lower(), d) not in live:
             job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)', ('list', s, d, 0, ts)).lastrowid
             start_list_run(conn, job_id, s, d)
