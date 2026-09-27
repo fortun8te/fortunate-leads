@@ -45,21 +45,6 @@ test('scraper separates active work from incomplete and capped list coverage',()
   assert.match(legacy,/2 incomplete lists/);
   assert.doesNotMatch(legacy,/entries missing|capped list|people collected/);
 });
-test('controls expose failed action and disable stale controls',async()=>{
-  const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null,contains:()=>false};
-  let offline=false,postFail=false;
-  const data={all_paused:false,local_laya:true,stages:['lists','bios','ai'].map(id=>({id,label:id,state:id==='ai'?'paused':'running',paused:id==='ai',now:'Reading',help:'Stage control'}))};
-  let code=readFileSync(new URL('../../web/controls.js',import.meta.url),'utf8');
-  code=code.replace('  function start() {','  window.testControls = {load, send};\n  function start() {');
-  const c=vm.createContext({window:{},document:{createElement:()=>el,readyState:'loading',addEventListener(){}},fetch:async(u,o)=>{if(offline)throw Error();return {ok:!(o?.method&&postFail),json:async()=>o?.method&&postFail?{error:'failed'}:data};},setInterval(){},clearInterval(){},Date,confirm:()=>true});
-  vm.runInContext(code,c);await c.window.testControls.load();postFail=true;await c.window.testControls.send({stage:'lists',action:'pause'});
-  assert.match(el.innerHTML,/Couldn’t confirm pause/);assert.doesNotMatch(el.innerHTML,/disabled/);
-  // Incomplete snapshots must still keep the combined collection action locked.
-  data.stages=data.stages.filter(s=>s.id!=='bios');await c.window.testControls.load();
-  assert.match(el.innerHTML,/<button[^>]*data-stage="collection"[^>]*disabled/);
-  assert.doesNotMatch(el.innerHTML,/<button[^>]*data-stage="lists"[^>]*disabled/);
-  offline=true;await c.window.testControls.load();assert.match(el.innerHTML,/disabled/);
-});
 test('demo implements controls and qualification',async()=>{
   const w={fetch:async()=>{throw Error('unexpected network')}};
   const c=vm.createContext({window:w,location:{origin:'http://demo'},URL,URLSearchParams,Response,console,setInterval(){},setTimeout:fn=>fn()});

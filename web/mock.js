@@ -487,7 +487,20 @@
   }
   const settings = { main_list_share: 0, local_laya: true };
   let processingMode = 'RLAI', processingGeneration = 0, localPaused = false;
-  const processingView = () => ({mode:processingMode,generation:processingGeneration,capabilities:{rules:true,scraping:true,laya:processingMode!=='R',notes:processingMode!=='R',local_qualification:processingMode!=='R',external:processingMode==='RLEAI',deep_dive:processingMode==='RLEAI' && scout.on}});
+  const engineEnabled = {laya:true,k2:true};
+  let k2Connection = {location:'this_mac',host:'',port:11436};
+  let k2HasKey = false;
+  const processingView = () => ({mode:processingMode,generation:processingGeneration,paused:localPaused,engines:{laya:{enabled:engineEnabled.laya},k2:{enabled:engineEnabled.k2}},capabilities:{rules:true,scraping:true,laya:processingMode!=='R' && engineEnabled.laya,notes:processingMode!=='R' && engineEnabled.k2,local_qualification:processingMode!=='R' && engineEnabled.k2,external:processingMode==='RLEAI',deep_dive:processingMode==='RLEAI' && scout.on}});
+  function engineView() {
+    const processing = processingView(), engines = {};
+    for (const id of ['laya','k2']) {
+      const allowed = engineEnabled[id] && processingMode !== 'R';
+      const active = allowed && !localPaused && id === 'k2';
+      engines[id] = {enabled:engineEnabled[id],allowed,state:active?'running':allowed&&!localPaused?'waiting':'off',active,ready:true,
+        reason:active?'Processing a request.':allowed&&!localPaused?'Waiting for work.':localPaused?'AI is paused.':'Choose RLAI or RLEAI to use this engine.',stop_acknowledged:!active};
+    }
+    return {processing,paused:localPaused,engines,stop_acknowledged:!Object.values(engines).some(engine=>engine.active)};
+  }
   const scout = { on: false, available: true, model: 'grok', workers: 2, done_today: 0, done: 0, waiting: 0, usage: [], models: [{ id: 'grok', label: 'Grok' }, { id: 'space-bunny', label: 'Space Bunny' }] };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
@@ -605,6 +618,25 @@
       }
       return controlView();
     }
+    if (path === '/api/engines') {
+      if (method === 'POST') {
+        if (!['laya','k2'].includes(body?.engine) || typeof body.enabled !== 'boolean') fail('Choose an engine and on/off state');
+        engineEnabled[body.engine] = body.enabled;
+        processingGeneration++;
+      }
+      return engineView();
+    }
+    if (path === '/api/k2/connection') {
+      if (method === 'POST') {
+        if (!['this_mac','other_pc'].includes(body?.location)) fail('Choose this Mac or another LAN computer');
+        if (body.location === 'other_pc' && (!body.host || !Number.isInteger(body.port) || body.port < 1 || body.port > 65535)) fail('Enter a LAN address and port');
+        if (body.location === 'this_mac' || body.location !== k2Connection.location || body.host !== k2Connection.host || body.port !== k2Connection.port) k2HasKey = false;
+        if (body.api_key) k2HasKey = true;
+        k2Connection = body.location === 'this_mac' ? {location:'this_mac',host:'',port:11436} : {location:'other_pc',host:body.host,port:body.port};
+      }
+      return {...k2Connection,has_api_key:k2HasKey};
+    }
+    if (path === '/api/k2/connection/test') return {ok:true,message:k2Connection.location === 'this_mac' ? 'This Mac is ready.' : 'LAN helper is ready.'};
     if (path === '/api/qual') {
       const view = q.get('view') || 'ai';
       const ai = (p) => { const model = verdicts.get(p.id).model; return model && model !== 'rules'; };
@@ -816,7 +848,7 @@
       }
       return processingView();
     }
-    if (path === '/api/local-processing') { if (method === 'POST') { if (typeof body.paused !== 'boolean') fail('paused must be boolean'); localPaused = body.paused; } return {paused:localPaused,runtime:{resources:{allowed:true}},enabled:processingMode!=='R',model:'K2 Horizon 3.7B',ready:true,queue:42,reviewed:318,needs_research:19,notes_pending:2,state:processingMode==='R'?'off':localPaused?'paused':'working'}; }
+    if (path === '/api/local-processing') { if (method === 'POST') { if (typeof body.paused !== 'boolean') fail('paused must be boolean'); localPaused = body.paused; } return {paused:localPaused,stop_acknowledged:localPaused,engines:engineView().engines,runtime:{resources:{allowed:true}},enabled:processingMode!=='R' && engineEnabled.k2,model:'K2 Horizon 3.7B',ready:true,queue:42,reviewed:318,needs_research:19,notes_pending:2,state:processingMode==='R'?'off':localPaused?'paused':'working',progress:{active:localPaused?null:{handle:'samplebrand'}}}; }
     if (path === '/api/settings/qualify') {
       for (const key of ['on', 'auto', 'local_laya']) if (key in body && typeof body[key] !== 'boolean') fail(key + ' must be true or false');
       const local = body.local_laya ?? settings.local_laya;

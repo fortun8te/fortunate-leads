@@ -20,7 +20,27 @@
         const option = document.createElement('div');
         option.id = `note-mention-option-${index}`; option.className = 'note-mention-option';
         option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === active));
-        option.textContent = `@${person.handle}${person.name ? ' · ' + person.name : ''}`;
+        const avatar = document.createElement('span'); avatar.className = 'note-mention-avatar';
+        if (person.pic) {
+          const img = document.createElement('img'); img.src = person.pic; img.alt = ''; img.loading = 'lazy';
+          avatar.append(img);
+        } else avatar.textContent = (person.name || person.handle || '?').trim().slice(0, 1).toUpperCase();
+        const body = document.createElement('span'); body.className = 'note-mention-body';
+        const identity = document.createElement('span'); identity.className = 'note-mention-identity';
+        const name = document.createElement('strong'); name.textContent = person.name || person.handle;
+        const handle = document.createElement('span'); handle.textContent = '@' + person.handle;
+        identity.append(name, handle); body.append(identity);
+        const badges = Array.isArray(person.badges) ? person.badges.slice(0, 2) : [];
+        if (badges.length) {
+          const saved = document.createElement('span'); saved.className = 'note-mention-badges';
+          for (const label of badges) {
+            const badge = document.createElement('span'); badge.className = 'note-mention-badge'; badge.textContent = label;
+            saved.append(badge);
+          }
+          body.append(saved);
+        }
+        option.setAttribute('aria-label', `${person.name || person.handle}, @${person.handle}${badges.length ? ', saved: ' + badges.join(', ') : ''}`);
+        option.append(avatar, body);
         option.addEventListener('pointerdown', e => { e.preventDefault(); choose(index); });
         picker.append(option);
       });

@@ -57,6 +57,15 @@ class Governor:
         self._recovery_at = None
         self._next_at = 0.0
         self._active = None
+        self._uncertain = set()
+
+    def set_uncertain(self, stage, uncertain):
+        """Keep local capacity occupied after a request times out at the client."""
+        with self._monitor:
+            if uncertain:
+                self._uncertain.add(stage)
+            else:
+                self._uncertain.discard(stage)
 
     def state(self, force=False, startup=False):
         with self._monitor:
@@ -88,6 +97,8 @@ class Governor:
                 reason = 'Local AI is waiting for more memory and a stable recovery.'
             if not reason and startup and (free is None or free < 35):
                 reason = 'Model startup needs more free memory. Your saved work is safe.'
+            if not reason and self._uncertain:
+                reason = 'Waiting for the local engine to confirm it has stopped.'
             if not reason and self._active:
                 reason = 'Another local AI check is running.'
             if not reason and now < self._next_at:
@@ -95,8 +106,8 @@ class Governor:
             retry_after = (10 if self._pressured or sample.get('error') or sample.get('thermal_limited')
                            or (startup and (free is None or free < 35)) else
                            1 if self._active else max(1, self._next_at - now))
-            sample.update(retry_after=retry_after, allowed=not bool(reason), reason=reason or '', busy=bool(self._active),
-                          active_stage=self._active, retry_in=max(0, self._next_at - now),
+            sample.update(retry_after=retry_after, allowed=not bool(reason), reason=reason or '', busy=bool(self._active or self._uncertain),
+                          activity_unknown=bool(self._uncertain), active_stage=self._active, retry_in=max(0, self._next_at - now),
                           recovering=self._pressured)
             return sample
 
@@ -154,3 +165,5 @@ class Governor:
 _governor = Governor(lock_path=Path.home() / 'Library/Application Support/Fortunate Leads/local-ai.lock')
 state = _governor.state
 lease = _governor.lease
+
+set_uncertain = _governor.set_uncertain

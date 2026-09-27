@@ -14,6 +14,7 @@ import db
 RANK_POOL = 2000
 OWNER_POOL = 500
 MAX_RESULTS = 20
+MAX_AUTO_DAILY = 2
 ENABLED_KEY = 'auto_discover'
 
 
@@ -134,7 +135,7 @@ def hide(conn, handle):
 
 
 def queue_when_idle(conn, row, now=None):
-    """Add at most one fresh target when the queue is empty; never retry a target.
+    """Add one fresh target while saved list work is idle; never retry a target.
 
     Caller owns the transaction and must still call accounts.pick_job to lease work.
     All Instagram operations remain behind the existing collector's account guards.
@@ -148,8 +149,11 @@ def queue_when_idle(conn, row, now=None):
             or accounts.follower_route_wait(conn, row, now)
             or 'list' not in accounts.kinds_for(conn, row, ['list'], now)):
         return None
-    # Even delayed manual jobs win. A different lane's work is still work.
-    if conn.execute("SELECT 1 FROM jobs WHERE state IN ('queued','leased') LIMIT 1").fetchone():
+    if _added_today(conn, now.date().isoformat()) >= MAX_AUTO_DAILY:
+        return None
+    # A delayed or other-lane list still takes precedence. Profile work is a
+    # separate backlog and must not prevent a list-capable lane finding lists.
+    if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state IN ('queued','leased') LIMIT 1").fetchone():
         return None
     candidates = suggest(conn, 1)['suggestions']
     if not candidates:

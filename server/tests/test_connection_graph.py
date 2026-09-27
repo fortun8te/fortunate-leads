@@ -269,9 +269,7 @@ class SnapshotTests(unittest.TestCase):
                 writer.close()
 
     def test_comparison_preserves_caller_transaction_and_releases_own_on_error(self):
-        conn = sqlite3.connect(':memory:')
-        conn.row_factory = sqlite3.Row
-        conn.executescript(db.SCHEMA)
+        conn = db.init(':memory:')
         try:
             db.upsert_person(conn, {'handle': 'alice', 'ig_id': '100'})
             db.upsert_person(conn, {'handle': 'bob', 'ig_id': '200'})

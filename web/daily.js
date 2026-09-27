@@ -8,7 +8,7 @@
   function isDueView(f, sort) {
     return !!f && f.status === 'all' && f.follow_up === 'due' && sort === 'follow_up'
       && !f.tags?.length && !f.any?.length && !f.not?.length
-      && !f.tier && !f.q && !f.min && !f.bio && !f.seed
+      && !f.relationship && !f.tier && !f.fit && !f.q && !f.min && !f.bio && !f.seed
       && f.fmin == null && f.fmax == null;
   }
 

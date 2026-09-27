@@ -22,7 +22,7 @@ class RequestPermitTest(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.now = datetime.now(timezone.utc)
         for i in range(25):
-            accounts.touch(self.conn, f'lane{i}', {'ig_id': str(100+i), 'handle': f'acct{i}'}, version='3.9.16')
+            accounts.touch(self.conn, f'lane{i}', {'ig_id': str(100+i), 'handle': f'acct{i}'}, version='3.9.17')
         self.conn.commit()
 
     def acquire(self, i, seconds=0, kind='list'):

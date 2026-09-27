@@ -38,37 +38,14 @@ else
   }
 fi
 
-# Read the persisted mode; Rules must not load any model or launch Ollama.
-MODE="$("$FL_PYTHON" - "$FL_REPO" "$FL_DB" <<'PYMODE'
+# Reconcile each engine independently against current saved intent.
+"$FL_PYTHON" - "$FL_REPO" "$FL_DB" <<'PYENGINES'
 import sqlite3, sys
 sys.path.insert(0, sys.argv[1] + '/server')
-import processing_modes, db
+import engine_start
 with sqlite3.connect('file:' + sys.argv[2] + '?mode=ro', uri=True) as conn:
-    print('R' if db.get_setting(conn, 'processing_paused', False) else processing_modes.current_mode(conn))
-PYMODE
-)"
-if [ "$MODE" = R ]; then
-  "$FL_PYTHON" "$FL_REPO/ops/k2-service.py" stop
-  "$FL_PYTHON" "$FL_REPO/sidecar/laya_service.py" stop
-else
-  # Check headroom before either model is loaded. No inference is performed.
-  "$FL_PYTHON" - "$FL_REPO" <<'PYBUDGET'
-import subprocess, sys
-sys.path.insert(0, sys.argv[1] + '/server')
-import resource_budget
-try:
-    with resource_budget.lease('laya_start', startup=True):
-        result = subprocess.run([sys.executable, sys.argv[1] + '/sidecar/laya_service.py',
-                                 'start', '--timeout', '120'], timeout=130)
-        if result.returncode:
-            raise SystemExit('Laya did not become ready; check its status before retrying.')
-except resource_budget.Deferred as exc:
-    raise SystemExit(str(exc))
-PYBUDGET
-  "$FL_PYTHON" "$FL_REPO/ops/k2-service.py" start || {
-    echo 'K2 did not become ready; the local checks remain queued.' >&2; exit 1;
-  }
-fi
+    engine_start.reconcile_models(sys.argv[1], conn)
+PYENGINES
 
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then
   open "http://127.0.0.1:$FL_PORT/#/accounts"

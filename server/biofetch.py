@@ -8,6 +8,7 @@ Pacing: at most one call per `gap` seconds (default 1.5 s, about 40/min). The wo
 slows down when the reported usage passes 75 % and stops on any throttling code, doubling the pause 10 min -> 4 h. It never touches the IG session.
 """
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -77,25 +78,31 @@ FETCH = [_get]  # tests swap this
 
 
 def usage_pct(headers):
-    """Highest percentage in x-business-use-case-usage / x-app-usage, 0 when absent."""
+    """Highest valid percentage in Meta usage headers; tolerate unknown shapes."""
     top = 0
     for k, v in headers.items():
         if k.lower() not in ('x-business-use-case-usage', 'x-app-usage'):
             continue
         try:
             data = json.loads(v)
-        except ValueError:
+        except (ValueError, TypeError):
             continue
-        items = [x for lst in data.values() for x in lst] if k.lower() == 'x-business-use-case-usage' else [data]
-        for it in items:
-            for f in ('call_count', 'total_cputime', 'total_time'):
-                if isinstance(it.get(f), (int, float)):
-                    top = max(top, it[f])
+        if not isinstance(data, dict):
+            continue
+        items = ([item for group in data.values() if isinstance(group, list) for item in group]
+                 if k.lower() == 'x-business-use-case-usage' else [data])
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for field in ('call_count', 'total_cputime', 'total_time'):
+                value = item.get(field)
+                if type(value) is int or type(value) is float and math.isfinite(value):
+                    top = max(top, value)
     return top
 
 
 def pick(conn):
-    return conn.execute("""SELECT p.handle FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
+    return conn.execute("""SELECT p.id,p.ig_id,p.handle,p.first_seen,p.updated_at,p.bio_at,p.bd_at FROM people p LEFT JOIN verdicts v ON v.person_id=p.id
         WHERE p.bio_at IS NULL AND p.bd_at IS NULL AND coalesce(p.is_private,0)=0 AND instr(p.handle,'~')=0
           AND p.handle NOT IN (SELECT handle FROM seeds)
         ORDER BY coalesce(v.prefilter,0) DESC, p.id LIMIT 1""").fetchone()
@@ -128,6 +135,13 @@ def step(conn, now=None):
     if meta_network.blocked(conn, now=now, stage='bios'):
         return False
     status, body, headers = FETCH[0](GRAPH + urllib.parse.quote(s['ig_user_id']) + '?' + q)
+    # Do not hold a write lock over network I/O. Revalidate the original row
+    # under the same write transaction as ingestion, not by mutable handle alone.
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    current = conn.execute('SELECT * FROM people WHERE id=?', (row['id'],)).fetchone()
+    fresh = current is not None and all(current[key] == row[key] for key in row.keys())
+    st = state(conn)  # settings/state may have changed while the request was in flight
     ts = db.now()
     day = now.date().isoformat()
     if st.get('day') != day:
@@ -135,8 +149,15 @@ def step(conn, now=None):
     st['calls'] = st.get('calls', 0) + 1
     st['last_at'] = now.isoformat(timespec='seconds')
     err = body.get('error') if isinstance(body, dict) else None
+    err = err if isinstance(err, dict) else None
     bd = body.get('business_discovery') if isinstance(body, dict) else None
-    if status == 200 and isinstance(bd, dict):
+    matches = (isinstance(bd, dict) and
+               ('username' not in bd or isinstance(bd['username'], str) and db.norm_handle(bd['username']) == h))
+    if status == 200 and matches and not fresh:
+        st['discarded'] = st.get('discarded', 0) + 1
+        if usage_pct(headers) >= 75:
+            _cool(conn, st, 'Meta usage above 75 %', now)
+    elif status == 200 and matches:
         p = {'handle': h, 'bio': bd.get('biography') or '', 'name': bd.get('name'), 'followers': bd.get('followers_count'),
              'following': bd.get('follows_count'), 'posts': bd.get('media_count'), 'is_business': 1,
              'bio_at': ts, 'bio_src': 'meta_bd', 'pic_url': bd.get('profile_picture_url')}
@@ -160,12 +181,17 @@ def step(conn, now=None):
     elif err and (err.get('code') in THROTTLE or status == 429):
         _cool(conn, st, f"Meta limit ({err.get('code')})", now)
     elif err and err.get('code') == 190:
-        s['on'] = False
-        db.set_setting(conn, 'biofetch', s)
-        st['last_error'] = 'Token expired or invalid: switched off'
+        current_settings = settings(conn)
+        if all(current_settings[key] == s[key] for key in ('token', 'ig_user_id')):
+            current_settings['on'] = False
+            db.set_setting(conn, 'biofetch', current_settings)
+            st['last_error'] = 'Token expired or invalid: switched off'
     elif err and err.get('code') in NOT_FOUND:
-        conn.execute('UPDATE people SET bd_at=? WHERE handle=?', (ts, h))
-        st['misses'] = st.get('misses', 0) + 1
+        if fresh:
+            conn.execute('UPDATE people SET bd_at=? WHERE id=?', (ts, row['id']))
+            st['misses'] = st.get('misses', 0) + 1
+        else:
+            st['discarded'] = st.get('discarded', 0) + 1
     else:
         _cool(conn, st, f'HTTP {status}' + (f" ({err.get('message', '')[:120]})" if err else ''), now)
     db.set_setting(conn, 'biofetch_state', st)

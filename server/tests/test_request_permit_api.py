@@ -6,7 +6,7 @@ import accounts
 
 
 class PermitApiTest(Base):
-    def lease(self, lane='lane1', version='3.9.16'):
+    def lease(self, lane='lane1', version='3.9.17'):
         self.call('/api/scraper/seeds', {'handles': ['one', 'two'], 'directions': ['followers']})
         return self.call(f'/api/ext/next?lane={lane}&version={version}')[1]
 
@@ -15,9 +15,9 @@ class PermitApiTest(Base):
                          job_id=job['id'], lease_token=job['lease_token'], **extra))
 
     def test_shared_hold_denies_even_a_valid_cached_job_and_old_clients_must_upgrade(self):
-        old = self.lease(version='3.9.15')
+        old = self.lease(version='3.9.16')
         self.assertTrue(old['upgrade_required'])
-        self.assertEqual(old['minimum_version'], '3.9.16')
+        self.assertEqual(old['minimum_version'], '3.9.17')
         self.assertIsNone(old['job'])
         job = self.lease()['job']
         db.set_setting(self.conn, 'cooldown', '2099-01-01T00:00:00Z')

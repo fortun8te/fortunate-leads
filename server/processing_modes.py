@@ -12,13 +12,14 @@ import db
 MODES = ('R', 'RLAI', 'RLEAI')
 STAGES = ('scraping', 'rules', 'laya', 'notes', 'local_qualification', 'external', 'deep_dive')
 AI_STAGES = frozenset(('laya', 'notes', 'local_qualification', 'external', 'deep_dive'))
-_KEYS = ('processing_mode', 'processing_generation', 'qualify', 'local_laya', 'scout', 'processing_paused')
+_KEYS = ('processing_mode', 'processing_generation', 'qualify', 'local_laya', 'scout', 'processing_paused', 'engine_k2_enabled', 'engine_laya_enabled',
+         'engine_k2_generation', 'engine_laya_generation')
 
 
 def snapshot(conn):
     """Read one consistent, bounded settings snapshot without writing on GET."""
     values = {key: json.loads(value) for key, value in conn.execute(
-        'SELECT key,value FROM settings WHERE key IN (?,?,?,?,?,?)', _KEYS)}
+        'SELECT key,value FROM settings WHERE key IN (' + ','.join('?' for _ in _KEYS) + ')', _KEYS)}
     explicit = values.get('processing_mode')
     mode = explicit if explicit in MODES else (
         'RLEAI' if values.get('qualify', False) else
@@ -28,7 +29,8 @@ def snapshot(conn):
         generation = 0
     local = mode != 'R'
     external = mode == 'RLEAI'
-    return {'mode': mode, 'generation': generation, 'paused': bool(values.get('processing_paused', False)), 'capabilities': {
+    return {'mode': mode, 'generation': generation, 'paused': bool(values.get('processing_paused', False)), 'engines': {name: {'enabled': values.get('engine_' + name + '_enabled', True) is not False,
+        'generation': values.get('engine_' + name + '_generation', 0)} for name in ('k2', 'laya')}, 'capabilities': {
         'scraping': True, 'rules': True, 'laya': local, 'notes': local,
         'local_qualification': local, 'external': external,
         'deep_dive': external and bool(values.get('scout', False)),
@@ -50,15 +52,19 @@ class WorkTicket:
     stage: str
     mode: str
     generation: int
+    engine_generation: int = 0
 
 
 def begin_work(conn, stage):
     if stage not in STAGES:
         raise ValueError('Unknown processing stage: ' + str(stage))
     state = snapshot(conn)
-    if not state['capabilities'][stage] or (stage in AI_STAGES and state['paused']):
+    engine = stage_engine(stage)
+    if (not state['capabilities'][stage] or (stage in AI_STAGES and state['paused'])
+            or (engine and not state['engines'][engine]['enabled'])):
         return None
-    return WorkTicket(stage, state['mode'], state['generation'])
+    return WorkTicket(stage, state['mode'], state['generation'],
+                      state['engines'][engine]['generation'] if engine else 0)
 
 
 def result_current(conn, ticket):
@@ -70,8 +76,11 @@ def result_current(conn, ticket):
     if not isinstance(ticket, WorkTicket):
         return False
     state = snapshot(conn)
+    engine = stage_engine(ticket.stage)
     return (state['mode'] == ticket.mode and state['generation'] == ticket.generation
             and state['capabilities'].get(ticket.stage, False)
+            and (not engine or (state['engines'][engine]['enabled']
+                 and state['engines'][engine]['generation'] == ticket.engine_generation))
             and not (ticket.stage in AI_STAGES and state['paused']))
 
 
@@ -132,6 +141,35 @@ def set_paused(conn, paused):
     except Exception:
         conn.execute('ROLLBACK TO SAVEPOINT processing_pause_change')
         conn.execute('RELEASE SAVEPOINT processing_pause_change')
+        if started:
+            conn.rollback()
+        raise
+    return snapshot(conn)
+
+
+def stage_engine(stage):
+    return 'k2' if stage in ('notes', 'local_qualification') else 'laya' if stage == 'laya' else None
+
+
+def set_engine(conn, engine, enabled):
+    """Gate new engine work without changing presets or removing saved answers."""
+    if engine not in ('k2', 'laya'):
+        raise ValueError('engine must be k2 or laya')
+    if type(enabled) is not bool:
+        raise ValueError('enabled must be true or false')
+    started = not conn.in_transaction
+    if started:
+        conn.execute('BEGIN IMMEDIATE')
+    conn.execute('SAVEPOINT engine_change')
+    try:
+        previous = snapshot(conn)['engines'][engine]
+        if previous['enabled'] != enabled:
+            db.set_setting(conn, 'engine_' + engine + '_enabled', enabled)
+            db.set_setting(conn, 'engine_' + engine + '_generation', previous['generation'] + 1)
+        conn.execute('RELEASE SAVEPOINT engine_change')
+    except Exception:
+        conn.execute('ROLLBACK TO SAVEPOINT engine_change')
+        conn.execute('RELEASE SAVEPOINT engine_change')
         if started:
             conn.rollback()
         raise

@@ -1,11 +1,23 @@
 import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the real key pool
 """Regression tests for bugs found in the adversarial review (each failed before its fix)."""
 import socket
+from unittest import mock
 
 from test_server import Base, db, server
 
 
 class BugTest(Base):
+    def test_unexpected_handler_errors_are_retryable_server_failures(self):
+        for failure in (KeyError('internal key'), TypeError('internal type')):
+            def broken(*args):
+                raise failure
+            with mock.patch.object(server, 'ROUTES', [('POST', '/api/test-failure', broken)]), \
+                    mock.patch.object(server.traceback, 'print_exc') as logged:
+                code, body = self.call('/api/test-failure', {})
+            self.assertEqual(code, 500)
+            self.assertEqual(body['error'], 'Internal server error')
+            logged.assert_called_once()
+
     def raw(self, request, timeout=3):
         s = socket.create_connection(('127.0.0.1', server.CFG['port']), timeout=timeout)
         try:

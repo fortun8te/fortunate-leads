@@ -238,7 +238,7 @@
                 <span class="checking-heading"><b>RLAI · Rules + local AI</b><i aria-hidden="true"></i></span>
                 <span class="checking-purpose">Everything in R, plus</span>
                 <span class="checking-description"><strong>Laya</strong> adds ranking hints. <strong>K2 3.7B</strong> reads your notes and checks saved bios for business fit.</span>
-                <span class="checking-scope">Runs on this Mac. External AI stays off.</span>
+                <span class="checking-scope">K2 runs on this Mac or your LAN computer. External AI stays off.</span>
               </button>
               <button class="checking-option" data-mode="RLEAI" aria-pressed="false" disabled>
                 <span class="checking-heading"><b>RLEAI · Rules + local + external AI</b><i aria-hidden="true"></i></span>
@@ -248,11 +248,21 @@
               </button>
             </div>
             <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
-            <p class="checking-note">Relationship suggestions need your confirmation. Notes can inform local business-fit checks; they stay on this Mac.</p>
+            <p class="checking-note">Relationship suggestions need your confirmation. Notes can inform K2 business-fit checks on the computer selected below.</p>
             <p class="checking-models" id="set-mode-models"></p>
-            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Pauses automatically when your Mac needs the memory.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
+            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Local engines wait when this Mac needs resources. K2 can use your selected computer.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
             <p class="checking-models" id="set-local-progress" role="status"></p>
             <div id="set-local-activity" class="local-activity" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="sg k2-connection-settings" aria-labelledby="k2-connection-heading">
+          <div class="sg-h"><h2 id="k2-connection-heading">K2 computer</h2><p>Choose where K2 checks saved bios and notes. Exclude K2 in the engine panel before changing computers. Saving or testing does not start work.</p></div>
+          <div class="card">
+            <form id="k2-connection-form" class="k2-connection-form" novalidate>
+              <div class="seg" role="group" aria-label="K2 computer location"><button type="button" data-k2-location="this_mac" aria-pressed="false">This Mac</button><button type="button" data-k2-location="other_pc" aria-pressed="false">Other PC (LAN)</button></div>
+              <div class="k2-lan-fields" id="k2-lan-fields" hidden><label>LAN address<input class="input" id="k2-host" type="text" autocomplete="off" spellcheck="false" placeholder="192.168.1.20"></label><label>Port<input class="input" id="k2-port" type="number" min="1" max="65535" inputmode="numeric" placeholder="1234"></label><label class="k2-key-field">PC API key, if required<input class="input" id="k2-key" type="password" autocomplete="off" spellcheck="false" placeholder="Leave blank to keep saved key"></label></div>
+              <div class="k2-connection-actions"><button class="btn" id="k2-save" type="submit" disabled>Save connection</button><button class="btn" id="k2-test" type="button" disabled>Test connection</button><span id="k2-connection-status" role="status" aria-live="polite">Loading K2 connection…</span></div>
+            </form>
           </div>
         </section>
         <section class="sg">
@@ -371,5 +381,6 @@
 <script src="dm-import.js"></script>
 <script src="connections.js" defer></script>
 <script src="controls.js"></script>
+<script src="k2-connection.js"></script>
 </body>
 </html>

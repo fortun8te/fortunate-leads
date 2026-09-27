@@ -64,19 +64,30 @@ def save(conn, pid, note, refs=None):
 
 def search(conn, query):
     query = (query or '').strip().lstrip('@')[:60]
+    columns = '''SELECT p.id,p.handle,p.name,p.pic_file,m.status,oc.relationships
+        FROM people p LEFT JOIN marks m ON m.person_id=p.id
+        LEFT JOIN owner_context oc ON oc.person_id=p.id'''
     if not query:
         # The owner's saved people first. Both LIMIT scans use integer primary keys.
-        rows = conn.execute('''SELECT p.id,p.handle,p.name FROM owner_context oc
-            JOIN people p ON p.id=oc.person_id ORDER BY oc.person_id DESC LIMIT 8''').fetchall()
+        rows = conn.execute(columns + ''' WHERE oc.person_id IS NOT NULL
+            ORDER BY oc.person_id DESC LIMIT 8''').fetchall()
         if not rows:
-            rows = conn.execute('SELECT id,handle,name FROM people ORDER BY id DESC LIMIT 8').fetchall()
-        return {'people': [dict(r) for r in rows]}
+            rows = conn.execute(columns + ' ORDER BY p.id DESC LIMIT 8').fetchall()
+        return {'people': [_suggestion(r) for r in rows]}
     escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-    rows = conn.execute("""SELECT id,handle,name FROM people
-        WHERE handle LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'
-        ORDER BY CASE WHEN lower(handle)=lower(?) THEN 0 WHEN handle LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
-        handle COLLATE NOCASE LIMIT 8""", (escaped+'%', '%'+escaped+'%', query, escaped+'%')).fetchall()
-    return {'people': [dict(r) for r in rows]}
+    rows = conn.execute(columns + """ WHERE p.handle LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\'
+        ORDER BY CASE WHEN lower(p.handle)=lower(?) THEN 0 WHEN p.handle LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
+        p.handle COLLATE NOCASE LIMIT 8""", (escaped+'%', '%'+escaped+'%', query, escaped+'%')).fetchall()
+    return {'people': [_suggestion(r) for r in rows]}
+
+
+def _suggestion(row):
+    saved = owner.relationships({'relationships': row['relationships'] or '[]', 'status': row['status']})
+    if 'client' in saved:
+        saved = [value for value in saved if value != 'worked_with']
+    return {'id': row['id'], 'handle': row['handle'], 'name': row['name'],
+            'pic': f"/img/{row['id']}" if row['pic_file'] else None,
+            'badges': [owner.RELATIONSHIPS[value] for value in saved[:2]]}
 
 
 def _owner_context(conn, pid):

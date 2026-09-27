@@ -4,6 +4,7 @@ import io
 import os
 import sys
 import unittest
+import threading
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -62,7 +63,26 @@ class HttpTest(HandlerHarness, unittest.TestCase):
     def test_health(self):
         self.assertEqual(self.req("/health"), (200, {"ok": True, "model": "stub", "device": "cpu",
                                                      "deployment_version": ls.DEPLOYMENT_VERSION,
-                                                     "questions_signature": ls.question_signature(ls.load_default_questions())}))
+                                                     "questions_signature": ls.question_signature(ls.load_default_questions()), "busy": False}))
+
+    def test_health_stays_busy_until_inference_finishes(self):
+        started, release = threading.Event(), threading.Event()
+        original = self.backend.predict_batch
+        def blocked(*args):
+            started.set()
+            release.wait(3)
+            return original(*args)
+        with patch.object(self.backend, 'predict_batch', side_effect=blocked):
+            thread = threading.Thread(target=lambda: self.req('/decide', {
+                'items': [{'id': 1, 'text': 'Founder'}]}))
+            thread.start()
+            self.assertTrue(started.wait(3))
+            try:
+                self.assertTrue(self.req('/health')[1]['busy'])
+            finally:
+                release.set()
+                thread.join(3)
+        self.assertFalse(self.req('/health')[1]['busy'])
 
     def test_decide_shapes(self):
         code, body = self.req("/decide", {

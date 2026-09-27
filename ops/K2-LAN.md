@@ -1,0 +1,12 @@
+# Optional K2 on another PC
+
+K2 stays on this Mac by default. Saving a LAN connection does not turn K2 on or change the processing mode. Test the connection before enabling K2 in the Engines panel.
+
+1. On the Windows PC, load the **same verified K2 model** behind a llama.cpp compatible server. Set its advertised model ID to `k2-horizon-3.7B-q4km`. The server must support `GET /v1/models`, `POST /apply-template`, `POST /tokenize`, and `POST /v1/chat/completions` with the JSON schema and reasoning parameters this app sends. Protect the PC and LAN; expose the server only on the private network.
+2. In Settings → K2 computer, choose **Other PC (LAN)** and enter its private IPv4 address and port. Only 10.x.x.x, 172.16–31.x.x, and 192.168.x.x addresses are accepted. Save, then use **Test connection**. The test checks the exact model ID and helper endpoints without asking the model to generate text. It does not enable K2.
+3. If the server requires an API key, enter it in Settings → K2 computer, supply it in the connection API as `api_key` when saving, or set `FL_K2_LAN_API_KEY` in the Fortunate Leads server environment. The saved key is held in a 0600 local file and omitted from connection readback; only `has_api_key` is shown. A saved key takes precedence over the environment key. To remove it through the API, save `api_key: ""`. Keep access to the Mac and PC restricted; plain HTTP on a private LAN is not encrypted.
+4. Only after a successful test, enable K2 in the Engines panel with RLAI or RLEAI selected. If the connection fails later, K2 waits; there is no public or external-model fallback.
+
+[Unsloth's official API guide](https://unsloth.ai/docs/basics/api) documents Windows Desktop, GGUF loading, and an authenticated OpenAI-compatible endpoint. It does **not** document the `/apply-template` and `/tokenize` helpers required here. Therefore Unsloth Desktop compatibility with this K2 lane is unverified. An independently configured llama.cpp server is the known target; use the connection test to check any Unsloth setup rather than assuming it works.
+
+The measured Mac M1 Max baseline for the current local model was 61.10 raw tokens/s and 52.04 completed-call tokens/s, with 201 calls in 30.93 minutes and 128 complete reviews. A possible 2–3× RTX 5080 uplift is a planning estimate from memory bandwidth, **not a measured PC result**. Actual speed depends on the model build, server, context, batching, and LAN overhead.

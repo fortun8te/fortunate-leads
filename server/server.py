@@ -42,7 +42,9 @@ import engine_start  # noqa: E402
 import processing_modes  # noqa: E402
 import processing_state  # noqa: E402
 import local_model  # noqa: E402
+import k2_connection  # noqa: E402
 import resource_budget  # noqa: E402
+import engine_controls  # noqa: E402
 import local_qualification  # noqa: E402
 import external_harness  # noqa: E402
 import external_queue  # noqa: E402
@@ -141,7 +143,7 @@ def workspace_cooldown(conn, now):
 
 def permit_capable(version):
     parts = str(version or '').split('.')
-    return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 16)
+    return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 17)
 
 
 def ext_state(conn, row=None):
@@ -150,7 +152,7 @@ def ext_state(conn, row=None):
     upgrade = row is None or not permit_capable(row['version'])
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
             'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
-            **({'upgrade_required': True, 'minimum_version': '3.9.16', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
+            **({'upgrade_required': True, 'minimum_version': '3.9.17', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
             **({'cooldown_until': cooling} if cooling else {})}
 
 
@@ -225,9 +227,9 @@ def ext_next(conn, q, b):
     if not kinds:
         conn.commit()
         return dict(st, job=None)
+    if 'list' in kinds:
+        collection_suggestions.queue_when_idle(conn, row, now)
     job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
-    if not job and 'list' in kinds and collection_suggestions.queue_when_idle(conn, row, now):
-        job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
     if not job:
         conn.commit()
         return dict(st, job=None)
@@ -517,7 +519,12 @@ def ext_profile(conn, q, b):
         identity = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         if not (identity and identity['ig_id'] and str(p.get('ig_id')) == identity['ig_id']):
             raise Bad('profile does not match its leased identity')
-    if not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
+    if ('website' in p and isinstance(p.get('bio'), str)
+            and (p['website'] is None or isinstance(p['website'], str) and not p['website'].strip())):
+        # A complete read can explicitly remove a link. Omitted fields and
+        # partial reads remain unknown; unsafe URLs never replace saved links.
+        p['website'] = ''
+    elif not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
         p.pop('website', None)  # javascript:, data:, bare text: never stored, never rendered as a link
     else:
         p['website'] = p['website'].strip()
@@ -529,23 +536,41 @@ def ext_profile(conn, q, b):
             p[k] = text_or_none(p[k])
     if not isinstance(p.get('ig_id'), (str, int)) or isinstance(p.get('ig_id'), bool):
         p.pop('ig_id', None)
-    ts = db.now()
+    received_ts = db.now()
+    received_at = utc(received_ts)
+    captured_at = b.get('captured_at')
+    if 'captured_at' not in b:
+        ts = received_ts  # compatibility with older extension versions
+    else:
+        try:
+            captured = datetime.fromisoformat(captured_at.replace('Z', '+00:00'))
+            if captured.tzinfo is None or captured > received_at + timedelta(minutes=5):
+                raise ValueError()
+            ts = iso(min(captured.astimezone(timezone.utc), received_at))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            raise Bad('captured_at must be a valid timezone-aware capture time')
     complete = isinstance(p.get('bio'), str)
     if complete:
         p['bio_at'] = ts
         p['bio_src'] = 'extension'
     else:
         p.pop('bio_at', None)
+        p.pop('bio_src', None)
     handle = db.norm_handle(p['handle'])
     if p.get('ig_id') and conn.execute('SELECT 1 FROM seeds WHERE handle=?', (handle,)).fetchone():
         check_seed_identity(conn, handle, str(p['ig_id']))
     pid = db.upsert_person(conn, p, ts)
     rules.sync(conn, [pid])
-    if p.get('ig_id'):
+    saved = conn.execute('SELECT handle,ig_id,bio_at FROM people WHERE id=?', (pid,)).fetchone()
+    if p.get('ig_id') and saved['handle'] == handle:
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (str(p['ig_id']), handle))
-    if complete:
-        conn.execute("UPDATE jobs SET state='done', leased_until=NULL WHERE kind='profile' AND handle=? "
-                     "AND (state='queued' OR (state='leased' AND id=?))", (handle, b.get('job_id')))
+    if complete and saved['bio_at'] == ts and saved['handle'] == handle:
+        pending = conn.execute("SELECT id,created_at FROM jobs WHERE kind='profile' AND handle=? "
+                               "AND (state='queued' OR (state='leased' AND id=?))",
+                               (handle, b.get('job_id'))).fetchall()
+        conn.executemany("UPDATE jobs SET state='done',leased_until=NULL WHERE id=?",
+                         [(row['id'],) for row in pending if 'captured_at' not in b or row['created_at'] is None
+                          or db._profile_time(row['created_at']) <= db._profile_time(ts)])
     conn.commit()
     return {'id': pid}
 
@@ -749,8 +774,14 @@ def ext_heartbeat(conn, q, b):
 
 # ---------- UI endpoints ----------
 
-LISTS = '(SELECT count(DISTINCT e.seed) FROM current_edges e WHERE e.person_id=p.id)'  # observed links only
-PEOPLE_FROM = 'FROM people p LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id'
+# The summary is maintained transactionally with active evidence. Keep the
+# read-through path for an interrupted backfill or missing summary triggers.
+LISTS_READ_THROUGH = '(SELECT count(DISTINCT e.seed) FROM current_edges e WHERE e.person_id=p.id)'
+LISTS = ("(CASE WHEN (SELECT value FROM settings WHERE key='map_person_degree_v1')='true' "
+         "AND (SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%')=6 "
+         f"THEN coalesce(d.degree,0) ELSE {LISTS_READ_THROUGH} END)")
+PEOPLE_FROM = ('FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
+               'LEFT JOIN marks m ON m.person_id=p.id LEFT JOIN map_person_degree d ON d.person_id=p.id')
 LEAD_SQL = f"SELECT p.*, v.tier, v.score, v.content_fit, v.role, v.reason, m.status, m.note, coalesce(m.updated_at, '') AS mark_rev, {LISTS} AS lists {PEOPLE_FROM}"
 NOT_ME = "p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1) AND p.handle!='fortun8te' COLLATE NOCASE"
 # manual first, then rule tags, then auto; inside a source: role, niche, signal, size, source
@@ -850,6 +881,15 @@ def lead_filter(q, status_default=True):
         if any(t not in ('hot', 'warm', 'cold', 'unread') for t in tiers):
             raise Bad('bad tier')
         within("coalesce(v.tier,'unread') IN ({})", tiers)
+    fits = csv(q, 'fit')
+    if fits:
+        conditions = {'strong': 'v.content_fit>=70',
+                      'good': 'v.content_fit>=45 AND v.content_fit<70',
+                      'weak': 'v.content_fit<45',
+                      'unread': 'v.content_fit IS NULL'}
+        if any(fit not in conditions for fit in fits):
+            raise Bad('bad fit')
+        where.append('(' + ' OR '.join('(' + conditions[fit] + ')' for fit in dict.fromkeys(fits)) + ')')
     effective_tags = 'SELECT t.person_id FROM (' + tag_projection.relation() + ') t WHERE '
     for t in dict.fromkeys(csv(q, 'tags')):  # all of
         within('p.id IN (' + effective_tags + 't.tag={})', [t])
@@ -1488,6 +1528,7 @@ def map_graph(conn, q):
     else:
         base = (f'SELECT p.id, v.score, count(DISTINCT e.seed) AS degree{rank_column} '
                 f"FROM people p {'LEFT JOIN' if search else 'JOIN'} current_edges e ON e.person_id=p.id "
+                f'LEFT JOIN map_person_degree d ON d.person_id=p.id '
                 f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
     by_score = 'ORDER BY ' + ('search_rank, ' if search else '') + 'score IS NULL, score DESC, degree DESC, id LIMIT ?'
     multi_n = 0 if search or q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
@@ -2166,6 +2207,7 @@ def schedule_local_services(conn):
                 _service_start_state.update(state='starting', error=None)
                 try:
                     engine_start.start(ROOT, 0)
+                    laya.reset()
                     _service_start_state.update(state='ready', error=None)
                 except engine_start.EngineStartError as exc:
                     _service_start_state.update(state='failed', error=str(exc))
@@ -2184,7 +2226,9 @@ def schedule_local_services(conn):
 def api_processing_mode(conn, q, b):
     if 'mode' in b:
         try:
-            processing_modes.set_mode(conn, b['mode'])
+            with engine_controls.lock:
+                processing_modes.set_mode(conn, b['mode'])
+                conn.commit()
         except ValueError as exc:
             raise Bad(str(exc)) from None
         conn.commit()
@@ -2231,25 +2275,85 @@ def local_processing_counts(conn):
     return out
 
 
+def engine_snapshot(conn, runtime=None):
+    processing = processing_modes.snapshot(conn)
+    runtime = local_model.status() if runtime is None else runtime
+    if laya.last_known() is None:
+        laya.available()  # Observe a loaded sidecar even when this app starts in Rules.
+    out = engine_controls.snapshot(processing, {
+        'k2': dict(runtime, managed_local=not local_model.is_remote()),
+        'laya': dict(laya.runtime_status(), resources=resource_budget.state()),
+    }, starting=_service_start_lock.locked())
+    out['external_active'] = bool(POOL[0] is not None and not POOL[0].idle())
+    out['stop_acknowledged'] = out['stop_acknowledged'] and not out['external_active']
+    return out
+
+
+def api_engines(conn, q, b):
+    if b:
+        try:
+            with engine_controls.lock:
+                processing_modes.set_engine(conn, b.get('engine'), b.get('enabled'))
+                conn.commit()
+        except ValueError as exc:
+            raise Bad(str(exc)) from None
+        schedule_local_services(conn)
+    return engine_snapshot(conn)
+
+
+def api_k2_connection(conn, q, b):
+    if b:
+        try:
+            with engine_controls.lock:
+                enabled = (processing_modes.snapshot(conn)['engines']['k2']['enabled']
+                           if conn is not None else False)
+                if (enabled or engine_controls.has_active('k2') or local_model._lock.locked()
+                        or local_model._activity_unknown or _service_start_lock.locked()
+                        or (local_model.SERVICE_ROOT / 'pid').exists()):
+                    raise Bad('Turn K2 off and wait for it to stop before changing its connection')
+                saved = k2_connection.save(b)
+                local_model._remote_ready_endpoint = None
+                return dict(saved, has_api_key=bool(k2_connection.read_secret()['api_key']))
+        except ValueError as exc:
+            raise Bad(str(exc)) from None
+    try:
+        saved = k2_connection.read()
+        return dict(saved, has_api_key=bool(k2_connection.read_secret()['api_key']))
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+
+
+def api_k2_connection_test(conn, q, b):
+    if b:
+        raise Bad('Save the connection before testing it')
+    return local_model.test_connection()
+
+
 def api_local_processing(conn, q, b):
     if 'paused' in b:
         try:
-            processing_modes.set_paused(conn, b['paused'])
+            with engine_controls.lock:
+                processing_modes.set_paused(conn, b['paused'])
+                conn.commit()
         except ValueError as exc:
             raise Bad(str(exc)) from None
         conn.commit()
         schedule_local_services(conn)
-    enabled = processing_modes.allows(conn, 'local_qualification')
+    enabled = (processing_modes.allows(conn, 'local_qualification')
+               and processing_modes.snapshot(conn)['engines']['k2']['enabled'])
     paused = processing_modes.snapshot(conn).get('paused', False)
     summary = dict(local_processing_counts(conn))
     counts = summary.pop('counts')
-    runtime = local_model.status() if enabled else {'ready': False, 'resources': resource_budget.state()}
+    runtime = local_model.status()
+    engines = engine_snapshot(conn, runtime)
     pending = notes_pending(conn) if enabled else 0
     failed = sum(owner_notes.result(conn, r[0])['state'] == 'failed' for r in conn.execute(
         "SELECT person_id FROM marks WHERE trim(coalesce(note,''))<>''")) if enabled else 0
     budget = runtime.get('resources', {})
     waiting = budget.get('recovering') or budget.get('thermal_limited') or budget.get('error')
-    state = ('off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
+    state = ('stopping' if (paused and engines['external_active']) or any(
+                 e['state'] == 'stopping' for e in engines['engines'].values()) else
+             'off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
              'starting' if _service_start_state['state'] == 'starting' else 'unavailable' if not runtime.get('ready') else
              'working' if summary.get('pending') or pending or summary.get('seeding') else 'ready')
     return dict(summary, queue=summary['pending'],
@@ -2258,7 +2362,8 @@ def api_local_processing(conn, q, b):
                 needs_research=counts.get('needs_research', 0), enabled=enabled,
                 model=local_model.MODEL, ready=bool(runtime.get('ready')),
                 notes_pending=pending, notes_failed=failed, state=state, runtime=runtime, paused=paused,
-                processing=processing_modes.snapshot(conn),
+                processing=processing_modes.snapshot(conn), engines=engines['engines'],
+                stop_acknowledged=engines['stop_acknowledged'],
                 progress=processing_progress.snapshot(conn, summary['pending'], paused=paused or not enabled,
                                                        seeding=summary.get('seeding'), waiting=bool(waiting)),
                 history=processing_state.recent_history(conn, 6))
@@ -2372,6 +2477,11 @@ LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+
 KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
     ('GET', r'/api/processing-mode', api_processing_mode), ('POST', r'/api/processing-mode', api_processing_mode),
+    ('GET', r'/api/engines', api_engines),
+    ('POST', r'/api/engines', api_engines),
+    ('GET', r'/api/k2/connection', api_k2_connection),
+    ('POST', r'/api/k2/connection', api_k2_connection),
+    ('POST', r'/api/k2/connection/test', api_k2_connection_test),
     ('GET', r'/api/local-processing', api_local_processing),
     ('POST', r'/api/local-processing', api_local_processing),
     ('POST', r'/api/person/(\d+)/note-retry', api_note_retry),
@@ -2515,7 +2625,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(409, dict(e.current, ok=False, error=str(e), current=e.current))
         except NotFound as e:
             return self.send(404, {'ok': False, 'error': str(e)})
-        except (Bad, ValueError, KeyError, TypeError, OverflowError) as e:
+        except (Bad, ValueError, OverflowError) as e:
             return self.send(400, {'ok': False, 'error': str(e)})
         except Exception:
             traceback.print_exc()
@@ -2524,6 +2634,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def image(self, pid):
         if not re.fullmatch(r'[0-9]+', pid):
+            return self.send(404, {'ok': False, 'error': 'no image'})
+        conn = db.connect(CFG['db'])
+        try:
+            owned = conn.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?', (pid, f'{pid}.jpg')).fetchone()
+        finally:
+            conn.close()
+        if not owned:
             return self.send(404, {'ok': False, 'error': 'no image'})
         f = pfp_dir() / f'{pid}.jpg'
         if not f.is_file():
@@ -2916,6 +3033,14 @@ def apply_local_review(conn, person, result, net, edges, note_context):
 
 
 def local_processing_step(conn):
+    ticket = processing_modes.begin_work(conn, 'local_qualification')
+    with engine_controls.work(conn, ticket) as admitted:
+        if not admitted:
+            return False
+        return _local_processing_step(conn)
+
+
+def _local_processing_step(conn):
     """One local call at a time; edits coalesce and notes get the first slot."""
     if processing_modes.begin_work(conn, 'local_qualification') is None:
         return False
@@ -3016,7 +3141,7 @@ def processing_maintenance(conn):
 
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
-    if not laya_allowed(conn) or not laya.available():
+    if laya.runtime_status().get('busy') or not laya_allowed(conn) or not laya.available():
         return False
     caller_transaction = conn.in_transaction
     ticket = processing_modes.begin_work(conn, 'laya')
@@ -3045,7 +3170,11 @@ def laya_step(conn):
     current = [r['id'] for r in rows if r['lh'] == laya_hash(*(r[k] for k in
                ('handle','name','bio','category','website','followers')))]
     if current and not caller_transaction:
-        conn.executemany('DELETE FROM laya_queue WHERE person_id=?', [(pid,) for pid in current])
+        conn.executemany('DELETE FROM laya_queue WHERE person_id=? AND EXISTS '
+                         '(SELECT 1 FROM people p JOIN laya l ON l.person_id=p.id '
+                         'WHERE p.id=laya_queue.person_id AND l.input_hash=? AND '
+                         'l.input_hash=laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))',
+                         [(r['id'], r['lh']) for r in rows if r['id'] in current])
         conn.commit()
         current_ids = set(current)
         rows = [r for r in rows if r['id'] not in current_ids]
@@ -3054,8 +3183,11 @@ def laya_step(conn):
     if not laya_allowed(conn):
         return False
     try:
-        with resource_budget.lease('laya'):
-            answers = laya.decide([dict(r) for r in rows])
+        with engine_controls.work(conn, ticket) as admitted:
+            if not admitted:
+                return False
+            with resource_budget.lease('laya'):
+                answers = laya.decide([dict(r) for r in rows])
     except resource_budget.Deferred:
         return WorkerDelay(resource_budget.state()['retry_after'])
     if not answers:
@@ -3547,7 +3679,7 @@ def plan_profiles(conn):
         degree_join = ('JOIN' if early else 'LEFT JOIN') + ' map_person_degree d ON d.person_id=p.id'
         degree = 'd.degree' if early else 'coalesce(d.degree,0)'
     else:
-        degree_join, degree = '', LISTS
+        degree_join, degree = '', LISTS_READ_THROUGH
     rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {degree} AS n
         FROM people p JOIN verdicts v ON v.person_id=p.id {degree_join}
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
@@ -3625,7 +3757,7 @@ _pfp_check_id = 0
 
 
 def repair_pfp_cache(conn, limit=32):
-    """Reconcile a bounded local slice, including orphaned photos, without HTTP.
+    """Reconcile a bounded local slice of associated photos without HTTP.
 
     The returned change count and cursor allow an explicit one-pass recovery.
     This also runs during collection pauses and network holds.
@@ -3642,11 +3774,8 @@ def repair_pfp_cache(conn, limit=32):
         _pfp_check_id = row['id']
         filename = f"{row['id']}.jpg"
         valid = valid_pic_file(directory / filename)
-        if valid and row['pic_file'] != filename:
-            # Reuse existing bytes; do not create thousands of network refreshes.
-            repaired += conn.execute('UPDATE people SET pic_file=? WHERE id=? AND pic_file IS ?',
-                                     (filename, row['id'], row['pic_file'])).rowcount
-        elif not valid and row['pic_file']:
+        # A file without a current DB association has no ownership proof.
+        if row['pic_file'] and (not valid or row['pic_file'] != filename):
             repaired += conn.execute('UPDATE people SET pic_file=NULL, pic_refresh=0 '
                                      'WHERE id=? AND pic_file=?',
                                      (row['id'], row['pic_file'])).rowcount
@@ -3659,15 +3788,23 @@ def pfp_step(conn):
     repaired = repair_pfp_cache(conn)
     if meta_network.blocked(conn):
         return bool(repaired)
-    r = conn.execute('SELECT p.id, p.pic_url, p.pic_file FROM people p '
-                     'WHERE p.pic_url IS NOT NULL AND (p.pic_file IS NULL OR p.pic_refresh=1) '
-                     'ORDER BY (p.pic_file IS NULL) DESC, p.updated_at DESC LIMIT 1').fetchone()
-    if not r:
-        return bool(repaired)
-    if meta_network.blocked(conn):
+    r = conn.execute('SELECT p.id,p.ig_id,p.handle,p.pic_url,p.pic_file,p.pic_attempts FROM people p '
+                     "WHERE p.pic_url IS NOT NULL AND (coalesce(p.pic_file,'')='' OR p.pic_refresh=1) "
+                     'AND (p.pic_retry_at IS NULL OR p.pic_retry_at<=?) '
+                     'ORDER BY (p.pic_file IS NULL) DESC,p.updated_at DESC LIMIT 1', (db.now(),)).fetchone()
+    if not r or meta_network.blocked(conn):
         return bool(repaired)
     data = fetch_pic(r['pic_url'])
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    current = conn.execute('SELECT * FROM people WHERE id=?', (r['id'],)).fetchone()
+    if not current or any(current[k] != r[k] for k in ('ig_id', 'handle', 'pic_url')):
+        if current:
+            conn.execute('UPDATE people SET pic_refresh=1 WHERE id=? AND pic_url IS NOT NULL', (r['id'],))
+        conn.commit()
+        return True
     directory = pfp_dir()
+    filename = f"{r['id']}.jpg"
     if data:
         directory.mkdir(parents=True, exist_ok=True)
         name = None
@@ -3675,17 +3812,18 @@ def pfp_step(conn):
             with tempfile.NamedTemporaryFile(dir=directory, prefix=f".{r['id']}.", suffix='.tmp', delete=False) as tmp:
                 name = tmp.name
                 tmp.write(data)
-            os.replace(name, directory / f"{r['id']}.jpg")
+            os.replace(name, directory / filename)
         finally:
             if name and os.path.exists(name):
                 os.unlink(name)
-    # A failed refresh must not hide an existing valid photo. Compare the URL
-    # before clearing refresh state so an in-flight URL update is not lost.
-    filename = f"{r['id']}.jpg" if data or valid_pic_file(directory / f"{r['id']}.jpg") else ''
-    updated = conn.execute('UPDATE people SET pic_file=?, pic_refresh=0 WHERE id=? AND pic_url=?',
-                           (filename, r['id'], r['pic_url'])).rowcount
-    if not updated:
-        conn.execute('UPDATE people SET pic_refresh=1 WHERE id=? AND pic_url IS NOT NULL', (r['id'],))
+        conn.execute('UPDATE people SET pic_file=?,pic_refresh=0,pic_attempts=0,pic_retry_at=NULL WHERE id=?',
+                     (filename, r['id']))
+    else:
+        attempts = min(current['pic_attempts'] + 1, 12)
+        retry_at = iso(db.utc_now() + timedelta(seconds=min(86400, 60 * 2 ** (attempts - 1))))
+        valid = current['pic_file'] == filename and valid_pic_file(directory / filename)
+        conn.execute('UPDATE people SET pic_file=?,pic_refresh=1,pic_attempts=?,pic_retry_at=? WHERE id=?',
+                     (filename if valid else '', attempts, retry_at, r['id']))
     conn.commit()
     return True
 
@@ -3740,9 +3878,13 @@ def local_services_step(conn):
     if not path or Path(path).resolve() != (ROOT / 'data/leads.sqlite').resolve():
         return False
     mode = processing_modes.snapshot(conn)
-    paused = mode.get('paused', False) or not mode['capabilities']['local_qualification']
+    laya_wanted = processing_modes.begin_work(conn, 'laya') is not None
+    if not laya_wanted and (laya.available() or laya.runtime_status().get('busy')):
+        schedule_local_services(conn)
+    paused = (mode.get('paused', False) or not mode['capabilities']['local_qualification']
+              or not mode['engines']['k2']['enabled'])
     local_model.maintain_service(paused=paused)
-    if not paused and resource_budget.state(startup=True)['allowed']:
+    if not paused and (local_model.is_remote() or resource_budget.state(startup=True)['allowed']):
         has_work = bool(processing_state.next_pending(conn)) or notes_pending(conn)
         if has_work and not local_model.ready() and not _service_start_lock.locked():
             schedule_local_services(conn)

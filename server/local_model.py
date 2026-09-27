@@ -7,7 +7,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import os
+import socket
 
+import k2_connection
 import resource_budget
 
 MODEL = 'k2-horizon-3.7B-q4km'
@@ -17,6 +20,8 @@ SERVICE_ROOT = Path.home() / 'Library/Application Support/Fortunate Leads/k2'
 _lock = threading.Lock()
 _retry_at = 0.0
 _call_state = threading.local()
+_remote_ready_endpoint = None
+_activity_unknown = False
 
 
 def last_call_metrics():
@@ -34,16 +39,24 @@ class Busy(Unavailable):
         self.retry_after = max(1.0, float(retry_after))
 
 
+class TimeoutUnknown(Unavailable):
+    """The HTTP wait expired; the model may still be generating."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
-        raise Unavailable('Local model redirected the request')
+        raise Unavailable('K2 connection redirected the request')
 
 
 def _request(path, payload=None, timeout=3):
+    config = getattr(_call_state, 'connection', None) or k2_connection.read_secret()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    request = urllib.request.Request(URL + path,
+    headers = {'Content-Type': 'application/json'}
+    if config['location'] == 'other_pc' and (config.get('api_key') or os.environ.get('FL_K2_LAN_API_KEY')):
+        headers['Authorization'] = 'Bearer ' + (config.get('api_key') or os.environ['FL_K2_LAN_API_KEY'])
+    request = urllib.request.Request(k2_connection.endpoint({key: config[key] for key in k2_connection.DEFAULT}) + path,
         data=None if payload is None else json.dumps(payload).encode(),
-        headers={'Content-Type': 'application/json'})
+        headers=headers)
     try:
         with opener.open(request, timeout=timeout) as response:
             raw = response.read(131073)
@@ -51,14 +64,44 @@ def _request(path, payload=None, timeout=3):
             raise ValueError('Local model response too large')
         return json.loads(raw)
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
-        raise Unavailable('K2 is unavailable. Start local models in Accounts.') from exc
+        if path == '/v1/chat/completions' and (isinstance(exc, (TimeoutError, socket.timeout))
+                or isinstance(getattr(exc, 'reason', None), (TimeoutError, socket.timeout))):
+            raise TimeoutUnknown('K2 response timed out; model activity is unconfirmed') from exc
+        raise Unavailable('K2 connection is unavailable or incompatible') from exc
+
+
+def is_remote():
+    return k2_connection.read()['location'] == 'other_pc'
+
+
+def test_connection():
+    """Probe only model identity and required llama.cpp helpers; never infer."""
+    global _remote_ready_endpoint
+    try:
+        _call_state.connection = k2_connection.read_secret()
+        if not ready():
+            return {'ok': False, 'message': 'Expected K2 model was not found at this connection.'}
+        rendered = _request('/apply-template', {'messages': [{'role': 'user', 'content': 'test'}]})
+        if not isinstance(rendered, dict) or not isinstance(rendered.get('prompt'), str):
+            raise ValueError('Prompt template endpoint did not return a prompt')
+        tokens = _request('/tokenize', {'content': rendered['prompt'], 'add_special': True})
+        if not isinstance(tokens, dict) or not isinstance(tokens.get('tokens'), list):
+            raise ValueError('Tokenization endpoint did not return tokens')
+        if _call_state.connection['location'] == 'other_pc':
+            _remote_ready_endpoint = k2_connection.endpoint({key: _call_state.connection[key] for key in k2_connection.DEFAULT})
+        return {'ok': True, 'message': 'Verified K2 model and required endpoints are reachable.'}
+    except (Unavailable, ValueError, TypeError, AttributeError):
+        return {'ok': False, 'message': 'Connection failed or does not expose the required K2 endpoints.'}
+    finally:
+        _call_state.connection = None
 
 
 def ready():
     try:
-        health = _request('/health')
-        if not isinstance(health, dict) or health.get('status') != 'ok':
-            return False
+        if not is_remote():
+            health = _request('/health')
+            if not isinstance(health, dict) or health.get('status') != 'ok':
+                return False
         models = _request('/v1/models').get('data', [])
         return any(isinstance(m, dict) and m.get('id') == MODEL for m in models)
     except (Unavailable, ValueError, TypeError, AttributeError):
@@ -66,12 +109,35 @@ def ready():
 
 
 def status():
-    return {'model': MODEL, 'ready': ready(), 'busy': _lock.locked(),
+    _confirm_idle()
+    remote = is_remote()
+    ready_now = (_remote_ready_endpoint == k2_connection.endpoint()) if remote else ready()
+    return {'model': MODEL, 'ready': ready_now, 'busy': _lock.locked() or _activity_unknown,
+            'activity_unknown': _activity_unknown, 'location': 'other_pc' if remote else 'this_mac',
+            'managed_local': not remote,
             'retry_in': max(0, round(_retry_at - time.monotonic())),
-            'resources': resource_budget.state()}
+            'resources': {} if remote else resource_budget.state()}
+
+
+def _confirm_idle():
+    """Only an explicit all-idle slot report resolves a timed-out request."""
+    global _activity_unknown
+    if not _activity_unknown or _lock.locked():
+        return
+    try:
+        slots = _request('/slots', timeout=2)
+        if (isinstance(slots, list) and slots and all(
+                isinstance(slot, dict) and slot.get('is_processing') is False for slot in slots)):
+            _activity_unknown = False
+            if not is_remote():
+                resource_budget.set_uncertain('k2', False)
+    except (Unavailable, ValueError, TypeError):
+        pass
 
 
 def _record_activity():
+    if is_remote():
+        return
     try:
         if SERVICE_ROOT.is_dir():
             (SERVICE_ROOT / 'last_activity').write_text(str(time.time()))
@@ -85,7 +151,7 @@ def maintain_service(paused=False):
     Does not start models. Health polling does not extend the idle timer.
     Returns a reason when a stop was requested; surfaces errors to the scheduler.
     """
-    if not (SERVICE_ROOT / 'pid').exists():
+    if is_remote() or not (SERVICE_ROOT / 'pid').exists():
         return {'stopped': False, 'reason': ''}
     budget = resource_budget.state()
     reason = 'paused' if paused else ('memory_or_heat' if budget.get('recovering') or budget.get('error') else '')
@@ -122,8 +188,9 @@ def maintain_service(paused=False):
 def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
     started = time.monotonic()
     _call_state.metrics = {}
+    _call_state.connection = k2_connection.read_secret()
     try:
-        with resource_budget.lease('k2'):
+        with resource_budget.lease('k2') if not is_remote() else _no_local_lease():
             _record_activity()
             try:
                 return _complete_json(system, user, schema, max_tokens, timeout, reasoning_budget_tokens)
@@ -132,12 +199,20 @@ def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_bu
     except resource_budget.Deferred as exc:
         raise Busy(str(exc), exc.retry_after) from exc
     finally:
+        _call_state.connection = None
         _call_state.metrics['duration_ms'] = max(0, round((time.monotonic() - started) * 1000))
+
+
+class _no_local_lease:
+    def __enter__(self):
+        return self
+    def __exit__(self, *_args):
+        return False
 
 
 def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
     """Return JSON, leaving domain validation to the caller. No hidden retries."""
-    global _retry_at
+    global _retry_at, _activity_unknown
     if not isinstance(system, str) or not isinstance(user, str) or len(system) + len(user) > 14000:
         raise ValueError('Local input is too large')
     if not isinstance(schema, dict) or not 1 <= max_tokens <= 1600 or not 1 <= timeout <= 90:
@@ -145,6 +220,10 @@ def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_b
     if reasoning_budget_tokens is not None and (type(reasoning_budget_tokens) is not int
             or not 0 <= reasoning_budget_tokens < max_tokens):
         raise ValueError('Invalid local reasoning budget')
+    if _activity_unknown:
+        _confirm_idle()
+        if _activity_unknown:
+            raise Busy('Waiting for K2 to confirm the previous request finished', 5)
     if time.monotonic() < _retry_at:
         raise Busy('K2 is recovering; this check will retry later', _retry_at - time.monotonic())
     if not _lock.acquire(blocking=False):
@@ -198,6 +277,12 @@ def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_b
         if not isinstance(result, dict):
             raise ValueError('Local result must be an object')
         return result
+    except TimeoutUnknown:
+        _activity_unknown = True
+        if not is_remote():
+            resource_budget.set_uncertain('k2', True)
+        _retry_at = time.monotonic() + 30
+        raise
     except Unavailable:
         _retry_at = time.monotonic() + 30
         raise

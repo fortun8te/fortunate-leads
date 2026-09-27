@@ -114,13 +114,13 @@ class RecoveryPathsTest(unittest.TestCase):
         self.conn.execute("INSERT INTO jobs(kind,handle,created_at) VALUES('profile','slow',?)", (db.now(),))
         self.conn.commit()
         lane = {'lane': ['test-lane']}
-        first = server.ext_next(self.conn, lane, {'version': '3.9.16'})['job']
+        first = server.ext_next(self.conn, lane, {'version': '3.9.17'})['job']
         self.assertEqual(first['handle'], 'slow')
         job_id = first['id']
         for attempt in range(1, server.PROFILE_MAX_ATTEMPTS + 1):
             self.conn.execute("UPDATE jobs SET leased_until='2000-01-01',retry_not_before=NULL WHERE id=?", (job_id,))
             self.conn.commit()
-            self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.16'})['job'])
+            self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.17'})['job'])
             row = self.conn.execute('SELECT state,attempts,retry_not_before,lease_token FROM jobs WHERE id=?', (job_id,)).fetchone()
             self.assertEqual(row['attempts'], attempt)
             self.assertIsNone(row['lease_token'])
@@ -129,15 +129,15 @@ class RecoveryPathsTest(unittest.TestCase):
                 self.assertGreater(datetime.fromisoformat(row['retry_not_before']), datetime.now(timezone.utc))
                 self.conn.execute("UPDATE jobs SET retry_not_before='2000-01-01' WHERE id=?", (job_id,))
                 self.conn.commit()
-                self.assertEqual(server.ext_next(self.conn, lane, {'version': '3.9.16'})['job']['id'], job_id)
-        self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.16'})['job'])
+                self.assertEqual(server.ext_next(self.conn, lane, {'version': '3.9.17'})['job']['id'], job_id)
+        self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.17'})['job'])
 
     def test_profile_other_error_waits_and_stops_after_eight_attempts(self):
         self.conn.execute("INSERT INTO jobs(kind,handle,created_at) VALUES('profile','broken',?)", (db.now(),))
         self.conn.commit()
         lane = {'lane': ['test-lane']}
         for attempt in range(1, server.PROFILE_MAX_ATTEMPTS + 1):
-            job = server.ext_next(self.conn, lane, {'version': '3.9.16'})['job']
+            job = server.ext_next(self.conn, lane, {'version': '3.9.17'})['job']
             self.assertEqual(job['handle'], 'broken')
             server.ext_error(self.conn, lane, {'job_id': job['id'], 'lease_token': job['lease_token'],
                                                'kind': 'profile', 'code': 'other'})
@@ -148,10 +148,10 @@ class RecoveryPathsTest(unittest.TestCase):
             else:
                 self.assertEqual(row['state'], 'queued')
                 self.assertGreater(datetime.fromisoformat(row['retry_not_before']), datetime.now(timezone.utc))
-                self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.16'})['job'])
+                self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.17'})['job'])
                 self.conn.execute("UPDATE jobs SET retry_not_before='2000-01-01' WHERE id=?", (job['id'],))
                 self.conn.commit()
-        self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.16'})['job'])
+        self.assertIsNone(server.ext_next(self.conn, lane, {'version': '3.9.17'})['job'])
 
     def test_planner_requeues_legacy_five_attempt_error_once(self):
         db.set_setting(self.conn, 'budget', {'list': 0, 'profile': 0})

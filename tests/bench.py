@@ -26,10 +26,12 @@ def build(path, n, seeds=60):
     Path(path).unlink(missing_ok=True)
     conn = db.init(path)
     ts = db.now()
+    # Respect identity allocation even when /tmp/pfp contains older test art.
+    first_id = conn.execute('SELECT value+1 FROM person_id_sequence WHERE singleton=1').fetchone()[0]
     names = [f'seed{i}' for i in range(seeds)]
     conn.executemany('INSERT INTO seeds(handle, added_at, is_me) VALUES(?,?,?)', [(s, ts, int(i == 0)) for i, s in enumerate(names)])
     people, edges, tags, verdicts, marks = [], [], [], [], []
-    for pid in range(1, n + 1):
+    for pid in range(first_id, first_id + n):
         bio = f'founder of brand {pid} skincare shop' if rnd.random() < 0.3 else None
         people.append((pid, str(10 ** 9 + pid), f'user{pid}', f'User {pid}', bio, rnd.randint(10, 500000),
                        ts if bio else None, ts, ts))
@@ -38,16 +40,21 @@ def build(path, n, seeds=60):
         for t in rnd.sample(NICHES, 3) + [rnd.choice(ROLES), 'US' if rnd.random() < .5 else 'NL']:
             tags.append((pid, t, 'niche' if t in NICHES else 'role' if t in ROLES else 'signal', 'auto'))
         tier = rnd.choice(('hot', 'warm', 'cold', 'unread'))
-        verdicts.append((pid, rnd.randint(0, 100), rnd.randint(0, 100), tier, 'rules', ts))
+        verdicts.append((pid, rnd.randint(0, 100), rnd.randint(0, 100), rnd.randint(0, 100), tier, 'rules', ts))
         if rnd.random() < 0.02:
             marks.append((pid, rnd.choice(('good', 'maybe', 'no', 'client')), ts))
     conn.executemany('INSERT INTO people(id, ig_id, handle, name, bio, followers, bio_at, first_seen, updated_at) '
                      'VALUES(?,?,?,?,?,?,?,?,?)', people)
     conn.executemany('INSERT OR IGNORE INTO edges VALUES(?,?,?,?)', edges)
+    # The lead list counts current evidence, not discovery history alone.
+    conn.executemany('INSERT OR IGNORE INTO edge_evidence(seed,person_id,direction,active,observed_at,checked_at) '
+                     'VALUES(?,?,?,1,?,?)', ((s, p, d, ts, ts) for s, p, d, _ in edges))
     conn.executemany('INSERT OR IGNORE INTO tags VALUES(?,?,?,?)', tags)
-    conn.executemany('INSERT INTO verdicts(person_id, prefilter, score, tier, model, updated_at) VALUES(?,?,?,?,?,?)', verdicts)
+    conn.executemany('INSERT INTO verdicts(person_id, prefilter, score, content_fit, tier, model, updated_at) '
+                     'VALUES(?,?,?,?,?,?,?)', verdicts)
     conn.executemany('INSERT INTO marks(person_id, status, updated_at) VALUES(?,?,?)', marks)
     db.set_setting(conn, 'bench_people', n)
+    db.set_setting(conn, 'bench_fixture_v2', True)
     db.set_setting(conn, 'qualify', True)
     conn.commit()
     conn.execute('ANALYZE')
@@ -76,7 +83,7 @@ def main():
     if not fresh:
         c = db.connect(a.db)
         try:
-            fresh = db.get_setting(c, 'bench_people') != a.people
+            fresh = db.get_setting(c, 'bench_people') != a.people or not db.get_setting(c, 'bench_fixture_v2', False)
         except Exception:
             fresh = True
         c.close()
@@ -94,6 +101,7 @@ def main():
         ('leads sort=score', lambda: server.api_leads(conn, q('limit=50'), {})),
         ('leads sort=connected', lambda: server.api_leads(conn, q('sort=connected&limit=50'), {})),
         ('leads min_lists=2', lambda: server.api_leads(conn, q('min_lists=2&limit=50'), {})),
+        ('leads fit=strong', lambda: server.api_leads(conn, q('fit=strong&limit=50'), {})),
         ('tags unfiltered (cold)', lambda: server.api_tags(conn, q(''), {}), clear),
         ('tags unfiltered (warm)', lambda: server.api_tags(conn, q(''), {})),
         ('tags tags=Coffee (cold)', lambda: server.api_tags(conn, q('tags=Coffee'), {}), clear),

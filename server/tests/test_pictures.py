@@ -62,7 +62,7 @@ class PictureTest(Base):
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_not_called()
         self.assertEqual([r[0] for r in self.conn.execute('SELECT pic_file FROM people ORDER BY id')],
-                         [f'{ids[0]}.jpg', f'{ids[1]}.jpg', None, None])
+                         [None, '', None, None])
 
     def test_rotating_url_keeps_valid_photo_during_hold_and_failed_refresh(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
@@ -79,7 +79,7 @@ class PictureTest(Base):
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_called_once_with('https://a.cdninstagram.com/new.jpg')
             self.assertFalse(server.pfp_step(self.conn))
-        self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 0))
+        self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 1))
         self.assertEqual((server.pfp_dir() / f'{pid}.jpg').read_bytes(), JPEG)
 
     def test_refresh_does_not_clear_a_newer_url_update(self):
@@ -98,7 +98,8 @@ class PictureTest(Base):
         server.pfp_dir().mkdir()
         for index in range(3):
             pid = db.upsert_person(self.conn, {'handle': f'person{index}'})
-            (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+            (server.pfp_dir() / f'{pid}.jpg').write_bytes(b'corrupt')
+            self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
         self.conn.commit()
         with mock.patch.object(server, 'fetch_pic') as fetch:
             self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 2)
@@ -158,8 +159,11 @@ class PictureTest(Base):
 
     def test_valid_image_is_revalidated_by_browser(self):
         server.pfp_dir().mkdir()
-        (server.pfp_dir() / '42.jpg').write_bytes(JPEG)
-        with urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/img/42") as response:
+        pid = db.upsert_person(self.conn, {'handle': 'alice'})
+        self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
+        self.conn.commit()
+        (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/img/{pid}") as response:
             self.assertEqual(response.read(), JPEG)
             self.assertEqual(response.headers['Cache-Control'], 'no-cache')
             self.assertEqual(response.headers['Content-Type'], 'image/jpeg')

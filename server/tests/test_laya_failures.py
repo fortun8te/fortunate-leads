@@ -22,6 +22,12 @@ def response(body):
 
 class LayaFailureTest(unittest.TestCase):
     def setUp(self):
+        activity = patch.dict(laya._activity, {'unknown': False, 'checked_at': float('-inf')})
+        activity.start()
+        self.addCleanup(activity.stop)
+        budget = patch.object(laya.resource_budget, 'set_uncertain')
+        budget.start()
+        self.addCleanup(budget.stop)
         laya.reset()
         self.addCleanup(laya.reset)
         clock = patch.object(laya.time, 'monotonic', return_value=0.5)   # last_known() reads the clock

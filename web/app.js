@@ -140,7 +140,7 @@ function relationshipHTML(r) {
 }
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
 // ---------- state ----------
-const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', relationship: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
+const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', relationship: '', tier: '', fit: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
   f: emptyFilter(), sort: store.get('sort', 'fit'),
@@ -161,6 +161,7 @@ function toQuery(f = S.f, sort = S.sort, withSort = true) {
   if (f.relationship) p.set('relationship', f.relationship);
   if (f.follow_up) p.set('follow_up', f.follow_up);
   if (f.tier) p.set('tier', f.tier);
+  if (f.fit) p.set('fit', f.fit);
   if (f.q) p.set('q', f.q);
   if (f.min) p.set('min_lists', f.min);
   if (f.bio) p.set('has_bio', f.bio);
@@ -175,14 +176,14 @@ function fromQuery(qs) {
   const list = (k) => (p.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
   const numOr = (k) => p.get(k) != null && p.get(k) !== '' && !isNaN(+p.get(k)) ? +p.get(k) : null;
   return {
-    f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', tier: FIT_TIER[TIER_FIT[p.get('tier')]] || '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
+    f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', tier: FIT_TIER[TIER_FIT[p.get('tier')]] || '', fit: FITS.includes(p.get('fit')) ? p.get('fit') : '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
       relationship: ['follows', 'followed', 'mutual'].includes(p.get('relationship')) ? p.get('relationship') : '',
       follow_up: ['due', 'overdue', 'scheduled', 'completed', 'none'].includes(p.get('follow_up')) ? p.get('follow_up') : '',
       bio: ['0', '1'].includes(p.get('has_bio')) ? p.get('has_bio') : '', seed: (p.get('seed') || '').replace(/^@/, ''), fmin: numOr('followers_min'), fmax: numOr('followers_max') },
     sort: p.get('sort') || 'fit',
   };
 }
-const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.relationship + !!f.follow_up + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
+const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.relationship + !!f.follow_up + !!f.tier + !!f.fit + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
 const modeOf = (t) => S.f.tags.includes(t) ? 'inc' : S.f.any.includes(t) ? 'any' : S.f.not.includes(t) ? 'exc' : null;
 function setMode(t, mode) {
   S.f.tags = S.f.tags.filter((x) => x !== t); S.f.any = S.f.any.filter((x) => x !== t); S.f.not = S.f.not.filter((x) => x !== t);
@@ -216,6 +217,7 @@ function tokens() {
   if (S.f.follow_up) out.push({ k: 'follow_up', text: 'followup:' + S.f.follow_up });
   if (S.f.status) out.push({ k: 'status', text: 'status:' + S.f.status });
   if (S.f.tier) out.push({ k: 'tier', text: 'priority:' + TIER_PRIORITY[S.f.tier] });
+  if (S.f.fit) out.push({ k: 'fit', text: 'fit:' + S.f.fit });
   if (S.f.min) out.push({ k: 'min', text: `lists:${S.f.min}+` });
   if (S.f.bio) out.push({ k: 'bio', text: 'bio:' + (S.f.bio === '1' ? 'yes' : 'no') });
   if (S.f.seed) out.push({ k: 'seed', text: 'seed:@' + S.f.seed });
@@ -244,7 +246,8 @@ function parseToken(w, strict) {
     if (s && s !== 'open' && s !== 'none' && s !== 'all' && !STATUSES.includes(s)) return null;
     return () => { S.f.status = s === 'open' ? '' : s; };
   }
-  if ((m = w.match(/^(priority|fit):(\w+)$/i))) { const t = (m[1].toLowerCase() === 'priority' ? PRIORITY_TIER : FIT_TIER)[m[2].toLowerCase()]; return t ? () => { S.f.tier = t; } : null; }
+  if ((m = w.match(/^priority:(\w+)$/i))) { const t = PRIORITY_TIER[m[1].toLowerCase()]; return t ? () => { S.f.tier = t; } : null; }
+  if ((m = w.match(/^fit:(\w+)$/i))) { const fit = m[1].toLowerCase(); return FITS.includes(fit) ? () => { S.f.fit = fit; } : null; }
   if ((m = w.match(/^lists:(\d+)\+?$/i))) {
     const n = Number(m[1]);
     return Number.isSafeInteger(n) ? () => { S.f.min = n > 1 ? n : 0; } : null;
@@ -463,6 +466,8 @@ function renderFilters() {
     <div class="fsec"><h4>Follow-up</h4>${['due', 'overdue', 'scheduled', 'completed', 'none'].map((v) => `<button class="fi${S.f.follow_up === v ? ' on' : ''}" data-follow-up="${v}"><span>${v === 'due' ? 'Due today or earlier' : ucf(v)}</span></button>`).join('')}</div>
     <div class="fsec"><h4>Priority tier</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${PRIORITY_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
+    <div class="fsec"><h4>Business fit</h4>
+    ${FITS.map((f) => `<button class="fi${S.f.fit === f ? ' on' : ''}" data-fit="${f}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span></button>`).join('')}</div>
     <div class="fsec fsegs f-x"><h4>Shape</h4>
       <div class="fseg"><span>Lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -510,6 +515,7 @@ $('#filters').addEventListener('click', async (e) => {
   if (d.status != null) S.f.status = d.status;
   else if (d.followUp != null) S.f.follow_up = S.f.follow_up === d.followUp ? '' : d.followUp;
   else if (d.tier != null) S.f.tier = S.f.tier === d.tier ? '' : d.tier;
+  else if (d.fit != null) S.f.fit = S.f.fit === d.fit ? '' : d.fit;
   else if (d.min != null) S.f.min = S.f.min === +d.min ? 0 : +d.min;
   else if (d.bio != null) S.f.bio = S.f.bio === d.bio ? '' : d.bio;
   else if (d.fol != null) { const o = FOL_OPTS.find((x) => x[0] === d.fol); const same = S.f.fmin === o[2] && S.f.fmax === o[3]; S.f.fmin = same ? null : o[2]; S.f.fmax = same ? null : o[3]; }
@@ -564,6 +570,7 @@ function removeToken(t) {
   else if (t.k === 'follow_up') S.f.follow_up = '';
   else if (t.k === 'status') S.f.status = '';
   else if (t.k === 'tier') S.f.tier = '';
+  else if (t.k === 'fit') S.f.fit = '';
   else if (t.k === 'min') S.f.min = 0;
   else if (t.k === 'bio') S.f.bio = '';
   else if (t.k === 'seed') S.f.seed = '';
@@ -641,12 +648,12 @@ function suggest() {
   else if (/^(?:priority|fit):\w*$/i.test(w)) {
     const legacy = w.toLowerCase().startsWith('fit:');
     items = (legacy ? FITS : Object.keys(PRIORITY_TIER)).filter((f) => ((legacy ? 'fit:' : 'priority:') + f).startsWith(w.toLowerCase()))
-      .map((f) => ({ text: 'priority:' + (legacy ? TIER_PRIORITY[FIT_TIER[f]] : f), count: S.counts?.[(legacy ? FIT_TIER : PRIORITY_TIER)[f]] }));
+      .map((f) => ({ text: (legacy ? 'fit:' : 'priority:') + f, count: legacy ? undefined : S.counts?.[PRIORITY_TIER[f]] }));
   }
   else if (/^lists:\d*$/i.test(w)) items = ['2+', '3+', '4+', '5+'].map((s) => ({ text: 'lists:' + s }));
   else if (/^bio:\w*$/i.test(w)) items = ['yes', 'no'].map((s) => ({ text: 'bio:' + s }));
   else if (/^followers:\S*$/i.test(w)) items = ['<1k', '1k+', '10k+', '100k+', '1k-10k', '10k-100k'].map((s) => ({ text: 'followers:' + s }));
-  else if (w.length >= 2 && /^[a-z]+:?$/i.test(w)) items = ['status:', 'priority:', 'lists:', 'bio:', 'seed:', 'followers:', 'via:@'].filter((k) => k.startsWith(w.toLowerCase())).map((k) => ({ text: k, key: true }));
+  else if (w.length >= 2 && /^[a-z]+:?$/i.test(w)) items = ['status:', 'priority:', 'fit:', 'lists:', 'bio:', 'seed:', 'followers:', 'via:@'].filter((k) => k.startsWith(w.toLowerCase())).map((k) => ({ text: k, key: true }));
   sugg = { items, i: 0 };
   const box = $('#suggest');
   if (!items.length || document.activeElement !== $('#q')) { box.hidden = true; return; }
@@ -2615,7 +2622,7 @@ function settingsMode(sc) {
 function backgroundAIState(local = SET.localProcessing) {
   if (!local) return 'Status unavailable';
   if (!local.enabled) return 'Off';
-  if (local.paused) return 'Paused';
+  if (local.paused) return local.stop_acknowledged === true ? 'Paused' : 'Stopping';
   const resources = local.runtime?.resources;
   if (resources?.busy) return 'Running';
   if (local.state === 'waiting_for_mac' || resources?.allowed === false && (resources.recovering || resources.thermal_limited || resources.error)) return 'Waiting for Mac';
@@ -2652,7 +2659,7 @@ function renderCheckingMode() {
   const summary = $('#set-mode-models');
   if (summary) {
     const model = SET.localProcessing?.model || 'K2 3.7B';
-    summary.textContent = mode === 'external' ? `${model} + Laya are included. External research: ${SET.scout?.model || 'choose a model below'}. Deep dive is optional.` : mode === 'local' ? `${model} · Laya ranking hints · private on this Mac` : '';
+    summary.textContent = mode === 'external' ? `${model} + Laya are included. External research: ${SET.scout?.model || 'choose a model below'}. Deep dive is optional.` : mode === 'local' ? `${model} · Laya ranking hints · K2 on your selected computer` : '';
     summary.hidden = !mode || mode === 'rules';
   }
   const progress = $('#set-local-progress');
@@ -2671,7 +2678,7 @@ function renderCheckingMode() {
   const state = $('#local-ai-state'), toggle = $('#local-ai-toggle'), help = $('#local-ai-help');
   if (state) state.textContent = SET.localBusy ? 'Saving…' : backgroundAIState(local);
   if (toggle) { toggle.textContent = local?.paused ? 'Resume' : 'Pause'; toggle.disabled = SET.localBusy || SET.modeBusy || !local || !local.enabled; }
-  if (help) help.textContent = local?.paused ? 'Your queue is saved. Rules and scraping continue.' : 'Pauses automatically when your Mac needs the memory.';
+  if (help) help.textContent = local?.paused ? local.stop_acknowledged === true ? 'Local work has stopped. Your queue is saved; rules and scraping continue.' : 'Finishing current local work. Your queue is saved.' : 'Local engines wait when this Mac needs resources. K2 can use your selected computer.';
 }
 async function toggleBackgroundAI() {
   const current = SET.localProcessing;
@@ -2681,7 +2688,8 @@ async function toggleBackgroundAI() {
     const result = await api.post('/api/local-processing', {paused: !current.paused});
     if (typeof result.paused !== 'boolean' || result.paused === !!current.paused) throw new Error('Pause state not confirmed');
     SET.localProcessing = result;
-    toast(result.paused ? 'Background AI paused. Your queue is saved.' : 'Background AI resumed when your Mac is ready.');
+    toast(result.paused ? result.stop_acknowledged === true ? 'Background AI paused. Your queue is saved.' : 'Background AI is stopping. Your queue is saved.' : 'Background AI resumed when your Mac is ready.');
+    window.dispatchEvent(new Event('fl:control-changed'));
   } catch { SET.localProcessing = null; toast('Could not confirm background AI. Refresh to check.'); }
   finally {
     SET.localBusy = false; renderCheckingMode();

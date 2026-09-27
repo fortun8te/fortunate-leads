@@ -128,16 +128,21 @@ class MapSummaryTest(unittest.TestCase):
         self.conn.execute('DELETE FROM marks WHERE person_id=2')
         self.assert_summary_exact()
 
-    def test_person_deletion_and_later_restore_do_not_overcount(self):
+    def test_person_deletion_and_rediscovery_do_not_inherit_old_edges(self):
         self.edge('sourcea', 1)
         self.assertEqual(self.assert_summary_exact(), {1: 1})
         self.conn.execute('DELETE FROM people WHERE id=1')
         self.assertEqual(self.assert_summary_exact(), {})
         graph = server.map_graph(self.conn, {})
         self.assertEqual(graph['total'], 0)
-        self.conn.execute('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
-                          (1, 'alice_restored', self.ts, self.ts))
-        self.assertEqual(self.assert_summary_exact(), {1: 1})
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
+                              (1, 'alice_restored', self.ts, self.ts))
+        pid = db.upsert_person(self.conn, {'handle': 'alice_restored'}, self.ts)
+        self.assertNotEqual(pid, 1)
+        self.assertEqual(self.assert_summary_exact(), {})
+        self.edge('sourcea', pid)
+        self.assertEqual(self.assert_summary_exact(), {pid: 1})
 
     def test_summary_and_read_through_queries_agree_across_filters(self):
         for pid in range(1, 25):
