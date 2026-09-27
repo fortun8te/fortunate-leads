@@ -238,6 +238,47 @@ class MapSummaryTest(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(server.api_map(self.conn, dict(query, follow_up=['due']), None)['total'], 1)
 
+    def test_profile_edits_reuse_overlap_but_connection_changes_invalidate(self):
+        self.edge('sourcea', 1)
+        self.edge('sourceb', 1)
+        self.conn.commit()
+        expected = server.seed_links(self.conn)
+        revision = db.get_setting(self.conn, 'map_membership_rev')
+        self.conn.execute("UPDATE people SET bio='New bio' WHERE id=1")
+        self.conn.execute("INSERT INTO tags VALUES(1,'Client','role','manual')")
+        self.conn.commit()
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        self.assertEqual(server.seed_links(self.conn), expected)
+        self.conn.set_trace_callback(None)
+        self.assertEqual(db.get_setting(self.conn, 'map_membership_rev'), revision)
+        self.assertFalse(any('GROUP BY a.seed,b.seed' in sql for sql in statements))
+        self.conn.execute("UPDATE edge_evidence SET active=0 WHERE seed='sourceb'")
+        self.conn.commit()
+        self.assertEqual(server.seed_links(self.conn), [])
+
+    def test_uncommitted_overlap_and_rollback_never_poison_committed_cache(self):
+        self.edge('sourcea', 1)
+        self.conn.commit()
+        self.assertEqual(server.seed_links(self.conn), [])
+        self.edge('sourceb', 1)
+        self.assertEqual(server.seed_links(self.conn)[0]['shared'], 1)
+        self.conn.rollback()
+        self.assertEqual(server.seed_links(self.conn), [])
+        self.edge('sourcec', 1)
+        self.conn.commit()
+        self.assertEqual(server.seed_links(self.conn)[0]['target'], 's:sourcec')
+
+    def test_missing_revision_trigger_cannot_serve_stale_overlap(self):
+        self.edge('sourcea', 1)
+        self.edge('sourceb', 1)
+        self.conn.commit()
+        self.assertEqual(len(server.seed_links(self.conn)), 1)
+        self.conn.execute('DROP TRIGGER map_overlap_rev_delete')
+        self.conn.execute("UPDATE edge_evidence SET active=0 WHERE seed='sourceb'")
+        self.conn.commit()
+        self.assertEqual(server.seed_links(self.conn), [])
+
     def test_missing_maintenance_trigger_falls_back_then_rebuilds(self):
         self.edge('sourcea', 1)
         self.conn.commit()

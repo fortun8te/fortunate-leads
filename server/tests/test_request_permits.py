@@ -133,3 +133,40 @@ class RequestPermitTest(unittest.TestCase):
         self.conn.commit()
         accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)
         self.assertTrue(self.acquire(2, 2, 'profile')['granted'])
+
+    def test_cached_job_cannot_acquire_after_account_budget_role_or_cooldown_changes(self):
+        for restriction in ('budget', 'role', 'cooldown', 'identity'):
+            with self.subTest(restriction=restriction):
+                self.conn.execute("UPDATE accounts SET role='both', budget=NULL, today=NULL, list_cool_until=NULL, ig_id='100' WHERE lane_id='lane0'")
+                if restriction == 'budget':
+                    self.conn.execute('UPDATE accounts SET budget=?, today=? WHERE lane_id=?',
+                                      ('{"list":1}', '{"list":1}', 'lane0'))
+                elif restriction == 'role':
+                    self.conn.execute("UPDATE accounts SET role='bios' WHERE lane_id='lane0'")
+                elif restriction == 'cooldown':
+                    self.conn.execute('UPDATE accounts SET list_cool_until=? WHERE lane_id=?',
+                                      (accounts.iso(self.now + timedelta(minutes=10)), 'lane0'))
+                else:
+                    self.conn.execute("UPDATE accounts SET ig_id='101', first_seen='2099-01-01' WHERE lane_id='lane0'")
+                self.conn.commit()
+                self.assertFalse(self.acquire(0)['granted'])
+                self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate')['active'])
+
+    def test_newly_exhausted_front_waiter_does_not_block_next_healthy_account(self):
+        first = self.acquire(0)
+        self.assertFalse(self.acquire(1)['granted'])
+        self.assertFalse(self.acquire(2)['granted'])
+        self.conn.execute('UPDATE accounts SET budget=?, today=? WHERE lane_id=?',
+                          ('{"list":1}', '{"list":1}', 'lane1'))
+        self.conn.commit()
+        accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)
+        self.assertTrue(self.acquire(2, 2)['granted'])
+        self.assertNotIn('lane1', [entry['lane'] for entry in db.get_setting(self.conn, 'instagram_request_gate')['queue']])
+
+    def test_account_cooldown_does_not_prevent_releasing_inflight_request(self):
+        first = self.acquire(0)
+        self.conn.execute('UPDATE accounts SET list_cool_until=? WHERE lane_id=?',
+                          (accounts.iso(self.now + timedelta(minutes=10)), 'lane0'))
+        self.conn.commit()
+        self.assertTrue(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)['released'])
+        self.assertTrue(self.acquire(1, 2)['granted'])

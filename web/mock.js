@@ -342,7 +342,7 @@
     const relationship = mine.size === 2 ? 'mutual' : mine.has('followers') ? 'follows' : mine.has('following') ? 'followed' : null;
     const n = lists(id), connection_strength = Math.min(100, 30 + [0, 0, 25, 38, 46][Math.min(n, 4)] + Math.max(0, n - 4) * 3 + Math.min(10, es.filter(e => e.direction === 'following').length * 5) + ({mutual:16, follows:10, followed:8}[relationship] || 0));
     const business_fit = v.tier === 'unread' ? null : v.score;
-    return { tier: v.tier, score: business_fit == null ? v.score : Math.round(.6 * connection_strength + .4 * business_fit), business_fit, connection_strength, relationship, role: v.role, reason: v.reason }; };
+    return { tier: v.tier, score: business_fit == null ? v.score : Math.round(.6 * connection_strength + .4 * business_fit), business_fit, connection_strength, relationship, owner_relationship:relationship,relationship_owner:'fortun8te',relationship_evidence:es.filter(e=>e.seed==='fortun8te').map(e=>({seed:e.seed,direction:e.direction,observed_at:e.observed_at||null})), role: v.role, reason: v.reason }; };
   const csv = (q, k) => (q.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   // Shared filter: tags (ALL), any (ANY), not (NONE), status, q, min_lists, has_bio, seed, followers_min/max.
@@ -352,10 +352,13 @@
     const ml = +q.get('min_lists') || 0, hb = q.get('has_bio'), sd = (q.get('seed') || '').replace(/^@/, '').toLowerCase();
     const fmin = q.get('followers_min'), fmax = q.get('followers_max'), tiers = csv(q, 'tier');
     if (!sts.includes('all') && sts.some((s) => s !== 'none' && !STATUSES.includes(s))) invalid('bad status');
+    const relationship = q.get('relationship');
+    if (relationship && !['follows','followed','mutual'].includes(relationship)) invalid('invalid relationship');
     const follow = q.get('follow_up');
     if (follow && !['due', 'overdue', 'scheduled', 'completed', 'none'].includes(follow)) invalid('invalid follow_up filter');
     const today = follow ? calendarDate(q.get('today') || localDay()) : localDay();
     return people.filter((p) => {
+      if (relationship) { const dirs = new Set(edges.get(p.id).filter(e=>e.seed==='fortun8te').map(e=>e.direction)); if (relationship==='follows' && !dirs.has('followers') || relationship==='followed' && !dirs.has('following') || relationship==='mutual' && dirs.size!==2) return false; }
       if (tiers.length && !tiers.includes(verdicts.get(p.id).tier)) return false;
       const m = marks.get(p.id) || null;
       const f = followups.get(p.id);
@@ -708,6 +711,13 @@
         edges.get(p.id).forEach((e) => { if (set.has(p.id)) links.push({ source: 's:' + e.seed, target: 'p:' + p.id, direction: e.direction, state: e.state, observed_at: e.observed_at, checked_at: e.checked_at }); });
       });
       return { nodes, links, seed_links: seedLinks(), total, limit, rev: mapRev };
+    }
+    if (path === '/api/scraper/suggestions') {
+      const suggestions = people.filter(p => p.handle !== ME && p.bio).slice(0,30).map(p => ({
+        handle:p.handle, display_name:p.name, reason:'Matches your saved leads',
+        directions:['followers','following'].filter(direction => !scraper.lists.some(l => l.seed === p.handle && l.direction === direction)),
+      })).filter(p => p.directions.length).slice(0,Math.min(6,Math.max(1,Number(q.get('limit')) || 6)));
+      return {suggestions,bounded:true};
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/status') {

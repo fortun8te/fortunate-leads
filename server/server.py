@@ -28,8 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
+import collection_suggestions  # noqa: E402
 import db  # noqa: E402
 import owner  # noqa: E402
+import owner_relationships  # noqa: E402
 import tag_projection  # noqa: E402
 import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
@@ -95,12 +97,11 @@ def pfp_dir():
     return Path(CFG['db']).resolve().parent / 'pfp'
 
 
-OWNER_HANDLE = 'fortun8te'
+OWNER_HANDLE = owner_relationships.OWNER
 
 
 def me_handle(conn):
-    row = conn.execute('SELECT handle FROM seeds WHERE is_me=1').fetchone()
-    return row[0] if row else OWNER_HANDLE
+    return owner_relationships.owner_handle(conn)
 
 
 def edges_of(conn, pid):
@@ -769,7 +770,9 @@ def lead_rows(conn, rows):
              'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
              'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
+    owner_links = owner_relationships.facts(conn, ids)
     for person in result:
+        person.update(owner_links[person['id']])
         person['manual_tags'] = [t['tag'] for t in person['tags'] if t['source'] == 'manual']
         person['owner_status'] = owner.owner_status(person)
         person['reachable'] = True if person['owner_status'] in ('client', 'talking') else None
@@ -803,6 +806,15 @@ def lead_filter(q, status_default=True):
 
     def within(sql, values):  # sql has one {} for the placeholders
         where.append(sql.format(','.join('?' * len(values))))
+        args.extend(values)
+
+    relationship = q.get('relationship', [''])[0]
+    if relationship:
+        try:
+            clauses, values = owner_relationships.filter_sql(relationship)
+        except ValueError as error:
+            raise Bad(str(error)) from None
+        where.extend(clauses)
         args.extend(values)
 
     tiers = csv(q, 'tier')
@@ -1261,16 +1273,20 @@ def seed_links(conn, cacheable=None):
     if cacheable is None:
         cacheable = not conn.in_transaction
     path = conn.execute('PRAGMA database_list').fetchone()[2]
-    key = (path or ('memory', id(conn)), data_rev(conn))
-    cached = SEED_LINKS[0] if cacheable else None
-    if cached and cached[0] == key:
-        return cached[2]
     # Overlap means people currently observed in both source lists. The
     # transactionally maintained distinct membership table avoids rejoining
     # every edge to evidence on each exact-revision refresh.
     members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
+    membership_rev = db.get_setting(conn, 'map_membership_rev', None)
+    revision_ready = members_ready and membership_rev is not None and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_overlap_rev_%'").fetchone()[0] == 3
+    revision = ('membership', membership_rev) if revision_ready else ('all', data_rev(conn))
+    key = (path or ('memory', id(conn)), revision)
+    cached = SEED_LINKS[0] if cacheable else None
+    if cached and cached[0] == key:
+        return cached[2]
     # Aggregate overlap in SQLite and return only the top pairs. This avoids
     # grouping every person's source list into strings or materializing every
     # member in Python on each exact-revision refresh.
@@ -1432,8 +1448,10 @@ def map_graph(conn, q):
                'tags': tags.get(r['id'], []), 'judge': judge(alltags.get(r['id'], set())),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
+    owner_links = owner_relationships.facts(conn, [r['id'] for r in people] + [s['pid'] for s in seeds if s['pid']])
     for node in nodes:
         pid = node.get('pid') if node['kind'] == 'seed' else int(node['id'].split(':', 1)[1])
+        node.update(owner_links.get(pid, {'owner_relationship': None, 'relationship_owner': OWNER_HANDLE, 'relationship_evidence': []}))
         facts = map_owners.get(pid, {})
         node['owner_status'] = owner.owner_status(facts)
         node.update(owner.owner_recommendation(facts, node))
@@ -1915,6 +1933,10 @@ def api_llm_models(conn, q, b):
 SNOWBALL_MAX = 50
 
 
+def api_collection_suggestions(conn, q, b):
+    return collection_suggestions.suggest(conn, qint(q, 'limit') or 6)
+
+
 def api_snowball(conn, q, b):
     """Opt-in: queue the `following` lists of good/client leads as new seeds (their people then get the same network signals)."""
     min_status = status_in(b.get('min_status', 'interested'))
@@ -2093,6 +2115,7 @@ ROUTES = [
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
     ('GET', r'/api/scraper/status', api_scraper_status), ('GET', r'/api/scraper', api_scraper),
+    ('GET', r'/api/scraper/suggestions', api_collection_suggestions),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),

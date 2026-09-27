@@ -49,7 +49,7 @@ test('opening Due follow-ups replaces every stale criterion through the real que
   app.applyQuery(daily.dueQuery());
 
   assert.deepEqual(plain(app.state.f), {
-    tags: [], any: [], not: [], status: 'all', tier: '', q: '', min: 0,
+    tags: [], any: [], not: [], status: 'all', relationship: '', tier: '', q: '', min: 0,
     follow_up: 'due', bio: '', seed: '', fmin: null, fmax: null,
   });
   assert.equal(app.state.sort, 'follow_up');
