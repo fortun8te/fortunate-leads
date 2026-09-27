@@ -1125,27 +1125,27 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
-/* Tag hierarchy: confirmed emphasis fills; supporting evidence and review cues stay outlined. */
+/* Tag hierarchy: gold fit, purple decision maker, orange buyer, teal proof, muted blue market, pink review, red mismatch. */
 :root {
-  --t-strong: #c0814f; --t-strong-ink: #21150e; --t-possible: #2c211a; --t-possible-ink: #ebc7a6;
-  --t-strong-line: #98704f; --t-strong-surface: #181410; --t-strong-border: #49382a;
-  --t-role: #2b2a29; --t-role-ink: #ece8e4; --t-evidence: #7b604b; --t-evidence-ink: #d9baa0;
-  --t-caution: #b78089; --t-review-line: #83575f; --t-review-ink: #dfbcc2;
-  --t-flag: #78404a; --t-flag-ink: #ffffff; --t-flag-surface: #191315; --t-flag-border: #50363b;
+  --t-strong: #d5ad63; --t-strong-ink: #251a0b; --t-possible: #392a1b; --t-possible-ink: #f1c68f;
+  --t-strong-line: #a8834a; --t-strong-surface: #19160f; --t-strong-border: #433722;
+  --t-decision: #37283f; --t-decision-ink: #ead4ee; --t-market: #252f40; --t-market-ink: #bdcfe9; --t-role: #33281f; --t-role-ink: #ebc49e; --t-evidence: #678d95; --t-evidence-ink: #b5dfe4;
+  --t-caution: #bf7d8b; --t-review-line: #935b69; --t-review-ink: #eac0c9;
+  --t-flag: #a44752; --t-flag-ink: #ffffff; --t-flag-surface: #201417; --t-flag-border: #56333b;
 }
 :root[data-theme="light"] {
-  --t-strong: #8c4d29; --t-strong-ink: #ffffff; --t-possible: #f2e9df; --t-possible-ink: #70431f;
-  --t-strong-line: #ad805f; --t-strong-surface: #fcf8f4; --t-strong-border: #e1d0c1;
-  --t-role: #e9e7e4; --t-role-ink: #292725; --t-evidence: #ad866a; --t-evidence-ink: #654a35;
-  --t-caution: #9b626b; --t-review-line: #aa7981; --t-review-ink: #70454c;
-  --t-flag: #783d48; --t-flag-ink: #ffffff; --t-flag-surface: #fbf6f7; --t-flag-border: #e3d0d3;
+  --t-strong: #86600c; --t-strong-ink: #ffffff; --t-possible: #fff0d4; --t-possible-ink: #674406;
+  --t-strong-line: #a07724; --t-strong-surface: #fffbf1; --t-strong-border: #e8d7ad;
+  --t-decision: #eee3f0; --t-decision-ink: #573861; --t-market: #e9eef8; --t-market-ink: #3d5379; --t-role: #faead9; --t-role-ink: #70431c; --t-evidence: #6a9ca4; --t-evidence-ink: #285d67;
+  --t-caution: #a65a6d; --t-review-line: #aa6b7b; --t-review-ink: #754252;
+  --t-flag: #a23e4d; --t-flag-ink: #ffffff; --t-flag-surface: #fdf1f3; --t-flag-border: #e8cbd1;
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
-  --t-strong: #8c4d29; --t-strong-ink: #ffffff; --t-possible: #f2e9df; --t-possible-ink: #70431f;
-  --t-strong-line: #ad805f; --t-strong-surface: #fcf8f4; --t-strong-border: #e1d0c1;
-  --t-role: #e9e7e4; --t-role-ink: #292725; --t-evidence: #ad866a; --t-evidence-ink: #654a35;
-  --t-caution: #9b626b; --t-review-line: #aa7981; --t-review-ink: #70454c;
-  --t-flag: #783d48; --t-flag-ink: #ffffff; --t-flag-surface: #fbf6f7; --t-flag-border: #e3d0d3;
+  --t-strong: #86600c; --t-strong-ink: #ffffff; --t-possible: #fff0d4; --t-possible-ink: #674406;
+  --t-strong-line: #a07724; --t-strong-surface: #fffbf1; --t-strong-border: #e8d7ad;
+  --t-decision: #eee3f0; --t-decision-ink: #573861; --t-market: #e9eef8; --t-market-ink: #3d5379; --t-role: #faead9; --t-role-ink: #70431c; --t-evidence: #6a9ca4; --t-evidence-ink: #285d67;
+  --t-caution: #a65a6d; --t-review-line: #aa6b7b; --t-review-ink: #754252;
+  --t-flag: #a23e4d; --t-flag-ink: #ffffff; --t-flag-surface: #fdf1f3; --t-flag-border: #e8cbd1;
 } }
 .tag, .tchip { border-radius: 999px; }
 .tg-top { background: var(--t-strong-surface); border-color: var(--t-strong-border); border-left: 2px solid var(--t-strong-line); }
@@ -1271,3 +1271,30 @@ button:disabled { cursor:default; opacity:.5; }
 .detail .d-disclosure #workflow-activity { padding: 0; }
 .detail .d-disclosure #workflow-activity > h4 { display: none; }
 .detail .d-disclosure .ql-site, .detail .d-disclosure > .d-sec { margin-top: 14px; }
+
+/* The tags page keeps decisions visible and collection metadata folded away. */
+.tg-groups { max-width: 920px; gap: 0; }
+.tg-sec { padding: 16px 0; border-bottom: 1px solid var(--line2); }
+.tg-top, .tg-caution { background: transparent; border: 0; border-bottom: 1px solid var(--line2); border-radius: 0; }
+.tg-top .tg-ch h3::before, .tg-caution .tg-ch h3::before { display: none; }
+.tg-chips { margin-top: 4px; }
+.tg-more { margin-top: 12px; }
+.tg-more > summary .num { margin-left: 6px; font-weight: 400; }
+.tg-rest { gap: 0 24px; margin-top: 6px; }
+.tg-rest .tg-sec { padding: 12px 0; }
+.tag.t-decision, .tchip.t-decision { background: var(--t-decision); color: var(--t-decision-ink); font-weight: 600; box-shadow: none; }
+.tag.t-market, .tchip.t-market { background: var(--t-market); color: var(--t-market-ink); box-shadow: none; font-weight: 500; }
+.tag.t-partner, .tchip.t-partner { background: transparent; color: var(--t-decision-ink); box-shadow: inset 0 0 0 1px var(--t-decision-ink); font-weight: 500; }
+.tchip.t-decision b, .tchip.t-market b { border-left-color: currentColor; color: inherit; }
+.tchip.t-partner b { border-left-color: currentColor; color: inherit; }
+.fi.t-decision .sw { --fg-c: var(--t-decision-ink); opacity: 1; }
+.fi.t-partner .sw { --fg-c: var(--t-decision-ink); opacity: 1; }
+.fi.t-role .sw { --fg-c: var(--t-role-ink); opacity: 1; }
+.fi.t-market .sw { --fg-c: var(--t-market-ink); opacity: 1; }
+.fi.t-decision.inc { background: var(--t-decision); border-color: var(--t-decision-ink); color: var(--t-decision-ink); }
+.fi.t-role.inc { background: var(--t-role); border-color: var(--t-role-ink); color: var(--t-role-ink); }
+.fi.t-market.inc { background: var(--t-market); border-color: var(--t-market-ink); color: var(--t-market-ink); }
+.fi.t-partner.inc { background: var(--t-decision); border-color: var(--t-decision-ink); color: var(--t-decision-ink); }
+.fi.t-decision.inc > b, .fi.t-role.inc > b, .fi.t-market.inc > b, .fi.t-partner.inc > b { color: inherit; }
+.tag.t-decision:focus-visible, .tag.t-market:focus-visible, .tag.t-partner:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+@media (max-width: 640px) { .tg-top, .tg-caution { padding: 16px 0; } .tg-groups { gap: 0; } }

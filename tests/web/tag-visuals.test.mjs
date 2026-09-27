@@ -29,6 +29,7 @@ test('emphasis and caution pills keep readable text in both themes', () => {
     for (const [text, surface] of [
       ['--t-strong-ink', '--t-strong'], ['--t-possible-ink', '--t-possible'],
       ['--t-flag-ink', '--t-flag'], ['--t-review-ink', '--t-flag-surface'],
+      ['--t-decision-ink', '--t-decision'], ['--t-role-ink', '--t-role'], ['--t-market-ink', '--t-market'],
     ]) assert.ok(contrast(palette[text], palette[surface]) >= 4.5, `${name} ${text} contrast`);
     assert.ok(contrast(palette['--t-evidence-ink'], page) >= 4.5, `${name} evidence contrast`);
   }
@@ -36,7 +37,7 @@ test('emphasis and caution pills keep readable text in both themes', () => {
 
 test('filled judgments, outlined clues, and neutral context share the pill shape', () => {
   assert.match(visual, /\.tag, \.tchip \{ border-radius: 999px; \}/);
-  for (const tier of ['hero', 'flag']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: var\\(--t-`));
+  for (const tier of ['hero', 'flag', 'decision', 'role', 'market']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: var\\(--t-`));
   for (const tier of ['plus', 'review']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: transparent;`));
   assert.match(visual, /\.fi\.t-hero\.inc, \.fi\.t-maybe\.inc/);
   assert.match(visual, /\.fi\.t-flag\.inc, \.fi\.t-review\.inc/);

@@ -35,8 +35,11 @@ function mount() {
 test('roles and review candidates do not inherit the verdict or hard-caution treatment', () => {
   const { ui } = mount();
   assert.match(ui.tagChip(tag('Fit: strong'), false), /t-hero/);
+  assert.match(ui.tagChip(tag('Founder'), false), /t-decision/);
   assert.match(ui.tagChip(tag('Brand', 'role'), false), /t-role.*aria-pressed="true"/);
   assert.match(ui.tagChip(tag('Shop Link'), false), /t-plus/);
+  assert.match(ui.tagChip(tag('US'), false), /t-market/);
+  assert.match(ui.tagChip(tag('Agency', 'role'), false), /t-partner/);
   assert.match(ui.tagChip(tag('Creator', 'role'), false), /t-review/);
   assert.match(ui.tagChip(tag('Too big'), false), /t-flag/);
   assert.match(ui.tagChip(tag('Creator', 'custom', 'manual'), true), /t-own.*data-rmtag="Creator"/);
@@ -54,14 +57,14 @@ test('dense lead rows show three labels and preserve the rest in the count toolt
   assert.doesNotMatch(html, /data-tag="Fit: strong"|data-tag="via @seed"/);
 });
 
-test('Tags overview omits empty fit assessments while keeping roles, clues and cautions', () => {
+test('Tags overview shows three decision groups and folds context tags', () => {
   const { context, groupNode } = mount();
   const rows = [tag('Brand', 'role'), tag('Shop Link'), tag('Too big'), tag('Creator', 'role'), tag('Jewelry', 'niche')];
   context.rows = rows;
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`, context);
   const html = groupNode.innerHTML;
-  assert.doesNotMatch(html, /Fit assessments/);
-  assert.match(html, /Roles[\s\S]*Business clues[\s\S]*Check before outreach[\s\S]*Product categories/);
+  assert.doesNotMatch(html, /Best prospects/);
+  assert.match(html, /Business signals[\s\S]*Needs a look[\s\S]*Other automatic tags[\s\S]*Products/);
   assert.match(html, /tchip t-flag[^>]*>\<span\>Too big/);
   assert.match(html, /tchip t-review[^>]*>\<span\>Creator/);
 });

@@ -847,24 +847,31 @@ const KEY_TAGS = new Set(['Founder', 'US', 'Fit: good']);
 // describe a lead; they are not verdicts and should not all look like warnings.
 const HERO_TAGS = new Set(['Scout: Strong', 'AI: Top fit', 'Fit: strong']);
 const MAYBE_TAGS = new Set(['Scout: Possible', 'Fit: good']);
-const ROLE_TAGS = new Set(['Founder', 'Brand', 'Store', 'AI: Decision maker']);
-const PLUS_TAGS = new Set(['AI: Runs ads', 'AI: US market', 'Shopify', 'Shop Link', 'US', 'US market', 'DTC']);
+const DECISION_TAGS = new Set(['Founder', 'AI: Decision maker']);
+const ROLE_TAGS = new Set(['Brand', 'Store']);
+const PLUS_TAGS = new Set(['AI: Runs ads', 'Shopify', 'Shop Link', 'DTC']);
+const MARKET_TAGS = new Set(['AI: US market', 'US', 'US market']);
 const FLAG_TAGS = new Set(['Too big', 'Other market', 'Scout: No', 'Not reachable', 'Celebrity']);
-const SOFT_TAGS = new Set(['Creator', 'Coach', 'Agency', 'Personal', 'SaaS', 'Freelancer', 'Supplier', 'Not DTC', 'Not a brand']);
+const PARTNER_TAGS = new Set(['Agency', 'Freelancer', 'Creative', 'Supplier']);
+const SOFT_TAGS = new Set(['Creator', 'Coach', 'Personal', 'SaaS', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
   const name = tagName(t);
+  // Personal labels stay neutral; adding one is not an automatic fit verdict.
   if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (FLAG_TAGS.has(name)) return 'flag';
   if (HERO_TAGS.has(name)) return 'hero';
   if (MAYBE_TAGS.has(name)) return 'maybe';
+  if (PARTNER_TAGS.has(name)) return 'partner';
   if (SOFT_TAGS.has(name)) return 'review';
+  if (DECISION_TAGS.has(name)) return 'decision';
   if (ROLE_TAGS.has(name) || t.grp === 'role') return 'role';
+  if (MARKET_TAGS.has(name)) return 'market';
   if (PLUS_TAGS.has(name)) return 'plus';
   if (t.grp === 'niche' || /^AI: (?!Top|Decision|Runs|US|Pre|Early|Grow|Estab)/.test(name)) return 'niche';
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
 }
-const TIER_ORDER = { hero: 0, flag: 1, maybe: 2, role: 3, plus: 4, own: 5, niche: 6, review: 7, ctx: 8, '': 8, min: 9 };
+const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
@@ -1796,40 +1803,32 @@ const T = {
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
     const fit = auto.filter((t) => ['hero', 'maybe'].includes(tagTier(t)));
-    const roles = auto.filter((t) => tagTier(t) === 'role');
-    const evidence = auto.filter((t) => tagTier(t) === 'plus');
+    const business = auto.filter((t) => ['decision', 'role', 'plus', 'market', 'partner'].includes(tagTier(t)));
     const caution = auto.filter((t) => ['flag', 'review'].includes(tagTier(t)));
-    const highlighted = new Set([...fit, ...roles, ...evidence, ...caution]);
+    const highlighted = new Set([...fit, ...business, ...caution]);
     const rest = auto.filter((t) => !highlighted.has(t));
-    const G = [
-      ['niche', 'Product categories', 'What they make or sell.'],
-      ['signal', 'Other profile clues', 'Hiring, contact details and similar.'],
-      ['size', 'Audience size', 'Follower count bands.'],
-      ['via', 'Where we found them', 'The account whose list they came from.'],
-      ['source', 'Collection and follows', 'In several lists, follows you, you follow them.'],
+    const groups = [
+      ['niche', 'Products'], ['signal', 'Other clues'], ['size', 'Audience size'],
+      ['via', 'Found via'], ['source', 'Collection'],
     ];
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['niche', 'signal', 'size', 'source']);
     const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
-    const sec = (key, title, desc, list, cls = '') => {
+    const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
-      list = [...list].sort((a, b) => (key === 'fit' || key === 'caution' ? TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] : 0) || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : key === 'fit' ? 6 : 12;
-      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div><p class="muted">${esc(desc)}</p>
-        <div class="tg-chips">${list.length ? list.slice(0, lim).map(chip).join('')
-          : `<span class="muted">${q ? 'No matching tags.' : 'None yet. AI tags appear once the AI has checked people.'}</span>`}
+      list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
+      const lim = this.more?.[key] || q ? 400 : 10;
+      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
+        <div class="tg-chips">${list.slice(0, lim).map(chip).join('')}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    const essentials = roles.length || evidence.length ? `<div class="tg-essentials${!roles.length || !evidence.length ? ' single' : ''}">${sec('roles', 'Roles', 'What the account appears to be.', roles)}${sec('evidence', 'Business clues', 'Shop, market and buying signals.', evidence)}</div>` : '';
-    $('#tg-groups').innerHTML = (q && !auto.length ? '<p class="muted">No matching automatic tags.</p>' : '')
-      + sec('fit', 'Fit assessments', 'Generated judgments to verify against the profile.', fit, 'tg-top')
-      + essentials
-      + sec('caution', 'Check before outreach', 'Possible mismatch or a reason to pause.', caution, 'tg-caution')
-      + sec('niche', G[0][1], G[0][2], pick('niche'))
-      // Collection metadata stays one click away from the decision-making labels.
-      + `<details class="adv tg-more"${q ? ' open' : ''}><summary>More tags</summary><div class="tg-rest">${G.slice(1).map(([k, t, d]) => sec(k, t, d, pick(k))).join('')
-        + sec('other', 'Other', 'Automatic tags outside the groups above.', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>`;
+    $('#tg-groups').innerHTML = (!auto.length ? `<p class="muted tg-empty">${q ? 'No matching automatic tags.' : 'Automatic tags appear as people are qualified.'}</p>` : '')
+      + sec('fit', 'Best prospects', fit, 'tg-top')
+      + sec('business', 'Business signals', business)
+      + sec('caution', 'Needs a look', caution, 'tg-caution')
+      + (rest.length ? `<details class="adv tg-more"${q ? ' open' : ''}><summary>Other automatic tags <span class="num muted">${rest.length}</span></summary><div class="tg-rest">${groups.map(([k, t]) => sec(k, t, pick(k))).join('')}
+        ${sec('other', 'Other', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>` : '');
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
