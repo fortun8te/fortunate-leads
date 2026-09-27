@@ -2,7 +2,10 @@
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +49,63 @@ class WebResearchTest(unittest.TestCase):
             self.assertEqual(websearch.cached(conn, PERSON)['site'], 'site')
             self.assertIsNone(websearch.cached(conn, dict(PERSON, website='other.com')))
             conn.close()
+
+    def test_missing_evidence_expires_quickly_without_discarding_good_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.init(str(Path(tmp) / 't.sqlite'))
+            websearch.ensure(conn)
+            conn.execute("INSERT INTO people(id,handle,first_seen,updated_at) VALUES(1,'nounnaturals','x','x')")
+            old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            websearch.store(conn, PERSON, {'results': [], 'site': ''})
+            conn.execute('UPDATE web_research SET at=? WHERE person_id=1', (old,))
+            self.assertIsNone(websearch.cached(conn, PERSON))
+            websearch.store(conn, PERSON, {'results': HITS[:1], 'site': ''})
+            conn.execute('UPDATE web_research SET at=? WHERE person_id=1', (old,))
+            self.assertIsNotNone(websearch.cached(conn, PERSON))
+            conn.close()
+
+    def test_site_read_overlaps_search_and_preserves_both_sources(self):
+        site_started = threading.Event()
+
+        def site(_person):
+            site_started.set()
+            return 'nounnaturals.com: store on Shopify'
+
+        def search(_query, **_kwargs):
+            self.assertTrue(site_started.wait(1), 'website should start before searches finish')
+            return HITS
+
+        with patch.object(websearch, 'search', side_effect=search), patch.object(websearch, 'read_website', side_effect=site):
+            found = websearch.lookup(PERSON)
+        self.assertEqual(found['site'], 'nounnaturals.com: store on Shopify')
+        self.assertTrue(found['results'])
+
+    def test_slow_site_does_not_hold_lookup_past_budget(self):
+        def slow_site(_person):
+            time.sleep(0.2)
+            return 'too late'
+
+        with patch.object(websearch, 'LOOKUP_BUDGET', 0.05), \
+                patch.object(websearch, 'search', return_value=HITS), \
+                patch.object(websearch, 'read_website', side_effect=slow_site):
+            began = time.monotonic()
+            found = websearch.lookup(PERSON)
+            elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 0.15)
+        self.assertEqual(found['site'], '')
+        self.assertTrue(found['results'])
+
+    def test_search_gate_wait_respects_lookup_deadline(self):
+        gate = threading.BoundedSemaphore(1)
+        gate.acquire()
+        try:
+            with patch.object(websearch, '_gate', gate), patch.object(websearch.urllib.request, 'urlopen') as open_url:
+                began = time.monotonic()
+                self.assertEqual(websearch.search('person', retry=False, deadline=began + 0.04), [])
+                self.assertLess(time.monotonic() - began, 0.15)
+                open_url.assert_not_called()
+        finally:
+            gate.release()
 
     def test_web_lines_reach_the_packet_and_count_as_evidence(self):
         found = {'results': HITS[1:2], 'site': 'nounnaturals.com: store on Shopify'}
