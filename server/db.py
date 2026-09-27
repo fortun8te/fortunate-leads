@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS ai_scoring_events(id INTEGER PRIMARY KEY, person_id I
 CREATE INDEX IF NOT EXISTS ai_scoring_events_at ON ai_scoring_events(scored_at);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS owner_context(person_id INT PRIMARY KEY, relationships TEXT NOT NULL DEFAULT '[]', familiarity TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS followups(person_id INTEGER PRIMARY KEY, due_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', completed_at TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', before_value TEXT, after_value TEXT, happened_at TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person_id);
@@ -315,6 +316,15 @@ def init(path):
                      "ON CONFLICT(person_id) DO UPDATE SET status='client',updated_at=excluded.updated_at "
                      "WHERE coalesce(marks.status,'')=''", (now(),))
         set_setting(conn, 'owner_client_relationship_v1', True)
+    if not get_setting(conn, 'owner_context_v1'):
+        # Preserve historical Client labels without claiming current work or personal closeness.
+        conn.execute("""INSERT OR IGNORE INTO owner_context(person_id,relationships,familiarity,updated_at)
+            SELECT p.id,'["worked_with", "client"]',NULL,coalesce(m.updated_at,?) FROM people p
+            LEFT JOIN marks m ON m.person_id=p.id
+            WHERE m.status='client' OR EXISTS(SELECT 1 FROM tags t WHERE t.person_id=p.id
+                AND t.source='manual' AND lower(trim(t.tag))='client')""", (now(),))
+        set_setting(conn, 'owner_context_v1', True)
+
     # Before per-run evidence, every edge was treated as a current follow. Clear
     # derived claims once; keep the original edges and all human-entered data.
     if not conn.execute("SELECT 1 FROM settings WHERE key='edge_evidence_v1'").fetchone():
@@ -336,7 +346,7 @@ def init(path):
     # Revisions catch edits that counts/timestamps cannot distinguish, including
     # out-of-process imports. Settings is excluded to avoid recursive updates.
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
-    add_rev_triggers(conn, ('people', 'verdicts', 'marks', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules',
+    add_rev_triggers(conn, ('people', 'verdicts', 'marks', 'owner_context', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules',
                             'followups', 'activity'))
     conn.commit()
     return conn
@@ -841,6 +851,22 @@ def merge_people(conn, keep, drop):
             conn.execute('DELETE FROM followups WHERE person_id=?', (drop,))
             if kept:
                 workflows.event(conn, keep, 'follow_up_merged', before={'kept': kept, 'merged': dropped}, after=chosen)
+
+        # Human relationship history survives identity consolidation independently of outreach stage.
+        for legacy_pid in (keep, drop):
+            if conn.execute("SELECT 1 FROM marks WHERE person_id=? AND status='client' UNION SELECT 1 FROM tags WHERE person_id=? AND source='manual' AND lower(trim(tag))='client'", (legacy_pid, legacy_pid)).fetchone():
+                context = conn.execute('SELECT * FROM owner_context WHERE person_id=?', (legacy_pid,)).fetchone()
+                values = set(json.loads(context['relationships']) if context else []) | {'client', 'worked_with'}
+                conn.execute('INSERT OR REPLACE INTO owner_context VALUES(?,?,?,?)',
+                             (legacy_pid, json.dumps(sorted(values)), context['familiarity'] if context else None,
+                              context['updated_at'] if context else now()))
+        contexts = conn.execute('SELECT * FROM owner_context WHERE person_id IN (?,?) ORDER BY updated_at DESC', (keep, drop)).fetchall()
+        if contexts:
+            relations = sorted({value for r in contexts for value in json.loads(r['relationships'])})
+            familiarity = next((r['familiarity'] for r in contexts if r['familiarity']), None)
+            conn.execute('INSERT OR REPLACE INTO owner_context VALUES(?,?,?,?)',
+                         (keep, json.dumps(relations), familiarity, contexts[0]['updated_at']))
+            conn.execute('DELETE FROM owner_context WHERE person_id=?', (drop,))
 
         km = conn.execute('SELECT * FROM marks WHERE person_id=?', (keep,)).fetchone()
         dm = conn.execute('SELECT * FROM marks WHERE person_id=?', (drop,)).fetchone()

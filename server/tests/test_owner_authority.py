@@ -42,17 +42,17 @@ class OwnerAuthority(unittest.TestCase):
         self.assertIn('Close friend', names)
         self.assertGreaterEqual(qualify.prefilter(self.person(), [], laya_fit=0), 65)
         server.set_status(self.conn, [self.pid], status='client')
-        self.assertNotIn('Client', {t['tag'] for t in server.api_person(self.conn, {}, {}, self.pid)['tags']})
+        self.assertIn('Client', {t['tag'] for t in server.api_person(self.conn, {}, {}, self.pid)['tags']})
         self.assertEqual(self.conn.execute("SELECT source FROM tags WHERE person_id=? AND tag='Client'", (self.pid,)).fetchone()[0], 'manual')
 
-    def test_explicit_no_replaces_legacy_client_relationship(self):
+    def test_explicit_no_preserves_client_history_and_controls_business_fit(self):
         self.conn.execute("INSERT INTO tags VALUES(?,'Client','signal','manual')", (self.pid,))
         server.set_status(self.conn, [self.pid], status='no')
         server.requalify(self.conn, self.person(), None)
         result = server.api_person(self.conn, {}, {}, self.pid)
         self.assertEqual(result['owner_status'], 'no')
         self.assertIsNone(result['owner_conflict'])
-        self.assertNotIn('Client', {t['tag'] for t in result['tags']})
+        self.assertIn('Client', {t['tag'] for t in result['tags']})
         self.assertEqual(result['score'], 0)
         self.assertEqual(qualify.prefilter(self.person(), [], laya_fit=100), 0)
 
@@ -68,7 +68,7 @@ class OwnerAuthority(unittest.TestCase):
         self.assertTrue(result['reachable'])
         self.assertNotEqual(result['verdict']['model'], 'leadscout')
         self.assertNotIn('Not reachable', {t['tag'] for t in result['tags']})
-        server.set_status(self.conn, [self.pid], status=None)
+        server.set_status(self.conn, [self.pid], status=None, relationships=[])
         server.requalify(self.conn, self.person(), None)
         self.assertIn('Not reachable', {t['tag'] for t in server.api_person(self.conn, {}, {}, self.pid)['tags']})
 
@@ -120,7 +120,7 @@ class OwnerAuthority(unittest.TestCase):
         self.conn.execute("UPDATE tags SET source='manual' WHERE person_id=? AND tag='Not reachable'", (self.pid,))
         self.assertEqual(ids({'tags': ['Not reachable']}), {self.pid, other})
         server.set_status(self.conn, [self.pid], status='client')
-        self.assertEqual(ids({'tags': ['Client']}), set())  # duplicate stage chip is hidden everywhere
+        self.assertEqual(ids({'tags': ['Client']}), {self.pid})  # Client is a relationship, independent of stage
         self.assertEqual(self.conn.execute('SELECT count(*) FROM tags').fetchone()[0], 3)
 
     def test_sql_visibility_matches_presentation_for_supported_relationships(self):

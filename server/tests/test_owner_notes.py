@@ -75,7 +75,7 @@ class NoteReader(unittest.TestCase):
         with patch.object(notes, 'interpret', return_value=facts):
             self.assertTrue(notes.step(self.conn))
             self.assertFalse(notes.step(self.conn))
-        self.assertEqual(notes.result(self.conn, self.pid)['facts'], facts)
+        self.assertEqual(notes.result(self.conn, self.pid)['facts'], [notes.actionable(f) for f in facts])
         self.assertEqual(self.conn.execute('SELECT status FROM marks').fetchone()[0], 'no')
         self.assertEqual(self.conn.execute('SELECT count(*) FROM tags').fetchone()[0], 0)
         self.conn.execute('UPDATE marks SET note=?', ('He is not my client.',))

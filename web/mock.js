@@ -82,7 +82,7 @@
   }
   function invalid(message) { const error = new Error(message); error.mockStatus = 400; throw error; }
   const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const STATUSES = ['interested', 'contacted', 'talking', 'client', 'no'];
+  const STATUSES = ['interested', 'contacted', 'talking', 'spoke_before', 'client', 'no'];
   function validStatus(value) {
     if (value === 'good') value = 'interested';
     if (value !== null && !STATUSES.includes(value)) invalid('bad status');
@@ -106,6 +106,11 @@
   function markInput(body) {
     const value = { ...body };
     if ('status' in value) value.status = validStatus(value.status);
+    if ('relationships' in value) {
+      if (!Array.isArray(value.relationships) || value.relationships.some(v => !Object.hasOwn(humanLabels,v))) invalid('invalid relationships');
+      value.relationships = [...new Set([...value.relationships,...(value.relationships.includes('client') ? ['worked_with'] : [])])];
+    }
+    if ('familiarity' in value && value.familiarity !== null && !['briefly','know_them','close'].includes(value.familiarity)) invalid('invalid familiarity');
     if ('note' in value && value.note !== null && (typeof value.note !== 'string' || value.note.length > 5000)) invalid('note must be text');
     return value;
   }
@@ -159,6 +164,16 @@
     }
   }
   function setMark(id, body) {
+    if ('relationships' in body || 'familiarity' in body) {
+      const context = {...humanContext(id)};
+      if ('relationships' in body) {
+        context.relationships = body.relationships;
+        if (marks.get(id) === 'client' && !body.relationships.includes('client')) marks.delete(id);
+        tags.set(id, [...tags.get(id).filter(t => !Object.values(humanLabels).includes(t.tag)), ...body.relationships.map(v=>({tag:humanLabels[v],source:'manual',grp:'custom'}))]);
+      }
+      if ('familiarity' in body) context.familiarity = body.familiarity;
+      humanContexts.set(id,context);
+    }
     for (const [key, map] of [['status', marks], ['note', notes]]) {
       if (!(key in body)) continue;
       const before = map.get(id) || null, after = body[key] || null;
@@ -166,6 +181,9 @@
       if (after) map.set(id, after); else map.delete(id);
     }
   }
+  const humanContexts = new Map();
+  const humanLabels = {worked_with:'Worked with',client:'Client',colleague:'Colleague',friend:'Friend',acquaintance:'Acquaintance'};
+  const humanContext = id => humanContexts.get(id) || {relationships:marks.get(id) === 'client' ? ['worked_with','client'] : [],familiarity:null};
   const markRevs = new Map();
   const readQueue = new Set();
   const handles = new Set();
@@ -330,7 +348,7 @@
   });
 
   const row = (p) => ({
-    id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
+    ...humanContext(p.id), id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
     tags: tags.get(p.id), via: [...new Set(currentEdges(p.id).map((e) => e.seed))], lists: lists(p.id), status: marks.get(p.id) || null,
     history_via: [...new Set(edges.get(p.id).map((e) => e.seed))], history_lists: new Set(edges.get(p.id).map((e) => e.seed)).size,
@@ -672,13 +690,13 @@
       }
       if (method !== 'POST') return null;
       if (m[3] === 'mark') {
-        const current = () => ({status: marks.get(id) || null, note: notes.get(id) || null, mark_rev: markRevs.get(id) || ''});
+        const current = () => ({...humanContext(id), status: marks.get(id) || null, note: notes.get(id) || null, mark_rev: markRevs.get(id) || ''});
         for (const key of ['if_match', 'mark_rev']) if (key in body && typeof body[key] !== 'string') fail(key + ' must be text');
         if ('if_match' in body && 'mark_rev' in body && body.if_match !== body.mark_rev) fail('conflicting revisions');
         const expected = body.if_match ?? body.mark_rev;
         if (expected !== undefined && expected !== current().mark_rev) fail('This record changed. Review the latest note before retrying.', 409, {...current(), current: current()});
         setMark(id, markInput(body));
-        if ('status' in body || 'note' in body) { bump(); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + mapRev).toISOString() : ''); }
+        if ('status' in body || 'note' in body || 'relationships' in body || 'familiarity' in body) { bump(); markRevs.set(id, marks.has(id) || notes.has(id) || humanContexts.has(id) ? new Date(Date.now() + mapRev).toISOString() : ''); }
         return {ok: true, ...current()};
       }
       if (m[3] === 'follow-up') {

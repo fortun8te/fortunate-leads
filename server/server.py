@@ -48,7 +48,7 @@ WEB = ROOT / 'web'
 EXT_ORIGIN = 'chrome-extension://fgdbghllamedgihmdcolaggnbhnakjnf'
 CFG = {'db': str(ROOT / 'data' / 'leads.sqlite'), 'port': 8777}
 # Pipeline: (unmarked) -> interested -> contacted -> talking -> client; 'no' = Not a fit (hidden by default).
-STATUSES = ('interested', 'contacted', 'talking', 'client', 'no')
+STATUSES = ('interested', 'contacted', 'talking', 'spoke_before', 'client', 'no')
 POSITIVE = ('interested', 'talking', 'client')   # what used to be good/client: positive few-shot, seed yield, snowball
 POSITIVE_SQL = "('interested','talking','client')"
 LEGACY_STATUS = {'good': 'interested'}           # older clients / saved views
@@ -784,6 +784,7 @@ def lead_rows(conn, rows):
              'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
              'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
+    owner.hydrate(conn, result)
     owner_links = owner_relationships.facts(conn, ids)
     for person in result:
         person.update(owner_links[person['id']])
@@ -1005,13 +1006,14 @@ def api_person(conn, q, b, pid):
 KEEP = object()   # "leave this field as it is"
 
 
-def set_status(conn, pids, status=KEEP, note=KEEP):
+def set_status(conn, pids, status=KEEP, note=KEEP, relationships=KEEP, familiarity=KEEP):
     """Upsert marks. KEEP leaves a field alone; None / '' clears it. A row with neither status nor note is removed."""
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     pids = list(dict.fromkeys(pids))
     affected = set()
-    if status is not KEEP:
+    context_changed = relationships is not KEEP or familiarity is not KEEP
+    if status is not KEEP or context_changed:
         for chunk in chunks(pids):
             placeholders = ','.join('?' * len(chunk))
             affected.update(r[0] for r in conn.execute(
@@ -1021,6 +1023,31 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
     ts = db.now()
     for pid in dict.fromkeys(pids):
         old = conn.execute('SELECT status,note FROM marks WHERE person_id=?', (pid,)).fetchone()
+        if context_changed:
+            existing = conn.execute('SELECT * FROM owner_context WHERE person_id=?', (pid,)).fetchone()
+            before_context = {'relationships': owner.relationships({'status': old['status'] if old else None,
+                               'relationships': json.loads(existing['relationships']) if existing else []}),
+                              'familiarity': existing['familiarity'] if existing else None}
+            after_context = {'relationships': before_context['relationships'] if relationships is KEEP else relationships,
+                             'familiarity': before_context['familiarity'] if familiarity is KEEP else familiarity}
+            conn.execute('INSERT OR REPLACE INTO owner_context VALUES(?,?,?,?)',
+                         (pid, json.dumps(after_context['relationships']), after_context['familiarity'], ts))
+            if before_context != after_context:
+                workflows.event(conn, pid, 'relationship', before=before_context, after=after_context)
+            if relationships is not KEEP and 'client' not in relationships:
+                conn.execute("UPDATE marks SET status=NULL,updated_at=? WHERE person_id=? AND status='client'", (ts, pid))
+                for legacy_tag in conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual' AND lower(trim(tag))='client'", (pid,)):
+                    workflows.event(conn, pid, 'tag', body='Relationship updated', before=legacy_tag['tag'])
+                conn.execute("DELETE FROM tags WHERE person_id=? AND source='manual' AND lower(trim(tag))='client'", (pid,))
+        # A pipeline change must not erase the recorded client history.
+        legacy_client = bool(old and old['status'] == 'client') or bool(conn.execute(
+            "SELECT 1 FROM tags WHERE person_id=? AND source='manual' AND lower(trim(tag))='client'", (pid,)).fetchone())
+        if relationships is KEEP and (status == 'client' or (status is not KEEP and legacy_client)):
+            existing = conn.execute('SELECT * FROM owner_context WHERE person_id=?', (pid,)).fetchone()
+            saved = owner.normalize_relationships((json.loads(existing['relationships']) if existing else []) + ['client'])
+            conn.execute('INSERT OR REPLACE INTO owner_context VALUES(?,?,?,?)',
+                         (pid, json.dumps(saved), existing['familiarity'] if existing else None, ts))
+
         if status is not KEEP and status != 'client':
             legacy = conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual' "
                                   "AND lower(trim(tag))='client'", (pid,)).fetchall()
@@ -1038,7 +1065,7 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
                          + ', '.join(sets + ['updated_at=excluded.updated_at']), rows)
     for chunk in chunks(pids):
         conn.execute(f"DELETE FROM marks WHERE person_id IN ({','.join('?' * len(chunk))}) AND status IS NULL AND coalesce(note,'')=''", chunk)
-    if sets:
+    if sets or context_changed:
         touch(conn, pids)   # status and note feed the qualifier: the person is re-qualified on the next batch
         for pid in pids:
             owner_notes.invalidate(conn, pid)
@@ -1051,6 +1078,14 @@ def set_status(conn, pids, status=KEEP, note=KEEP):
 def api_mark(conn, q, b, pid):
     """Optional if_match/mark_rev compares the last read mark before applying a partial edit."""
     status, note = b.get('status', KEEP), b.get('note', KEEP)
+    relationships, familiarity = b.get('relationships', KEEP), b.get('familiarity', KEEP)
+    if relationships is not KEEP:
+        try:
+            relationships = owner.normalize_relationships(relationships)
+        except ValueError as exc:
+            raise Bad(str(exc)) from exc
+    if familiarity is not KEEP and familiarity is not None and (not isinstance(familiarity, str) or familiarity not in owner.FAMILIARITIES):
+        raise Bad('Choose a known familiarity')
     status = status_in(status) if isinstance(status, str) else status
     if status is not KEEP and status is not None and status not in STATUSES:
         raise Bad('bad status')
@@ -1066,11 +1101,15 @@ def api_mark(conn, q, b, pid):
     try:
         row = person_row(conn, pid)
         current = {key: row[key] for key in ('status', 'note', 'mark_rev')}
+        current['id'] = pid
+        owner.hydrate(conn, [current])
         if expected is not KEEP and expected != current['mark_rev']:
             raise Conflict(current)
-        set_status(conn, [pid], status, note)
+        set_status(conn, [pid], status, note, relationships, familiarity)
         row = person_row(conn, pid)
         result = {key: row[key] for key in ('status', 'note', 'mark_rev')}
+        result['id'] = pid
+        owner.hydrate(conn, [result])
         conn.commit()
         return result
     except Exception:
@@ -1116,21 +1155,31 @@ def api_tag_edit(conn, q, b, pid):
         if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
             raise Bad(f'{key} must be a list of tags')
     additions = [clean_tag(t) for t in b.get('add') or []]
-    client = any(t.casefold() == 'client' for t in additions)
+    relation_names = {label.casefold(): key for key, label in owner.RELATIONSHIPS.items()}
     conn.execute('BEGIN IMMEDIATE')
     try:
-        person_row(conn, pid)
-        add_manual(conn, [pid], [t for t in additions if t.casefold() != 'client'])
+        person = with_owner(conn, dict(person_row(conn, pid)))
+        selected = set(owner.relationships(person))
+        relation_edit = False
+        for t in additions:
+            if t.casefold() in relation_names:
+                selected.add(relation_names[t.casefold()])
+                relation_edit = True
+            else:
+                add_manual(conn, [pid], [t])
         for t in b.get('remove') or []:
             conn.execute("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", (pid, t))
+            if t.casefold() in relation_names:
+                key = relation_names[t.casefold()]
+                selected.discard(key)
+                if key == 'worked_with':
+                    selected.discard('client')
+                relation_edit = True
         rules.sync(conn, [pid])
-        if client:
-            set_status(conn, [pid], status='client')
+        if relation_edit:
+            set_status(conn, [pid], relationships=owner.normalize_relationships(list(selected)))
         touch(conn, [pid])
-        result = {}
-        if client:
-            updated = person_row(conn, pid)
-            result = {'converted_to_status': 'client', 'status': 'client', 'mark_rev': updated['mark_rev']}
+        result = {'relationships': owner.normalize_relationships(list(selected))} if relation_edit else {}
         conn.commit()
         return result
     except Exception:
@@ -1139,7 +1188,11 @@ def api_tag_edit(conn, q, b, pid):
 
 
 def api_tag_rename(conn, q, b):
-    src, dst = clean_tag(b.get('from')), manual_tag(b.get('to'))
+    src, dst = clean_tag(b.get('from')), clean_tag(b.get('to'))
+    fixed = {label.casefold() for label in owner.RELATIONSHIPS.values()}
+    if src.casefold() in fixed or dst.casefold() in fixed:
+        raise Bad('Edit relationships on the profile')
+    dst = manual_tag(dst)
     if src == dst:
         return {'renamed': 0}
     pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (src,))]
@@ -1155,6 +1208,8 @@ def api_tag_rename(conn, q, b):
 
 def api_tag_delete(conn, q, b):
     tag = clean_tag(b.get('tag'))
+    if tag.casefold() in {label.casefold() for label in owner.RELATIONSHIPS.values()}:
+        raise Bad('Edit relationships on the profile')
     pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (tag,))]
     conn.execute("DELETE FROM tags WHERE tag=? AND source='manual'", (tag,))
     touch(conn, pids)
@@ -1429,7 +1484,7 @@ def map_graph(conn, q):
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
     links, seeds_of, tags, alltags = [], {}, {}, {}
     map_owners = {r['id']: dict(r) for r in people}
-    map_owners.update({s['pid']: dict(s) for s in seeds if s['pid']})
+    map_owners.update({s['pid']: dict(s, id=s['pid']) for s in seeds if s['pid']})
     raw_tags = {}
     for chunk in chunks(node_of):
         marks = ','.join('?' * len(chunk))
@@ -1443,6 +1498,7 @@ def map_graph(conn, q):
                 seeds_of[e['person_id']].append(e['seed'])
         for t in conn.execute(f'SELECT t.* FROM ({tag_projection.relation()}) t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
             raw_tags.setdefault(t['person_id'], []).append(dict(t))
+    owner.hydrate(conn, list(map_owners.values()))
     for pid, person in map_owners.items():
         raw = raw_tags.get(pid, [])
         person['manual_tags'] = [t['tag'] for t in raw if t['source'] == 'manual']
@@ -1467,6 +1523,8 @@ def map_graph(conn, q):
         pid = node.get('pid') if node['kind'] == 'seed' else int(node['id'].split(':', 1)[1])
         node.update(owner_links.get(pid, {'owner_relationship': None, 'relationship_owner': OWNER_HANDLE, 'relationship_evidence': []}))
         facts = map_owners.get(pid, {})
+        node['relationships'] = owner.relationships(facts)
+        node['familiarity'] = facts.get('familiarity')
         node['owner_status'] = owner.owner_status(facts)
         node.update(owner.owner_recommendation(facts, node))
     return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
@@ -1960,7 +2018,7 @@ def api_snowball(conn, q, b):
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
         raise Bad('limit must be 1-500')
     statuses = POSITIVE if min_status == 'interested' else ('client',)
-    rows = conn.execute(f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id WHERE m.status IN ({','.join('?' * len(statuses))}) "
+    rows = conn.execute(f"SELECT p.handle FROM people p JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id WHERE m.status IN ({','.join('?' * len(statuses))}) "
                         "AND instr(p.handle, '~')=0 AND coalesce(p.is_private,0)=0 "
                         "AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.seed=p.handle AND l.direction='following') "
                         "ORDER BY m.updated_at DESC LIMIT ?", (*statuses, limit)).fetchall()
@@ -2309,6 +2367,7 @@ def network_context(conn, pids, me=None):
     relevant = sorted({seed for n in out.values() for seed, _ in n['seeds']})
     yields = {}
     good_handles = set()
+    known_handles = set()
     members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
@@ -2318,12 +2377,15 @@ def network_context(conn, pids, me=None):
         distinct = '' if members_ready else 'DISTINCT '
         for r in conn.execute(
                 f"SELECT e.seed, count({distinct}CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
-                f"count({distinct}e.person_id) FROM {membership} e JOIN marks m ON m.person_id=e.person_id "
+                f"count({distinct}e.person_id) FROM {membership} e JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=e.person_id "
                 f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
             yields[r[0]] = (r[1], r[2])
         good_handles.update(r[0] for r in conn.execute(
-            f"SELECT p.handle FROM people p JOIN marks m ON m.person_id=p.id "
+            f"SELECT p.handle FROM people p JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id "
             f"WHERE m.status IN {POSITIVE_SQL} AND p.handle IN ({slots})", chunk))
+        known_handles.update(r[0] for r in conn.execute(
+            f"SELECT p.handle FROM people p JOIN owner_context oc ON oc.person_id=p.id "
+            f"WHERE oc.relationships!='[]' AND p.handle IN ({slots})", chunk))
     for pid, n in out.items():
         seeds = {s for s, _ in n['seeds']}
         mine = {d for s, d in n['seeds'] if me and s == me}
@@ -2340,6 +2402,7 @@ def network_context(conn, pids, me=None):
         if best:
             n['seed_yield'], n['seed_marked'] = round(best[0], 3), best[1]
         n['client_seeds'] = len(others & good_handles)
+        n['known_seeds'] = len((others & known_handles) - good_handles)
     return out
 
 
@@ -2450,6 +2513,7 @@ def with_owner(conn, p):
     m = conn.execute('SELECT status, note FROM marks WHERE person_id=?', (p['id'],)).fetchone()
     p['status'], p['note'] = (m['status'], m['note']) if m else (None, None)
     p['manual_tags'] = sorted(r[0] for r in conn.execute("SELECT tag FROM tags WHERE person_id=? AND source='manual'", (p['id'],)))
+    owner.hydrate(conn, [p])
     return p
 
 
@@ -2681,8 +2745,8 @@ FEWSHOT_TAG_MAX = getattr(qualify, 'FEWSHOT_TAG_MAX', 6)
 
 def feedback_example(conn, pid):
     """A small, identity-stable example from Michael's mark and manual tags only."""
-    r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status FROM people p
-        LEFT JOIN marks m ON m.person_id=p.id WHERE p.id=?
+    r = conn.execute(f"""SELECT p.id,p.handle,p.name,p.bio,m.status AS status FROM people p
+        LEFT JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id WHERE p.id=?
         AND (m.status IN ('interested','talking','client','no') OR
              (m.status IS NOT 'no' AND EXISTS(SELECT 1 FROM tags t WHERE t.person_id=p.id
                 AND t.source='manual' AND t.tag='client' COLLATE NOCASE)))
@@ -2701,19 +2765,19 @@ def feedback_example(conn, pid):
 
 def fewshot(conn):
     """Use bounded owner examples for future calls; batch broad re-runs after several new marks."""
-    n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('interested','talking','client','no')").fetchone()[0]
+    n = conn.execute(f"SELECT count(*) FROM ({owner.feedback_marks_sql()}) m WHERE m.status IN ('interested','talking','client','no')").fetchone()[0]
     cur = db.get_setting(conn, 'fewshot') or {}
     prior = cur.get('examples') or []
     selected_n = cur.get('n', 0)
     count_due = bool(cur) and abs(n - selected_n) >= max(FEWSHOT_CHANGE, selected_n // 5)
     old_format = any('person_id' not in e or 'feedback_source' not in e for e in prior)
-    latest_client = conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+    latest_client = conn.execute(f"""SELECT p.id FROM ({owner.feedback_marks_sql()}) m JOIN people p ON p.id=m.person_id
         WHERE m.status='client' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
           AND p.handle!='fortun8te' COLLATE NOCASE
           AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
         ORDER BY m.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
-    tagged_client = conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
-        LEFT JOIN marks m ON m.person_id=p.id
+    tagged_client = conn.execute(f"""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+        LEFT JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id
         WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
           AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
           AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
@@ -2729,14 +2793,14 @@ def fewshot(conn):
             rebuild = True
     if rebuild:
         ex = []
-        marked_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+        marked_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM ({owner.feedback_marks_sql()}) m JOIN people p ON p.id=m.person_id
                 WHERE m.status IN {POSITIVE_SQL} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
                   AND p.handle!='fortun8te' COLLATE NOCASE
                   AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
                 ORDER BY CASE m.status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 ELSE 2 END,
                          m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
-        tagged_ids = [r[0] for r in conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
-            LEFT JOIN marks m ON m.person_id=p.id
+        tagged_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+            LEFT JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id
             WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
               AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
               AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
@@ -2748,7 +2812,7 @@ def fewshot(conn):
             good_ids.pop()  # one slot for Michael's manual Client tag, even when marks fill the cap
         good_ids.extend(extra_tagged[:FEWSHOT_MAX - len(good_ids)])
         ex.extend(e for e in (feedback_example(conn, pid) for pid in good_ids) if e)
-        no_ids = [r[0] for r in conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+        no_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM ({owner.feedback_marks_sql()}) m JOIN people p ON p.id=m.person_id
             WHERE m.status='no' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
               AND p.handle!='fortun8te' COLLATE NOCASE
               AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)

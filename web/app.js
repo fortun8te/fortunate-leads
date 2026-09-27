@@ -76,13 +76,13 @@ document.addEventListener('error', (e) => {
 
 // ---------- constants ----------
 // The pipeline, in order. Keys 1-5 set it, 0 clears, m steps forward. 'no' hides the person from the default views.
-const STATUSES = ['interested', 'contacted', 'talking', 'client', 'no'];
-const SLABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', client: 'Client', no: 'Not a fit' };
+const STATUSES = ['interested', 'contacted', 'talking', 'spoke_before', 'no'];
+const SLABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', spoke_before: 'Spoke before', client: 'Client', no: 'Not a fit' };
 const SDESC = { interested: 'Worth contacting', contacted: 'You sent the first message', talking: 'They replied, a conversation is going',
-  client: 'Paying client', no: 'Not for you: hidden from the list' };
+  spoke_before: 'You talked before; no current conversation implied', client: 'A current or past client', no: 'Not for you: hidden from the list' };
 const LEGACY_STATUS = { good: 'interested' };
 const slabel = (s) => SLABEL[s] || ucf(s);
-const CYCLE = [null, 'interested', 'contacted', 'talking', 'client'];
+const CYCLE = [null, 'interested', 'contacted', 'talking', 'spoke_before'];
 const GROUPS = [['ai', 'AI verdict'], ['role', 'Role'], ['niche', 'Niche'], ['signal', 'Signal'], ['size', 'Size']];
 const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
 const BIO_OPTS = [['1', 'Yes'], ['0', 'No']];
@@ -1056,7 +1056,7 @@ async function refreshPerson(id) {
     notePolls.set(id, poll);
     const r = S.rows.find((x) => x.id === id);
     if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, business_fit: p.business_fit,
-      connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev,
+      relationships: p.relationships, familiarity: p.familiarity, connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev,
       owner_relationship: p.owner_relationship, relationship_owner: p.relationship_owner, relationship_evidence: p.relationship_evidence, owner_status: p.owner_status, owner_conflict: p.owner_conflict, reachable: p.reachable, manual_tags: p.manual_tags });
   } catch (e) {
     if (S.open !== id || !S.person || personReads.get(id) !== version) return;
@@ -1180,8 +1180,7 @@ function renderDetail() {
     </div>
     ${overviewTags.length || p.bio ? `<section class="d-sec d-overview">${overviewTags.length ? `<div class="d-tags d-overview-tags">${overviewTags.map(t => tagChip(t)).join('')}</div>` : ''}${p.bio ? `<p class="d-overview-bio">${esc(p.bio)}</p>` : ''}</section>` : ''}
     <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what you discussed, what matters…">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
-    <section class="d-sec d-labels-section d-status-section"><h4>Relationship</h4>
-      <div class="marks" role="group" aria-label="Relationship">${STATUSES.map((s) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" aria-label="${esc(slabel(s))}: ${esc(SDESC[s])}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
+    <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
       <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
@@ -1230,6 +1229,12 @@ $('#detail').addEventListener('click', async (e) => {
   if (rmt) { e.stopPropagation(); return editTags(p.id, [], [rmt.dataset.rmtag]); }
   const tag = e.target.closest('[data-tag]');
   if (tag) return clickTag(tag.dataset.tag, e);
+  const suggestion = e.target.closest('[data-note-fact]');
+  if (suggestion) return applyNoteFact(p.id, Number(suggestion.dataset.noteFact));
+  const rel = e.target.closest('[data-human-relationship]');
+  if (rel) return updateHumanRelationship(p.id, 'relationships', rel.dataset.humanRelationship);
+  const familiarity = e.target.closest('[data-familiarity]');
+  if (familiarity) return updateHumanRelationship(p.id, 'familiarity', familiarity.dataset.familiarity);
   const m = e.target.closest('[data-s]');
   if (m) return mark(p.id, p.status === m.dataset.s ? null : m.dataset.s);
   const sd = e.target.closest('[data-seed]');
@@ -1290,6 +1295,65 @@ function noteConflictHTML(id) {
   if (!e?.conflict) return '';
   return `<p>This note changed elsewhere. Your draft is above.</p><p><b>Saved note</b><br>${esc(e.remoteNote || 'Empty note')}</p><div class="workflow-actions"><button class="btn" type="button" data-note-resolution="saved" ${e.pending ? 'disabled' : ''}>Use saved note</button><button class="btn" type="button" data-note-resolution="draft" ${e.pending ? 'disabled' : ''}>Save my draft instead</button></div>`;
 }
+const HUMAN_RELATIONSHIPS = { worked_with: 'Worked with', client: 'Client', colleague: 'Colleague', friend: 'Friend', acquaintance: 'Acquaintance' };
+const FAMILIARITY_LABELS = { briefly: 'Briefly', know_them: 'Know them', close: 'Close' };
+function humanRelationships(p) {
+  return Array.isArray(p.relationships) ? p.relationships : p.status === 'client' ? ['client', 'worked_with'] : [];
+}
+function humanRelationshipHTML(p) {
+  const selected = humanRelationships(p), disabled = p.loading || p.failed ? 'disabled' : '';
+  return `<h4>How you know them</h4><div class="marks relationship-choices" role="group" aria-label="How you know them">${Object.entries(HUMAN_RELATIONSHIPS).map(([key,label]) => `<button type="button" id="d-relationship-${key}" data-human-relationship="${key}" aria-label="${label} relationship" aria-pressed="${selected.includes(key)}" class="${selected.includes(key) ? 'on' : ''}" ${disabled}><i></i><b>${label}</b></button>`).join('')}</div>
+    <p class="relationship-hint">Past or present. Add detail in your note.</p>
+    <div class="relationship-familiarity"><span>How well?</span><div class="marks" role="group" aria-label="How well you know them">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
+    <h4 class="relationship-conversation-title">Conversation</h4><div class="marks" role="group" aria-label="Conversation">${STATUSES.filter(s => s !== 'no').map(s => `<button type="button" id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${p.status === s ? 'on' : ''}" ${disabled}><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
+    <button type="button" id="d-status-no" data-s="no" aria-pressed="${p.status === 'no'}" class="relationship-not-fit ${p.status === 'no' ? 'on' : ''}" ${disabled}>${p.status === 'no' ? '✓ ' : ''}Not a business fit</button>`;
+}
+function updateHumanRelationship(id, field, value) {
+  return saveHumanContext(id, p => {
+    if (field === 'relationships') {
+      const current = humanRelationships(p);
+      return { relationships: current.includes(value) ? current.filter(v => v !== value && !(value === 'worked_with' && v === 'client')) : [...current, value] };
+    }
+    return { familiarity: p.familiarity === value ? null : value };
+  });
+}
+function saveHumanContext(id, update) {
+  return serializeMutation(async () => {
+    try {
+      await noteQueue.flush(id);
+      const p = S.person?.id === id ? S.person : await api.get(`/api/person/${id}`);
+      if (p.loading || p.failed) return;
+      const patch = update(p);
+      if (!patch) return;
+      invalidatePersonRead(id);
+      await api.post(`/api/person/${id}/mark`, { ...patch, if_match: p.mark_rev ?? '' });
+      await refreshPerson(id);
+      loadCounts(); loadFacetsSoon();
+    } catch (error) {
+      if (error.status === 409) await refreshPerson(id);
+      toast(error.status === 409 ? 'This profile changed. Review it and try again.' : 'Could not save relationship');
+    }
+  });
+}
+function noteFactPatch(p, fact) {
+  const kinds = { current_client: 'client', past_client: 'client', worked_with: 'worked_with', colleague: 'colleague', friend: 'friend', acquaintance: 'acquaintance' };
+  const stages = { in_conversation: 'talking', contacted: 'contacted', spoke_before: 'spoke_before', not_a_fit: 'no' };
+  const relation = kinds[fact.kind];
+  if (relation && !humanRelationships(p).includes(relation)) return { relationships: [...new Set([...humanRelationships(p), relation, ...(relation === 'client' ? ['worked_with'] : [])])] };
+  if (Object.hasOwn(FAMILIARITY_LABELS, fact.kind) && p.familiarity !== fact.kind) return { familiarity: fact.kind };
+  const status = stages[fact.kind];
+  if (status && (!p.status || p.status === 'client')) return { status };
+  return null;
+}
+function applyNoteFact(id, index) {
+  const original = S.person?.id === id ? S.person.note_interpretation?.facts?.[index] : null;
+  if (!original) return;
+  return saveHumanContext(id, p => {
+    const fact = p.note_interpretation?.facts?.find(f => f.kind === original.kind && f.quote === original.quote);
+    if (!fact || !p.note?.includes(fact.quote) || p.note_interpretation.state !== 'ready') return null;
+    return noteFactPatch(p, fact);
+  });
+}
 function noteInsightsHTML(p) {
   const state = p.note_interpretation;
   const draft = noteQueue.peek(p.id);
@@ -1297,14 +1361,16 @@ function noteInsightsHTML(p) {
   if (state.state === 'disabled') return '<span class="muted">Note saved. Local processing is off.</span>';
   if (state.state === 'pending') return '<span class="muted">Reading your note locally…</span>';
   if (state.state === 'unavailable' || state.state === 'failed') return '<span class="muted">Note saved. Local understanding is unavailable.</span>';
-  const relationships = { current_client: 'client', in_conversation: 'talking', not_a_fit: 'no' };
-  const facts = (state.facts || []).filter(f => f.label && typeof f.quote === 'string' && p.note.includes(f.quote) && !(relationships[f.kind] && relationships[f.kind] === p.status));
-  const proposed = new Set(facts.map(f => relationships[f.kind]).filter(Boolean));
-  return state.state === 'ready' && facts.length ? facts.map(f => {
-    const status = relationships[f.kind];
-    const action = status && !p.status && proposed.size === 1 ? ` <button class="btn ghost" type="button" data-s="${status}">Set ${esc(slabel(status))}</button>` : '';
-    return `<p><span class="muted">${esc(f.label)}:</span> “${esc(f.quote)}”${action}</p>`;
-  }).join('') : '';
+  if (state.state !== 'ready') return '';
+  return (state.facts || []).map((fact, index) => {
+    if (!fact.label || typeof fact.quote !== 'string' || !p.note.includes(fact.quote)) return '';
+    const patch = noteFactPatch(p, fact);
+    const known = ['current_client','past_client','worked_with','colleague','friend','acquaintance'].includes(fact.kind);
+    if (known && !patch) return '';
+    const label = patch?.relationships ? HUMAN_RELATIONSHIPS[fact.kind === 'current_client' || fact.kind === 'past_client' ? 'client' : fact.kind] : patch?.familiarity ? FAMILIARITY_LABELS[patch.familiarity] : patch?.status ? slabel(patch.status) : '';
+    const action = patch ? ` <button class="btn ghost" type="button" data-note-fact="${index}">Set ${esc(label)}</button>` : '';
+    return `<p><span class="muted">${esc(fact.label)}:</span> “${esc(fact.quote)}”${action}</p>`;
+  }).join('');
 }
 function renderNoteState(id) {
   if ($('#note-st')) $('#note-st').textContent = noteStatus(id);
@@ -1692,8 +1758,8 @@ const T = {
     try { this.rules = await api.get('/api/tag-rules'); this.rulesErr = null; } catch (e) { this.rulesErr = e.status === 404 ? 'missing' : 'failed'; if (this.rulesErr === 'missing') this.rules = null; }
     this.renderRules();
   },
-  // Manual labels can be renamed or deleted; generated tags follow their source.
-  editable: (t) => t.sources.includes('manual'),
+  // Custom labels can be renamed or deleted. Relationship choices belong to each person.
+  editable: (t) => t.grp !== 'relationship' && t.sources.includes('manual'),
   render() {
     const q = this.q.toLowerCase();
     this.renderGroups(q);

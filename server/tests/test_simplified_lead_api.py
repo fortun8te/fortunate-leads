@@ -24,27 +24,28 @@ class SimplifiedLeadApi(Base):
         self.call(self.mark, {'note': 'We worked together.'})
         code, out = self.call(self.tags, {'add': ['Friend', ' cLiEnT ']})
         self.assertEqual(code, 200)
-        self.assertEqual(out['converted_to_status'], 'client')
+        self.assertIn('client', out['relationships'])
         person = self.call(f'/api/person/{self.pid}')[1]
-        self.assertEqual(person['status'], 'client')
+        self.assertIsNone(person['status'])
         self.assertTrue(person['reachable'])
         self.assertEqual(person['note'], 'We worked together.')
-        self.assertEqual([r[0] for r in self.conn.execute('SELECT tag FROM tags')], ['Friend'])
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT tag FROM tags')], [])
+        self.assertIn('friend', person['relationships'])
         self.assertEqual(self.call(self.tags, {'add': ['Client']})[0], 200)
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM activity WHERE kind='status'").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM activity WHERE kind='relationship'").fetchone()[0], 1)
 
-    def test_explicit_client_submission_replaces_prior_status_and_preserves_history(self):
+    def test_explicit_client_submission_preserves_stage_and_history(self):
         self.conn.execute("INSERT INTO tags VALUES(?,'Client','signal','manual')", (self.pid,))
         self.conn.commit()
         for status in ('interested', 'contacted', 'talking', 'no'):
             self.call(self.mark, {'status': status, 'note': 'Keep my note'})
             code, out = self.call(self.tags, {'add': ['New', 'Client']})
             self.assertEqual(code, 200)
-            self.assertEqual(out['converted_to_status'], 'client')
-            self.assertEqual(self.conn.execute('SELECT status,note FROM marks').fetchone()[:], ('client', 'Keep my note'))
+            self.assertIn('client', out['relationships'])
+            self.assertEqual(self.conn.execute('SELECT status,note FROM marks').fetchone()[:], (status, 'Keep my note'))
             self.assertEqual({r[0] for r in self.conn.execute('SELECT tag FROM tags')}, {'New'})
             latest = self.conn.execute("SELECT before_value,after_value FROM activity WHERE kind='status' ORDER BY id DESC LIMIT 1").fetchone()
-            self.assertEqual(latest[:], ('"' + status + '"', '"client"'))
+            self.assertEqual(latest['after_value'], '"' + status + '"')
 
     def test_legacy_client_label_survives_and_can_be_removed(self):
         self.conn.execute("INSERT INTO tags VALUES(?,'Client','signal','manual')", (self.pid,))

@@ -53,7 +53,7 @@ test('older detail responses cannot restore a pre-save relationship or note', as
 });
 test('note suggestions show exact quotes and only offer a non-conflicting relationship',()=>{
   const ctx=vm.createContext({noteQueue:{peek:()=>null},esc:String,slabel:s=>({client:'Client',talking:'Talking',no:'Not a fit'}[s])});
-  vm.runInContext(source.slice(source.indexOf('function noteInsightsHTML('),source.indexOf('function renderNoteState(')),ctx);
+  vm.runInContext(source.slice(source.indexOf('const HUMAN_RELATIONSHIPS ='),source.indexOf('function renderNoteState(')),ctx);
   const person={id:1,note:'He is my client.',note_interpretation:{state:'ready',facts:[{kind:'current_client',label:'Current client',quote:'He is my client.'}]}};
   assert.match(ctx.noteInsightsHTML(person),/He is my client.*Set Client/);
   assert.equal(ctx.noteInsightsHTML({...person,status:'client'}),'');
