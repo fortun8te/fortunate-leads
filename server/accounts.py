@@ -463,6 +463,108 @@ def kinds_for(conn, row, kinds, now):
             and not (k == 'profile' and main_bios_reserved(conn, row))]
 
 
+def pending_profile_jobs(conn, job):
+    """Read only one indexed target group, never the full profile backlog."""
+    handle = db.norm_handle(job['handle'])
+    target = job['target_ig_id'] if 'target_ig_id' in job.keys() else None
+    person = conn.execute('SELECT ig_id,handle FROM people WHERE ' + ('ig_id=?' if target else 'handle=?'),
+                          (target or handle,)).fetchone()
+    target = target or (person['ig_id'] if person else None)
+    canonical = person['handle'] if person else handle
+    aliases = tuple(dict.fromkeys((job['handle'], handle, canonical, '@' + canonical)))
+    slots = ','.join('?' * len(aliases))
+    rows = conn.execute("SELECT j.*,p.ig_id AS known_ig_id,p.handle AS known_handle,"
+                        "bound.handle AS bound_handle FROM jobs j "
+                        "LEFT JOIN people p ON p.handle=j.handle COLLATE NOCASE "
+                        "LEFT JOIN people bound ON bound.ig_id=j.target_ig_id "
+                        "WHERE j.id IN (SELECT id FROM jobs WHERE kind='profile' AND state IN ('queued','leased') "
+                        "AND target_ig_id=? UNION SELECT id FROM jobs WHERE kind='profile' "
+                        f"AND state IN ('queued','leased') AND handle COLLATE NOCASE IN ({slots})) ORDER BY j.id",
+                        (target, *aliases)).fetchall()
+    result = []
+    for raw in rows:
+        row = dict(raw)
+        handle = db.norm_handle(row['handle'])
+        # Legacy callers occasionally saved an @handle or profile URL.
+        if not row['known_ig_id'] and handle != row['handle']:
+            known = conn.execute('SELECT ig_id,handle FROM people WHERE handle=?', (handle,)).fetchone()
+            if known:
+                row['known_ig_id'], row['known_handle'] = known['ig_id'], known['handle']
+        row_target = row['target_ig_id'] or row['known_ig_id']
+        if target and row_target and row_target != target:
+            continue  # a reused handle must not inherit an older identity's request
+        row_canonical = row['bound_handle'] or (row['known_handle'] if not row['target_ig_id'] else None) or handle
+        if row_target != row['target_ig_id'] or row_canonical != row['handle']:
+            renamed = row_canonical != handle and row['state'] == 'leased'
+            conn.execute("UPDATE jobs SET target_ig_id=?,handle=?,"
+                         "state=CASE WHEN ? THEN 'queued' ELSE state END,"
+                         "lane=CASE WHEN ? THEN NULL ELSE lane END,"
+                         "lease_token=CASE WHEN ? THEN NULL ELSE lease_token END,"
+                         "leased_until=CASE WHEN ? THEN NULL ELSE leased_until END WHERE id=?",
+                         (row_target, row_canonical, renamed, renamed, renamed, renamed, row['id']))
+            row.update(target_ig_id=row_target, handle=row_canonical)
+            if renamed:
+                row.update(state='queued', lane=None, lease_token=None, leased_until=None)
+        row['target_key'] = ('id', row_target) if row_target else ('handle', row_canonical)
+        result.append(row)
+    return result
+
+
+def profile_job_siblings(conn, job):
+    rows = pending_profile_jobs(conn, job)
+    match = next((r for r in rows if r['id'] == job['id']), None)
+    if match:
+        return [r for r in rows if r['target_key'] == match['target_key']]
+    target = job['target_ig_id']
+    handle = db.norm_handle(job['handle'])
+    return [r for r in rows if (target and r['target_ig_id'] == target) or r['handle'] == handle]
+
+
+def coalesce_profile_jobs(conn, job, now=None):
+    """Keep one pending request per target, retaining cancelled rows as history.
+
+    Caller owns the write transaction. Newest requested time, longest delay and
+    highest manual priority survive; a coalesced row is never reported as read.
+    """
+    now = now or datetime.now(timezone.utc)
+    groups = {}
+    for row in pending_profile_jobs(conn, job):
+        groups.setdefault(row['target_key'], []).append(row)
+    active = (db.get_setting(conn, 'instagram_request_gate') or {}).get('active') or {}
+    history = []
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        leased = [r for r in rows if r['state'] == 'leased' and later(r['leased_until'], now)]
+        winner = next((r for r in leased if active.get('kind') == 'profile' and r['lane'] == active.get('lane')),
+                      leased[0] if leased else rows[0])
+        retries = [r['retry_not_before'] for r in rows if r['retry_not_before']]
+        retry = max(retries, key=utc) if retries else None
+        created = [r['created_at'] for r in rows if r['created_at']]
+        created_at = max(created, key=utc) if created else None
+        delayed = later(retry, now)
+        conn.execute("UPDATE jobs SET priority=?,attempts=?,limit_hits=?,retry_not_before=?,created_at=?,"
+                     "state=CASE WHEN ? THEN 'queued' ELSE state END,"
+                     "lane=CASE WHEN ? THEN NULL ELSE lane END,"
+                     "lease_token=CASE WHEN ? THEN NULL ELSE lease_token END,"
+                     "leased_until=CASE WHEN ? THEN NULL ELSE leased_until END WHERE id=?",
+                     (max(r['priority'] or 0 for r in rows), max(r['attempts'] or 0 for r in rows),
+                      max(r['limit_hits'] or 0 for r in rows), retry, created_at,
+                      delayed, delayed, delayed, delayed, winner['id']))
+        for row in rows:
+            if row['id'] != winner['id']:
+                conn.execute("UPDATE jobs SET state='cancelled',lane=NULL,lease_token=NULL,leased_until=NULL WHERE id=?",
+                             (row['id'],))
+                history.append({'id': row['id'], 'kept': winner['id'], 'reason': 'duplicate_profile_request', 'at': iso(now)})
+    if history:
+        previous = db.get_setting(conn, 'profile_jobs_coalesced') or []
+        db.set_setting(conn, 'profile_jobs_coalesced', (previous + history)[-50:])
+    # Return the surviving pending row in the shape used by the lease planner.
+    survivor = next((row for rows in groups.values() for row in rows if row['id'] not in {h['id'] for h in history}), None)
+    return conn.execute('SELECT j.*,NULL AS owner,NULL AS prev_lane,NULL AS released_why FROM jobs j WHERE j.id=?',
+                        (survivor['id'],)).fetchone() if survivor else None
+
+
 def pick_job(conn, lane, kinds, now, allow_page_size=True):
     """The next job for this lane (inside the caller's write transaction), or None. Lists first: its own list,
     then lists another lane left mid-way (they have a cursor), then by priority."""
@@ -569,18 +671,32 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             return None
         kinds = ['profile']
         marks = '?'
-    return conn.execute(
-        f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
+    query = f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
+          AND (j.kind!='profile' OR NOT EXISTS (
+            SELECT 1 FROM jobs busy WHERE busy.kind='profile' AND busy.state='leased'
+              AND busy.id!=j.id AND busy.leased_until>=?
+              AND ((j.target_ig_id IS NOT NULL AND busy.target_ig_id=j.target_ig_id)
+                   OR busy.handle=j.handle COLLATE NOCASE)))
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
           AND (j.kind='profile' OR {viewer_filter}){follower_filter}{page_size_filter}
         ORDER BY j.kind='list' DESC,
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
-          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, ts, lane, *ok, *route_waiting, *viewer_args, prefer_following, lane)).fetchone()
+          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1"""
+    args = (*kinds, ts, ts, ts, lane, *ok, *route_waiting, *viewer_args, prefer_following, lane)
+    while True:
+        candidate = conn.execute(query, args).fetchone()
+        if not candidate or candidate['kind'] != 'profile':
+            return candidate
+        survivor = coalesce_profile_jobs(conn, candidate, now)
+        if survivor and not later(survivor['retry_not_before'], now) and (
+                survivor['state'] == 'queued' or not later(survivor['leased_until'], now)):
+            return survivor
+        # Coalescing can reveal a longer target delay or an existing live lease.
+        # That indexed group is now excluded; select the next eligible target.
 
 
 def took(conn, lane, job):

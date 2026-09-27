@@ -71,15 +71,16 @@ WHERE instr(p.handle,'~')=0 AND coalesce(p.is_private,0)=0 AND p.handle!='fortun
  AND (owner_status IN ('interested','talking','client') OR relationships!='[]' OR manual_fit
       OR (coalesce(v.tier,'unread')!='unread' AND v.content_fit>=45))
  AND ((can_followers AND coalesce(p.followers,1)>0) OR (can_following AND coalesce(p.following,1)>0))
+ AND (:following_only=0 OR (can_following AND coalesce(p.following,1)>0))
 ORDER BY CASE owner_status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 WHEN 'interested' THEN 2 ELSE 3 END,
  (relationships!='[]') DESC, manual_fit DESC, feedback_at DESC, v.content_fit DESC, observed_sources DESC,p.id
 LIMIT :limit
 """
 
 
-def suggest(conn, limit=6):
+def suggest(conn, limit=6, *, following_only=False):
     limit = min(MAX_RESULTS, max(1, int(limit)))
-    rows = conn.execute(CANDIDATES, {'rank_pool': RANK_POOL, 'owner_pool': OWNER_POOL, 'limit': limit})
+    rows = conn.execute(CANDIDATES, {'rank_pool': RANK_POOL, 'owner_pool': OWNER_POOL, 'limit': limit, 'following_only': bool(following_only)})
     suggestions = []
     for row in rows:
         status = row['owner_status']
@@ -146,20 +147,29 @@ def queue_when_idle(conn, row, now=None):
     if (not enabled(conn) or control.stage_paused(conn, 'lists')
             or control.shared_collection_wait(conn, now) or not accounts.healthy(row, now)
             or control.lane_wait(conn, row, 'list', now)
-            or accounts.follower_route_wait(conn, row, now)
             or 'list' not in accounts.kinds_for(conn, row, ['list'], now)):
         return None
     if _added_today(conn, now.date().isoformat()) >= MAX_AUTO_DAILY:
         return None
-    # A delayed or other-lane list still takes precedence. Profile work is a
-    # separate backlog and must not prevent a list-capable lane finding lists.
-    if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state IN ('queued','leased') LIMIT 1").fetchone():
+    # A healthy lane finishes available work first. Future retries must not
+    # block unrelated discovery, but an active list keeps the queue bounded.
+    if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state='leased' "
+                    "AND leased_until>? LIMIT 1", (accounts.iso(now),)).fetchone():
         return None
-    candidates = suggest(conn, 1)['suggestions']
+    if accounts.pick_job(conn, row['lane_id'], ['list'], now) is not None:
+        return None
+    # Automatic exploration never recruits the protected main account.
+    all_accounts = conn.execute('SELECT * FROM accounts').fetchall()
+    if not accounts.keeps_lists(conn, row, now, accounts.list_share(conn, all_accounts)):
+        return None
+    route_wait = accounts.follower_route_wait(conn, row, now)
+    candidates = suggest(conn, 1, following_only=bool(route_wait))['suggestions']
     if not candidates:
         return None
     candidate = candidates[0]
-    queued = [direction for direction in candidate['directions']
+    directions = [direction for direction in candidate['directions']
+                  if not (route_wait and direction == 'followers')]
+    queued = [direction for direction in directions
               if db.queue_list(conn, candidate['handle'], direction, priority=-10)]
     if not queued:
         return None
