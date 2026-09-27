@@ -1,0 +1,48 @@
+name: Bug audit
+
+on:
+  push:
+    branches: [fix/deep-bug-audit-2026-09-27]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bug-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
+      - name: Package tracked audit source
+        run: git archive --format=tar -o /tmp/audit-source.tar HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audit-source
+          path: /tmp/audit-source.tar
+          retention-days: 1
+      - name: Runtime versions
+        run: |
+          python3 --version
+          node --version
+          python3 -c "import sqlite3; print(sqlite3.sqlite_version)"
+      - name: Server regression tests
+        run: python3 -m unittest discover -s server/tests
+      - name: Sidecar unit tests
+        if: ${{ !cancelled() }}
+        run: python3 -m unittest sidecar/test_laya.py
+      - name: Extension regression tests
+        if: ${{ !cancelled() }}
+        run: node --test extension/test/*.test.mjs
+      - name: Web regression tests
+        if: ${{ !cancelled() }}
+        run: node --test tests/web/*.test.mjs
+      - name: Simulated end-to-end tests
+        if: ${{ !cancelled() }}
+        run: node tests/e2e/driver.mjs --lanes 1,2,4
