@@ -341,6 +341,7 @@ async function fail(job, bad, what, res, bucket) {
   if (local) return;
   const cd = st.cool[bucket] && st.cool[bucket].until > now ? st.cool[bucket].until : 0;
   await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
+    retry_after: bad.retryAt ? iso(bad.retryAt) : null,
     reason: bad.reason || null,
     message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
 }

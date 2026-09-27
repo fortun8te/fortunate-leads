@@ -14,7 +14,7 @@ test('classify: ok list page and ok profile', () => {
 test('classify: soft blocks', () => {
   assert.equal(FL.classify(res({ users: [], has_more: true, status: 'ok' }), 'list').code, 'soft_block');
   assert.equal(FL.classify(res({ users: [], next_max_id: 'x', status: 'ok' }), 'list').code, 'soft_block');
-  assert.equal(FL.classify(res({ status: 'fail', message: 'something' }), 'list').code, 'soft_block');
+  assert.equal(FL.classify(res({ status: 'fail', message: 'something' }), 'list').code, 'other');
   assert.equal(FL.classify(res({ status: 'fail', message: 'feedback_required' }), 'profile').code, 'soft_block');
 });
 test('classify: rate limits incl. Retry-After and 401 please-wait', () => {

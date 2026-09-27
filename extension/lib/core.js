@@ -10,7 +10,7 @@
     cooldownBase: 10 * MIN, cooldownCap: 6 * HOUR, strikes: 3, strikePause: 2 * HOUR,
     hitPause: 5 * MIN,                 // any hit pauses the whole lane at least this long, whatever the bucket
     netBase: 30e3, netCap: 10 * MIN,   // tab / network trouble: local backoff, never counted as an Instagram limit
-    otherBase: 2 * MIN, otherCap: 30 * MIN, // unknown Instagram answers: escalating backoff so they never hammer
+    otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
   const KINDS = ['list', 'profile'];
   // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
@@ -117,7 +117,7 @@
     if (!status) return out('network', res.aborted ? 'timeout' : res.tabError ? 'tab' : 'fetch');
     if (!ok) return out('other', 'http_' + status);
     if (!json) return /login|password/.test(raw) ? out('login', 'html_login') : out('other', 'not_json');
-    if (json.status && json.status !== 'ok') return out('soft_block', 'status_' + String(json.status).slice(0, 20));
+    if (json.status && json.status !== 'ok') return out('other', 'status_' + String(json.status).slice(0, 20));
     if (kind === 'list') return listCheck(json, ctx || {}, out);
     if (kind === 'profile' && !mapProfile(userOf(json))) return out('other', 'no_user');
     return null;

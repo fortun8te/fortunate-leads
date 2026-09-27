@@ -36,7 +36,7 @@ class BugTest(Base):
         job = self.call('/api/ext/next')[1]['job']
         self.assertEqual(self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'retry_at': 'garbage'})[0], 200)
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'queued')
-        self.assertIsNotNone(self.call('/api/scraper')[1]['ext']['cooldown_until'])
+        self.assertIsNotNone(self.call('/api/scraper')[1]['accounts'][0]['cool']['list'])
 
     def test_search_underscore_and_percent_are_literal(self):
         for h in ('a_b', 'axb', 'cxd'):

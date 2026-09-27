@@ -144,7 +144,7 @@ test('pacing unchanged: list 7-12 s, profile 35-70 s; requests logged for the ho
   assert.equal(FL.rateOf(st, T0 + MIN).requests_hour, 2);
   assert.equal(FL.rateOf(st, T0 + 2 * HOUR).requests_hour, 0);
 });
-test('backoff: network 30 s → 10 min cap, other 2 → 30 min cap, success resets', () => {
+test('backoff: network 30 s → 10 min cap, other 2 → 5 min cap, success resets', () => {
   const st = FL.fresh();
   FL.backoff(st, T0, 'net'); assert.equal(st.nextAt, T0 + 30e3);
   FL.backoff(st, T0, 'net'); assert.equal(st.nextAt, T0 + 60e3);
@@ -153,7 +153,7 @@ test('backoff: network 30 s → 10 min cap, other 2 → 30 min cap, success rese
   const o = FL.fresh();
   FL.backoff(o, T0, 'other'); assert.equal(o.nextAt, T0 + 2 * MIN);
   for (let i = 0; i < 10; i++) FL.backoff(o, T0, 'other');
-  assert.equal(o.nextAt, T0 + 30 * MIN);
+  assert.equal(o.nextAt, T0 + 5 * MIN);
   FL.succeeded(o); assert.deepEqual(o.streak, { other: 0, net: 0 });
 });
 test('lane: busy until expiry', () => {

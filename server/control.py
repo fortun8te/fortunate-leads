@@ -97,11 +97,10 @@ def lane_wait(conn, row, kind, now):
     used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
     if budget and used >= budget:   # 0 = no daily limit
         return 'Daily request budget reached', int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
-    cool = row['list_cool_until'] if kind == 'list' else None
-    for until in (cool, row['cooldown_until']):
-        u = utc(until) if until else None
-        if u and u > now:
-            return 'Instagram asked us to slow down, resting', int((u - now).total_seconds())
+    cool = row['list_cool_until'] if kind == 'list' else row['profile_cool_until']
+    u = utc(cool) if cool else None
+    if u and u > now:
+        return 'Instagram asked us to slow down, resting', int((u - now).total_seconds())
     ready = (db.get_setting(conn, 'ext_ready') or {}).get(row['lane_id']) or {}
     u = utc(ready.get(kind)) if ready.get(kind) else None
     if u and u > now:

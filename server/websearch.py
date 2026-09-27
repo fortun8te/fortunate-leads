@@ -80,6 +80,8 @@ def search(query, n=RESULTS, retry=True, deadline=None):
             return []
     finally:
         _gate.release()
+    if not isinstance(data, dict):
+        return []
     out = []
     for item in data.get('results') or []:
         if not isinstance(item, dict) or not isinstance(item.get('url'), str):

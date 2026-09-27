@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, person_id INTEGER NO
 CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person_id);
 CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
-  handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT);
+  handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT,
+  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(j
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
-  list_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+  list_cool_until TEXT, profile_cool_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
 CREATE TABLE IF NOT EXISTS list_private_denials(seed TEXT NOT NULL COLLATE NOCASE, direction TEXT NOT NULL,
   viewer_ig_id TEXT NOT NULL, denied_at TEXT NOT NULL,
   PRIMARY KEY(seed,direction,viewer_ig_id));
@@ -237,6 +238,8 @@ def init(path):
     for table, col, decl in (('pages', 'at', 'TEXT'), ('pages', 'lane', 'TEXT'), ('pages', 'users', 'INT'),
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
+                             ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
+                             ('accounts', 'profile_cool_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
                              ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
@@ -260,6 +263,8 @@ def init(path):
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
+    conn.execute("CREATE INDEX IF NOT EXISTS lists_waiting_prev ON lists(prev_lane) "
+                 "WHERE lane IS NULL AND prev_lane IS NOT NULL AND state IN ('queued','running')")
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
     migrate_statuses(conn)
     # Before per-run evidence, every edge was treated as a current follow. Clear

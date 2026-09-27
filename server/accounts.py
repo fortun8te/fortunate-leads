@@ -128,24 +128,39 @@ def healthy(row, now):
         and not row['paused'] and not later(row['list_cool_until'], now)
 
 
+def list_budget_left(conn, row, now):
+    return request_budget_left(conn, row, 'list', now)
+
+
+def request_budget_left(conn, row, kind, now):
+    limit = budget_of(conn, row).get(kind, 0)
+    if not limit:
+        return True
+    today = jload(row['today'], {}) or {}
+    used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
+    return used < limit
+
+
 def list_share(conn, rows, now):
     """The main account's list share: the setting, or 1.0 while no other healthy account takes lists (a lone main
     account used to get no lists at all, so one connected extension sat 'Idle, queue empty' on a full queue)."""
     share = float(db.get_setting(conn, 'main_list_share') or 0)
     if share > 0:
         return share
-    others = [r for r in rows if not r['is_main'] and healthy(r, now) and (r['role'] or 'both') in ('lists', 'both')]
+    others = [r for r in rows if not r['is_main'] and healthy(r, now) and list_budget_left(conn, r, now)
+              and (r['role'] or 'both') in ('lists', 'both')]
     return 0.0 if others else 1.0
 
 
-def keeps_lists(row, now, share=0.0):
+def keeps_lists(conn, row, now, share=0.0):
     """Healthy and allowed to work lists (role, main-account protection)."""
-    return healthy(row, now) and (row['role'] or 'both') in ('lists', 'both') and (not row['is_main'] or share > 0)
+    return healthy(row, now) and list_budget_left(conn, row, now) and (row['role'] or 'both') in ('lists', 'both') \
+        and (not row['is_main'] or share > 0)
 
 
 def eligible_for_list(conn, row, seed, direction, now):
     """A viewer can take a private list only if this Instagram identity has not been denied."""
-    if not healthy(row, now) or (row['role'] or 'both') not in ('lists', 'both'):
+    if not healthy(row, now) or not list_budget_left(conn, row, now) or (row['role'] or 'both') not in ('lists', 'both'):
         return False
     if not row['ig_id']:
         return not conn.execute('SELECT 1 FROM list_private_denials WHERE seed=? AND direction=? LIMIT 1',
@@ -194,7 +209,7 @@ def release(conn, now, only=None):
     finishing a request. Keep that lease until its callback or expiry; login and list cooldowns hand off now."""
     rows = {r['lane_id']: r for r in conn.execute('SELECT * FROM accounts')}
     share = list_share(conn, rows.values(), now)
-    ok = {k for k, r in rows.items() if keeps_lists(r, now, share)}
+    ok = {k for k, r in rows.items() if keeps_lists(conn, r, now, share)}
     ts = iso(now)
     fine = {k for k, r in rows.items() if healthy(r, now)}
     jobs, held = [], set()
@@ -250,7 +265,7 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed]
+    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -259,7 +274,7 @@ def pick_job(conn, lane, kinds, now):
     ts = iso(now)
     accts = conn.execute('SELECT * FROM accounts').fetchall()
     share = list_share(conn, accts, now)
-    ok = [r['lane_id'] for r in accts if keeps_lists(r, now, share)]
+    ok = [r['lane_id'] for r in accts if keeps_lists(conn, r, now, share)]
     marks = ','.join('?' * len(kinds))
     okm = ','.join('?' * len(ok)) or "''"
     row = next((r for r in accts if r['lane_id'] == lane), None)
@@ -281,7 +296,7 @@ def pick_job(conn, lane, kinds, now):
     if row['is_main'] and not regular_main:
         # Drive this exceptional lookup from the small set of denied lists,
         # rather than scanning every ordinary queued list on each poll.
-        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now)
+        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now) and list_budget_left(conn, r, now)
                    and (r['role'] or 'both') in ('lists', 'both') and r['ig_id']]
         denied_alts = ''.join(" AND EXISTS(SELECT 1 FROM list_private_denials a "
                               "WHERE a.seed=j.seed AND a.direction=j.direction AND a.viewer_ig_id=?)"
@@ -292,12 +307,13 @@ def pick_job(conn, lane, kinds, now):
             JOIN jobs j ON j.kind='list' AND j.seed=d.seed AND j.direction=d.direction
             LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
             WHERE (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
+              AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
               AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
               AND {viewer_filter}{denied_alts}
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
               l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
               coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-            (ts, lane, *ok, *viewer_args, *alt_ids, lane)).fetchone()
+            (ts, ts, lane, *ok, *viewer_args, *alt_ids, lane)).fetchone()
         if fallback:
             return fallback
         if 'profile' not in kinds:
@@ -308,11 +324,12 @@ def pick_job(conn, lane, kinds, now):
         f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
+          AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
           AND (j.kind='profile' OR {viewer_filter})
         ORDER BY j.kind='list' DESC, coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, lane, *ok, *viewer_args, lane)).fetchone()
+        (*kinds, ts, ts, lane, *ok, *viewer_args, lane)).fetchone()
 
 
 def took(conn, lane, job):
@@ -334,6 +351,14 @@ def name_of(row):
     return '@' + row['handle'] if row['handle'] else (row['label'] or 'lane ' + row['lane_id'][:8])
 
 
+def full_cooldown(row, now):
+    """An account is resting only when every request type in its role is cooling."""
+    role = row['role'] if row['role'] in ROLES else 'both'
+    kinds = {'lists': ('list',), 'bios': ('profile',), 'both': ('list', 'profile')}[role]
+    untils = [row['list_cool_until'] if k == 'list' else row['profile_cool_until'] for k in kinds]
+    return min(untils) if untils and all(later(x, now) for x in untils) else None
+
+
 def status_of(row, now, conn=None):
     seen = row['last_seen'] and now - utc(row['last_seen']) < ONLINE_FOR
     if row['hold']:
@@ -342,7 +367,7 @@ def status_of(row, now, conn=None):
         return 'offline'
     if row['paused'] or (conn is not None and db.get_setting(conn, 'paused')):
         return 'paused'
-    if later(row['cooldown_until'], now):
+    if full_cooldown(row, now):
         return 'cooldown'
     if conn is not None and conn.execute(
             "SELECT 1 FROM jobs WHERE state='leased' AND lane=? AND leased_until>? LIMIT 1",
@@ -351,14 +376,15 @@ def status_of(row, now, conn=None):
     return 'online'
 
 
-def out(conn, row, now):
+def out(conn, row, now, include_lists=True):
     since = iso(now - timedelta(hours=1))
     pages, people = conn.execute('SELECT count(*), coalesce(sum(users), 0) FROM pages WHERE lane=? AND at>=?',
                                  (row['lane_id'], since)).fetchone()
     job = conn.execute("SELECT kind, seed, direction, handle FROM jobs WHERE state='leased' AND lane=? AND leased_until>? "
                        'ORDER BY id DESC LIMIT 1', (row['lane_id'], iso(now))).fetchone()
     owns = [dict(r) for r in conn.execute("SELECT seed, direction, received, total FROM lists WHERE lane=? "
-                                          "AND state NOT IN ('done','private','error') ORDER BY updated_at DESC", (row['lane_id'],))]
+                                          "AND state NOT IN ('done','private','error') ORDER BY updated_at DESC", (row['lane_id'],))] \
+        if include_lists else []
     rate = jload(row['rate'])
     today = jload(row['today']) or {}
     if not (row['last_seen'] or '').startswith(iso(now)[:10]):
@@ -369,7 +395,9 @@ def out(conn, row, now):
             'paused': bool(row['paused']), 'is_main': bool(row['is_main']), 'first_seen': row['first_seen'],
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
-            'healthy': healthy(row, now), 'cooldown_until': row['cooldown_until'] if later(row['cooldown_until'], now) else None,
+            'healthy': healthy(row, now), 'cooldown_until': full_cooldown(row, now),
+            'cool': {'list': row['list_cool_until'] if later(row['list_cool_until'], now) else None,
+                     'profile': row['profile_cool_until'] if later(row['profile_cool_until'], now) else None},
             'rate': rate, 'last_limit': (rate or {}).get('last_hit_at'), 'last_error': row['last_error'],
             'today': {'list': today.get('list', 0), 'profile': today.get('profile', 0)},
             'hour': {'pages': pages, 'people': people}, 'activity': row['activity'], 'text': row['text'],
@@ -380,9 +408,9 @@ def rows(conn):
     return conn.execute('SELECT * FROM accounts ORDER BY is_main DESC, first_seen, lane_id').fetchall()
 
 
-def listing(conn, now=None):
+def listing(conn, now=None, include_lists=True):
     now = now or db.utc_now()
-    return [out(conn, r, now) for r in rows(conn)]
+    return [out(conn, r, now, include_lists=include_lists) for r in rows(conn)]
 
 
 def alerts(conn, now=None, accts=None):
@@ -392,15 +420,15 @@ def alerts(conn, now=None, accts=None):
     by = {a['lane_id']: a for a in accts}
     recent = iso(now - timedelta(hours=6))
     moves = [h for h in db.get_setting(conn, 'handoffs') or [] if h.get('at', '') >= recent]
-    waiting = {(r['seed'], r['direction']): r for r in conn.execute(
-        "SELECT seed, direction, prev_lane FROM lists WHERE lane IS NULL AND prev_lane IS NOT NULL AND state IN ('queued','running')")}
+    waiting = {r[0] for r in conn.execute(
+        "SELECT DISTINCT prev_lane FROM lists WHERE lane IS NULL AND prev_lane IS NOT NULL AND state IN ('queued','running')")}
 
     def moved(lane):
         to = [h for h in moves if h['from'] == lane]
         if to:
             h = to[-1]
             return f"; its list moved to {by[h['to']]['name'] if h['to'] in by else 'another account'}"
-        if any(w['prev_lane'] == lane for w in waiting.values()):
+        if lane in waiting:
             return '; its list waits for another account'
         return ''
 
