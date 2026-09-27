@@ -1,11 +1,11 @@
-// Collection action and direct links to the queue and checking settings.
+// Scraping action and direct links to the queue and checking settings.
 // Reads GET /api/control and writes POST /api/control without touching app.js state.
 (() => {
   if (window.__flControls) return;
   window.__flControls = true;
   const POLL = 5e3;
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const SHORT = { collection: 'Collection', lists: 'Lists', bios: 'Bios', ai: 'External AI' };
+  const SHORT = { collection: 'scraping', lists: 'Lists', bios: 'Bios', ai: 'External AI' };
   let data = null, busy = false, offline = false, timer = 0, tick = 0;
   let requestVersion = 0, actionError = '';
 
@@ -28,7 +28,7 @@
     mount();
     const active = el.contains(document.activeElement) ? document.activeElement : null;
     const focusStage = active?.dataset.stage;
-    if (!data) { el.innerHTML = `<span class="fl-ctl-msg">${offline ? 'Server offline, controls unavailable.' : 'Loading collection status…'}</span>`; return; }
+    if (!data) { el.innerHTML = `<span class="fl-ctl-msg">${offline ? 'Server offline, controls unavailable.' : 'Loading scraping status…'}</span>`; return; }
     const running = data.stages.filter((s) => !s.paused).length;
     const failed = data.stages.some((s) => s.state === 'error' || s.state === 'failed');
     const attention = data.instagram_request_attention?.message || data.stages.find((s) => s.attention?.message)?.attention.message || '';
@@ -36,7 +36,7 @@
     const collection = data.stages.filter((s) => s.id === 'lists' || s.id === 'bios');
     const collectionPaused = collection.length === 2 && collection.every((s) => s.paused);
     const collectionAction = collectionPaused ? 'resume' : 'pause';
-    const collectionLabel = collectionPaused ? 'Start collection' : 'Pause collection';
+    const collectionLabel = collectionPaused ? 'Start scraping' : 'Pause scraping';
     const sharedWait = collection.find(s => s.state === 'waiting' && s.wait?.scope === 'workspace')?.wait;
     const resumeAt = sharedWait?.until && Number.isFinite(Date.parse(sharedWait.until))
       ? new Date(sharedWait.until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
@@ -49,7 +49,7 @@
     const mode = offline || !external || typeof data.local_laya !== 'boolean' ? 'Unknown'
       : !external.paused ? 'External AI' : data.local_laya ? 'Local' : 'Rules';
     el.innerHTML = `<div class="fl-ctl-top">
-      <a class="fl-ctl-summary-item fl-ctl-status-link" href="#/accounts" aria-label="Collection ${collectionState}. View accounts and collection progress."><span>Collection</span><b>${collectionState}</b></a>
+      <a class="fl-ctl-summary-item fl-ctl-status-link" href="#/accounts" aria-label="Scraping ${collectionState}. View accounts and progress."><span>Scraping</span><b>${collectionState}</b></a>
       <a class="fl-ctl-summary-item fl-ctl-status-link" href="#/settings" title="Change how saved profiles and notes are checked"><span>Mode</span><b>${mode}</b></a>
       <button class="fl-ctl-direct btn" data-stage="collection" data-action="${collectionAction}" title="${collectionLabel}. Local and external checking settings stay unchanged." ${busy || offline || collection.length !== 2 ? 'disabled' : ''}>${busy ? 'Saving…' : collectionLabel}</button></div>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${attention && !offline ? ' <a href="#/accounts">Check accounts</a>' : failed && !offline && !actionError ? ' <a href="#/accounts">View collection details.</a>' : ''}</span>` : ''}`;
     el.dataset.running = String(running);

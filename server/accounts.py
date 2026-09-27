@@ -275,6 +275,34 @@ def request_budget_left(conn, row, kind, now):
     return used < limit
 
 
+def main_bios_reserved(conn, row):
+    """Ordinary bios belong to configured alternates, including while they rest."""
+    return bool(row['is_main'] and conn.execute(
+        "SELECT 1 FROM accounts WHERE is_main=0 AND role IN ('bios','both') LIMIT 1").fetchone())
+
+
+def follower_route_wait(conn, row, now):
+    """Keep failed follower routes out of the next recovery window.
+
+    Recent recorded failures also cover jobs queued by versions that only saved
+    a shared wait. No current shared hold or saved cursor is modified.
+    """
+    deadlines = [row['list_endpoint_until']] if later(row['list_endpoint_until'], now) else []
+    events = conn.execute(
+        "SELECT e.at FROM collector_events e JOIN jobs j ON j.id=e.job_id "
+        "WHERE e.lane=? AND e.at>=? AND e.kind='list' AND e.direction='followers' "
+        "AND e.reason='list_html_home_redirect' AND j.viewer_ig_id IS ? "
+        "ORDER BY e.at DESC LIMIT 2",
+        (row['lane_id'], iso(now - timedelta(hours=6)), row['ig_id'])).fetchall()
+    if events:
+        latest = utc(events[0]['at'])
+        repeated = len(events) > 1 and latest - utc(events[1]['at']) <= timedelta(hours=2)
+        deadline = latest + timedelta(hours=4 if repeated else 2)
+        if deadline > now:
+            deadlines.append(iso(deadline))
+    return max(deadlines, key=utc) if deadlines else None
+
+
 def list_share(conn, rows):
     """Zero share reserves the main even when configured alternates cannot work.
 
@@ -313,7 +341,7 @@ def eligible_for_list(conn, row, seed, direction, now):
     """The viewer can take this list right now."""
     return healthy(row, now) and identity_owner(conn, row, now) and role_allows(row, 'list') \
         and not identity_cooling(conn, row, 'list', now) \
-        and not (direction == 'followers' and later(row['list_endpoint_until'], now)) \
+        and not (direction == 'followers' and follower_route_wait(conn, row, now)) \
         and list_budget_left(conn, row, now) and viewer_may_access_list(
         conn, row, seed, direction)
 
@@ -431,7 +459,8 @@ def kinds_for(conn, row, kinds, now):
     # Its normal share is checked in pick_job, after that list is known.
     return [k for k in kinds if k in allowed and identity_owner(conn, row, now)
             and request_budget_left(conn, row, k, now)
-            and not identity_cooling(conn, row, k, now)]
+            and not identity_cooling(conn, row, k, now)
+            and not (k == 'profile' and main_bios_reserved(conn, row))]
 
 
 def pick_job(conn, lane, kinds, now, allow_page_size=True):
@@ -465,13 +494,14 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     row = next((r for r in accts if r['lane_id'] == lane), None)
     if not row or identity_handoff_pending(conn, row, now):
         return None
-    kinds = [kind for kind in kinds if role_allows(row, kind) and owner(row)]
+    kinds = [kind for kind in kinds if role_allows(row, kind) and owner(row)
+             and not (kind == 'profile' and main_bios_reserved(conn, row))]
     if not kinds:
         return None
     marks = ','.join('?' * len(kinds))
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
-    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if later(row['list_endpoint_until'], now) else ''
+    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if follower_route_wait(conn, row, now) else ''
     page_size_filter = '' if allow_page_size else ' AND j.page_size IS NULL'
     owner_filter = (" OR (j.direction='followers' AND EXISTS(SELECT 1 FROM accounts owner "
                     "WHERE owner.lane_id=l.lane AND owner.list_endpoint_until>?))")
@@ -621,7 +651,7 @@ def out(conn, row, now, include_lists=True):
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
             'healthy': healthy(row, now), 'cooldown_until': full_cooldown(row, now),
-            'list_endpoint_until': row['list_endpoint_until'] if later(row['list_endpoint_until'], now) else None,
+            'list_endpoint_until': follower_route_wait(conn, row, now),
             'cool': {'list': list_wait_until(row, now),
                      'profile': row['profile_cool_until'] if later(row['profile_cool_until'], now) else None},
             'rate': rate, 'last_limit': (rate or {}).get('last_hit_at'), 'last_error': row['last_error'],
@@ -810,6 +840,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
                 row = live.get(candidate)
                 eligibility[key] = bool(row is not None and request_kind in allowed
                                         and role_allows(row, request_kind)
+                                        and not (request_kind == 'profile' and main_bios_reserved(conn, row))
                                         and identity_owner(conn, row, now)
                                         and not identity_handoff_pending(conn, row, now)
                                         and not identity_cooling(conn, row, request_kind, now)
