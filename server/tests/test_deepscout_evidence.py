@@ -183,3 +183,34 @@ class EvidenceTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_client_relationship_overrides_negative_even_when_contacted(self):
+        self.conn.execute("INSERT INTO marks(person_id,status,note,updated_at) VALUES(?,'contacted','',?)", (self.pid, db.now()))
+        self.conn.execute("INSERT INTO owner_context(person_id,relationships,updated_at) VALUES(?,'[\"worked_with\",\"client\"]',?)", (self.pid, db.now()))
+        self.assertTrue(scout.apply(self.conn, self.p, self.answer(verdict='no', reachable=False), verification=(True,None)))
+        self.assertEqual(self.verdict(), ('offline-bulk',72,72))
+        self.assertTrue(scout.result(self.conn, self.pid)['overridden_by_owner'])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE person_id=? AND grp='scout'", (self.pid,)).fetchone()[0],0)
+
+    def test_manual_pause_stops_dispatch_and_followup_citation_fetch(self):
+        import processing_modes
+        processing_modes.set_mode(self.conn, 'RLEAI')
+        db.set_setting(self.conn, 'scout', True)
+        processing_modes.set_paused(self.conn, True)
+        self.conn.commit()
+        pool = scout.ScoutPool(self.path)
+        with patch.object(scout, 'run') as run, patch.object(scout, 'candidates') as candidates:
+            self.assertFalse(pool.step(self.conn))
+            pool._work(self.p)
+            run.assert_not_called()
+            candidates.assert_not_called()
+        processing_modes.set_paused(self.conn, False)
+        self.conn.commit()
+        def pause_after_answer(*args):
+            processing_modes.set_paused(self.conn, True)
+            self.conn.commit()
+            return self.answer()
+        with patch.object(scout, 'run', side_effect=pause_after_answer), patch.object(scout, 'verify') as verify:
+            pool._work(self.p)
+            verify.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM deep_research_runs').fetchone()[0],0)

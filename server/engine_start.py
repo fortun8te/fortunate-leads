@@ -31,7 +31,7 @@ def start(repo, account_count, run=subprocess.run):
         result = run([str(launcher), '--from-app'], cwd=str(repo), capture_output=True,
                      text=True, timeout=210, check=False)
     except subprocess.TimeoutExpired as exc:
-        raise EngineStartError('Startup took too long. Check the Accounts page and Laya status before trying again.') from exc
+        raise EngineStartError('Startup took too long. Check the Accounts page and local model status before trying again.') from exc
     except OSError as exc:
         raise EngineStartError('Could not run the Start engine launcher: ' + str(exc)) from exc
     if result.returncode:

@@ -6,6 +6,7 @@ from pathlib import Path
 from test_server import db, server
 import owner
 import qualify
+import processing_modes
 
 
 class OwnerAuthority(unittest.TestCase):
@@ -57,9 +58,12 @@ class OwnerAuthority(unittest.TestCase):
         self.assertEqual(qualify.prefilter(self.person(), [], laya_fit=100), 0)
 
     def test_scout_cannot_restore_rejection_over_owner_relationship(self):
+        processing_modes.set_mode(self.conn, 'RLEAI')
+        self.conn.execute("UPDATE people SET bio='Personal account only, not a business.' WHERE id=?", (self.pid,))
         server.requalify(self.conn, self.person(), None)
-        server.deepscout.apply(self.conn, self.person(), {'verdict': 'no', 'reachable': False,
-            'summary': 'Could not find a route.', 'tags': [], 'sources': []}, verification=(True, None))
+        self.assertTrue(server.deepscout.apply(self.conn, self.person(), {'verdict': 'no', 'reachable': False,
+            'summary': 'Explicitly a personal account, not a business.', 'tags': [], 'sources': [],
+            'evidence': [{'source': 'profile.bio', 'quote': 'Personal account only, not a business.'}]}))
         server.set_status(self.conn, [self.pid], status='client')
         server.requalify(self.conn, self.person(), None)
         result = server.api_person(self.conn, {}, {}, self.pid)
@@ -84,14 +88,16 @@ class OwnerAuthority(unittest.TestCase):
             'decision_maker': True}, person, [], 'offline-test', 'test')
         self.assertIsNone(verdict)  # Private note cannot support an external verdict.
 
-    def test_local_laya_cannot_be_bypassed_by_omitting_flag(self):
-        db.set_setting(self.conn, 'qualify', False)
-        db.set_setting(self.conn, 'local_laya', True)
+    def test_external_mode_adds_to_local_processing_without_disabling_it(self):
+        processing_modes.set_mode(self.conn, 'RLAI')
         self.conn.commit()
-        with self.assertRaises(server.Bad):
-            server.api_qualify(self.conn, {}, {'on': True})
-        self.assertFalse(db.get_setting(self.conn, 'qualify'))
+        reply = server.api_qualify(self.conn, {}, {'on': True})
+        self.assertEqual(reply['processing']['mode'], 'RLEAI')
+        self.assertTrue(db.get_setting(self.conn, 'qualify'))
         self.assertTrue(db.get_setting(self.conn, 'local_laya'))
+        self.assertTrue(processing_modes.allows(self.conn, 'local_qualification'))
+        self.assertTrue(processing_modes.allows(self.conn, 'notes'))
+        self.assertFalse(processing_modes.allows(self.conn, 'deep_dive'))
 
     def test_automatic_only_conflicts_never_erase_manual_corrections(self):
         p = {'status': 'client'}

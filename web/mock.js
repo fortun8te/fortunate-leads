@@ -486,6 +486,8 @@
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
   const settings = { main_list_share: 0, local_laya: true };
+  let processingMode = 'RLAI', processingGeneration = 0, localPaused = false;
+  const processingView = () => ({mode:processingMode,generation:processingGeneration,capabilities:{rules:true,scraping:true,laya:processingMode!=='R',notes:processingMode!=='R',local_qualification:processingMode!=='R',external:processingMode==='RLEAI',deep_dive:processingMode==='RLEAI' && scout.on}});
   const scout = { on: false, available: true, model: 'grok', workers: 2, done_today: 0, done: 0, waiting: 0, usage: [], models: [{ id: 'grok', label: 'Grok' }, { id: 'space-bunny', label: 'Space Bunny' }] };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
@@ -499,7 +501,7 @@
         hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
         today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
     });
-    return { stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
+    return { processing:processingView(), stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
   }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
@@ -528,7 +530,7 @@
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
-      people_today: scraper.peopleToday, lists: listViews, coverage, stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
+      people_today: scraper.peopleToday, lists: listViews, coverage, processing:processingView(), stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       progress: {
         lists: { left: scraper.lists.filter((l) => l.state === 'queued' || l.state === 'running').reduce((n, l) => n + Math.max(0, (l.total || 1000) - l.received), 0), per_hour: 11280, eta_h: 3.4 },
@@ -740,7 +742,7 @@
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/status') {
       const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue, stages } = scraperView();
-      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue, stages };
+      return { processing:processingView(), ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue, stages };
     }
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
     if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
@@ -805,6 +807,16 @@
       return { ok: true, account: { ...a } };
     }
     if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; stagePaused.lists = stagePaused.bios = body.paused; return { ok: true }; }
+    if (path === '/api/processing-mode') {
+      if (method === 'POST') {
+        if (!['R','RLAI','RLEAI'].includes(body.mode)) fail('Unknown processing mode');
+        if (body.mode !== processingMode) processingGeneration++;
+        processingMode = body.mode; settings.local_laya = processingMode !== 'R'; scraper.qualify = processingMode === 'RLEAI'; scraper.qualify_auto = false;
+        if (processingMode !== 'RLEAI') scout.on = false;
+      }
+      return processingView();
+    }
+    if (path === '/api/local-processing') { if (method === 'POST') { if (typeof body.paused !== 'boolean') fail('paused must be boolean'); localPaused = body.paused; } return {paused:localPaused,runtime:{resources:{allowed:true}},enabled:processingMode!=='R',model:'K2 Horizon 3.7B',ready:true,queue:42,reviewed:318,needs_research:19,notes_pending:2,state:processingMode==='R'?'off':localPaused?'paused':'working'}; }
     if (path === '/api/settings/qualify') {
       for (const key of ['on', 'auto', 'local_laya']) if (key in body && typeof body[key] !== 'boolean') fail(key + ' must be true or false');
       const local = body.local_laya ?? settings.local_laya;

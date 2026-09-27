@@ -348,6 +348,8 @@ def init(path):
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
     add_rev_triggers(conn, ('people', 'verdicts', 'marks', 'owner_context', 'tags', 'seeds', 'edges', 'edge_evidence', 'tag_rules',
                             'followups', 'activity'))
+    import processing_state
+    processing_state.ensure(conn)
     conn.commit()
     return conn
 

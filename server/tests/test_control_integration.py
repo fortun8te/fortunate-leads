@@ -1,5 +1,6 @@
 """Offline coverage for shared controls across public collection and manual website reads."""
 import os
+from contextlib import nullcontext
 os.environ.setdefault('FL_NO_ORSLOT', '1')
 import sys
 import tempfile
@@ -19,6 +20,9 @@ class PublicControlIntegration(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.conn = db.init(Path(self.temp.name) / 'test.sqlite')
+        lease = patch.object(server.resource_budget, 'lease', side_effect=lambda *_a, **_k: nullcontext())
+        lease.start()
+        self.addCleanup(lease.stop)
 
     def tearDown(self):
         self.conn.close()
@@ -30,7 +34,9 @@ class PublicControlIntegration(unittest.TestCase):
         self.conn.execute("INSERT INTO seeds(handle) VALUES('seed')")
         self.conn.execute("INSERT INTO lists(seed,direction,state) VALUES('seed','following','done')")
         self.conn.commit()
-        self.assertEqual(server.api_qualify(self.conn, {}, {'on': False}), {'qualify': False})
+        out = server.api_qualify(self.conn, {}, {'on': False})
+        self.assertFalse(out['qualify'])
+        self.assertEqual(out['processing']['mode'], 'RLAI')
         self.assertFalse(server.auto_qualify(self.conn))
         self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))
         self.assertTrue(control.stage_paused(self.conn, 'ai'))
@@ -39,8 +45,10 @@ class PublicControlIntegration(unittest.TestCase):
         pid = db.upsert_person(self.conn, {'handle': 'localonly', 'bio': 'Founder of a clothing brand'})
         self.conn.commit()
         db.set_setting(self.conn, 'qualify_auto', True)
-        self.assertEqual(server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True}),
-                         {'qualify': False, 'local_laya': True})
+        out = server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True})
+        self.assertFalse(out['qualify'])
+        self.assertTrue(out['local_laya'])
+        self.assertEqual(out['processing']['mode'], 'RLAI')
         self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))
         with self.assertRaises(server.Bad):
             server.api_qualify(self.conn, {}, {'on': False, 'auto': True, 'local_laya': True})
@@ -70,6 +78,15 @@ class PublicControlIntegration(unittest.TestCase):
             self.assertFalse(db.get_setting(self.conn, 'local_laya'))
             self.assertFalse(server.laya_step(self.conn))
 
+    def test_external_mode_keeps_local_models_enabled(self):
+        out = server.api_qualify(self.conn, {}, {'on': True, 'local_laya': True})
+        self.assertEqual(out['processing']['mode'], 'RLEAI')
+        self.assertTrue(out['qualify'])
+        self.assertTrue(out['local_laya'])
+        self.assertTrue(out['processing']['capabilities']['notes'])
+        self.assertTrue(out['processing']['capabilities']['local_qualification'])
+        self.assertFalse(out['processing']['capabilities']['deep_dive'])
+
     def test_local_rules_continue_while_collection_is_paused(self):
         control.stop_all(self.conn)
         server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True})
@@ -89,29 +106,36 @@ class PublicControlIntegration(unittest.TestCase):
         control.set_stage(self.conn, 'ai', False)
         self.conn.commit()
 
-        def pause_during_research(conn, _items):
+        self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear','now')", (pid,))
+        self.conn.commit()
+
+        def pause_during_cached_research(conn, _person):
             control.set_stage(conn, 'ai', True)
             conn.commit()
+            return None
 
-        with patch.object(server, 'research', side_effect=pause_during_research), \
-                patch.object(server.qualify, 'llm_verdicts', create=True) as model:
+        with patch.object(server.websearch, 'cached', side_effect=pause_during_cached_research), \
+                patch.object(server.external_harness, 'broad') as model:
             self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
             model.assert_not_called()
-        with patch.object(server.llm, 'refresh_models') as refresh:
-            self.assertFalse(server.models_step(self.conn))
-            refresh.assert_not_called()
+        # A temporary test database must never start/unload actual local services.
+        with patch.object(server.local_model, 'maintain_service') as maintain, \
+                patch.object(server, 'schedule_local_services') as start:
+            self.assertFalse(server.local_services_step(self.conn))
+            maintain.assert_not_called()
+            start.assert_not_called()
 
         control.set_stage(self.conn, 'ai', False)
         self.conn.commit()
 
-        def pause_during_model(_items, _examples):
+        def pause_during_model(*_args, **_kwargs):
             control.set_stage(self.conn, 'ai', True)
             self.conn.commit()
-            return [{'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'old reply', 'model': 'llm'}]
+            return {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'old reply', 'model': 'llm'}
 
-        with patch.object(server, 'research'), patch.object(server.qualify, 'llm_verdicts',
-                                                          side_effect=pause_during_model, create=True):
+        with patch.object(server.external_harness, 'broad', side_effect=pause_during_model) as model:
             self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
+            model.assert_called_once()
         self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0],
                          'rules')
 

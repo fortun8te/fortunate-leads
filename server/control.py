@@ -4,13 +4,14 @@ Stages and the settings they sit on:
   lists  "Collect lists"  settings `paused` (workspace pause, legacy) or `paused_lists`  -> /api/ext/next hands out no list jobs
   bios   "Read bios"      settings `paused` or `paused_bios`                              -> /api/ext/next hands out no profile jobs
   ai     "External AI scoring" setting `qualify` (off also switches `qualify_auto` off)
-Local Laya can keep running with external AI off when `local_laya` is enabled.
+Processing modes are cumulative: R, RLAI and RLEAI. Pausing external AI retains local AI.
 Resuming lists or bios clears the legacy `paused` and keeps the other stage where it was, so the three stay independent.
 """
 from datetime import datetime, timedelta, timezone
 
 import accounts
 import db
+import processing_modes
 
 STAGES = ('lists', 'bios', 'ai')
 LABEL = {'lists': 'Collect lists', 'bios': 'Read bios', 'ai': 'AI scoring'}
@@ -37,7 +38,7 @@ def iso(d):
 
 def stage_paused(conn, stage):
     if stage == 'ai':
-        return not db.get_setting(conn, 'qualify')
+        return not processing_modes.allows(conn, 'external')
     return bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
 
 
@@ -48,12 +49,9 @@ def paused_kinds(conn):
 
 def set_stage(conn, stage, pause):
     if stage == 'ai':
-        db.set_setting(conn, 'qualify', not pause)
-        if pause:
-            db.set_setting(conn, 'qualify_auto', False)
-        else:
-            # Explicitly resuming external AI leaves local-only mode.
-            db.set_setting(conn, 'local_laya', False)
+        mode = processing_modes.current_mode(conn)
+        processing_modes.set_mode(conn, 'RLAI' if pause and mode == 'RLEAI'
+                                  else mode if pause else 'RLEAI')
         return
     if not pause and db.get_setting(conn, 'paused'):
         # the legacy pause covered both Instagram stages: keep the other one paused so only this one resumes
@@ -64,8 +62,8 @@ def set_stage(conn, stage, pause):
 
 
 def stop_all(conn):
-    db.set_setting(conn, 'local_laya', False)
-    for s in STAGES:
+    processing_modes.set_mode(conn, 'R')
+    for s in ('lists', 'bios'):
         set_stage(conn, s, True)
 
 
@@ -97,13 +95,13 @@ def shared_collection_wait(conn, now):
     until = utc(raw)
     if until and until <= now:
         return None
-    why = 'Instagram collection is resting'
+    why = 'Instagram requested a pause'
     if until is None:
         return {'state': 'waiting', 'wait': {'why': why, 'seconds': None, 'until': None, 'scope': 'workspace'},
                 'now': 'Instagram collection is on hold. Check collection settings before continuing.'}
     seconds = max(0, int((until - now).total_seconds()))
     return {'state': 'waiting', 'wait': {'why': why, 'seconds': seconds, 'until': iso(until), 'scope': 'workspace'},
-            'now': f'Instagram collection is resting until {until.astimezone():%H:%M}. Resumes automatically.'}
+            'now': f'Paused after an Instagram warning until {until.astimezone():%H:%M}. Resumes automatically; progress is saved.'}
 
 
 def lane_wait(conn, row, kind, now):
@@ -159,7 +157,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         out['minute'] = c['minute']
     if paused:
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
-        if stage == 'ai' and db.get_setting(conn, 'local_laya'):
+        if stage == 'ai' and processing_modes.allows(conn, 'laya'):
             return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
         attention = db.get_setting(conn, 'instagram_request_attention')
         if stage != 'ai' and isinstance(attention, dict) and attention.get('message'):
@@ -246,7 +244,8 @@ def snapshot(conn, ai_left=None):
               stage_out(conn, 'ai', accts, rows, c['ai'], now, ai_left or 0)]
     both = all(s['paused'] for s in stages[:2])
     return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
-            'all_paused': all(s['paused'] for s in stages), 'local_laya': bool(db.get_setting(conn, 'local_laya')),
+            'all_paused': all(s['paused'] for s in stages) and not processing_modes.allows(conn, 'laya'),
+            'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
             'instagram_request_attention': db.get_setting(conn, 'instagram_request_attention'),
             'at': iso(now)}
 

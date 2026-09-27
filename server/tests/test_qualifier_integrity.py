@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_server import db, server
+from test_server import db, server, external_ready
 
 spec = importlib.util.spec_from_file_location('integrity_qualify', Path(__file__).resolve().parents[1] / 'qualify.py')
 q = importlib.util.module_from_spec(spec)
@@ -32,12 +32,14 @@ class QualifierIntegrity(unittest.TestCase):
         return pid
 
     def model(self, role='buyer', fit=90):
-        def result(items, examples):
-            return [q._verdict({'role': role, 'fit': fit, 'decision_maker': True, 'evidence': [it['person']['bio']]}, it['person'], it['tags'],
-                               'fake-model', q.prompt_version(examples), it['net']) for it in items]
-        return patch.object(q, 'llm_verdicts', side_effect=result)
+        def result(person, tags, edges, net, examples, **kwargs):
+            it = {'person': person, 'tags': tags, 'net': net}
+            return q._verdict({'role': role, 'fit': fit, 'decision_maker': True, 'evidence': [it['person']['bio']]}, it['person'], it['tags'],
+                               'fake-model', q.prompt_version(examples), it['net'])
+        return patch.object(server.external_harness, 'broad', side_effect=result)
 
     def run_model(self, pid):
+        external_ready(self.conn, [pid])
         rows = self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchall()
         return server.run_llm(self.conn, rows, {})
 
@@ -84,7 +86,7 @@ class QualifierIntegrity(unittest.TestCase):
         with self.model():
             self.assertEqual(self.run_model(lead), 1)
         before = self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0]
-        with patch.object(q, 'llm_verdicts', side_effect=AssertionError('must not call model')):
+        with patch.object(server.external_harness, 'broad', side_effect=AssertionError('must not call model')):
             server.set_status(self.conn, [seed], status='client')
             server.drain_network_dirty(self.conn)   # peers re-rank on the next background pass
         after = self.conn.execute('SELECT * FROM verdicts WHERE person_id=?', (lead,)).fetchone()
@@ -94,7 +96,7 @@ class QualifierIntegrity(unittest.TestCase):
         self.assertEqual(after['score'], q.blend(90, net))
         p = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (lead,)).fetchone()))
         self.assertEqual(after['input_hash'], q.input_hash(p, server.edges_of(self.conn, lead), net))
-        server.set_status(self.conn, [seed], status=None)
+        server.set_status(self.conn, [seed], status=None, relationships=[])
         server.drain_network_dirty(self.conn)
         self.assertEqual(self.conn.execute('SELECT score FROM verdicts WHERE person_id=?', (lead,)).fetchone()[0], before)
 
@@ -120,17 +122,18 @@ class QualifierIntegrity(unittest.TestCase):
             self.assertEqual(server.fewshot(self.conn), old_examples)
             self.assertEqual(db.get_setting(self.conn, 'fewshot')['version'], q.prompt_version(old_examples))
         models = dict(self.conn.execute('SELECT person_id,model FROM verdicts'))
-        self.assertEqual(models, {warm: 'rules', cold: 'fake'})
+        self.assertEqual(models, {warm: 'fake', cold: 'fake'})
 
     def test_profile_change_during_model_call_discards_reply(self):
         pid = self.person('glow')
         server.qualify_batch(self.conn)
-        def changed(items, examples):
+        def changed(person, tags, edges, net, examples, **kwargs):
             db.upsert_person(self.conn, {'handle': 'glow', 'bio': 'Different business'})
-            return [q._verdict({'role': 'buyer', 'fit': 90, 'evidence': ['Skincare brand']}, items[0]['person'], [], 'fake', 'v')]
-        with patch.object(q, 'llm_verdicts', side_effect=changed):
+            self.conn.commit()
+            return q._verdict({'role': 'buyer', 'fit': 90, 'evidence': ['Skincare brand']}, person, [], 'fake', 'v')
+        with patch.object(server.external_harness, 'broad', side_effect=changed):
             self.assertEqual(self.run_model(pid), 0)
-        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'local:test')
 
     def test_identical_reread_does_not_requeue_rules_but_changed_bio_does(self):
         profile = {'handle': 'glow', 'bio': 'Founder of a skincare brand',

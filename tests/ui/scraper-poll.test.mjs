@@ -10,7 +10,7 @@ test('small scraper status refresh preserves detailed progress and lists', async
   const full = { lists: [{ seed: 'example', state: 'running' }], progress: { bios: { left: 120 } }, paused: false };
   const status = { paused: true, ext: { online: true }, queue: { list: 2, profile: 5 } };
   const c = vm.createContext({
-    S: { sc: full, view: 'leads' },
+    SCRAPER_FULL_VIEWS:new Set(['accounts','scraper','qual','settings']),loadProcessingStatus:async()=>{}, S: { sc: full, view: 'leads' },
     api: { get: async (path) => {
       assert.equal(path, '/api/scraper/status');
       return status;

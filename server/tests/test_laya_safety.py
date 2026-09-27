@@ -1,5 +1,6 @@
 """Offline Laya protocol and cache tests. No socket or model is used."""
 import io
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -13,6 +14,14 @@ import db  # noqa: E402
 import laya  # noqa: E402
 import qualify  # noqa: E402
 import server  # noqa: E402
+import processing_modes
+
+
+def local_conn(path):
+    conn = db.init(path)
+    processing_modes.set_mode(conn, 'RLAI')
+    conn.commit()
+    return conn
 
 
 class Response:
@@ -117,7 +126,7 @@ class ClientSafetyTest(unittest.TestCase):
 class StoredAnswerTest(unittest.TestCase):
     def test_stale_profile_and_model_answers_are_not_read(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 pid = db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
@@ -136,10 +145,15 @@ class StoredAnswerTest(unittest.TestCase):
 
 
 class LayaQueueTest(unittest.TestCase):
+    def setUp(self):
+        lease = patch.object(server.resource_budget, 'lease', side_effect=lambda *_a, **_k: nullcontext())
+        lease.start()
+        self.addCleanup(lease.stop)
+
     def test_rebuild_commits_small_ranges_and_resumes_without_early_scoring(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, 'leads.sqlite')
-            conn = db.init(path)
+            conn = local_conn(path)
             try:
                 ids = [db.upsert_person(conn, {'handle': f'person{i}', 'bio': 'bio'}) for i in range(5)]
                 conn.execute("INSERT INTO seeds(handle,is_me) VALUES('person1',1)")
@@ -175,7 +189,7 @@ class LayaQueueTest(unittest.TestCase):
     def test_caller_transaction_is_not_committed_by_failed_or_successful_step(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, 'leads.sqlite')
-            conn = db.init(path)
+            conn = local_conn(path)
             reader = db.connect(path)
             try:
                 pid = db.upsert_person(conn, {'handle': 'pending', 'bio': 'A brand'})
@@ -204,7 +218,7 @@ class LayaQueueTest(unittest.TestCase):
 
     def test_order_changes_rebuild_and_profile_freshness(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 ids = [db.upsert_person(conn, {'handle': f'person{i}', 'bio': bio})
                        for i, bio in enumerate(('bio', 'bio', 'bio', None))]
@@ -240,7 +254,7 @@ class LayaQueueTest(unittest.TestCase):
 
     def test_excluded_and_reverted_profiles(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 a = db.upsert_person(conn, {'handle': 'person', 'bio': 'original'})
                 db.upsert_person(conn, {'handle': 'parked~old', 'bio': 'original'})
@@ -268,7 +282,7 @@ class LayaQueueTest(unittest.TestCase):
 
     def test_malformed_cached_probability_is_not_used(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 pid = db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
@@ -283,7 +297,7 @@ class LayaQueueTest(unittest.TestCase):
 
     def test_profile_change_during_decide_is_not_saved(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 pid = db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 conn.commit()
@@ -299,25 +313,36 @@ class LayaQueueTest(unittest.TestCase):
 
     def test_pause_during_decide_prevents_write(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 pid = db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 conn.commit()
                 answers = {pid: {q['key']: 0.5 for q in laya.QUESTIONS}}
-                with patch.object(server.control, 'stage_paused', side_effect=[False, False, True]), \
-                        patch.object(laya, 'available', return_value=True), patch.object(laya, 'decide', return_value=answers):
+                def pause_during_decide(_):
+                    processing_modes.set_paused(conn, True)
+                    conn.commit()
+                    return answers
+                with patch.object(laya, 'available', return_value=True), \
+                        patch.object(laya, 'decide', side_effect=pause_during_decide) as decide:
                     self.assertFalse(server.laya_step(conn))
+                    decide.assert_called_once()
                 self.assertEqual(conn.execute('SELECT count(*) FROM laya').fetchone()[0], 0)
             finally:
                 conn.close()
 
     def test_pause_during_rebuild_prevents_sidecar_call(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 conn.commit()
-                with patch.object(server.control, 'stage_paused', side_effect=[False, True]), \
+                original = server.rebuild_laya_queue
+                def pause_after_rebuild(dbconn, signature):
+                    completed = original(dbconn, signature)
+                    processing_modes.set_paused(dbconn, True)
+                    dbconn.commit()
+                    return completed
+                with patch.object(server, 'rebuild_laya_queue', side_effect=pause_after_rebuild), \
                         patch.object(laya, 'available', return_value=True), \
                         patch.object(laya, 'decide') as decide:
                     self.assertFalse(server.laya_step(conn))
@@ -346,7 +371,7 @@ class LayaScoreCapTest(unittest.TestCase):
 class PrefilterRefreshTest(unittest.TestCase):
     def test_policy_change_refreshes_only_laya_rows_once(self):
         with tempfile.TemporaryDirectory() as directory:
-            conn = db.init(os.path.join(directory, 'leads.sqlite'))
+            conn = local_conn(os.path.join(directory, 'leads.sqlite'))
             try:
                 scored = db.upsert_person(conn, {'handle': 'largefounder', 'followers': 300_000})
                 plain = db.upsert_person(conn, {'handle': 'plainfounder'})

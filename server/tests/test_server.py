@@ -38,9 +38,25 @@ import server  # noqa: E402
 EXT = server.EXT_ORIGIN
 
 
+def external_ready(conn, pids):
+    """Represent completed local reviews that explicitly request external research."""
+    server.processing_state.ensure(conn)
+    server.processing_modes.set_mode(conn, 'RLEAI')
+    for pid in pids:
+        conn.execute("INSERT OR REPLACE INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'fixture','needs_research','business_unclear',?)", (pid, db.now()))
+        conn.execute("UPDATE verdicts SET model='local:test' WHERE person_id=?", (pid,))
+    conn.commit()
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tokens = {}
+        self.external_mock = mock.patch.object(server.external_harness, 'broad', return_value=None)
+        self.external_mock.start()
+        self.addCleanup(self.external_mock.stop)
+        budget = mock.patch.object(server.resource_budget, 'lease', side_effect=lambda stage: contextlib.nullcontext())
+        budget.start()
+        self.addCleanup(budget.stop)
         self.old_qualify = server.qualify
         server.qualify = stub
         self.addCleanup(setattr, server, 'qualify', self.old_qualify)
@@ -239,7 +255,7 @@ class ServerTest(Base):
         self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'},
                       [{k: link[k] for k in ('source', 'target', 'direction')} for link in m['links']])
         self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
-                                              'tags', 'seeds', 'is_me', 'pid', 'note', 'owner_status'})
+                                              'tags', 'seeds', 'is_me', 'pid', 'note', 'owner_status', 'relationships', 'familiarity', 'relationship_owner', 'owner_relationship', 'relationship_evidence'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
 
     def test_connected_sort_min_lists_and_tag_sources(self):
@@ -282,10 +298,11 @@ class ServerTest(Base):
         s = self.call('/api/scraper')[1]
         self.assertEqual((s['qualify'], s['qualify_auto']), (False, False))
         self.assertEqual(self.call('/api/settings/qualify', {'on': 'yes'})[0], 400)
-        self.assertEqual(self.call('/api/settings/qualify', {'on': True})[1], {'ok': True, 'qualify': True})
+        self.assertEqual(self.call('/api/settings/qualify', {'on': True})[1]['processing']['mode'], 'RLEAI')
         self.assertTrue(self.call('/api/scraper')[1]['qualify'])
-        self.call('/api/settings/qualify', {'on': False, 'auto': True})
-        # auto (opt-in): stays off while either direction is queued, flips on when both are done
+        self.assertEqual(self.call('/api/settings/qualify', {'on': False, 'auto': True})[0], 400)
+        self.call('/api/settings/qualify', {'on': False})
+        # Explicit processing mode cannot be silently upgraded after scraping completes.
         self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers', 'following']})
         self.assertFalse(server.auto_qualify(self.conn))
         job = self.call('/api/ext/next')[1]['job']
@@ -293,8 +310,8 @@ class ServerTest(Base):
         self.assertFalse(server.auto_qualify(self.conn))
         job = self.call('/api/ext/next')[1]['job']
         self.page(job, [{'ig_id': str(i), 'handle': f'a{i}'} for i in range(3)], done=True)
-        self.assertTrue(server.auto_qualify(self.conn))
-        self.assertTrue(self.call('/api/scraper')[1]['qualify'])
+        self.assertFalse(server.auto_qualify(self.conn))
+        self.assertFalse(self.call('/api/scraper')[1]['qualify'])
         self.call('/api/settings/qualify', {'on': False, 'auto': False})
         self.assertFalse(server.auto_qualify(self.conn))
 
@@ -310,16 +327,17 @@ class ServerTest(Base):
         self.call('/api/ext/profile', {'job_id': job['id'], 'profile': {'ig_id': '5', 'handle': 'eve', 'bio': 'founder'}})
         server.qualify_batch(self.conn)
         self.assertEqual(self.conn.execute('SELECT tier, model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('hot', 'rules'))
+        external_ready(self.conn, [pid])
         skip = {}
         self.assertFalse(server.llm_step(self.conn, skip))  # model unavailable: rule verdict stays
         self.assertIn(pid, skip)
         self.assertIsNone(server.llm_step(self.conn, skip))  # held back, nothing else to do
-        server.qualify.llm_verdict = lambda p, tags, edges: {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm',
+        server.external_harness.broad = lambda *args, **kwargs: {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm',
                                                              'tags': [('Skincare', 'niche')]}
         try:
             self.assertTrue(server.llm_step(self.conn, {}))
         finally:
-            server.qualify.llm_verdict = lambda p, tags, edges: None
+            server.external_harness.broad = lambda *args, **kwargs: None
         v = self.conn.execute('SELECT score, model, input_hash FROM verdicts WHERE person_id=?', (pid,)).fetchone()
         self.assertEqual(v[:], (90, 'm', 'h'))
         self.assertIn(('Skincare', 'niche', 'auto'), [tuple(r) for r in self.conn.execute('SELECT tag, grp, source FROM tags')])
@@ -696,19 +714,22 @@ class TagsMapTest(Base):
         db.set_setting(self.conn, 'qualify', True)
         self.conn.commit()
 
-        def boom(p, tags, edges):
+        external_ready(self.conn, [pid])
+
+        def boom(*args, **kwargs):
             raise RuntimeError('bad reply')
-        server.qualify.llm_verdict = boom
+        server.external_harness.broad = boom
         try:
             skip = {}
             with contextlib.redirect_stderr(io.StringIO()):  # the worker logs the traceback; expected here
                 self.assertFalse(server.llm_step(self.conn, skip))
             self.assertIn(pid, skip)
         finally:
-            server.qualify.llm_verdict = lambda p, tags, edges: None
-        self.assertEqual(self.conn.execute('SELECT model, tier FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('rules', 'hot'))
+            server.external_harness.broad = lambda *args, **kwargs: None
+        self.assertEqual(self.conn.execute('SELECT model, tier FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('local:test', 'hot'))
 
     def test_retag_on_taxonomy_change(self):
+        server.processing_modes.set_mode(self.conn, 'RLEAI')
         pid = self.people({'eve': ('founder', 10, ['s1'])})['eve']
         self.conn.execute("UPDATE verdicts SET model='m', score=91, content_fit=91, input_hash='h'")  # an LLM verdict (stub hash is 'h')
         self.conn.execute("DELETE FROM tags WHERE source='auto'")  # stands in for tags from an older taxonomy

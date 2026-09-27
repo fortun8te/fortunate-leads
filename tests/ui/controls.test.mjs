@@ -10,6 +10,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 const state = (paused = false, waitStage = null) => ({
   all_paused: false,
   local_laya: false,
+  processing: {mode:"RLEAI",generation:1},
   stages: ['lists', 'bios', 'ai'].map(id => ({
     id, label: { lists: 'Collect lists', bios: 'Read bios', ai: 'AI scoring' }[id],
     paused: id !== 'ai' && paused,
@@ -154,19 +155,19 @@ test('completion does not steal focus when the user moves elsewhere', async () =
 
 test('mode links explain the selected configuration without starting external AI', async () => {
   const h = harness(); const local = state();
-  local.local_laya = true; local.stages[2].paused = true; local.stages[2].state = 'paused';
+  local.local_laya = true; local.processing = {mode:"RLAI",generation:2}; local.stages[2].paused = true; local.stages[2].state = 'paused';
   h.respond(0, local); await settle();
   assert.match(h.el.innerHTML, /href="#\/settings"/);
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
   assert.match(h.el.innerHTML, /href="#\/accounts"/);
   assert.doesNotMatch(h.el.innerHTML, /<details|data-stage="ai"/);
 });
 
 test('local setting-only changes refresh the summary, and offline states become unknown', async () => {
   const h = await ready();
-  h.poll(); const local = state(); local.local_laya = true; local.stages[2].paused = true; local.stages[2].state = 'paused';
+  h.poll(); const local = state(); local.local_laya = true; local.processing = {mode:"RLAI",generation:2}; local.stages[2].paused = true; local.stages[2].state = 'paused';
   h.respond(1, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
   h.poll(); h.fail(2); await settle();
   assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Unknown<\/b>/);
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Unknown<\/b>/);
@@ -175,19 +176,19 @@ test('local setting-only changes refresh the summary, and offline states become 
 
 test('processing mode remains a configuration label when collection is paused', async () => {
   const h = harness();
-  const local = state(); local.local_laya = true;
+  const local = state(); local.local_laya = true; local.processing = {mode:"RLAI",generation:2};
   local.stages.forEach(s => { s.paused = true; s.state = 'paused'; });
   h.respond(0, local); await settle();
   assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Off<\/b>/);
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
-  h.poll(); local.local_laya = false; h.respond(1, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Rules<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
+  h.poll(); local.local_laya = false; local.processing = {mode:"R",generation:3}; h.respond(1, local); await settle();
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>R · Rules<\/b>/);
 });
 
 for (const initiallyPaused of [true, false]) {
   test(`direct collection ${initiallyPaused ? 'start' : 'pause'} stays outside disclosure and sends only the collection action`, async () => {
     const h = harness();
-    const initial = state(); initial.local_laya = true;
+    const initial = state(); initial.local_laya = true; initial.processing = {mode:"RLAI",generation:2};
     for (const s of initial.stages) if (s.id !== 'ai') { s.paused = initiallyPaused; s.state = initiallyPaused ? 'paused' : 'running'; }
     h.respond(0, initial); await settle();
     assert.match(h.el.innerHTML, new RegExp(`<button[^>]+data-stage="collection"[^>]*>${initiallyPaused ? 'Start' : 'Pause'} scraping</button>`));
@@ -203,7 +204,7 @@ for (const initiallyPaused of [true, false]) {
     assert.equal(h.button('collection').disabled, false);
     assert.equal(h.button('collection').dataset.action, initiallyPaused ? 'pause' : 'resume');
     assert.equal(result.stages[2].paused, initial.stages[2].paused, 'external configuration is unchanged');
-    assert.match(h.el.innerHTML, /<b>External AI<\/b>/);
+    assert.match(h.el.innerHTML, /<b>RLAI · Local AI<\/b>/);
     assert.equal(h.document.activeElement, h.button('collection'));
   });
 }

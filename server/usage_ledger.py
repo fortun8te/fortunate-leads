@@ -91,7 +91,7 @@ def record(provider, model, purpose, batch_size, success, status, latency_ms,
     """Record one network attempt, including failures; token totals only use provider-reported values."""
     if provider != 'proxy' and (not isinstance(provider, str) or len(provider) != 10):
         raise ValueError('provider must be a nonsecret identifier')
-    if purpose not in ('qualification', 'website_summary', 'provider_test'):
+    if purpose not in ('qualification', 'website_summary', 'provider_test', 'external_broad', 'external_deep'):
         raise ValueError('unknown usage purpose')
     if status not in ('ok', 'http_error', 'transport_error', 'invalid_reply'):
         raise ValueError('unknown usage status')
@@ -134,14 +134,14 @@ def record(provider, model, purpose, batch_size, success, status, latency_ms,
 
 def summary(path=PATH, days=30, purpose='qualification'):
     """Read-only totals; coverage starts with the first recorded attempt, never inferred from verdict rows."""
-    if purpose not in ('qualification', 'website_summary', 'provider_test', 'all'):
+    if purpose not in ('qualification', 'website_summary', 'provider_test', 'external_broad', 'external_deep', 'all'):
         raise ValueError('unknown usage purpose')
     path = Path(path)
     if not path.exists():
         return {'recording_since': None, 'window_days': days, 'purpose': purpose,
                 'requests': 0, 'successes': 0,
                 'failed_attempts': 0, 'items_attempted': 0, 'input_tokens_reported': 0,
-                'output_tokens_reported': 0, 'token_reports': 0, 'by_provider_model': []}
+                'output_tokens_reported': 0, 'token_reports': 0, 'missing_token_reports': 0, 'by_provider_model': []}
     since = (datetime.now(timezone.utc) - timedelta(days=days - 1)).date().isoformat()
     db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5)
     try:
@@ -157,7 +157,7 @@ def summary(path=PATH, days=30, purpose='qualification'):
         db.close()
     detail = [{'provider': p, 'model': m, 'purpose': purpose, 'success': bool(ok),
                'requests': n, 'items_attempted': items, 'input_tokens_reported': inp,
-               'output_tokens_reported': out, 'token_reports': reports,
+               'output_tokens_reported': out, 'token_reports': reports, 'missing_token_reports': n - reports,
                'average_latency_ms': round(ms / n) if n else 0}
               for p, m, purpose, ok, n, items, inp, out, reports, ms in rows]
     return {'recording_since': first, 'window_days': days, 'purpose': purpose,
@@ -168,4 +168,5 @@ def summary(path=PATH, days=30, purpose='qualification'):
             'input_tokens_reported': sum(x['input_tokens_reported'] for x in detail),
             'output_tokens_reported': sum(x['output_tokens_reported'] for x in detail),
             'token_reports': sum(x['token_reports'] for x in detail),
+            'missing_token_reports': sum(x['missing_token_reports'] for x in detail),
             'by_provider_model': detail}

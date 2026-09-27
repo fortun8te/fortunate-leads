@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import control
+import processing_modes
 import db
 import qualify
 import server
@@ -109,15 +110,17 @@ class NetworkReview(unittest.TestCase):
         server.set_status(c, [marked], status='client')
         c.execute('DELETE FROM network_dirty')
         old = dict(self.stored(peer))
-        control.stop_all(c)   # rule scoring runs with only AI off; Stop all holds it
+        # Pause AI without changing its cumulative mode or discarding saved fit.
+        # Stop all deliberately selects R and is a different contract now.
+        processing_modes.set_paused(c, True)
         db.add_edge(c, 's', marked, 'followers')
         db.add_edge(c, 's', unknown, 'followers')
         c.execute('DELETE FROM verdicts WHERE person_id=?', (unknown,))
         with patch.object(qualify, 'rule_verdict', side_effect=AssertionError('new fit forbidden')), \
              patch.object(qualify, 'llm_verdicts', side_effect=AssertionError('models forbidden')):
-            server.background_qualify(c)
-            server.qualify_batch(c)
-            server.requalify(c, dict(c.execute('SELECT * FROM people WHERE id=?', (unknown,)).fetchone()), None)
+            self.assertFalse(server.local_processing_step(c))
+            self.assertFalse(server.LLMPool().step(c))
+            server.drain_network_dirty(c)
         after = self.stored(peer)
         self.assertGreater(after['score'], old['score'])
         for field in ('content_fit', 'model', 'reason', 'role', 'input_hash'):
