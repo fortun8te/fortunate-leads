@@ -493,7 +493,9 @@ def ext_error(conn, q, b):
             conn.execute('INSERT OR IGNORE INTO list_private_denials(seed,direction,viewer_ig_id,denied_at) VALUES(?,?,?,?)',
                          (job['seed'], job['direction'], viewer_id, ts))
             candidates = conn.execute('SELECT * FROM accounts').fetchall()
-            remaining = any(accounts.eligible_for_list(conn, a, job['seed'], job['direction'], datetime.now(timezone.utc))
+            # A cooling or offline account may still follow this private target later.
+            # Its temporary availability must not turn an access denial into a final result.
+            remaining = any(accounts.viewer_may_access_list(conn, a, job['seed'], job['direction'])
                             for a in candidates)
             final = not remaining
         else:

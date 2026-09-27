@@ -60,16 +60,38 @@ class PrivateListHandoff(unittest.TestCase):
         self.assertIsNone(self.c.execute("SELECT value FROM settings WHERE key='cooldown'").fetchone())
         self.assertEqual(self.c.execute('SELECT count(*) FROM edges').fetchone()[0], 1)
 
-    def test_offline_main_reopens_when_it_returns(self):
+    def test_offline_main_remains_a_possible_viewer(self):
         self.c.execute('UPDATE accounts SET last_seen=? WHERE lane_id=?',
                        (accounts.iso(db.utc_now() - timedelta(hours=1)), 'main'))
         self.c.commit()
         self.deny('bot', self.next('bot'))
         self.deny('bot2', self.next('bot2'))
-        self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'private')
+        self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'queued')
+        self.assertEqual(self.c.execute('SELECT state FROM jobs WHERE kind="list"').fetchone()[0], 'queued')
         job = self.next('main')
         self.assertIsNotNone(job)
         self.assertEqual(job['cursor'], None)
+
+    def test_cooling_main_remains_a_possible_viewer(self):
+        future = accounts.iso(db.utc_now() + timedelta(minutes=30))
+        self.c.execute('UPDATE accounts SET list_cool_until=? WHERE lane_id=?', (future, 'main'))
+        self.c.commit()
+        self.deny('bot', self.next('bot'))
+        self.deny('bot2', self.next('bot2'))
+        self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'queued')
+        self.assertEqual(self.c.execute('SELECT state FROM jobs WHERE kind="list"').fetchone()[0], 'queued')
+
+    def test_unconfirmed_html_redirect_delays_target_without_account_cooldown(self):
+        job = self.next('bot')
+        server.ext_error(self.c, {'lane': ['bot']}, {'job_id': job['id'], 'lease_token': job['lease_token'],
+            'code': 'other', 'reason': 'list_html_home_redirect', 'message': 'HTML list redirect; wall unconfirmed'})
+        row = self.c.execute('SELECT state,retry_not_before FROM jobs WHERE id=?', (job['id'],)).fetchone()
+        self.assertEqual(row['state'], 'queued')
+        self.assertGreater(accounts.utc(row['retry_not_before']), db.utc_now())
+        self.assertIsNone(self.c.execute("SELECT value FROM settings WHERE key='cooldown'").fetchone())
+        db.queue_list(self.c, 'another', 'followers')
+        self.c.commit()
+        self.assertEqual(self.next('bot')['seed'], 'another')
 
     def test_stale_denial_cannot_exclude_new_holder(self):
         job = self.next('bot')

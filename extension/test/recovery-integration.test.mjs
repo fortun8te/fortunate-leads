@@ -17,11 +17,14 @@ function worker(data = {}, hooks = {}) {
   vm.runInContext(source, ctx);
   ctx.apiStub = hooks.api || (async () => { throw new Error('offline'); });
   ctx.pageStub = hooks.page;
+  ctx.domStub = hooks.dom;
   ctx.lookupStub = hooks.lookup || (async () => ({p: {ig_id: '12', handle: 'seed', followers: 3}}));
   vm.runInContext(`api = (...args) => apiStub(...args);
     igRequest = async (...args) => pageStub(...args);
     lookupViaPage = (...args) => lookupStub(...args);
+    if (domStub) tabDom = (...args) => domStub(...args);
     waitUntil = async () => true;
+    globalThis.checked = (handle, profile) => checkedProfileDom(1, handle, profile);
     globalThis.run = async job => { await set({cur: {job, at: Date.now()}}); await runList(mem.gen, job, {id: 1}); };
     globalThis.flush = () => flushBox();
     globalThis.error = job => fail(job, {code: 'other', reason: 'fixture'}, 'fixture', {status: 400}, 'list');
@@ -105,6 +108,55 @@ test('storage failure while recording a job error preserves its resumable lease'
   await assert.rejects(ctx.error(leased), /storage full/);
   assert.deepEqual(data.cur.job, leased);
   assert.equal(data.box, undefined);
+});
+
+test('HTML list redirect with verified private wall hands off this viewer', async () => {
+  const data = {laneId: 'fixture-lane'};
+  let lookups = 0;
+  const ctx = worker(data, {
+    page: async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
+      status: 200, contentType: 'text/html', url: 'https://www.instagram.com/', redirected: true, text: '<html></html>'}}),
+    lookup: async () => ++lookups === 1 ? {p: {ig_id: '12', handle: 'seed', is_private: true},
+      info: {url: 'https://www.instagram.com/seed/', privateWall: false}} :
+      {p: null, info: {url: 'https://www.instagram.com/seed/', privateWall: true, privateWallRechecked: true}},
+  });
+  await ctx.run(job());
+  assert.equal(data.box[0].path, '/api/ext/error');
+  assert.equal(data.box[0].body.code, 'private');
+  assert.equal(data.box[0].body.reason, 'profile_private_wall');
+  assert.equal(data.st.cool.list.until, 0);
+  assert.equal(lookups, 2);
+});
+
+test('profile wall must persist across two reads at the target URL', async () => {
+  const wall = {url: 'https://www.instagram.com/seed/', privateWall: true};
+  let reads = 0;
+  const confirmed = worker({}, {dom: async () => { reads++; return wall; }});
+  assert.equal(FL.privateWall(await confirmed.checked('seed', null), 'seed', null), true);
+  assert.equal(reads, 2);
+
+  const transient = worker({}, {dom: async () => { reads++; return reads % 2 ? wall :
+    {url: wall.url, privateWall: false}; }});
+  reads = 0;
+  assert.equal(FL.privateWall(await transient.checked('seed', null), 'seed', null), false);
+});
+
+test('HTML list redirect without wall quarantines only the target and keeps other work eligible', async () => {
+  const data = {laneId: 'fixture-lane'};
+  let lookups = 0;
+  const ctx = worker(data, {
+    page: async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
+      status: 200, contentType: 'text/html', url: 'https://www.instagram.com/', redirected: true, text: '<html></html>'}}),
+    lookup: async () => { lookups++; return {p: {ig_id: '12', handle: 'seed', is_private: true},
+      info: {url: 'https://www.instagram.com/seed/', privateWall: false}}; },
+  });
+  await ctx.run(job());
+  assert.equal(data.box[0].body.code, 'other');
+  assert.equal(data.box[0].body.reason, 'list_html_home_redirect');
+  assert.equal(data.st.streak.other, 0);
+  assert.equal(data.st.cool.list.until, 0);
+  assert.match(data.st.lastError, /Instagram returned its home page/);
+  assert.equal(lookups, 2);
 });
 
 test('recorded errors atomically clear the lease while keeping the backoff', async () => {
