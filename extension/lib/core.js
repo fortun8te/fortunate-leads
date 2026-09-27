@@ -117,6 +117,7 @@
     if (!status) return out('network', res.aborted ? 'timeout' : res.tabError ? 'tab' : 'fetch');
     if (!ok) return out('other', 'http_' + status);
     if (!json) {
+      if (res.env?.uid === false && /html/i.test(res.contentType || '')) return out('login', 'html_logged_out');
       // A list API fetch can finish with HTTP 200 after Instagram redirects it to its HTML home page.
       // This says nothing about access to the target until the viewer's profile page is checked.
       if (kind === 'list' && /html/i.test(res.contentType || '')) {

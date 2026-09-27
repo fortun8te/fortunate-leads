@@ -31,6 +31,8 @@ test('HTML list response at Instagram home is a target retry signal, not a priva
     'list_html_home_redirect');
   assert.equal(FL.classify({ status: 200, text: '<html></html>', json: null,
     contentType: 'text/html', url: 'https://www.instagram.com/' }, 'profile').reason, 'not_json');
+  assert.equal(FL.classify({ status: 200, text: '<html>login</html>', json: null,
+    contentType: 'text/html', url: 'https://www.instagram.com/', env: { uid: false } }, 'list').code, 'login');
 });
 
 test('a repeated live private wall can prove this viewer lacks access without profile JSON', () => {
