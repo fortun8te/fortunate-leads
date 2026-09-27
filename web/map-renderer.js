@@ -37,22 +37,38 @@
       this.canvas = canvas;
       const gl = this.gl = canvas.getContext('webgl', { alpha: true, antialias: false, depth: false, preserveDrawingBuffer: false });
       if (!gl) throw new Error('WebGL unavailable');
+      this.data = new Float32Array(0); this.count = 0; this.lost = true;
+      this.initialize();
+      canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; });
+      canvas.addEventListener('webglcontextrestored', () => {
+        // A restored context invalidates every old shader, program and buffer.
+        // Keep the CPU fallback if rebuilding fails; never reuse stale resources.
+        try { this.initialize(); } catch (_) { this.lost = true; }
+      });
+    }
+    initialize() {
+      const gl = this.gl;
+      this.lost = true;
       const shader = (type, text) => { const s = gl.createShader(type); gl.shaderSource(s, text); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
       const p = this.program = gl.createProgram();
       gl.attachShader(p, shader(gl.VERTEX_SHADER, 'attribute vec3 point; uniform vec2 viewport; uniform vec3 camera; uniform float dpr; void main(){ vec2 p=point.xy*camera.z+camera.xy; gl_Position=vec4(p.x/viewport.x*2.0-1.0,1.0-p.y/viewport.y*2.0,0,1); gl_PointSize=max(2.0,point.z*camera.z*2.0)*dpr; }'));
       gl.attachShader(p, shader(gl.FRAGMENT_SHADER, 'precision mediump float; uniform vec4 color; void main(){vec2 p=gl_PointCoord*2.0-1.0; if(dot(p,p)>1.0)discard;gl_FragColor=color;}'));
       gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-      this.buffer = gl.createBuffer(); this.count = 0;
-      canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; });
-      canvas.addEventListener('webglcontextrestored', () => { this.lost = true; });
+      this.buffer = gl.createBuffer();
+      if (!this.buffer) throw new Error('WebGL buffer unavailable');
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, this.data, gl.STATIC_DRAW);
+      this.lost = gl.isContextLost() === true;
     }
     set(nodes) {
       const data = new Float32Array(nodes.length * 3);
       nodes.forEach((n, i) => { data[i * 3] = n.x; data[i * 3 + 1] = n.y; data[i * 3 + 2] = n.r; });
-      const gl = this.gl; gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); this.count = nodes.length;
+      // Preserve the newest coordinates even when set() runs during context loss.
+      this.data = data; this.count = nodes.length;
+      if (this.lost || this.gl.isContextLost() === true) return;
+      const gl = this.gl; gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     }
     draw(w, h, x, y, k, color) {
-      if (this.lost) return false;
+      if (this.lost || this.gl.isContextLost() === true) return false;
       const gl = this.gl, dpr = Math.min(root.devicePixelRatio || 1, 2), p = this.program;
       if (this.canvas.width !== Math.round(w * dpr) || this.canvas.height !== Math.round(h * dpr)) { this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr); }
       gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(p);
