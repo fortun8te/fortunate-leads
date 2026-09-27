@@ -139,15 +139,15 @@ leased work goes back in the queue after 10 minutes, lists resume from their sav
 extension could not deliver wait in its outbox. After a restart, open Chrome with each profile and one
 Instagram tab; the LaunchAgent has already started the server.
 
-To stop scraping on purpose use **Pause** in the top strip (all accounts) or on one account.
+To stop collection on purpose, pause lists and bios in **Controls**, or pause an individual account.
 
 ## 11. Troubleshooting
 
 | symptom | what to do |
 |---|---|
 | Extension offline | Chrome is closed, or the extension is off in that profile. Open the profile; check `chrome://extensions`. |
-| Needs login / Security check on an account | Open that Chrome profile, log in or complete the check in the Instagram tab, then click Resume in the extension popup. Its list has already moved to another account. |
-| Cooldown | Instagram asked to slow down. Nothing to do; it resumes by itself. Three limits in a day stop that account until midnight. |
+| Needs login / Security check on an account | Collection pauses across all accounts. Resolve the warning in that Chrome profile, resume its extension, then explicitly resume lists and bios in Controls after the shared wait ends. |
+| Shared wait | An Instagram limit or unexpected list redirect stops collection across accounts until the displayed wait ends. A login or security warning also keeps lists and bios paused until you explicitly resume them. |
 | Page does not load | `ops/doctor.sh --fix`, then check the log. By hand: `python3 server/server.py` shows errors directly. |
 | Port 8777 in use | `ops/doctor.sh --fix` stops stray servers and restarts the agent. |
 | A key shows Refused | The key is wrong or revoked. Replace it in Settings. |
