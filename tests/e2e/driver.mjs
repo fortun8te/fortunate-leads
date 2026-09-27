@@ -916,13 +916,15 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
     const a = acc.accounts.find((x) => x.ig_id === accts[i].ig_id);
     check(a && a.handle === accts[i].handle, 'server knows each lane\'s account', `${L.name} -> ${a ? a.handle + ' (' + a.lane_id + ')' : 'missing'}`);
     check(!(L.store.box || []).length, 'outbox empty', `${L.name} ${(L.store.box || []).length}`);
-    // its own cooldowns: none of its requests inside them (checkRequest too), and the others kept going meanwhile
+    // Account cooldowns still apply, and a server warning now stops new work
+    // across every account for at least the shared 15-minute safety wait.
     for (const h of L.hits.filter((x) => x.bucket === 'list')) {
       const until = coolOf(h.post).list.until;
-      const others = igLog.filter((e) => e.kind === 'list' && e.lane !== L.name && e.t > h.at && e.t < until).length;
+      const sharedUntil = h.at + 15 * MIN;
+      const others = igLog.filter((e) => e.kind === 'list' && e.lane !== L.name && e.t > h.at && e.t < sharedUntil).length;
       const own = igLog.filter((e) => e.kind === 'list' && e.lane === L.name && e.t > h.at && e.t < until).length;
       check(!own, 'no request during its own cooldown', `${L.name} ${own} in ${dhm(h.at)}–${dhm(until)}`);
-      if (N > 1) check(others > 0, 'cooldown stays on its lane (others keep going)', `${L.name} hit at ${dhm(h.at)}: ${others} requests by other lanes meanwhile`);
+      if (N > 1) check(!others, 'shared warning stops other lanes', `${L.name} hit at ${dhm(h.at)}: ${others} other requests before ${dhm(sharedUntil)}`);
     }
   }
   check(acc.accounts.length === N, 'one account row per lane', `${acc.accounts.length} rows`);
