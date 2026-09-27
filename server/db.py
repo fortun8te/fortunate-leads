@@ -265,6 +265,11 @@ def init(path):
                 # Existing tracked prefixes already have members. Backfill once
                 # before triggers start maintaining the exact count.
                 conn.execute('UPDATE list_runs SET member_count=(SELECT count(*) FROM list_members WHERE job_id=list_runs.job_id)')
+    # Earlier collectors called a terminal page "done" even when the saved
+    # list was capped or short. Correct only the job still identified as that
+    # partial run; a later refresh may have superseded older job evidence.
+    conn.execute("UPDATE jobs SET state='partial' WHERE kind='list' AND state='done' "
+                 "AND EXISTS(SELECT 1 FROM lists l WHERE l.run_job_id=jobs.id AND l.state='partial')")
     for name in ('list_members_count_insert', 'list_members_count_delete', 'list_members_count_reassign'):
         conn.execute(f'DROP TRIGGER IF EXISTS {name}')
     conn.execute('CREATE TRIGGER list_members_count_insert AFTER INSERT ON list_members BEGIN '

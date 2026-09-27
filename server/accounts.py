@@ -245,7 +245,7 @@ def release(conn, now, only=None):
         else:
             jobs.append(j)
     lists = [x for x in conn.execute("SELECT seed, direction, lane FROM lists WHERE lane IS NOT NULL "
-                                     "AND state NOT IN ('done','private','error')")
+                                     "AND state NOT IN ('done','private','error','partial')")
              if x['lane'] not in ok and x['lane'] not in held and (only is None or x['lane'] == only)]
     for j in jobs:
         conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, lease_token=NULL, attempts=max(attempts-1, 0) WHERE id=?", (j['id'],))
@@ -265,7 +265,7 @@ def release_all(conn, lane):
     why = why_released(row, db.utc_now())
     return n + conn.execute("UPDATE lists SET lane=NULL, prev_lane=?, released_at=?, released_why=?, "
                             "state=CASE WHEN state='running' THEN 'queued' ELSE state END "
-                            "WHERE lane=? AND state NOT IN ('done','private','error')", (lane, ts, why, lane)).rowcount
+                            "WHERE lane=? AND state NOT IN ('done','private','error','partial')", (lane, ts, why, lane)).rowcount
 
 
 def note_handoff(conn, seed, direction, frm, to, why):
@@ -425,7 +425,7 @@ def out(conn, row, now, include_lists=True):
     job = conn.execute("SELECT kind, seed, direction, handle FROM jobs WHERE state='leased' AND lane=? AND leased_until>? "
                        'ORDER BY id DESC LIMIT 1', (row['lane_id'], iso(now))).fetchone()
     owns = [dict(r) for r in conn.execute("SELECT seed, direction, received, total FROM lists WHERE lane=? "
-                                          "AND state NOT IN ('done','private','error') ORDER BY updated_at DESC", (row['lane_id'],))] \
+                                          "AND state NOT IN ('done','private','error','partial') ORDER BY updated_at DESC", (row['lane_id'],))] \
         if include_lists else []
     rate = jload(row['rate'])
     today = jload(row['today']) or {}

@@ -380,7 +380,7 @@ def _ext_list_page(conn, q, b):
                  (seed,direction,state,requested if stalled else next_cursor,received,total,error,ts,job['id'] if job else None))
     if job:
         conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL, lease_token=NULL WHERE id=?",
-                     ('error' if stalled else 'done' if done else 'queued', job['id']))
+                     ('error' if stalled else state if done else 'queued', job['id']))
     changed = db.complete_list_snapshot(conn, seed, direction, job['id'], ts) if job and state == 'done' else set()
     if changed:
         rules.sync(conn, changed)
@@ -506,8 +506,13 @@ def ext_error(conn, q, b):
             # Keep trying this target after its delay while other lists can run.
             final = code in ('private', 'not_found') or (code == 'other' and b.get('reason') != 'list_html_home_redirect'
                                                        and job['attempts'] >= 5)
+        collected = (conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
+                                  (job['seed'], job['direction'])).fetchone() if was_list else None)
+        job_state = ('partial' if was_list and final and collected and collected['received'] else
+                     'done' if code in ('private', 'not_found') and final else
+                     'error' if final else 'queued')
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
-                     ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
+                     (job_state, job['id']))
         if code in ('rate_limit', 'soft_block'):
             # A hot job must not bounce immediately through every signed-in account.
             # An explicit Instagram Retry-After wins; the lane's *computed* cooldown
@@ -536,8 +541,6 @@ def ext_error(conn, q, b):
             else:
                 conn.execute('UPDATE jobs SET retry_not_before=? WHERE id=?', (retry, job['id']))
         if job['kind'] == 'list':
-            collected = conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
-                                     (job['seed'], job['direction'])).fetchone()
             state = ('partial' if final and collected and collected['received'] else
                      'private' if code == 'private' and final else 'error' if final else 'queued')
             if code == 'private':

@@ -324,7 +324,7 @@ class ServerTest(Base):
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'leased')
         self.page(job, [], done=True)
         self.call('/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'message': '429'})  # late error
-        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'done')
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
         self.assertEqual(self.conn.execute("SELECT state FROM lists WHERE seed='s'").fetchone()[0], 'partial')
 
     def test_budget_defaults_not_mutated(self):
