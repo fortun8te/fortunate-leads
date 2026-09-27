@@ -2129,9 +2129,11 @@ function renderScraper() {
   const offline = x.online ? '' : 'waiting for the extension';
   const listsDone = ls.length > 0 && ls.every(l => l.state === 'done');
   const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
+    : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No list entries this minute'
     : eta(L.eta_h) ? `${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')} · limit ${int(B.per_day)} a day`;
-  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
+  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
+    ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
   // Speed scales with accounts: each extra Instagram account adds roughly one account's measured pace.
   const lanes = Math.max(1, (sc.accounts || []).filter((a) => a.online && !a.paused).length);
   const faster = L.eta_h > 72 && L.per_hour ? `<p class="muted">Each extra Instagram account adds about ${int(Math.round(L.per_hour / lanes))} people an hour. Add one under Accounts.</p>` : '';
@@ -2302,7 +2304,7 @@ function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start engine';
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
@@ -2388,15 +2390,23 @@ $('#acc-list').addEventListener('keydown', (e) => {
 $('#acc-start').addEventListener('click', async () => {
   if (A.starting) return;
   A.starting = true;
+  const status = $('#acc-start-status');
+  status.dataset.state = 'working';
+  status.textContent = 'Starting Laya, opening configured Chrome profiles, and resuming all stages…';
   renderAccounts();
   try {
-    const result = await api.post('/api/control', { action: 'start_all' });
+    const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
     window.dispatchEvent(new Event('fl:control-changed'));
-    toast('Started lists, bios and AI. Cooldowns still apply.');
+    const count = Number.isInteger(result?.profiles_opened) ? result.profiles_opened : null;
+    status.dataset.state = 'success';
+    status.textContent = `Engine started${count == null ? '' : ` with ${count} configured Chrome profiles`}. Login checks and Instagram limits still apply.`;
+    toast('Engine started. Login checks and Instagram limits still apply.');
     await loadScraper();
   } catch (e) {
-    toast(e.message || 'Could not start all');
+    status.dataset.state = 'error';
+    status.textContent = e.message || 'Could not start engine. Check service and profile setup.';
+    toast(e.message || 'Could not start engine');
   } finally {
     A.starting = false;
     renderAccounts();

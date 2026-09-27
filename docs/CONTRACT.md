@@ -260,6 +260,10 @@ transferred handle cannot inherit the old owner's mark. `@fortun8te` is treated 
 row is missing; it is excluded from Laya, bulk LLM and Leadscout candidates. Leadscout/Hermes still receives only public
 profile fields for its independent evidence check; owner notes and tags are not included in its prompt. These examples
 guide later prompts; they are not model retraining or independent validation of recommendation quality.
+An exact manual `client` tag (case-insensitive) also enters the next positive example set without requiring a Client
+status. The prompt calls it a manual preference signal, not a confirmed relationship; one of the eight positive slots
+is reserved when needed. An explicit Not a fit status overrides the tag. Removing the tag removes that tag-only example.
+This does not write a status, rescore all old verdicts, or train Laya/Broad.
 
 ## Evidence-based pair comparison
 

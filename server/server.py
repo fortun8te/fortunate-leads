@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import secrets
+import sqlite3
 import socket
 import ssl
 import sys
@@ -27,8 +28,10 @@ import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
+import engine_start  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
+import usage_ledger  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
 import workflows  # noqa: E402
@@ -1547,7 +1550,32 @@ def api_llm(conn, q, b):
     out['summary'] = counts   # e.g. {'ok': 2, 'spent': 2, 'error': 1}: spent keys are not broken, they return at 00:00 UTC
     out['verdicts'] = dict(conn.execute("SELECT CASE WHEN model IN ('rules','error') THEN model ELSE 'llm' END, count(*) FROM verdicts "
                                         'GROUP BY 1').fetchall())
+    out['usage'] = llm_usage_report()
     return out
+
+
+def llm_usage_report(days=30, purpose='qualification'):
+    pool = llm.get()
+    path = pool.usage_path or usage_ledger.PATH
+    gap = pool.usage_gap or usage_ledger.read_gap(path)
+    try:
+        report = usage_ledger.summary(path, days, purpose)
+    except (OSError, ValueError, sqlite3.Error):
+        return {'available': False, 'error': 'usage_ledger_unavailable',
+                'accounting_gap': gap, 'window_days': days, 'purpose': purpose}
+    first = report['recording_since']
+    covered_window = bool(first) and datetime.fromisoformat(first) <= datetime.now(timezone.utc) - timedelta(days=days)
+    return dict(report, available=True, complete=gap is None and covered_window, accounting_gap=gap)
+
+
+def api_llm_usage(conn, q, b):
+    raw = (q.get('days') or ['30'])[0]
+    if not raw.isdigit() or not 1 <= int(raw) <= 365:
+        raise Bad('days must be 1-365')
+    purpose = (q.get('purpose') or ['qualification'])[0]
+    if purpose not in ('qualification', 'website_summary', 'provider_test', 'all'):
+        raise Bad('unknown usage purpose')
+    return llm_usage_report(int(raw), purpose)
 
 
 def api_llm_health(conn, q, b):
@@ -1688,6 +1716,15 @@ def api_control_set(conn, q, b):
     return api_control(conn, q, b)
 
 
+def api_engine_start(conn, q, b):
+    """Start local services and configured Chrome profiles, then resume all stages."""
+    try:
+        account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
+        return engine_start.start(ROOT, account_count)
+    except engine_start.EngineStartError as exc:
+        raise Bad(str(exc)) from None
+
+
 def api_budget(conn, q, b):
     budget = db.get_setting(conn, 'budget')
     changes = {}
@@ -1760,6 +1797,7 @@ ROUTES = [
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
     ('GET', r'/api/control', api_control), ('POST', r'/api/control', api_control_set),
+    ('POST', r'/api/engine/start', api_engine_start),
     ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
     ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
@@ -1775,7 +1813,8 @@ ROUTES = [
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
     ('GET', r'/api/settings/biofetch', api_biofetch_get), ('POST', r'/api/settings/biofetch', api_biofetch),
-    ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
+    ('GET', r'/api/llm', api_llm), ('GET', r'/api/llm/usage', api_llm_usage),
+    ('GET', r'/api/llm/health', api_llm_health), ('POST', r'/api/llm/keys', api_llm_key_add),
     ('POST', rf'/api/llm/keys/{KEY}/remove', api_llm_key_remove), ('POST', rf'/api/llm/keys/{KEY}/test', api_llm_key_test),
     ('GET', r'/api/scout', api_scout), ('POST', r'/api/settings/scout', api_scout_set),
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
@@ -2273,7 +2312,10 @@ FEWSHOT_TAG_MAX = getattr(qualify, 'FEWSHOT_TAG_MAX', 6)
 def feedback_example(conn, pid):
     """A small, identity-stable example from Michael's mark and manual tags only."""
     r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status FROM people p
-        JOIN marks m ON m.person_id=p.id WHERE p.id=? AND m.status IN ('interested','talking','client','no')
+        LEFT JOIN marks m ON m.person_id=p.id WHERE p.id=?
+        AND (m.status IN ('interested','talking','client','no') OR
+             (m.status IS NOT 'no' AND EXISTS(SELECT 1 FROM tags t WHERE t.person_id=p.id
+                AND t.source='manual' AND t.tag='client' COLLATE NOCASE)))
         AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
         AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)""", (pid,)).fetchone()
     if not r:
@@ -2283,8 +2325,8 @@ def feedback_example(conn, pid):
         (pid, FEWSHOT_TAG_MAX))]
     return {'person_id': r['id'], 'handle': r['handle'], 'name': (r['name'] or '')[:80],
             'bio': r['bio'][:200], 'label': 'no' if r['status'] == 'no' else 'good',
-            'status': r['status'],
-            'manual_tags': [t for t in tags if t]}
+            'status': r['status'], 'feedback_source': 'status_mark' if r['status'] in (*POSITIVE, 'no') else 'manual_client_tag',
+            'manual_tags': [t for t in tags if t and not (r['status'] == 'no' and t.casefold() == 'client')]}
 
 
 def fewshot(conn):
@@ -2294,13 +2336,21 @@ def fewshot(conn):
     prior = cur.get('examples') or []
     selected_n = cur.get('n', 0)
     count_due = bool(cur) and abs(n - selected_n) >= max(FEWSHOT_CHANGE, selected_n // 5)
-    old_format = any('person_id' not in e for e in prior)
+    old_format = any('person_id' not in e or 'feedback_source' not in e for e in prior)
     latest_client = conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
         WHERE m.status='client' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
           AND p.handle!='fortun8te' COLLATE NOCASE
           AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
         ORDER BY m.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
-    new_client = latest_client and latest_client[0] not in {e.get('person_id') for e in prior}
+    tagged_client = conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+        LEFT JOIN marks m ON m.person_id=p.id
+        WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
+          AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
+          AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+        ORDER BY CASE WHEN m.status IN ('interested','talking','client') THEN 1 ELSE 0 END,
+                 p.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
+    prior_ids = {e.get('person_id') for e in prior}
+    new_client = any(row and row[0] not in prior_ids for row in (latest_client, tagged_client))
     rebuild = not cur or count_due or old_format or new_client
     ex = []
     if not rebuild:
@@ -2309,14 +2359,31 @@ def fewshot(conn):
             rebuild = True
     if rebuild:
         ex = []
-        for statuses in (POSITIVE_SQL, "('no')"):
-            ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
-                WHERE m.status IN {statuses} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+        marked_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+                WHERE m.status IN {POSITIVE_SQL} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
                   AND p.handle!='fortun8te' COLLATE NOCASE
                   AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
                 ORDER BY CASE m.status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 ELSE 2 END,
                          m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
-            ex.extend(e for e in (feedback_example(conn, pid) for pid in ids) if e)
+        tagged_ids = [r[0] for r in conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+            LEFT JOIN marks m ON m.person_id=p.id
+            WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
+              AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
+              AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+            ORDER BY CASE WHEN m.status IN ('interested','talking','client') THEN 1 ELSE 0 END,
+                     p.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
+        good_ids = marked_ids[:FEWSHOT_MAX]
+        extra_tagged = [pid for pid in tagged_ids if pid not in good_ids]
+        if extra_tagged and len(good_ids) == FEWSHOT_MAX:
+            good_ids.pop()  # one slot for Michael's manual Client tag, even when marks fill the cap
+        good_ids.extend(extra_tagged[:FEWSHOT_MAX - len(good_ids)])
+        ex.extend(e for e in (feedback_example(conn, pid) for pid in good_ids) if e)
+        no_ids = [r[0] for r in conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+            WHERE m.status='no' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+              AND p.handle!='fortun8te' COLLATE NOCASE
+              AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+            ORDER BY m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
+        ex.extend(e for e in (feedback_example(conn, pid) for pid in no_ids) if e)
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if ex == prior and version == cur.get('version') and not count_due:
         return ex

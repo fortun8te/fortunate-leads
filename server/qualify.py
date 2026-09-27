@@ -685,6 +685,10 @@ def owner_lines(person):
         out.append(f"OWNER'S OWN NOTE (Michael wrote this; trust it over the bio): {note[:500]}")
     if person.get('manual_tags'):
         out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags'][:12]))
+        if person.get('status') not in ('client', 'no') and any(
+                str(tag).casefold() == 'client' for tag in person['manual_tags']):
+            out.append("Michael manually tagged this profile Client. Use it as a preference signal; "
+                       "no Client status was set, and the profile still needs its own fit evidence.")
     if out:
         out.append("(Lines marked OWNER come from Michael himself: follow them. Not a fit means fit under 15; Interested, "
                    "Talking or Client means he wants them, so keep fit high unless his note says otherwise.)")
@@ -727,15 +731,22 @@ def fewshot_text(examples):
     def line(e):
         value = f"- @{e.get('handle')}" + (f" ({e['name']})" if e.get('name') else '')
         value += ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]
-        if e.get('status') in OWNER_STATUS:
+        if e.get('feedback_source') == 'manual_client_tag':
+            value += ' | Michael manually tagged Client (preference signal, not a confirmed Client status)'
+            if e.get('status') in OWNER_STATUS:
+                value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
+        elif e.get('status') in OWNER_STATUS:
             value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
+            if e['status'] in ('interested', 'talking') and any(
+                    str(tag).casefold() == 'client' for tag in e.get('manual_tags') or []):
+                value += ' | also manually tagged Client (not a Client status)'
         if e.get('manual_tags'):
             value += ' | Michael\'s manual tags: ' + ', '.join(
                 json.dumps(str(t)[:64], ensure_ascii=False) for t in e['manual_tags'][:FEWSHOT_TAG_MAX])
         return value
     out = ["Michael's past owner feedback (learn his preferences; manual tags are not factual proof about new profiles):"]
     if good:
-        out += ['Marked Interested / Talking / Client (he wants these):'] + [line(e) for e in good]
+        out += ['Marked Interested / Talking / Client, or manually tagged Client (positive preference examples):'] + [line(e) for e in good]
     if bad:
         out += ['Marked NO (not a fit):'] + [line(e) for e in bad]
     return '\n'.join(out)
@@ -743,7 +754,7 @@ def fewshot_text(examples):
 
 def fewshot_version(examples):
     # Include exactly the owner-sourced fields that alter the example prompt.
-    fields = ('person_id', 'handle', 'name', 'bio', 'label', 'status', 'manual_tags')
+    fields = ('person_id', 'handle', 'name', 'bio', 'label', 'status', 'feedback_source', 'manual_tags')
     key = [[e.get(field) for field in fields] for e in examples or []]
     return hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()[:8] if key else '0'
 
@@ -946,7 +957,8 @@ def llm_verdicts(items, examples=None, timeout: float = 45, models=None, budget:
         user = '\n\n'.join(f"### id={k}\n" + _packet(it['person'], it.get('tags'), it.get('edges'), it.get('net')) for k, it in enumerate(chunk))
         msgs = [{'role': 'system', 'content': _system(examples, len(chunk))}, {'role': 'user', 'content': user}]
         try:
-            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left, max_tokens=900 * len(chunk) + 600)   # room for models that think out loud before the JSON
+            text, used = _providers().chat(msgs, models=models, timeout=timeout, budget=left,
+                                           max_tokens=900 * len(chunk) + 600, batch_size=len(chunk))
         except llm.Unavailable:
             continue
         data = parse_json(text)

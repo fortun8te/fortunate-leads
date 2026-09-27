@@ -54,6 +54,60 @@ class FeedbackLearningTest(unittest.TestCase):
         person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
         self.assertIn('Great retention and founder relationship', qualify._packet(person, [], []))
 
+    def test_manual_client_tag_without_status_is_a_provenance_labeled_future_example(self):
+        self.assertEqual(server.fewshot(self.conn), [])
+        pid = self.person('taggedclient')
+        auto = self.person('autotagged')
+        self.conn.execute("INSERT INTO tags VALUES(?, 'Client', 'signal', 'auto')", (auto,))
+        self.conn.commit()
+        server.api_mark(self.conn, {}, {'note': 'Private context for this lead only'}, pid)
+        server.api_tag_edit(self.conn, {}, {'add': ['cLiEnT']}, pid)
+
+        examples = server.fewshot(self.conn)
+        self.assertEqual(len(examples), 1)
+        self.assertEqual(examples[0]['person_id'], pid)
+        self.assertEqual(examples[0]['label'], 'good')
+        self.assertIsNone(examples[0]['status'])
+        self.assertEqual(examples[0]['feedback_source'], 'manual_client_tag')
+        self.assertIsNone(self.conn.execute('SELECT status FROM marks WHERE person_id=?', (pid,)).fetchone()[0])
+        prompt = qualify.fewshot_text(examples)
+        self.assertIn('manually tagged', prompt)
+        self.assertIn('not a confirmed Client status', prompt)
+        self.assertNotIn('Private context for this lead only', prompt)
+        self.assertNotIn('@autotagged', prompt)
+
+        person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
+        self.assertIn('manually tagged', qualify._packet(person, [], []))
+        self.assertIn('Private context for this lead only', qualify._packet(person, [], []))
+
+    def test_manual_client_tag_keeps_one_slot_among_eight_marked_examples(self):
+        marked = [self.person(f'marked{i}') for i in range(8)]
+        for pid in marked:
+            server.api_mark(self.conn, {}, {'status': 'client'}, pid)
+            server.api_tag_edit(self.conn, {}, {'add': ['Client']}, pid)
+        self.assertEqual(len(server.fewshot(self.conn)), 8)
+        tagged = self.person('taggedclient')
+        server.api_tag_edit(self.conn, {}, {'add': ['Client']}, tagged)
+        examples = server.fewshot(self.conn)
+        self.assertEqual(len(examples), 8)
+        self.assertIn(tagged, {e['person_id'] for e in examples})
+        self.assertEqual(sum(e['feedback_source'] == 'manual_client_tag' for e in examples), 1)
+
+    def test_explicit_no_mark_overrides_manual_client_tag_and_removal_drops_example(self):
+        pid = self.person('taggedclient')
+        server.api_tag_edit(self.conn, {}, {'add': ['Client']}, pid)
+        self.assertEqual(server.fewshot(self.conn)[0]['label'], 'good')
+        server.api_mark(self.conn, {}, {'status': 'no'}, pid)
+        examples = server.fewshot(self.conn)
+        self.assertEqual(len(examples), 1)
+        self.assertEqual(examples[0]['label'], 'no')
+        self.assertEqual(examples[0]['feedback_source'], 'status_mark')
+        self.assertNotIn('Client', qualify.fewshot_text(examples))
+        server.api_mark(self.conn, {}, {'status': None}, pid)
+        self.assertEqual(server.fewshot(self.conn)[0]['feedback_source'], 'manual_client_tag')
+        server.api_tag_edit(self.conn, {}, {'remove': ['Client']}, pid)
+        self.assertEqual(server.fewshot(self.conn), [])
+
     def test_note_stays_local_and_tag_edit_changes_future_prompt_without_mass_rerun(self):
         pid = self.person('brand')
         server.api_mark(self.conn, {}, {'status': 'client', 'note': 'First reason'}, pid)

@@ -37,6 +37,14 @@ test('navigation uses a settings gear and removes the keyboard help button while
   assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
 
+test('Accounts Start engine opens the configured startup path and reports its progress', () => {
+  assert.match(html, /id="acc-start">Start engine/);
+  assert.match(html, /id="acc-start-status"[^>]*role="status"/);
+  assert.match(html, /opens the configured Chrome profiles, starts Laya, and resumes lists, bios, and AI/i);
+  assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
+  assert.match(source, /Engine started.*configured Chrome profiles/);
+});
+
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),

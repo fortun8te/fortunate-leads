@@ -2,12 +2,14 @@ import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the rea
 """Server side of the staged qualifier: network context, Laya stage, LLM worker pool, few-shot re-runs, snowball, /api/llm."""
 import json
 import os
+import sqlite3
 import threading
 import time
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 from test_server import Base, db, server
 
@@ -149,12 +151,36 @@ class PipelineTest(Base):
             self.assertEqual([p['key'] for p in out['providers']], [None, 'sk-…9876'])
             self.assertNotIn('secret', json.dumps(out))
             self.assertEqual(out['workers'], 8)
+            self.assertFalse(out['usage']['complete'])  # a new ledger cannot cover earlier calls
             self.assertIn('llm', self.call('/api/scraper')[1])
         finally:
             server.llm.PROVIDERS[0] = old
         self.assertEqual(self.call('/api/settings/qualify', {'on': True, 'workers': 0})[0], 400)
         self.assertEqual(self.call('/api/settings/qualify', {'on': True, 'workers': 2})[0], 200)
         self.assertEqual(db.get_setting(self.conn, 'llm_workers'), 2)
+
+    def test_corrupt_usage_file_does_not_break_settings_or_scraper(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'usage.sqlite'
+            path.write_bytes(b'broken SQLite file')
+            old = server.llm.PROVIDERS[0]
+            server.llm.PROVIDERS[0] = server.llm.Providers([], None, usage_path=path)
+            try:
+                for uri in ('/api/llm', '/api/llm/usage', '/api/scraper'):
+                    status, body = self.call(uri)
+                    self.assertEqual(status, 200, uri)
+                    usage = body if uri == '/api/llm/usage' else body['usage'] if uri == '/api/llm' else body['llm']['usage']
+                    self.assertFalse(usage['available'])
+                    self.assertNotIn('requests', usage)
+            finally:
+                server.llm.PROVIDERS[0] = old
+
+    def test_locked_usage_file_reports_unavailable_without_zero(self):
+        with patch.object(server.usage_ledger, 'summary', side_effect=sqlite3.OperationalError('database is locked')):
+            status, body = self.call('/api/scraper')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['llm']['usage']['error'], 'usage_ledger_unavailable')
+        self.assertNotIn('requests', body['llm']['usage'])
 
     def test_pool_is_bounded_parallel_and_never_blocks_ingest(self):
         self.people({f'p{i}': ('founder', [('s1', 'followers')]) for i in range(12)})

@@ -68,6 +68,24 @@ class LaneTest(Base):
         self.assertEqual(self.call('/api/settings/accounts', {'main_list_share': 0.25})[1]['main_list_share'], 0.25)
         self.assertEqual(self.call('/api/accounts')[1]['main_list_share'], 0.25)
 
+    def test_recent_follower_redirects_allow_one_following_probe(self):
+        self.seeds('f1', 'f2', 'f3', direction='followers')
+        self.seeds('other', direction='following')
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'idle'})
+        now = datetime.now(timezone.utc)
+        self.conn.execute("UPDATE jobs SET priority=200 WHERE direction='followers'")
+        self.conn.execute("UPDATE lists SET lane='lane-a' WHERE direction='followers'")
+        self.conn.execute("UPDATE lists SET error='other (list_html_home_redirect)', updated_at=? "
+                          "WHERE direction='followers'", (now.isoformat(),))
+        self.conn.commit()
+        job = accounts.pick_job(self.conn, 'lane-a', ['list'], now)
+        self.assertEqual(job['direction'], 'following')
+        self.conn.execute("UPDATE lists SET error='other (list_html_home_redirect)', updated_at=? "
+                          "WHERE direction='following'", (now.isoformat(),))
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['direction'], 'followers')
+        self.conn.execute("INSERT INTO pages(job_id,cursor,at) VALUES(?,?,?)", (job['id'], '', now.isoformat()))
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['direction'], 'following')
+
     def test_roles_and_pause(self):
         pid = db.upsert_person(self.conn, {'ig_id': '7', 'handle': 'dave'})
         self.conn.commit()

@@ -206,7 +206,8 @@ def summarise(url, title, desc, text, sig):
     user = f'URL: {url}\nTitle: {title}\nDescription: {desc}\nDetected in page source: {facts}; platform: {sig.get("shop") or "unknown"}\nPage text: {text}'
     try:
         content, model = qualify._providers().chat([{'role': 'system', 'content': SUMMARY_PROMPT % ', '.join(niches)},
-                                                    {'role': 'user', 'content': user}], timeout=30, budget=45, max_tokens=700)
+                                                    {'role': 'user', 'content': user}], timeout=30, budget=45,
+                                                   max_tokens=700, purpose='website_summary')
     except llm.Unavailable:
         return None, None
     data = qualify.parse_json(content)
