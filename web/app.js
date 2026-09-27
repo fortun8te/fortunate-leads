@@ -2794,7 +2794,7 @@ function mapDots(leads, k, x, y, w, h, important) {
   return dots.concat(priority);
 }
 const M = {
-  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), rev: null, scope: 'leads',
+  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'leads',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
   limit: 400, rawData: null, audienceKey: null, dataRev: null,
@@ -2891,6 +2891,8 @@ const M = {
       else pair.set(key, { source: l.source, target: l.target, dir: l.direction || 'followers', state });
     }
     this.links = [...pair.values()].filter((l) => l.state === 'observed');
+    const selfId = this.seeds.find((n) => n.is_me)?.id;
+    this.selfRelation = new Map(this.links.filter((l) => l.source === selfId).map((l) => [l.target, l.dir]));
     this.historyLinks = [...pair.values()].filter((l) => l.state !== 'observed')
       .map((l) => ({ ...l, source: this.byId.get(l.source), target: this.byId.get(l.target) }));
     this.seedLinks = (d.seed_links || []).map((l) => ({ source: sid(l.source), target: sid(l.target), shared: +l.shared || 0 }))
@@ -2918,11 +2920,17 @@ const M = {
       const R = 140 + this.seeds.length * 26;
       order.forEach((id, i) => { const s = this.byId.get(id); if (s.x == null) { const a = (i / order.length) * Math.PI * 2; s.x = Math.cos(a) * R; s.y = Math.sin(a) * R; } });
     }
+    // A golden-angle spiral spreads dense groups without an all-pairs force.
+    // The 10k view keeps this linear-time placement and a bounded click adjustment.
+    const placedByGroup = new Map();
     for (const n of this.leads) {
       if (n.x != null) continue;
       const ss = this.nbr.get(n.id).map((id) => this.byId.get(id)).filter(Boolean);
       const cx = ss.reduce((a, s) => a + s.x, 0) / (ss.length || 1), cy = ss.reduce((a, s) => a + s.y, 0) / (ss.length || 1);
-      const a = Math.random() * Math.PI * 2, rr = (ss.length > 1 ? 10 : 30) + Math.random() * 60;
+      const group = ss.map((s) => s.id).sort().join('|') || 'unlinked';
+      const i = placedByGroup.get(group) || 0;
+      placedByGroup.set(group, i + 1);
+      const a = i * 2.399963229728653, rr = 38 + Math.sqrt(i) * 14;
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
     }
     const nl = this.leads.length;
@@ -2931,6 +2939,10 @@ const M = {
     const absent = this.historyLinks.filter((l) => l.state === 'absent').length;
     const unverified = this.historyLinks.length - absent;
     $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees. Other matching people may be outside this sample; choose a larger Show setting to see more.`;
+    const me = this.seeds.find((n) => n.is_me);
+    const meButton = $('#map-me');
+    meButton.hidden = !me;
+    if (me) meButton.textContent = `You · @${me.label}`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     this.simulate(old.size ? 0.5 : 1);
@@ -2947,7 +2959,7 @@ const M = {
     this.sim = F.forceSimulation(this.nodes)
       .force('link', F.forceLink(all).id((n) => n.id)
         .distance((l) => l.ss ? 520 - 360 * Math.sqrt(l.shared / this.maxShared) : l.source.r + 26 + (l.target.L > 1 ? 30 : 10) + Math.sqrt(l.source.vis || 1) * 1.6)
-        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : 0.9 / Math.max(1, l.target.L)))
+        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : (huge ? 0.008 : 0.9) / Math.max(1, l.target.L)))
       // The 10k sample already starts in seed-centred clusters. On that scale,
       // all-node charge and collision dominate each tick without adding useful
       // detail at overview zoom; links and the seed force still refine it.
@@ -3018,12 +3030,12 @@ const M = {
     if (n.kind === 'seed') for (const id of this.nbr.get(n.id) || []) { const m = this.byId.get(id); if (m && m.L === 1 && m.fx == null) { m.x += dx; m.y += dy; m.vx = m.vy = 0; } }
     this.draw();
   },
-  relax(n) {
+  relax(n, frames = 14, limit = 80) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     // Drag release only adjusts the closest neighbours. The old all-pairs
     // loop could lock the tab when thousands of dots shared a small region.
     let list = near().sort((a, b) => (a.x - n.x) ** 2 + (a.y - n.y) ** 2 -
-      ((b.x - n.x) ** 2 + (b.y - n.y) ** 2)).slice(0, 80), frames = 14;
+      ((b.x - n.x) ** 2 + (b.y - n.y) ** 2)).slice(0, limit);
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const step = () => {
       let moved = false;
@@ -3184,6 +3196,11 @@ const M = {
       else { c.fillStyle = n.is_me ? bg : fg; c.fill(); }
       c.strokeStyle = n.is_me ? fg : bg; c.lineWidth = n.is_me ? Math.max(3, 3 / k) : 2 / k;
       c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2); c.stroke();
+      if (n.is_me) {
+        c.globalAlpha = 1;
+        c.strokeStyle = fg; c.lineWidth = Math.max(1.4, 1.4 / k);
+        c.beginPath(); c.arc(n.x, n.y, r + 5 / k, 0, Math.PI * 2); c.stroke();
+      }
     }
     c.restore();
     c.globalAlpha = 1;
@@ -3208,11 +3225,11 @@ const M = {
     const seedsBy = [...this.seeds].sort((a, b) => b.degree - a.degree);
     for (const n of seedsBy) {
       const faded = (hd && !hd.set.has(n.id)) || !n.vis;
-      const t = '@' + n.label + (n.is_me ? ' (you)' : '');
+      const t = n.is_me ? `YOU · @${n.label}` : '@' + n.label;
       const w = c.measureText(t).width + 10, x = sx(n) - w / 2, y = sy(n) + n.r * k + 4;
       if (x > this.w || x + w < 0 || y > this.h || y + 20 < 0) continue;
       const mine = hd && hd.n === n;
-      if (!mine && hit(x, y, x + w, y + 20)) continue;
+      if (!mine && !n.is_me && hit(x, y, x + w, y + 20)) continue;
       placed.push([x, y, x + w, y + 20]);
       c.globalAlpha = faded ? 0.45 : 1;
       c.fillStyle = bg; c.beginPath(); c.roundRect ? c.roundRect(x, y, w, 20, 10) : c.rect(x, y, w, 20); c.fill();
@@ -3292,18 +3309,33 @@ const M = {
   select(n) {
     this.focus = n;
     // A seed that is also a person opens that person's panel (status, tags, note) with its lists below.
-    if (n.kind === 'seed' && !n.pid) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
+    if (n.kind === 'seed' && (n.is_me || !n.pid)) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
     this.draw();
+    // Opening the panel changes the usable map width. Keep the chosen node
+    // comfortably visible and clear only its immediate neighbours.
+    requestAnimationFrame(() => {
+      if (this.focus !== n || !this.shown) return;
+      this.resize();
+      this.autoFit = false;
+      const marginX = Math.min(110, this.w * 0.22), marginY = Math.min(90, this.h * 0.18);
+      const px = n.x * this.k + this.x, py = n.y * this.k + this.y;
+      this.x += Math.max(marginX - px, Math.min(0, this.w - marginX - px));
+      this.y += Math.max(marginY - py, Math.min(0, this.h - marginY - py));
+      this.relax(n, 5, 32);
+      this.draw();
+    });
   },
 };
 function hoverCard(n) {
   if (n.kind === 'seed') {
     const ov = (M.overlap.get(n.id) || []).slice(0, 3);
-    return `<b>@${esc(n.label)}${n.is_me ? ' (you)' : ''}</b><span>Seed · ${int(n.degree)} observed people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} observed in both lists with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
+    return `<b>${n.is_me ? 'You · ' : ''}@${esc(n.label)}</b><span>${n.is_me ? 'Your account' : 'Source account'} · ${int(n.degree)} observed people · ${int(n.vis)} shown</span>${ov.map(([id, s]) => `<span>${int(s)} observed in both lists with @${esc(M.byId.get(id)?.label)}</span>`).join('')}`;
   }
   const seeds = (n.seeds || (M.nbr.get(n.id) || []).map((id) => M.byId.get(id)?.label)).filter(Boolean);
-  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(slabel(n.status)) : ''}</span><span>Connection ${n.connection_strength ?? '–'} · Priority ${n.score ?? '–'}</span>
-    ${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>Observed in ${plural(n.L, 'list')}: ${seedList(seeds, 3)}</span>`;
+  const relation = M.selfRelation.get(n.id);
+  const relationText = relation === 'both' ? 'You follow each other' : relation === 'followers' ? 'Follows you' : relation === 'following' ? 'You follow them' : '';
+  return `<div class="h-top"><b>${esc(n.name || n.handle || n.label)}</b>${fitBadge(n)}</div><span>@${esc(n.handle || n.label)}${n.followers != null ? ' · ' + fmt(n.followers) + ' followers' : ''}${n.status ? ' · ' + esc(slabel(n.status)) : ''}</span>
+    ${relationText ? `<span>${relationText} · recorded follow</span>` : ''}${n.reason ? `<p>${esc(n.reason)}</p>` : ''}${n.note ? `<p class="h-note">${noteIcon(n.note)} ${esc(n.note.length > 120 ? n.note.slice(0, 120) + '…' : n.note)}</p>` : ''}<span>In ${plural(n.L, 'source list')}${seeds.length ? ` · via ${seedList(seeds, 2)}` : ''}</span>`;
 }
 function openSeed(n) {
   if (S.open) noteQueue.flush(S.open).catch(() => {});
@@ -3316,9 +3348,9 @@ function renderSeedCard() {
   if (!n) return;
   $('#detail').innerHTML = `
     <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
-      <div class="who"><b>@${esc(n.label)}${String(n.label).includes('~') ? '' : igLink(n.label)}</b><span>${String(n.label).includes('~') ? 'Archived account identity' : n.is_me ? 'You' : 'Seed'}</span></div>
+      <div class="who"><b>${n.is_me ? 'You · ' : ''}@${esc(n.label)}${String(n.label).includes('~') ? '' : igLink(n.label)}</b><span>${String(n.label).includes('~') ? 'Archived account identity' : n.is_me ? 'Your Instagram account' : 'Source account'}</span></div>
       <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    <div class="d-sec"><span class="muted">Not read as a person yet, so no status or tags. Its bio is read when a list reaches it.</span></div>
+    ${n.is_me ? '' : '<div class="d-sec"><span class="muted">Profile details appear after this account is read.</span></div>'}
     ${seedBlock(n)}`;
 }
 // The seed part of a panel: shown alone for a seed without a person row, or under that person's own panel.
@@ -3413,6 +3445,7 @@ function seedCardClick(e) {
   }, { passive: false });
 })();
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
+$('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) { M.select(me); M.centerOn(me, 1.4); } };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
 $('#map-labels').onclick = () => M.toggleLabels();
 $('#map-density').onchange = (e) => {

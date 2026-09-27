@@ -38,10 +38,11 @@ test('overview keeps one useful dot per crowded screen cell and preserves chosen
 });
 test('initial layout fits immediately without synchronous force ticks', () => {
   const {c,m,simulate} = harness();
-  let ticks = 0, fits = 0; const forces = new Map();
+  let ticks = 0, fits = 0, linkStrength; const forces = new Map();
   const fluent = () => ({id(){return this;},distance(){return this;},strength(){return this;},distanceMax(){return this;},theta(){return this;},radius(){return this;},iterations(){return this;}});
+  const link = () => ({...fluent(), strength(v){linkStrength=v;return this;}});
   const sim = {force(name, value){forces.set(name, value);return this;},alpha(){return this;},alphaDecay(){return this;},alphaMin(){return this;},velocityDecay(){return this;},on(){return this;},stop(){return this;},tick(){ticks++;return this;}};
-  c.window = {d3:{forceSimulation:()=>sim,forceLink:fluent,forceManyBody:fluent,forceCollide:fluent,forceX:fluent,forceY:fluent}};
+  c.window = {d3:{forceSimulation:()=>sim,forceLink:link,forceManyBody:fluent,forceCollide:fluent,forceX:fluent,forceY:fluent}};
   m.fit = () => { fits++; };
   m.nodes = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead'}));
   m.seeds = []; m.leads = m.nodes; m.links = []; m.seedLinks = [];
@@ -50,6 +51,7 @@ test('initial layout fits immediately without synchronous force ticks', () => {
   assert.equal(fits, 1);
   assert.equal(forces.get('charge'), null);
   assert.equal(forces.get('collide'), null);
+  assert.equal(linkStrength({ss:false,target:{L:1}}),0.008,'10k layout keeps spiral spacing during simulation');
 });
 test('map resolves history endpoints but excludes history from neighbours and distinct counts', () => {
   const {m,$} = harness();
@@ -72,6 +74,23 @@ test('map resolves history endpoints but excludes history from neighbours and di
     assert.equal(edge.target,m.byId.get(edge.target.id));
     assert.ok(Number.isFinite(edge.source.x) && Number.isFinite(edge.target.x));
   }
+});
+test('map identifies your account and spaces a dense source group', () => {
+  const {m,$} = harness();
+  const mine = {...seed('fortun8te'), is_me:true, degree:120};
+  const people = Array.from({length:120}, (_, i) => lead(i));
+  m.build({nodes:[mine,...people],total:120,links:people.map((p) => ({
+    source:mine.id,target:p.id,direction:'followers',state:'observed'
+  }))});
+  assert.equal($('#map-me').hidden,false);
+  assert.equal($('#map-me').textContent,'You · @fortun8te');
+  assert.equal(m.selfRelation.get('p:0'),'followers');
+  for (let i=0; i<people.length; i++) for (let j=i+1; j<people.length; j++) {
+    const a=m.byId.get(people[i].id), b=m.byId.get(people[j].id);
+    assert.ok(Math.hypot(a.x-b.x,a.y-b.y)>a.r+b.r, `people ${i} and ${j} overlap`);
+  }
+  m.build({nodes:[seed('other')],total:0,links:[]});
+  assert.equal($('#map-me').hidden,true);
 });
 test('map reports a bounded sample and search scope', () => {
   const {m,$} = harness();m.scope='all';

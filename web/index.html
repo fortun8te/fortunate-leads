@@ -103,6 +103,7 @@
             <label class="search"><input class="input" id="map-q" type="search" aria-label="Find in displayed map" placeholder="Find in displayed map" title="Searches only displayed accounts, up to 3,000 matching people." autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
+            <button class="btn map-me" id="map-me" title="Find your account on the map" hidden></button>
             <button class="btn" id="map-labels" aria-pressed="true" title="Labels (l)">Labels</button>
             <button class="btn" id="map-fit" title="Zoom to fit (f)">Fit</button>
           </div>
@@ -112,13 +113,14 @@
             <div class="hover" id="hover" hidden></div>
             <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
             <div class="legend" id="legend">
-              <span><i class="lg-seed"></i>Seed</span>
+              <span><i class="lg-me"></i>Your account</span>
+              <span><i class="lg-seed"></i>Other accounts</span>
               <span><i class="fdot" style="background:#ff8a1f"></i>Good tags</span>
               <span><i class="fdot" style="background:#e5484d"></i>Red flags</span>
               <span><i class="fdot f-weak"></i>Not judged</span>
               <span><i class="lg-mk"></i>Has a status</span>
-              <span title="Observed in a collected list"><i class="lg-ln"></i>Observed: follows seed</span>
-              <span title="Observed in a collected list"><i class="lg-ln dash"></i>Observed: seed follows</span>
+              <span title="Recorded in a collected list"><i class="lg-ln"></i>Person follows account</span>
+              <span title="Recorded in a collected list"><i class="lg-ln dash"></i>Account follows person</span>
               <span title="Seen before, but not checked again"><i class="lg-ln dash"></i>Earlier: unverified</span>
               <span title="Not found in a completed later check"><i class="lg-ln dotted"></i>Earlier: absent</span>
               <span><i class="lg-ss"></i>Shared currently observed people</span>
