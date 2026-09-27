@@ -112,8 +112,10 @@ Staged pipeline (all stages run in background threads; HTTP handlers and ingest 
    founder/decision-maker of a DTC physical-product brand, US or NL-selling-to-US, able to pay ~EUR 2k. JSON reply per profile:
    `role, niche, brand_handle, decision_maker, fit, evidence[], reason, extra_tags`; evidence quotes not found in the profile are
    dropped. Tags from the verdict: role, niche, `Founder` (decision-maker of a brand), `Fit: strong` (buyer, fit ≥ 75), `Fit: good`
-   (buyer/connector, fit ≥ 55). Few-shot: up to 8 recent interested/talking/client and 8 `no` marks with a bio, frozen until those
-   count moves by ≥ 5 (or 20 %); then LLM verdicts from another prompt version with score ≥ 35 (warm or near it) are re-run. Bounded pool: `llm_workers` concurrent
+   (buyer/connector, fit ≥ 55). Few-shot: up to 8 interested/talking/client and 8 `no` marks with a bio. A new Client enters
+   future LLM prompts immediately; selected examples update when their note, manual tags, status, or profile changes. Other
+   new marks enter when the mark count moves by ≥ 5 (or 20 %). That larger change also re-runs LLM verdicts from another
+   prompt version with score ≥ 35 (warm or near it). Bounded pool: `llm_workers` concurrent
    calls (default 4) spread across providers/keys.
 
 `person` dict = the `people` row. `edges` = list of `{seed, direction}`. Tiers: hot ≥70, warm 45–69, cold <45, `unread` when there is no bio yet (private or not read). `source` group tags are generated from edges: `via @seed`, `follows @seed`, `followed by @seed`, `in N lists` (N≥2), `Instagram link` when `me` is linked. LLM goes through the local OpenRouter proxy `http://127.0.0.1:18741/api/v1/chat/completions` (free models only). Per-model socket timeout 45 s and a 90 s budget per verdict across models; any transport error, non-JSON/non-object reply, missing content or model substitution = "unavailable" (`None`). The server then keeps the rule verdict and retries that person after 30 min; an exception inside `llm_verdict` is treated the same way.
@@ -250,6 +252,13 @@ Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_a
 person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
 `input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
 judgement re-runs the model for that person.
+Selected examples also carry a bounded note (200 characters) and up to six manual tags into future bulk LLM prompts,
+labelled as Michael's preferences rather than proof about another profile. Automatic tags are excluded. A note or tag
+edit changes future prompt versions without re-running every prior verdict. The example tracks the person ID, so a
+transferred handle cannot inherit the old owner's mark. `@fortun8te` is treated as Michael's account even if its seed
+row is missing; it is excluded from Laya, bulk LLM and Leadscout candidates. Leadscout/Hermes still receives only public
+profile fields for its independent evidence check; owner notes and tags are not included in its prompt. These examples
+guide later prompts; they are not model retraining or independent validation of recommendation quality.
 
 ## Evidence-based pair comparison
 

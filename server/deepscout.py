@@ -478,6 +478,8 @@ def candidates(conn, limit, exclude):
     return [dict(r) for r in conn.execute(
         "SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id "
         "WHERE v.model NOT IN ('rules','error','leadscout') AND coalesce(v.content_fit,0)>=? "
+        "AND p.handle!='fortun8te' COLLATE NOCASE "
+        "AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle) "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research d WHERE d.person_id=p.id AND {MATCH} "
         "AND (d.verified=1 OR d.retry_after>?)) "
         f"AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>? AND {RUN_MATCH}) "
