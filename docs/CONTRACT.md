@@ -1,6 +1,6 @@
 # Fortunate Leads — build contract
 
-One local tool: a Chrome extension collects Instagram lists and bios at a safe pace, a small Python server stores and qualifies them, a one-page UI shows who is worth contacting and why.
+One local tool: a Chrome extension collects Instagram lists and bios with pacing and shared warning holds, a small Python server stores and qualifies them, a one-page UI shows who is worth contacting and why.
 
 Owner: Michael (@fortun8te). Agency: Fortunate — static ad creatives and product visuals for physical-product (DTC/e-commerce) brands, mostly US; Dutch operators selling to the US also fit. Min engagement ~EUR 2,000.
 
