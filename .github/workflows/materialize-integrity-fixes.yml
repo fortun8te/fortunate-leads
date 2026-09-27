@@ -1,0 +1,34 @@
+name: Apply reviewed integrity fixes
+
+on:
+  push:
+    branches: [review/2026-09-27-integrity-audit]
+    paths: [.github/workflows/materialize-integrity-fixes.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/review/2026-09-27-integrity-audit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FL_NO_ORSLOT: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply exact-context changes and verify regressions
+        run: |
+          python3 .audit/apply_integrity_fixes.py
+          python3 -m unittest discover -s server/tests -p test_integrity_audit.py -v
+          git diff --check
+      - name: Commit fixes and remove one-shot application machinery
+        run: |
+          git add server/db.py server/server.py server/biofetch.py server/tests/test_server.py extension/test/core.test.mjs
+          git rm .audit/apply_integrity_fixes.py .github/workflows/materialize-integrity-fixes.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: preserve identity history and reject stale profile responses'
+          git push origin HEAD:refs/heads/review/2026-09-27-integrity-audit
