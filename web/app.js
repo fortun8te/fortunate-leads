@@ -1202,7 +1202,14 @@ async function markNow(id, status) {
   const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
   const prev = r ? r.status : null;
   patchRow(id, { status });
-  try { await api.post(`/api/person/${id}/mark`, { status }); loadCounts(); refreshActivity(id); }
+  try {
+    await api.post(`/api/person/${id}/mark`, { status });
+    loadCounts(); loadFacetsSoon();
+    // Owner status changes the server-derived tags, reason and research too.
+    // Await the readback inside this mutation so rapid status changes stay ordered.
+    if (S.open === id) await refreshPerson(id);
+    else refreshActivity(id);
+  }
   catch (e) { patchRow(id, { status: prev }); toast('Could not save'); }
 }
 function patchRow(id, patch) {
@@ -1235,7 +1242,8 @@ async function refreshPerson(id) {
     S.person = p;
     const r = S.rows.find((x) => x.id === id);
     if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, business_fit: p.business_fit,
-      connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev });
+      connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev,
+      owner_status: p.owner_status, owner_conflict: p.owner_conflict, reachable: p.reachable, manual_tags: p.manual_tags });
   } catch (e) {
     if (S.open !== id || !S.person) return;
     S.person.loading = false; S.person.failed = true;

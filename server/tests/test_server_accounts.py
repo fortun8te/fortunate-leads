@@ -295,6 +295,31 @@ class LaneTest(Base):
                 self.assertEqual(self.call('/api/engine/start', {})[0], 400)
                 launch.assert_not_called()
 
+    def test_legacy_resumes_cannot_clear_security_pause_during_shared_hold(self):
+        self.seeds('first', 'second')
+        self.nxt('b')
+        self.call('/api/accounts/lane-b', {'paused': True})
+        for code in ('login', 'challenge'):
+            self.post('a', '/api/ext/error', {'kind': 'profile', 'code': code})
+            for stage in ('lists', 'bios', 'all'):
+                self.assertEqual(self.call('/api/control', {'stage': stage, 'action': 'resume'})[0], 400)
+                self.assertEqual(self.call('/api/ext/control', {'stage': stage, 'action': 'resume'})[0], 400)
+            self.assertEqual(self.call('/api/control', {'account': 'lane-b', 'action': 'resume'})[0], 400)
+            self.assertEqual(self.call('/api/accounts/lane-b', {'paused': False})[0], 400)
+            self.assertEqual(self.call('/api/scraper/pause', {'paused': False})[0], 400)
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+            self.assertEqual(self.conn.execute("SELECT paused FROM accounts WHERE lane_id='lane-b'").fetchone()[0], 1)
+            # Expiring the timer must not undo the security pause.
+            db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+            self.conn.commit()
+            self.assertIsNone(self.nxt('c')['job'])
+            self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+            self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+        self.assertEqual(self.call('/api/control', {'stage': 'all', 'action': 'resume'})[0], 200)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_bios'))
+
     def test_profile_rate_limit_quarantines_same_handle_across_lanes(self):
         self.nxt('a', 'profile')
         self.nxt('b', 'profile')

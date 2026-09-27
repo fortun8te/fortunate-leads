@@ -230,7 +230,8 @@ def apply(conn, b):
     if action == 'start_all':
         if b.get('stage') is not None or isinstance(b.get('account'), str):
             raise ValueError('start_all applies to the whole workspace')
-        conn.execute('BEGIN IMMEDIATE')
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
         try:
             start_all(conn)
             conn.commit()
@@ -243,7 +244,8 @@ def apply(conn, b):
     pause = action == 'pause'
     # the extension tags every POST with its own `account` object, so only a lane id string means "this account"
     if b.get('stage') is None and isinstance(b.get('account'), str):
-        conn.execute('BEGIN IMMEDIATE')
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
         try:
             accounts.edit(conn, b['account'], {'paused': pause})
         except Exception:

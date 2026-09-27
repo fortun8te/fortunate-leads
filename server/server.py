@@ -785,12 +785,14 @@ def lead_filter(q, status_default=True):
         if any(t not in ('hot', 'warm', 'cold', 'unread') for t in tiers):
             raise Bad('bad tier')
         within("coalesce(v.tier,'unread') IN ({})", tiers)
+    effective_tags = ('SELECT t.person_id FROM tags t LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE '
+                      + owner.visible_tag_sql() + ' AND ')
     for t in dict.fromkeys(csv(q, 'tags')):  # all of
-        within('p.id IN (SELECT person_id FROM tags WHERE tag={})', [t])
+        within('p.id IN (' + effective_tags + 't.tag={})', [t])
     if csv(q, 'any'):  # at least one of
-        within('p.id IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'any'))
+        within('p.id IN (' + effective_tags + 't.tag IN ({}))', csv(q, 'any'))
     if csv(q, 'not'):  # none of
-        within('p.id NOT IN (SELECT person_id FROM tags WHERE tag IN ({}))', csv(q, 'not'))
+        within('p.id NOT IN (' + effective_tags + 't.tag IN ({}))', csv(q, 'not'))
     statuses = csv(q, 'status')
     if any(status_in(s) not in (*STATUSES, 'none', 'all') for s in statuses):
         raise Bad('bad status')
@@ -881,9 +883,13 @@ def tag_facets(conn, q):
     where, args = lead_filter(q)
     counts = dict(((r[0], r[1]), r[2]) for r in conn.execute(
         f"""WITH f AS MATERIALIZED (SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)})
-        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id GROUP BY t.tag, t.source""", args))
+        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id
+        LEFT JOIN marks tm ON tm.person_id=t.person_id
+        WHERE {owner.visible_tag_sql()} GROUP BY t.tag, t.source""", args))
     out = [{'tag': r[0], 'grp': r[2], 'source': r[1], 'count': counts.get((r[0], r[1]), 0), 'total': r[3]}  # totals: covering index
-           for r in conn.execute('SELECT tag, source, min(grp), count(*) FROM tags GROUP BY tag, source')]
+           for r in conn.execute(f'SELECT t.tag, t.source, min(t.grp), count(*) FROM tags t '
+                                 f'LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE {owner.visible_tag_sql()} '
+                                 'GROUP BY t.tag, t.source')]
     return sorted(out, key=lambda f: (-f['count'], -f['total'], f['tag'], f['source']))
 
 
@@ -1822,6 +1828,8 @@ def api_seeds(conn, q, b):
 def api_pause(conn, q, b):
     if not isinstance(b.get('paused'), bool):
         raise Bad('paused must be an explicit boolean')
+    if b['paused'] is False:
+        require_collection_resume(conn)
     db.set_setting(conn, 'paused', b['paused'])
     conn.commit()
     return {}
@@ -1838,15 +1846,32 @@ def api_control(conn, q, b):
     return control.snapshot(conn, ai_left(conn))
 
 
-def api_control_set(conn, q, b):
-    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
-    if b.get('action') == 'start_all':
+def require_collection_resume(conn):
+    # Serialize the check with the subsequent resume so a warning cannot land between them.
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
         if workspace_cooldown(conn, datetime.now(timezone.utc)):
             raise Bad('Instagram is on a shared safety hold. Collection remains paused.')
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def api_control_set(conn, q, b):
+    """{"stage": lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
+    if (b.get('action') == 'start_all' or
+            b.get('action') == 'resume' and (b.get('stage') in ('lists', 'bios', 'all') or
+                                          b.get('stage') is None and isinstance(b.get('account'), str))):
+        require_collection_resume(conn)
     try:
         control.apply(conn, b)
     except LookupError:
+        conn.rollback()
         raise NotFound('no such account') from None
+    except Exception:
+        conn.rollback()
+        raise
     return api_control(conn, q, b)
 
 
@@ -1896,6 +1921,8 @@ def api_account_settings(conn, q, b):
 
 def api_account_edit(conn, q, b, lane):
     conn.execute('BEGIN IMMEDIATE')
+    if b.get('paused') is False:
+        require_collection_resume(conn)
     try:
         row = accounts.edit(conn, lane, b)
     except LookupError:

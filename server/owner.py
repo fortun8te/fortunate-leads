@@ -53,3 +53,15 @@ def owner_conflict(person):
     if owner_status(person) in ('client', 'talking') and 'not reachable' in labels:
         return 'Not reachable label conflicts with the saved relationship. Update the status or label.'
     return None
+
+
+def visible_tag_sql(tag='t', mark='tm'):
+    """SQL counterpart for filters/facets; aliases are internal, never user input."""
+    status = (f"coalesce(nullif({mark}.status,''), CASE WHEN EXISTS "
+              f"(SELECT 1 FROM tags ot WHERE ot.person_id={tag}.person_id "
+              "AND ot.source='manual' AND lower(trim(ot.tag))='client') THEN 'client' ELSE '' END)")
+    return (f"NOT (({tag}.source='auto' AND ("
+            f"({status} IN ('client','talking') AND lower({tag}.tag) IN ('not reachable','scout: no')) OR "
+            f"({status}='client' AND lower({tag}.tag) IN ('too big','other market')) OR "
+            f"({status}='no' AND lower({tag}.tag) IN ('scout: strong','scout: possible','ai: top fit','fit: strong','fit: good'))"
+            f")) OR (coalesce({mark}.status,'')='client' AND lower({tag}.tag)='client'))")

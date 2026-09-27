@@ -15,3 +15,24 @@ test('owner override makes old research historical while preserving the cited so
   assert.match(html, /href="https:\/\/example.com\/about"/);
   assert.doesNotMatch(html, /not reachable|Not a lead/);
 });
+const marking = source.slice(source.indexOf('async function markNow('), source.indexOf('function patchRow('));
+test('saving a relationship waits for full detail readback before finishing', async () => {
+  const calls = [];
+  let finishRead;
+  const ctx = vm.createContext({S:{rows:[{id:7,status:null}],open:7},patchRow:(_id,p)=>calls.push(['patch',p.status]),api:{post:async()=>calls.push(['saved'])},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>calls.push(['activity']),refreshPerson:()=>new Promise(resolve=>{calls.push(['read']);finishRead=resolve}),toast:()=>{}});
+  vm.runInContext(marking, ctx);
+  let done=false;
+  const pending=ctx.markNow(7,'client').then(()=>{done=true});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[['patch','client'],['saved'],['read']]);
+  assert.equal(done,false);
+  finishRead(); await pending;
+  assert.equal(done,true);
+});
+test('failed relationship save restores prior status without starting a detail read', async () => {
+  const calls=[];
+  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},toast:()=>calls.push('error')});
+  vm.runInContext(marking,ctx);
+  await ctx.markNow(7,'no');
+  assert.deepEqual(calls,['no','talking','error']);
+});
