@@ -32,6 +32,8 @@ test('emphasis and caution pills keep readable text in both themes', () => {
       ['--t-decision-ink', '--t-decision'], ['--t-role-ink', '--t-role'], ['--t-market-ink', '--t-market'],
     ]) assert.ok(contrast(palette[text], palette[surface]) >= 4.5, `${name} ${text} contrast`);
     assert.ok(contrast(palette['--t-evidence-ink'], page) >= 4.5, `${name} evidence contrast`);
+    assert.ok(contrast(palette['--t-partner-ink'], page) >= 4.5, `${name} partner contrast`);
+    assert.ok(contrast(palette['--t-review-ink'], page) >= 4.5, `${name} review contrast`);
   }
 });
 
