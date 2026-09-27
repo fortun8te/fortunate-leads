@@ -30,6 +30,7 @@ import connection_graph  # noqa: E402
 import db  # noqa: E402
 import owner  # noqa: E402
 import engine_start  # noqa: E402
+import meta_network  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
 import usage_ledger  # noqa: E402
@@ -2949,12 +2950,16 @@ def repair_pfp_cache(conn):
 
 
 def pfp_step(conn):
+    if meta_network.blocked(conn):
+        return False
     repaired = repair_pfp_cache(conn)
     r = conn.execute('SELECT p.id, p.pic_url FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                      'WHERE p.pic_url IS NOT NULL AND p.pic_file IS NULL '
                      'ORDER BY p.updated_at DESC LIMIT 1').fetchone()
     if not r:
         return repaired
+    if meta_network.blocked(conn):
+        return False
     data = fetch_pic(r['pic_url'])
     if data:
         directory = pfp_dir()

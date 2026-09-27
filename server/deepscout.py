@@ -31,6 +31,7 @@ from urllib.parse import urljoin, urlsplit
 import db
 import owner
 import qualify
+import meta_network
 
 SCOUT_MIN = 60          # bulk AI fit needed before an agent looks
 TIMEOUT = 240           # seconds per lead
@@ -246,6 +247,8 @@ def _fetch_cited_page(url, p):
         if parsed.port not in (None, port):
             raise ValueError('nonstandard cited URL port')
         host = parsed.hostname
+        if meta_network.is_meta_host(host):
+            raise ValueError('Meta pages are not fetched as websites; use saved profile evidence')
         address = _public_address(host, port)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
