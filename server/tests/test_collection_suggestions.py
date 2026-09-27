@@ -143,7 +143,8 @@ class CollectionSuggestions(unittest.TestCase):
         picked = suggestions.queue_when_idle(self.conn,row)
         self.assertEqual(picked['handle'], 'best')
         jobs = self.conn.execute('SELECT kind,seed,priority FROM jobs').fetchall()
-        self.assertEqual([(j['kind'],j['seed'],j['priority']) for j in jobs], [('list','best',-10)]*2)
+        self.assertEqual([(j['kind'],j['seed'],j['priority']) for j in jobs], [('list','best',-10)])
+        self.assertEqual(picked['directions'], ['following'])
         self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
         self.conn.execute("UPDATE jobs SET state='error'")
         self.conn.execute("DELETE FROM lists")
@@ -152,10 +153,11 @@ class CollectionSuggestions(unittest.TestCase):
         self.assertEqual(picked['handle'],'second')
         self.conn.execute("DELETE FROM lists")
         self.conn.execute("DELETE FROM jobs")
-        self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
+        picked = suggestions.queue_when_idle(self.conn,row)
+        self.assertEqual(picked['handle'], 'third')
         self.conn.commit()
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],2)
-        self.assertEqual(suggestions.suggest(self.conn)['added_today'],2)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],3)
+        self.assertEqual(suggestions.suggest(self.conn)['added_today'],3)
 
     def test_manual_lists_win_but_profile_backlog_does_not_block_discovery(self):
         self.person('best')
@@ -167,6 +169,43 @@ class CollectionSuggestions(unittest.TestCase):
                           "VALUES('list','manual_seed','followers','queued','2099-01-01')")
         self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],1)
+
+    def test_pending_limit_bounds_delayed_work_and_replenishes_after_completion(self):
+        for i in range(4):
+            self.person('fresh' + str(i))
+        row = self.account()
+        for expected in ('fresh0', 'fresh1'):
+            self.assertEqual(suggestions.queue_when_idle(self.conn, row)['handle'], expected)
+            self.conn.execute("UPDATE jobs SET retry_not_before='2099-01-01' WHERE state='queued'")
+        self.assertEqual(suggestions._pending_auto(self.conn), 2)
+        self.assertIsNone(suggestions.queue_when_idle(self.conn, row))
+        self.conn.execute("UPDATE jobs SET state='done' WHERE seed='fresh0'")
+        self.assertEqual(suggestions.queue_when_idle(self.conn, row)['handle'], 'fresh2')
+        self.assertEqual(suggestions._pending_auto(self.conn), 2)
+
+    def test_renamed_automatic_target_still_counts_toward_pending_bound(self):
+        pid = self.person('fresh')
+        row = self.account()
+        suggestions.queue_when_idle(self.conn, row)
+        self.conn.execute("UPDATE people SET handle='renamed' WHERE id=?", (pid,))
+        self.conn.execute("UPDATE jobs SET seed='renamed' WHERE seed='fresh'")
+        self.assertEqual(suggestions._pending_auto(self.conn), 1)
+
+    def test_equal_fit_prefers_less_observed_source_overlap_without_raising_fit(self):
+        repeated = self.person('repeated')
+        fresh = self.person('fresh')
+        self.conn.execute('INSERT INTO map_person_degree(person_id,degree) VALUES(?,20)', (repeated,))
+        self.conn.execute('INSERT INTO map_person_degree(person_id,degree) VALUES(?,1)', (fresh,))
+        self.assertEqual([r['handle'] for r in self.rows()], ['fresh', 'repeated'])
+        self.assertEqual([r['business_fit'] for r in self.rows()], [80, 80])
+
+    def test_automatic_discovery_does_not_add_untouched_followers_or_refresh_following(self):
+        self.person('followers_only', 95, following=0)
+        self.person('following_already_read', 90)
+        self.conn.execute("INSERT INTO lists(seed,direction,state) VALUES('following_already_read','following','done')")
+        self.person('fresh', 70)
+        picked = suggestions.queue_when_idle(self.conn, self.account())
+        self.assertEqual((picked['handle'], picked['directions']), ('fresh', ['following']))
 
     def test_future_retry_does_not_starve_fresh_discovery(self):
         self.person('fresh')

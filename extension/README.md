@@ -27,3 +27,15 @@ Each collector must obtain a server permit before an API fetch, profile lookup, 
 This coordinates collector actions, not every background request a browser page may make. A loading page can outlive its reservation, and requests already started cannot always be cancelled. Separate server-side Meta workers obey the shared safety hold but are not part of the extension permit queue. These controls reduce bursts; they do not guarantee account or IP safety or make unauthorized collection permitted.
 
 Start local services now starts only the server and local helper. It neither opens Instagram profiles nor resumes collection. Connect an account explicitly from Accounts when needed, then use the collection controls deliberately. Older extensions receive an upgrade notice and cannot obtain new work until reloaded to 3.9.17.
+
+### Passive native-list samples in 3.9.19
+
+Normal Instagram fetch/XHR responses can leave up to30 sanitized local samples in
+`chrome.storage.local.nativeListDiagnostics`. They identify list transport, public
+GraphQL operation, row counts and pagination flags. Only `doc_id` and
+`fb_api_req_friendly_name` may be read from an already-materialized GraphQL POST
+body. No request streams, variables, cookies, headers, tokens or cursor values
+are saved. These samples make no requests and are not list coverage or auto-imports.
+Complete biographies already present in native list responses and bounded late
+JSON scripts use the existing guarded passive profile path. Reload the extension
+and an authorized tab when deploying; this change does not itself reload tabs.
