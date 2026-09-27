@@ -1,6 +1,6 @@
 // Control strip: always on top of every page. Shows what each stage (Collect lists, Read bios, AI scoring) is doing right
 // now in one sentence, with a pause/resume button per stage and a "Stop all". Self-contained: reads GET /api/control every
-// 5 s, writes POST /api/control. It mounts itself at the top of `.app` (or <body>) and never touches app.js state.
+// 5 s, writes POST /api/control. It lives inside the existing status area and never touches app.js state.
 (() => {
   if (window.__flControls) return;
   window.__flControls = true;
@@ -19,8 +19,12 @@
 
   function mount() {
     if (el.isConnected) return;
-    const app = document.querySelector('.app');
-    if (app) app.insertBefore(el, app.firstChild); else document.body.insertBefore(el, document.body.firstChild);
+    const slot = document.querySelector('#stage-controls');
+    if (slot) slot.appendChild(el);
+    else {
+      const app = document.querySelector('.app');
+      if (app) app.insertBefore(el, app.firstChild); else document.body.insertBefore(el, document.body.firstChild);
+    }
   }
 
   function clock(sec) {
@@ -71,20 +75,19 @@
       const on = !offline && s.state === 'running';
       const act = s.paused ? 'resume' : 'pause';
       const what = s.paused ? `Resume ${s.label.toLowerCase()}` : `Pause ${s.label.toLowerCase()}`;
-      return `<div class="fl-ctl-pill ${s.state}" title="${esc(tip(s))}">
+      return `<div class="fl-ctl-pill ${esc(s.state)}" role="group" aria-label="${esc(s.label + ': ' + word(s) + '. ' + tip(s).replace(/\n+/g, ' '))}" title="${esc(tip(s))}">
         <i class="fl-ctl-dot${on ? ' on' : ''}"></i><b>${SHORT[s.id]}</b><span class="fl-ctl-word">${esc(word(s))}</span>
         <button class="fl-ctl-btn" data-stage="${s.id}" data-action="${act}" aria-label="${esc(what)}" title="${esc(what + '. ' + s.help)}" ${busy || offline ? 'disabled' : ''}>${s.paused ? 'Resume' : 'Pause'}</button>
       </div>`;
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
-    const lead = data.stages.find((s) => s.state === 'running') || data.stages.find((s) => s.state === 'waiting');
-    const sentence = actionError || (offline ? 'Server offline: showing the last known state.' :
-      data.all_paused ? 'Everything is paused. No new work will start. Current requests may still finish.' :
-      lead ? (lead.state === 'waiting' ? `${lead.label} is waiting. See its status above.` : `${lead.label}: ${lead.now}`) : 'Nothing is working right now.');
+    const failed = data.stages.some((s) => s.state === 'error' || s.state === 'failed');
+    const notice = actionError || (offline ? 'Server offline: showing the last known state.' :
+      failed ? 'A stage needs attention.' : '');
     const all = data.all_paused
       ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. AI scoring has its own Resume button." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
       : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Pause all three: no more Instagram requests and no more AI calls. Nothing is deleted; Resume picks up where it left off." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;
-    el.innerHTML = `<div class="fl-ctl-pills">${pills}</div><span class="fl-ctl-now" ${actionError ? 'role="alert" aria-atomic="true"' : ''} title="${esc(sentence)}">${esc(sentence)}</span>${all}`;
+    el.innerHTML = `<div class="fl-ctl-pills">${pills}</div>${all}${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">Open Scraper for details.</a>' : ''}</span>` : ''}`;
     el.dataset.running = String(running);
     if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
   }

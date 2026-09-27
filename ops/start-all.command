@@ -1,6 +1,6 @@
 #!/bin/bash
-# Double-click to start the installed local services, the three Chrome profiles,
-# and collection stages. External AI follows the saved qualification mode.
+# Double-click to start the installed local services, the configured Chrome profiles,
+# and collection stages. External AI keeps its saved setting.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -76,7 +76,7 @@ agent_owns_port || {
 curl -fsS -m 15 -o /dev/null -H "Origin: http://127.0.0.1:$FL_PORT" \
   -H 'Content-Type: application/json' -d '{"action":"start_all"}' \
   "http://127.0.0.1:$FL_PORT/api/control" || {
-    echo 'Services and Chrome opened, but the app could not start all stages.' >&2; exit 1;
+    echo 'Services and Chrome opened, but the app could not resume collection.' >&2; exit 1;
   }
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then
   open "http://127.0.0.1:$FL_PORT/#/accounts"

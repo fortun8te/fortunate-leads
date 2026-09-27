@@ -76,11 +76,10 @@ def resume_all(conn):
 
 
 def start_all(conn):
-    """Start collection; preserve a user's local-only qualification mode."""
+    """Start collection and accounts without changing the user's external AI choice."""
     db.set_setting(conn, 'paused', False)
     for stage in ('lists', 'bios'):
         set_stage(conn, stage, False)
-    set_stage(conn, 'ai', bool(db.get_setting(conn, 'local_laya')))
     conn.execute('UPDATE accounts SET paused=0 WHERE paused=1')
 
 

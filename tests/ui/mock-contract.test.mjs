@@ -72,14 +72,15 @@ test('account controls affect one lane and reject invalid edits atomically',asyn
   assert.equal((await api('control',{account:'missing',action:'pause'})).status,404);
   assert.equal((await api('settings/accounts',{main_list_share:'1'})).status,400);
 });
-test('start all resumes collection, AI and paused lanes while keeping login and cooldown holds',async()=>{
+test('start all resumes collection and paused lanes without changing AI choice',async()=>{
   const api=demo();
   const before=(await api('accounts')).data.accounts;
   await api('control',{account:before[0].lane_id,action:'pause'});
   await api('control',{stage:'all',action:'pause'});
   const started=await api('control',{action:'start_all'});
   assert.equal(started.status,200);
-  assert.ok(started.data.stages.every((stage)=>!stage.paused));
+  assert.ok(started.data.stages.filter((stage)=>stage.id!=='ai').every((stage)=>!stage.paused));
+  assert.equal(started.data.stages.find((stage)=>stage.id==='ai').paused,true);
   assert.ok(started.data.accounts.every((account)=>!account.paused));
   const after=(await api('accounts')).data.accounts;
   assert.equal(after.find((a)=>a.hold==='login').status,'needs_login');

@@ -29,7 +29,7 @@ function mount() {
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
   vm.runInContext(section('function tagItem(', 'function tagSection('), context);
   vm.runInContext(section('function rowHTML(', 'function renderRows()'), context);
-  const ui = vm.runInContext('({ tagTier, tagChip, tagItem, rowHTML, rowTagSelection })', context);
+  const ui = vm.runInContext('({ tagTier, tagChip, tagItem, rowHTML, rowTagSelection, detailTagSelection })', context);
   return { context, groupNode, ui };
 }
 
@@ -47,7 +47,7 @@ test('roles and review candidates do not inherit the verdict or hard-caution tre
   assert.match(ui.tagChip(tag('Client', 'custom', 'manual'), false), /t-client/);
 });
 
-test('dense lead rows show distinct evidence and preserve the rest in the count tooltip', () => {
+test('dense lead rows lead with user labels and count distinct remaining evidence', () => {
   const { ui } = mount();
   const row = { id: 7, handle: 'store', tags: [
     tag('Fit: strong'), tag('Brand', 'role'), tag('Founder'), tag('Shop Link'),
@@ -57,8 +57,8 @@ test('dense lead rows show distinct evidence and preserve the rest in the count 
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.ok(desktopTags, 'desktop tag cell is present');
   assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 3);
-  assert.match(desktopTags, /data-tag="Founder"[\s\S]*data-tag="Brand"[\s\S]*data-tag="Shop Link"/);
-  assert.match(desktopTags, /title="Warm intro · Jewelry"\>\+2/);
+  assert.match(desktopTags, /data-tag="Warm intro"[\s\S]*data-tag="Founder"[\s\S]*data-tag="Brand"/);
+  assert.match(desktopTags, /title="Shop Link · Jewelry"\>\+2/);
   assert.doesNotMatch(html, /data-tag="Fit: strong"|data-tag="via @seed"/);
 });
 
@@ -70,14 +70,16 @@ test('client, relationship and caution outrank fit and niche; synonymous decisio
     tag('Founder', 'role'), tag('AI: Decision maker', 'ai'),
   ] });
   assert.deepEqual(Array.from(dense.shown, (t) => t.tag), ['Client', 'follows you', 'Too big']);
-  assert.equal(dense.hidden.length, 4);
+  assert.equal(dense.hidden.length, 3);
+  assert.deepEqual(Array.from(dense.suppressed, (t) => t.tag), ['AI: Decision maker']);
 
   const decision = ui.rowTagSelection({ tags: [
     tag('AI: Skincare', 'niche'), tag('Shop Link'), tag('Founder', 'role', 'manual'),
     tag('AI: Decision maker', 'ai'), tag('Scout: Strong'), tag('Too big'),
   ] });
-  assert.deepEqual(Array.from(decision.shown, (t) => t.tag), ['Too big', 'Scout: Strong', 'Founder']);
-  assert.deepEqual(Array.from(decision.hidden, (t) => t.tag), ['AI: Decision maker', 'Shop Link', 'AI: Skincare']);
+  assert.deepEqual(Array.from(decision.shown, (t) => t.tag), ['Founder', 'Too big', 'Scout: Strong']);
+  assert.deepEqual(Array.from(decision.hidden, (t) => t.tag), ['Shop Link', 'AI: Skincare']);
+  assert.deepEqual(Array.from(decision.suppressed, (t) => t.tag), ['AI: Decision maker']);
 });
 
 test('near-synonymous fit and identity chips cannot fill a lead row', () => {
@@ -91,12 +93,13 @@ test('near-synonymous fit and identity chips cannot fill a lead row', () => {
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.match(desktopTags, /data-tag="client"[\s\S]*data-tag="follows you"[\s\S]*data-tag="Founder"/);
   assert.doesNotMatch(desktopTags, /data-tag="AI: Decision maker"|data-tag="AI: Top fit"|data-tag="AI: Skincare"/);
-  assert.match(desktopTags, /\+4/);
+  assert.match(desktopTags, /\+2/);
   assert.match(ui.tagChip(tag('AI: Skincare', 'niche'), false), /data-tag="AI: Skincare"[^>]*title="AI: Skincare · auto"[^>]*><span>Skincare<\/span>/);
 
   const sparse = ui.rowTagSelection({ tags: [tag('Founder', 'role'), tag('AI: Decision maker', 'ai'), tag('AI: Top fit', 'ai')] });
   assert.equal(sparse.shown.length, 2);
-  assert.equal(sparse.hidden.length, 1);
+  assert.equal(sparse.hidden.length, 0);
+  assert.equal(sparse.suppressed.length, 1);
 });
 
 test('generic profile access and a repeated fit verdict stay out of informative rows', () => {
@@ -108,7 +111,8 @@ test('generic profile access and a repeated fit verdict stay out of informative 
   ] };
   const selected = ui.rowTagSelection(row);
   assert.deepEqual(Array.from(selected.shown, (t) => t.tag), ['AI: Decision maker', 'Shop Link', 'AI: Supplements']);
-  assert.deepEqual(Array.from(selected.hidden, (t) => t.tag).sort(), ['AI: Top fit', 'Instagram link', 'you follow'].sort());
+  assert.equal(selected.hidden.length, 0);
+  assert.deepEqual(Array.from(selected.suppressed, (t) => t.tag).sort(), ['AI: Top fit', 'Instagram link', 'you follow'].sort());
   const accessOnly = ui.rowTagSelection({ tags: [tag('Instagram link', 'source')] });
   assert.equal(accessOnly.shown[0].tag, 'Instagram link');
   const repeatedNiche = ui.rowTagSelection({ tags: [
@@ -116,7 +120,8 @@ test('generic profile access and a repeated fit verdict stay out of informative 
     tag('Founder', 'role'), tag('you follow', 'source'), tag('Verified'),
   ] });
   assert.deepEqual(Array.from(repeatedNiche.shown, (t) => t.tag), ['Founder', 'Supplements']);
-  assert.deepEqual(Array.from(repeatedNiche.hidden, (t) => t.tag).sort(), ['AI: Supplements', 'Verified', 'you follow'].sort());
+  assert.equal(repeatedNiche.hidden.length, 0);
+  assert.deepEqual(Array.from(repeatedNiche.suppressed, (t) => t.tag).sort(), ['AI: Supplements', 'Verified', 'you follow'].sort());
 });
 
 test('niche chips and filters use one neutral tier without product hues', () => {
@@ -131,12 +136,35 @@ test('niche chips and filters use one neutral tier without product hues', () => 
   assert.equal(ui.tagTier(tag('Beauty', 'niche', 'manual')), 'own');
 });
 
-test('mobile overflow counts hidden same-facet tags with one visible chip', () => {
+test('mobile overflow omits synonymous decision tags', () => {
   const { ui } = mount();
   const html = ui.rowHTML({ id: 10, handle: 'founder', tags: [tag('Founder', 'role'), tag('AI: Decision maker', 'ai')] }, 0, 64);
   const mobile = html.match(/<div class="row-mobile-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.match(mobile, /data-tag="Founder"/);
-  assert.match(mobile, /title="AI: Decision maker">\+1/);
+  assert.doesNotMatch(mobile, /AI: Decision maker|\+1/);
+});
+
+test('different commerce facts remain counted while literal duplicates do not', () => {
+  const { ui } = mount();
+  const chosen = ui.rowTagSelection({ tags: [
+    tag('Founder', 'role'), tag('Brand', 'role'), tag('Shop Link'),
+    tag('Shopify'), tag('AI: Runs ads', 'ai'), tag('AI: Brand', 'ai'),
+  ] });
+  assert.deepEqual(Array.from(chosen.shown, (t) => t.tag), ['Founder', 'Brand', 'Shop Link']);
+  assert.deepEqual(Array.from(chosen.hidden, (t) => t.tag), ['Shopify', 'AI: Runs ads']);
+  assert.deepEqual(Array.from(chosen.suppressed, (t) => t.tag), ['AI: Brand']);
+});
+
+test('detail keeps user tags prominent and makes repeated labels accessible', () => {
+  const { ui } = mount();
+  const chosen = ui.detailTagSelection({ business_fit: 82, tags: [
+    tag('AI: Top fit', 'ai'), tag('AI: Skincare', 'ai'), tag('Skincare', 'niche', 'rule'),
+    tag('Warm intro', 'custom', 'manual'), tag('Verified'), tag('Instagram link', 'source'),
+    tag('Fit: strong', 'signal'), tag('Founder', 'role'), tag('AI: Decision maker', 'ai'),
+  ] });
+  assert.deepEqual(Array.from(chosen.primary, (t) => t.tag), ['Warm intro', 'Founder', 'Skincare']);
+  assert.deepEqual(Array.from(chosen.related, (t) => t.tag).sort(),
+    ['AI: Top fit', 'AI: Skincare', 'Verified', 'Instagram link', 'Fit: strong', 'AI: Decision maker'].sort());
 });
 
 test('Tags overview shows three decision groups and folds context tags', () => {
@@ -150,4 +178,15 @@ test('Tags overview shows three decision groups and folds context tags', () => {
   assert.match(html, /tchip t-niche/);
   assert.match(html, /tchip t-flag[^>]*>\<span\>Too big/);
   assert.match(html, /tchip t-review[^>]*>\<span\>Creator/);
+});
+
+test('Tags search shows a bounded page and reveals additional matches on request', () => {
+  const { context, groupNode } = mount();
+  context.rows = Array.from({ length: 75 }, (_, i) => tag(`Signal ${i}`, 'signal'));
+  vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('signal');`, context);
+  assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 20);
+  assert.match(groupNode.innerHTML, /\+55 more/);
+  vm.runInContext("groups.more = { signal: 70 }; groups.renderGroups('signal');", context);
+  assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 70);
+  assert.match(groupNode.innerHTML, /\+5 more/);
 });
