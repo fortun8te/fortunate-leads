@@ -6,3 +6,4 @@ node_modules/
 .claude/worktrees/
 sidecar/.cache/
 sidecar/.venv/
+.venv-scale/
