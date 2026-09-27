@@ -341,7 +341,15 @@ rate = ext.get("rate") or {}
 out("INFO", "last-hour", "pages %s, people %s, bios %s; ext rate %s pages/h" % (
     soak.get("pages", 0), soak.get("people", 0), soak.get("profiles", 0), rate.get("pages_hour", "n/a")))
 
-if s.get("qualify"):
+if s.get("local_laya") and not s.get("qualify"):
+    laya = (s.get("llm") or {}).get("laya") or {}
+    if laya.get("up") is True:
+        out("PASS", "qualify", "local Laya and rules selected; external AI off")
+    elif laya.get("up") is False:
+        out("WARN", "qualify", "local Laya and rules selected; Laya sidecar is offline")
+    else:
+        out("INFO", "qualify", "local Laya and rules selected; sidecar health not recently checked")
+elif s.get("qualify"):
     keys = [p for p in (s.get("llm") or {}).get("providers") or [] if p.get("key") and not p.get("disabled")]
     try:
         socket.create_connection(("127.0.0.1", 18741), timeout=1).close()
@@ -383,7 +391,21 @@ fi
 
 # --- backups ---------------------------------------------------------------------------------------
 bdir="$(dirname "$FL_DB")/backups"
-newest="$(find "$bdir" -maxdepth 1 -name 'leads-*.sqlite' -type f 2>/dev/null | sort | tail -n 1)"
+# Backup names include older manual snapshots (for example leads-before-main-*),
+# so lexical order is not creation order. Check the newest actual file instead.
+newest="$("$FL_PYTHON" - "$bdir" <<'PY'
+import os, sys
+root = sys.argv[1]
+try:
+    candidates = [(entry.stat(follow_symlinks=False).st_mtime_ns, entry.name, entry.path)
+                  for entry in os.scandir(root)
+                  if entry.name.startswith('leads-') and entry.name.endswith('.sqlite')
+                  and entry.is_file(follow_symlinks=False)]
+except FileNotFoundError:
+    candidates = []
+print(max(candidates)[2] if candidates else '')
+PY
+)"
 if [ -z "$newest" ]; then
   warn backup "none in $bdir (run ops/backup.sh; install --with-backup for daily)"
 else

@@ -22,25 +22,26 @@ function contrast(a, b) {
 }
 
 test('emphasis and caution pills keep readable text in both themes', () => {
-  for (const [name, palette, page] of [
-    ['dark', colors(':root {'), '#0d0d0d'],
-    ['light', colors(':root[data-theme="light"] {'), '#ffffff'],
+  for (const [name, palette] of [
+    ['dark', colors(':root {')],
+    ['light', colors(':root[data-theme="light"] {')],
   ]) {
     for (const [text, surface] of [
       ['--t-strong-ink', '--t-strong'], ['--t-possible-ink', '--t-possible'],
-      ['--t-flag-ink', '--t-flag'], ['--t-review-ink', '--t-flag-surface'],
-      ['--t-decision-ink', '--t-decision'], ['--t-role-ink', '--t-role'], ['--t-market-ink', '--t-market'],
+      ['--t-flag-ink', '--t-flag'], ['--t-review-ink', '--t-review'],
+      ['--t-decision-ink', '--t-decision'], ['--t-role-ink', '--t-role'],
+      ['--t-partner-ink', '--t-partner'], ['--t-evidence-ink', '--t-plus'],
+      ['--t-client-ink', '--t-client'], ['--t-market-ink', '--t-market'],
+      ...['beauty', 'food', 'style', 'wellness', 'lifestyle'].map((hue) => [`--t-niche-${hue}-ink`, `--t-niche-${hue}`]),
     ]) assert.ok(contrast(palette[text], palette[surface]) >= 4.5, `${name} ${text} contrast`);
-    assert.ok(contrast(palette['--t-evidence-ink'], page) >= 4.5, `${name} evidence contrast`);
-    assert.ok(contrast(palette['--t-partner-ink'], page) >= 4.5, `${name} partner contrast`);
-    assert.ok(contrast(palette['--t-review-ink'], page) >= 4.5, `${name} review contrast`);
   }
 });
 
-test('filled judgments, outlined clues, and neutral context share the pill shape', () => {
+test('filled decisions, tinted clues, and neutral context share the pill shape', () => {
   assert.match(visual, /\.tag, \.tchip \{ border-radius: 999px; \}/);
-  for (const tier of ['hero', 'flag', 'decision', 'role', 'market']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: var\\(--t-`));
-  for (const tier of ['plus', 'review']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: transparent;`));
+  for (const tier of ['hero', 'flag', 'decision', 'role', 'partner', 'plus', 'client', 'market', 'review']) assert.match(visual, new RegExp(`\\.tag\\.t-${tier}, \\.tchip\\.t-${tier} \\{ background: var\\(--t-`));
+  for (const hue of ['beauty', 'food', 'style', 'wellness', 'lifestyle']) assert.match(visual, new RegExp(`\\.tag\\.t-niche\\.h-${hue}, \\.tchip\\.t-niche\\.h-${hue} \\{ background: var\\(--t-niche-${hue}\\)`));
+  assert.match(visual, /\.tag\.t-ctx, \.tchip\.t-ctx \{ background: transparent;/);
   assert.match(visual, /\.fi\.t-hero\.inc, \.fi\.t-maybe\.inc/);
   assert.match(visual, /\.fi\.t-flag\.inc, \.fi\.t-review\.inc/);
 });

@@ -724,12 +724,18 @@ def upsert_person(conn, u, ts=None):
             vals = {k: v for k, v in vals.items() if k not in BIO_FIELDS}
         if ts < current['updated_at']:
             vals = {k: v for k, v in vals.items() if k in BIO_FIELDS or k == 'ig_id' or current[k] is None}
-        if 'pic_url' in vals:  # a changed URL invalidates either a failed or a successful cached download
-            conn.execute("UPDATE people SET pic_file=NULL WHERE id=? AND pic_url IS NOT ?",
-                         (pid, vals['pic_url']))
-        if vals:
-            conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in vals)}, updated_at=? WHERE id=?",
-                         (*vals.values(), max(ts, current['updated_at']), pid))
+        changes = {k: v for k, v in vals.items() if current[k] != v}
+        if changes:
+            # A successful reread can refresh the observation time/source without
+            # changing the profile that qualification consumes. Preserve that
+            # freshness, but do not schedule another rules pass for the same data.
+            content_changed = any(k not in ('bio_at', 'bio_src') for k in changes)
+            if 'pic_url' in changes:  # invalidate either cached download outcome
+                changes['pic_file'] = None
+            if content_changed:
+                changes['updated_at'] = max(ts, current['updated_at'])
+            conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
+                         (*changes.values(), pid))
         return pid
     cols = list(vals) + ['first_seen', 'updated_at']
     return conn.execute(f"INSERT INTO people({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",

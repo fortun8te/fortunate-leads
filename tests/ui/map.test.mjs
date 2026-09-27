@@ -29,7 +29,7 @@ const seed = name => ({id:'s:'+name,kind:'seed',label:name,degree:1,pid:null});
 const lead = id => ({id:'p:'+id,kind:'lead',label:'person'+id,lists:1,degree:1});
 test('map accents follow the tag palette with visible contrast in both themes', () => {
   assert.match(source,/css\('--t-caution'\)/);
-  assert.match(source,/css\('--t-strong'\)/);
+  assert.match(source,/css\('--t-map-strong'\)/);
   assert.match(markup,/fdot lg-good/);
   assert.match(markup,/fdot lg-bad/);
   assert.doesNotMatch(markup,/background:#ff8a1f|background:#e5484d/);
@@ -42,7 +42,7 @@ test('map accents follow the tag palette with visible contrast in both themes', 
     const channels = [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)/255).map(v => v<=.04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
     return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722;
   };
-  for (const tokens of [dark,light]) for (const name of ['--t-strong','--t-caution']) {
+  for (const tokens of [dark,light]) for (const name of ['--t-map-strong','--t-caution']) {
     const a=luminance(tokens[name]), b=luminance(tokens['--bg']);
     assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05)>=3, `${name} needs visible contrast on ${tokens['--bg']}`);
   }

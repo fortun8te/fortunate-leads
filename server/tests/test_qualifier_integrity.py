@@ -131,3 +131,21 @@ class QualifierIntegrity(unittest.TestCase):
         with patch.object(q, 'llm_verdicts', side_effect=changed):
             self.assertEqual(self.run_model(pid), 0)
         self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')
+
+    def test_identical_reread_does_not_requeue_rules_but_changed_bio_does(self):
+        profile = {'handle': 'glow', 'bio': 'Founder of a skincare brand',
+                   'bio_at': '2026-01-01', 'bio_src': 'extension'}
+        pid = db.upsert_person(self.conn, profile, '2026-01-01')
+        self.assertEqual(server.qualify_batch(self.conn), 1)
+        initial = self.conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0]
+
+        db.upsert_person(self.conn, profile, '2026-01-02')
+        self.assertEqual(server.qualify_batch(self.conn), 0)
+        db.upsert_person(self.conn, {**profile, 'bio_at': '2026-01-03'}, '2026-01-03')
+        self.assertEqual(server.qualify_batch(self.conn), 0)
+        self.assertEqual(self.conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], initial)
+
+        db.upsert_person(self.conn, {**profile, 'bio': 'Now selling skincare',
+                                     'bio_at': '2026-01-04'}, '2026-01-04')
+        self.assertEqual(server.qualify_batch(self.conn), 1)
+        self.assertEqual(self.conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], '2026-01-04')
