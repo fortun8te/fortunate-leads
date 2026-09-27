@@ -331,7 +331,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false) {
   const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what +
     (homeRedirect ? ': Instagram returned its home page for the list API; target will retry later.' : '');
   const st = await editSt((st) => {
-    if (homeRedirect) FL.recordListRedirect(st, job.seed, publicTarget, now);
+    if (homeRedirect) FL.recordListRedirect(st, job.seed, job.direction, publicTarget, now);
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt, bucket);
     else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now };
     else if (bad.code === 'other' && !homeRedirect) FL.backoff(st, now, 'other');
