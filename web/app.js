@@ -1180,11 +1180,16 @@ function closeDetail() {
   renderRows(); M.resize();
   detailAccess.close();
 }
-// One row per seed; both directions read as mutual.
-function seedEdges(edges) {
-  const m = new Map();
-  for (const e of edges) { if (!m.has(e.seed)) m.set(e.seed, new Set()); if (e.direction) m.get(e.seed).add(e.direction); }
-  return [...m];
+function edgeDay(value) { const date = String(value || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : ''; }
+function connectionEvidenceHTML(current, historical) {
+  const direction = (e) => e.direction === 'followers' ? `They followed @${e.seed}` : e.direction === 'following' ? `@${e.seed} followed them` : 'Seen in a list';
+  const seen = (value, label) => { const day = edgeDay(value); return day ? `<time datetime="${esc(day)}">${label} ${esc(day)}</time>` : `${label} date unavailable`; };
+  const active = current.length ? current.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by @${esc(e.seed)}"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${seen(e.observed_at, 'Seen')}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>';
+  const earlier = historical.length ? `<h4 class="d-history-heading">Earlier observations</h4><div class="edges d-history-edges">${historical.map((e) => {
+    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? ` · ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')} · not reverified`;
+    return `<div class="d-history-row"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${timing}</span></div>`;
+  }).join('')}</div>` : '';
+  return `<div class="edges">${active}</div>${earlier}`;
 }
 const modelLabel = (m) => (!m ? '' : m === 'rules' ? 'Rule-based' : String(m).split('/').pop().replace(/:free$/, ''));
 // The Hermes leadscout's final read: verdict, two sentences and the pages it used.
@@ -1271,8 +1276,6 @@ function renderDetail() {
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
-  const connections = seedEdges(edges);
-  const connectionText = (seed, directions) => directions.size > 1 ? 'Follow each other (seen)' : directions.has('followers') ? `They follow @${seed} (seen)` : directions.has('following') ? `@${seed} follows them (seen)` : 'Seen in a list';
   panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
       <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
@@ -1297,10 +1300,10 @@ function renderDetail() {
     ${workflowSummaryHTML(p)}
     <details class="d-sec d-disclosure" data-detail-section="connections" data-owner="${p.id}" ${view.sections.connections ? 'open' : ''}><summary>Connections <span class="num">${n ? plural(n, 'list') : 'None'}</span></summary>
       ${you ? `<p class="d-connection-you">${esc(you)}</p>` : ''}
-      <div class="edges">${connections.length ? connections.map(([seed, directions]) => `<button data-seed="${esc(seed)}" title="Filter by @${esc(seed)}"><b>@${esc(seed)}</b><span>${esc(connectionText(seed, directions))}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>'}</div>
-      ${oldEdges.length ? `<p class="muted d-history">${oldEdges.length} earlier list observations are unverified or no longer present.</p>` : ''}
+      ${connectionEvidenceHTML(edges, oldEdges)}
     </details>
     <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">Profile and evidence</summary>
+      ${p.category ? `<p class="d-category">${esc(p.category)}</p>` : ''}
       <div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
       <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
       ${site && !url ? `<p class="muted">${esc(site)}</p>` : ''}

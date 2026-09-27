@@ -1264,7 +1264,11 @@ button:disabled { cursor:default; opacity:.5; }
 .detail .d-disclosure .edges { margin: 0; }
 .detail .d-disclosure .edges button { padding-inline: 0; }
 .detail .d-connection-you { margin-bottom: 8px; font-weight: 600; }
-.detail .d-history { margin-top: 10px; font-size: var(--fs-sm); }
+.detail .d-history-heading { margin: 16px 0 4px; }
+.detail .d-history-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; min-height: 32px; padding: 4px 0; color: var(--fg3); }
+.detail .d-history-row b { font-weight: 500; color: var(--fg2); }
+.detail .d-history-row span { font-size: var(--fs-sm); text-align: right; }
+.detail .d-category { margin-bottom: 6px; color: var(--fg2); font-weight: 500; }
 .detail .d-disclosure #workflow-activity { padding: 0; }
 .detail .d-disclosure #workflow-activity > h4 { display: none; }
 .detail .d-disclosure .ql-site, .detail .d-disclosure > .d-sec { margin-top: 14px; }
