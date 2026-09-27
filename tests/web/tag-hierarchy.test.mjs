@@ -23,7 +23,7 @@ function mount() {
     esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
     fmt: String, int: Number,
     lists: () => 0, avatar: () => '', igLink: () => '', noteIcon: () => '',
-    fitBadge: () => '', connHTML: () => '', whyHTML: () => '', statHTML: () => '',
+    fitBadge: () => '', rowFitHTML: () => '', connHTML: () => '', whyHTML: () => '', statHTML: () => '',
     LeadWorkflow: { localToday: () => '2026-09-27' },
   });
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
@@ -52,8 +52,10 @@ test('dense lead rows show three labels and preserve the rest in the count toolt
     tag('Jewelry', 'niche'), tag('Warm intro', 'custom', 'manual'), tag('via @seed', 'source'),
   ] };
   const html = ui.rowHTML(row, 0, 64);
-  assert.equal([...html.matchAll(/class="tag /g)].length, 3);
-  assert.match(html, /title="Warm intro · Jewelry"\>\+2/);
+  const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
+  assert.ok(desktopTags, 'desktop tag cell is present');
+  assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 3);
+  assert.match(desktopTags, /title="Warm intro · Jewelry"\>\+2/);
   assert.doesNotMatch(html, /data-tag="Fit: strong"|data-tag="via @seed"/);
 });
 
