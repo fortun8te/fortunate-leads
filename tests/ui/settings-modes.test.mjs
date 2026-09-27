@@ -46,3 +46,14 @@ test('unexpected saved order leaves changes available and reports failure', asyn
   const h = harness({ reorder: true }); await h.$('#set-models-save').onclick();
   assert.equal(h.SET.dirty, true); assert.match(h.messages.at(-1), /Could not confirm/);
 });
+
+test('external mode preserves the local pipeline and explains the chosen remote models', async () => {
+  const h = harness(); h.SET.llm = { models: ['vendor/chosen-model'] };
+  await h.choose('external');
+  assert.equal(h.S.sc.qualify, true);
+  h.context.renderCheckingMode();
+  assert.match(h.$('#set-mode-status').textContent, /rules, Laya and external/);
+  assert.match(h.$('#set-mode-status').textContent, /Local note reading stays on/);
+  assert.match(h.$('#set-mode-models').textContent, /vendor\/chosen-model/);
+  assert.equal(h.calls[0].body.on, false, 'deeper research stays separate and off');
+});

@@ -393,7 +393,7 @@ async function loadFacets() {
   S.tagList = mergeTags(d);
   S.tagBy = new Map(S.tagList.map((t) => [t.tag, t]));
   S.tagLower = new Map(S.tagList.map((t) => [t.tag.toLowerCase(), t.tag]));
-  $('#tag-dl').innerHTML = S.tagList.filter((t) => t.grp !== 'source').sort((a, b) => b.total - a.total).map((t) => `<option value="${esc(t.tag)}">`).join('');
+  $('#tag-dl').innerHTML = [...new Set(['Exceptional fit', ...S.tagList.filter((t) => t.grp !== 'source').sort((a, b) => b.total - a.total).map((t) => t.tag)])].map((tag) => `<option value="${esc(tag)}">`).join('');
   renderFilters();
   if (!$('#suggest').hidden) suggest();
 }
@@ -414,7 +414,7 @@ function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" title="${esc(title)}" aria-pressed="${!!m}">${tagIcon(t)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}"><span class="tag" ${tagStyleAttrs(t)}>${tagContent(t, label, n)}</span></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -749,42 +749,57 @@ function tagTier(t) {
   return 'ctx';
 }
 const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, client: 8, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
-// Figma emphasis describes importance, independently of a tag's source or filter state.
-// Only an explicit owner label can use the rare orange tier; a model score cannot.
+// One presentation contract for tags, filter choices, rules and the tag directory.
+// The source explains the evidence; it does not change a tag's visual meaning.
 const EXCEPTIONAL_TAGS = new Set(['exceptional fit', 'exceptional opportunity', 'design partner']);
+const TAG_LABELS = { 'Fit: strong': 'Strong fit', 'Fit: good': 'Good fit', 'Fit: weak': 'Weak fit',
+  'Scout: Strong': 'Strong fit', 'Scout: Possible': 'Good fit', 'Scout: No': 'Not a fit',
+  'Shop Link': 'Shop link', 'Link Hub': 'Link hub', '<1k': 'Under 1k',
+  '1k-10k': '1k–10k', '10k-100k': '10k–100k', '100k-1M': '100k–1M' };
+const REVIEW_TAGS = new Set(['check fit', 'missing contact', 'missing context', 'not reachable']);
+const PRODUCT_TAGS = new Set(['skincare', 'beauty', 'supplements', 'apparel', 'jewelry', 'home', 'pets', 'coffee', 'food & drink', 'fitness', 'wellness', 'baby', 'accessories', 'outdoor', 'tech gadgets']);
+const BUSINESS_TAGS = new Set(['founder', 'decision maker', 'runs ads', 'shopify', 'shop link', 'brand', 'store', 'dtc', 'us market']);
+const QUIET_TAGS = new Set(['verified', 'business', 'email', 'link hub', 'us', 'us market', 'uk', 'nl', 'ecom', 'scaling', 'hiring']);
+const tagKey = t => tagLabel(tagName(t)).toLowerCase().replace(/^scout: /, '');
+const isExceptionalTag = t => (t.source === 'manual' || t.kind === 'manual') && EXCEPTIONAL_TAGS.has(tagKey(t));
+const isProspectTag = t => isExceptionalTag(t) || ['top fit', 'strong fit', 'good fit'].includes(tagKey(t));
 function tagImportance(t) {
-  const name = tagName(t);
-  if ((t.source === 'manual' || t.kind === 'manual') && EXCEPTIONAL_TAGS.has(name.toLowerCase())) return 'exceptional';
-  if (name === 'AI: Top fit') return 'priority';
-  if (['Scout: Strong', 'Fit: strong'].includes(name) || tagTier(t) === 'client') return 'strong';
-  if (['Scout: Possible', 'Fit: good'].includes(name)) return 'accent';
-  if (isViaTag(name) || ['source', 'size'].includes(t.grp)) return 'background';
-  if (FLAG_TAGS.has(name) || SOFT_TAGS.has(name) || ['Verified', 'Business', 'Email', 'Link hub'].includes(name)) return 'quiet';
+  const name = tagName(t), key = tagKey(t);
+  if (isExceptionalTag(t)) return 'exceptional';
+  if (key === 'top fit' || key === 'open to collaborate') return 'priority';
+  if (['strong fit', 'client', 'customer', 'returning client', 'warm introduction', 'warm intro'].includes(key)) return 'strong';
+  if (key === 'good fit') return 'accent';
+  if (isViaTag(name)) return 'background';
+  if (['source', 'size'].includes(t.grp) || QUIET_TAGS.has(key) || FLAG_TAGS.has(name) || SOFT_TAGS.has(name)) return 'quiet';
+  if (t.grp === 'scout' && !BUSINESS_TAGS.has(key) && !REVIEW_TAGS.has(key)) return 'background';
   return 'standard';
 }
 function tagTone(t) {
-  if (t.source === 'manual' || t.kind === 'manual') return '';
-  const name = tagName(t);
-  if (DECISION_TAGS.has(name) || name === 'AI: Runs ads') return 'positive';
-  if (['Check fit', 'Missing context', 'Scout: Check fit', 'Scout: Missing context'].includes(name)) return 'review';
+  const key = tagKey(t);
+  if (['founder', 'decision maker', 'runs ads'].includes(key)) return 'positive';
+  if (REVIEW_TAGS.has(key)) return 'review';
   return '';
 }
+function tagStyleAttrs(t) { return `data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}"`; }
 function tagIcon(t) {
   const level = tagImportance(t);
   const icon = level === 'exceptional' ? 'sparkles' : ['priority', 'strong'].includes(level) ? 'verified' : '';
   return icon ? `<span class="tag-icon" data-icon="${icon}" aria-hidden="true"></span>` : '';
+}
+function tagContent(t, label, count) {
+  return `${tagIcon(t)}<span>${esc(label || tagLabel(t.tag))}</span>${count == null ? '' : `<b class="num">${fmt(count)}</b>`}`;
 }
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = tagLabel(t.tag);
   const tier = tagTier(t);
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-filter-mode="${m || ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}">${tagIcon(t)}<span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" ${tagStyleAttrs(t)} data-filter-mode="${m || ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}">${tagContent(t, label)}${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 // The source stays in the tooltip and filter value; the visible chip says what
 // the label means. Repeating "AI:" on every chip hides the actual distinction.
 function tagLabel(name) {
-  return isViaTag(name) ? name.slice(4) : name.replace(/^AI: /, '');
+  return isViaTag(name) ? name.slice(4) : TAG_LABELS[name] || name.replace(/^AI: /, '');
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
 const GORDER = { ai: -1, role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
@@ -796,6 +811,7 @@ const ROW_COMMERCE = new Set(['AI: Runs ads', 'AI: Ad tracking detected', 'AI: H
 // pair, for example, takes one slot; the full set remains on the lead detail.
 function rowTagFacet(t) {
   if (t.source === 'manual' && /^(client|customer)$/i.test(t.tag)) return 'client';
+  if (isProspectTag(t)) return 'verdict';
   if (ROW_RELATIONSHIP.has(t.tag)) return 'relationship';
   if (ROW_WEAK_CONNECTION.has(t.tag)) return 'access';
   if (FLAG_TAGS.has(t.tag)) return 'caution';
@@ -811,11 +827,10 @@ function rowTagFacet(t) {
   return 'other:' + (t.grp || 'custom');
 }
 const ROW_FACET_ORDER = { client: 0, manual: 1, relationship: 2, caution: 3, verdict: 4, decision: 5, role: 6, commerce: 7, partner: 8, market: 9, stage: 10, niche: 11, other: 12, access: 13 };
-const rowFacetRank = (t) => t.source === 'manual' && rowTagFacet(t) !== 'client' ? 1 : ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
-// Tags that describe the person, not ordinary source/size metadata or a fit
-// badge already shown elsewhere in the row.
+const rowFacetRank = (t) => isExceptionalTag(t) ? -3 : isProspectTag(t) ? -2 : t.source === 'manual' && rowTagFacet(t) !== 'client' ? 1 : ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
+// Keep the prospect judgement visible alongside the most useful profile facts.
 function rowTags(r) {
-  return (r.tags || []).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)) && !isFitTag(t.tag))
+  return (r.tags || []).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)))
     .sort((a, b) => rowFacetRank(a) - rowFacetRank(b) || ORDER[a.source] - ORDER[b.source] || TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || Number(a.tag.startsWith('AI: ')) - Number(b.tag.startsWith('AI: ')) || a.tag.localeCompare(b.tag));
 }
 const chipIdentity = (t) => tagLabel(t.tag).trim().toLocaleLowerCase();
@@ -824,10 +839,8 @@ function rowTagSelection(r, limit = 3) {
   const informative = tags.some((t) => t.tag !== 'AI: Top fit' && !ROW_WEAK_CONNECTION.has(t.tag) && !ROW_GENERIC.has(t.tag));
   for (const t of tags) {
     const facet = rowTagFacet(t);
-    // Business fit is already displayed in the Fit column. A profile link is
-    // access, not a relationship; generic profile metadata adds no distinction.
-    const redundant = t.tag === 'AI: Top fit' && (r.business_fit != null || r.score != null && informative) ||
-      informative && (ROW_WEAK_CONNECTION.has(t.tag) || ROW_GENERIC.has(t.tag));
+    const redundant = (informative && (ROW_WEAK_CONNECTION.has(t.tag) || ROW_GENERIC.has(t.tag))) ||
+      (facet === 'verdict' && facets.has('verdict'));
     const equivalent = labels.has(chipIdentity(t)) || facet === 'decision' && facets.has('decision');
     if (redundant || equivalent) { suppressed.push(t); continue; }
     if (facets.has(facet)) { hidden.push(t); labels.add(chipIdentity(t)); continue; }
@@ -849,8 +862,8 @@ function detailTagSelection(p) {
   const hasFounder = tags.some((t) => t.tag === 'Founder');
   for (const t of tags) {
     const label = chipIdentity(t);
-    const redundant = t.source !== 'manual' && (isFitTag(t.tag) || t.tag === 'AI: Top fit' && p.business_fit != null ||
-      ROW_GENERIC.has(t.tag) || t.tag === 'Instagram link' || t.tag === 'AI: Decision maker' && hasFounder);
+    const redundant = t.source !== 'manual' && (ROW_GENERIC.has(t.tag) || t.tag === 'Instagram link' || t.tag === 'AI: Decision maker' && hasFounder ||
+      isProspectTag(t) && primary.some(isProspectTag));
     if (redundant || labels.has(label)) related.push(t);
     else { primary.push(t); labels.add(label); }
   }
@@ -1655,7 +1668,7 @@ const T = {
     const ed = this.editing;
     $('#tg-body').innerHTML = rows.length ? rows.map((t) => {
       const can = this.editable(t);
-      const label = `<button class="tag ${KIND[t.kind]}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-go="${esc(t.tag)}" title="Show leads with this tag">${tagIcon(t)}<span>${esc(tagLabel(t.tag))}</span></button>`;
+      const label = `<button class="tag ${KIND[t.kind]}" ${tagStyleAttrs(t)} data-go="${esc(t.tag)}" title="Show leads with this tag">${tagContent(t)}</button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
       return `<tr class="${t.total ? '' : 'dim'}">
         <td>${name}</td>
@@ -1665,33 +1678,43 @@ const T = {
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
   },
   renderGroups(q) {
-    const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
-    const fit = auto.filter((t) => ['hero', 'maybe'].includes(tagTier(t)));
-    const business = auto.filter((t) => ['decision', 'role', 'plus', 'market'].includes(tagTier(t)));
-    const caution = auto.filter((t) => tagTier(t) === 'flag' || tagTone(t) === 'review');
-    const highlighted = new Set([...fit, ...business, ...caution]);
-    const rest = auto.filter((t) => !highlighted.has(t));
-    const groups = [
-      ['niche', 'Products'], ['signal', 'Other clues'], ['size', 'Audience size'],
-      ['via', 'Found via'], ['source', 'Collection'],
-    ];
-    const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
-      : rest.filter((t) => (t.grp || 'custom') === g);
-    const known = new Set(['niche', 'signal', 'size', 'source']);
-    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}">${tagIcon(t)}<span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
-    const sec = (key, title, list, cls = '') => {
-      if (!list.length) return '';
-      list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || (q ? 20 : 12);
-      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
-        <div class="tg-chips">${list.slice(0, lim).map(chip).join('')}
-        ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
+    const matches = t => !q || (t.tag + ' ' + tagLabel(t.tag)).toLowerCase().includes(q);
+    const rows = this.list.filter(matches);
+    const category = t => {
+      const name = tagName(t), key = tagKey(t);
+      if (isProspectTag(t)) return 'fit';
+      if (BUSINESS_TAGS.has(key)) return 'business';
+      if (tagTone(t) === 'review' || FLAG_TAGS.has(name) || SOFT_TAGS.has(name)) return 'review';
+      if (isViaTag(name)) return 'via';
+      if (t.grp === 'niche' || PRODUCT_TAGS.has(key)) return 'products';
+      if (t.grp === 'size') return 'size';
+      if (t.grp === 'source') return 'collection';
+      if (t.grp === 'signal' || QUIET_TAGS.has(key)) return 'clues';
+      return 'other';
     };
-    $('#tg-groups').innerHTML = (!auto.length ? `<p class="muted tg-empty">${q ? 'No matching tags.' : 'Tags appear as profiles are checked.'}</p>` : '')
-      + sec('fit', 'Best prospects', fit, 'tg-top')
-      + `<div class="tg-main">${sec('business', 'Business signals', business)}${sec('caution', 'Needs review', caution, 'tg-caution')}</div>`
-      + (rest.length ? `<div class="tg-context"><h3>Everything else</h3><div class="tg-rest">${groups.map(([k, t]) => sec(k, t, pick(k))).join('')}
-        ${sec('other', 'Other', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></div>` : '');
+    // These are real filters, including zero results. No score or label is invented.
+    const defaults = [['Exceptional fit', 'manual'], ['AI: Top fit', 'auto'], ['Fit: strong', 'auto'], ['Fit: good', 'auto']];
+    const fit = rows.filter(t => category(t) === 'fit');
+    for (const [tag, kind] of defaults) {
+      if (!fit.some(t => t.tag === tag) && matches({tag})) fit.push({tag, kind, source: kind, sources: [kind], grp: 'signal', total: 0, count: 0});
+    }
+    const levelOrder = {exceptional: 0, priority: 1, strong: 2, accent: 3, standard: 4, quiet: 5, background: 6};
+    const chip = t => `<button class="tchip t-${tagTier(t) || 'ctx'}" ${tagStyleAttrs(t)} data-go="${esc(t.tag)}" title="${esc(t.tag)} · ${int(t.total)} people">${tagContent(t, null, t.total)}</button>`;
+    const sec = (key, title, list, cls = '', note = '') => {
+      if (!list.length) return '';
+      list = [...list].sort((a, b) => levelOrder[tagImportance(a)] - levelOrder[tagImportance(b)] || Number(!!tagTone(b)) - Number(!!tagTone(a)) || b.total - a.total || a.tag.localeCompare(b.tag));
+      const limit = this.more?.[key] || (q ? 50 : key === 'via' ? 8 : 16);
+      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3>${key === 'fit' ? '<span class="tg-eyebrow">Start here</span>' : `<span class="num muted">${list.length}</span>`}</div>
+        <div class="tg-chips">${list.slice(0, limit).map(chip).join('')}${list.length > limit ? `<button class="tchip more" data-tmore="${key}">+${list.length - limit} more</button>` : ''}</div>
+        ${note ? `<p class="tg-section-note">${esc(note)}</p>` : ''}</section>`;
+    };
+    const inGroup = key => rows.filter(t => category(t) === key);
+    const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Collection'], ['other','Other']]
+      .map(([key,title]) => sec(key,title,inGroup(key))).join('');
+    $('#tg-groups').innerHTML = sec('fit', 'Best prospects', fit, 'tg-top', 'Exceptional fit is a label you add to a rare opportunity. Blue reflects the saved assessment.')
+      + `<div class="tg-main">${sec('business', 'Business signals', inGroup('business'))}${sec('review', 'Needs review', inGroup('review'), '', 'Exclusions stay quiet. Amber means a decision is needed.')}</div>`
+      + (context ? `<div class="tg-context"><div class="tg-context-heading"><h3>Everything else</h3><span>Useful context, without the noise.</span></div><div class="tg-rest">${context}</div></div>` : '')
+      + (!rows.length && !fit.length ? '<p class="muted tg-empty">No matching tags.</p>' : '');
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
@@ -1727,7 +1750,7 @@ const T = {
     const rs = this.rules;
     $('#rl-n').textContent = rs ? int(rs.length) : '';
     $('#rl-body').innerHTML = this.rulesErr === 'failed' && !rs?.length ? `<tr><td colspan="5" class="muted">Could not load rules</td></tr>` : rs == null ? `<tr><td colspan="5" class="muted">Rules not available on this server</td></tr>`
-      : rs.length ? rs.map((r) => `<tr><td><button class="tag rule" data-go="${esc(r.tag)}"><span>${esc(r.tag)}</span></button></td><td class="mono hide-sm">${esc(ucf(r.field))}</td>
+      : rs.length ? rs.map((r) => `<tr><td><button class="tag rule" ${tagStyleAttrs({tag:r.tag, source:"rule"})} data-go="${esc(r.tag)}">${tagContent({tag:r.tag, source:"rule"})}</button></td><td class="mono hide-sm">${esc(ucf(r.field))}</td>
         <td class="mono">"${esc(r.match)}"</td><td class="r num">${int(r.hits)}</td><td class="r"><button class="rl-del" data-rdel="${esc(r.id)}">Delete</button></td></tr>`).join('')
         : `<tr><td colspan="5" class="muted">No rules</td></tr>`;
   },
@@ -1861,6 +1884,7 @@ function eta(h) {
   return `about ${Math.round(h / 24)} days`;
 }
 function renderScraper() {
+  mountCollectionTargets();
   const sc = S.sc;
   if (!sc || S.scError) {
     const message = S.scError
@@ -1886,7 +1910,7 @@ function renderScraper() {
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
-  else if (listPaused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
+  else if (listPaused) { now = 'Paused'; sub = 'Use Start collection at the top to continue from saved progress.'; }
   else if (listHeld) { now = listStage.now || 'Collection waiting'; sub = listStage.reason || ''; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
@@ -1949,7 +1973,7 @@ function renderScraper() {
   if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
   const order = { running: 0, queued: 1, partial: 2, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
-  const rows = listsAll ? all : all.slice(0, 8);
+  const rows = listsAll || S.view === 'accounts' ? all : all.slice(0, 8);
   const empty = ls.length ? { active: 'No active lists.', done: 'No completed lists.', issues: 'No issues.' }[listFilter] : 'No lists yet. Add an account above.';
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const saved = l.saved_entries ?? l.received;
@@ -1958,7 +1982,7 @@ function renderScraper() {
     const pct = expected ? Math.min(complete ? 100 : 99, (saved / expected) * 100) : null;
     const label = l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : LIST_STATE[l.state] || ucf(l.state);
     const reason = l.completion_reason || l.error;
-    return `<tr><td><b>@${esc(l.seed)}</b>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
+    return `<tr><td><b>@${esc(l.seed)}</b><small class="list-direction-mobile">${l.direction === 'followers' ? 'Followers' : 'Following'}</small>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
       <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : complete ? 'done' : l.state === 'running' && listActive ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
       <td class="r num">${int(saved)}${expected != null ? ' / ' + (l.expected_source === 'estimate' ? '~' : '') + int(expected) : ' / ?'}</td>
       <td><span class="state ${esc(complete ? 'done' : l.state === 'done' ? 'partial' : l.state)}">${l.state === 'running' && listActive ? '<i class="dot run"></i>' : ''}${esc(label)}</span></td></tr>`;
@@ -2060,7 +2084,7 @@ function accountAccess(a) {
       ? 'Instagram also requested a wait. Following lists and bios resume when that wait ends.'
       : 'Follower requests returned Instagram’s home page. Following lists and bios can still run; this account will retry followers later.',
     kind: 'wait' };
-  if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
+  if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: a.cooldown_until ? `Resumes ${backIn(a.cooldown_until)}.` : 'Waiting for Instagram to allow requests again.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
   return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }
@@ -2076,7 +2100,7 @@ function accountRow(a) {
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
+    <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-overview">
       <div class="acc-fact"><span class="acc-key">Access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b>${access.kind !== 'ok' ? `<small>${esc(access.detail)}</small>` : ''}</div>
@@ -2087,7 +2111,7 @@ function accountRow(a) {
     <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
       <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Alternates collect lists. Main is reserved for lists they cannot access, within its daily allowance."><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
         <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">list pages/day</span></label>
@@ -2100,6 +2124,39 @@ function accountRow(a) {
       <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
     </details>
   </section>`;
+}
+
+// Move the existing source form and list table between views. Event handlers and
+// input state stay on the same nodes, and both views use the same queue API.
+let collectionTargetHomes;
+function mountCollectionTargets() {
+  const form = $('#seed-panel'), table = $('#lists-body')?.closest('.panel');
+  if (!form || !table) return;
+  if (!collectionTargetHomes) {
+    collectionTargetHomes = [form, table].map(node => {
+      const home = document.createComment('collection targets');
+      node.before(home);
+      return {node, home};
+    });
+  }
+  let workspace = $('#acc-targets');
+  if (!workspace) {
+    workspace = document.createElement('section');
+    workspace.id = 'acc-targets';
+    workspace.className = 'collection-targets';
+    workspace.setAttribute('aria-label', 'Accounts to collect');
+    workspace.innerHTML = '<header class="collection-target-heading"><div><h2>Accounts to collect</h2><p class="muted">These are the profiles whose followers and following lists you want saved.</p></div><button class="btn" id="acc-target-add">Add accounts</button></header>';
+    $('#acc-coverage').after(workspace);
+    workspace.querySelector('button').onclick = () => {
+      form.scrollIntoView({block:'center', behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+      $('#seed-in').focus({preventScroll:true});
+    };
+  }
+  if (S.view === 'accounts') {
+    for (const {node} of collectionTargetHomes) if (node.parentNode !== workspace) workspace.append(node);
+  } else if (S.view === 'scraper') {
+    for (const {node, home} of collectionTargetHomes) if (node.previousSibling !== home) home.after(node);
+  }
 }
 
 function collectionCoverageHTML(sc) {
@@ -2124,12 +2181,13 @@ function collectionCoverageHTML(sc) {
 }
 
 function renderAccounts() {
+  renderScraper();
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   const coverage = $('#acc-coverage');
   if (coverage) coverage.innerHTML = collectionCoverageHTML(sc);
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local services';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local models';
   $('#acc-alerts').innerHTML = alerts.filter((x, i) => x.code !== 'list_endpoint_wait' &&
     alerts.findIndex((y) => y.text === x.text && y.level === x.level) === i)
     .map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
@@ -2227,15 +2285,15 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting local services…';
+  status.textContent = 'Starting Laya and checking the local notes model…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
     window.dispatchEvent(new Event('fl:control-changed'));
     status.dataset.state = 'success';
-    status.textContent = 'Local services started. Collection and checking mode are unchanged.';
-    toast('Local services started');
+    status.textContent = 'Laya is ready. The installed notes model was checked. Collection and checking mode stay as selected.';
+    toast('Local models started');
     await loadScraper();
   } catch (e) {
     status.dataset.state = 'error';
@@ -2313,19 +2371,27 @@ function settingsMode(sc) {
 function renderCheckingMode() {
   const mode = S.scStale || S.scError ? null : settingsMode(S.sc);
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : mode === 'local' ? 'Local checks selected. External AI is off.' : mode === 'external' ? 'External AI is enabled. Bios may be sent to external services.' : mode === 'rules' ? 'Rules only. AI checks are off.' : 'Current mode could not be confirmed. Refresh to try again.';
+  if (status) status.textContent = SET.modeBusy ? 'Saving…' : mode === 'local' ? 'Selected: rules, Laya and the local note reader. External AI is off.' : mode === 'external' ? 'Selected: rules, Laya and external profile review. Local note reading stays on; private notes stay on this Mac.' : mode === 'rules' ? 'Selected: rules only. Both local and external AI checks are off.' : 'Current mode could not be confirmed. Refresh to try again.';
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === mode);
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
     button.disabled = SET.modeBusy || !mode;
   });
   $('#set-q-auto').disabled = SET.modeBusy || mode !== 'external';
+  const modelSummary = $('#set-mode-models');
+  if (modelSummary) {
+    const models = SET.llm?.models || [];
+    modelSummary.textContent = mode === 'external'
+      ? models.length ? `Profile review models: ${models.join(' → ')}. Configure these below.` : 'Choose a profile review model in External AI setup below.'
+      : mode === 'local' ? 'Local models: Laya multilingual · Llama 3.2 (3B). Checks need their local services to be running.' : '';
+    modelSummary.hidden = !mode || mode === 'rules';
+  }
 }
 $('#set-mode')?.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-mode]');
   const mode = button?.dataset.mode;
   if (!mode || button.disabled || SET.modeBusy || mode === settingsMode(S.sc)) return;
-  if (mode === 'external' && !confirm('Enable external AI? Bios can be sent to OpenRouter. Extra web checks remain off until you enable them.')) return;
+  if (mode === 'external' && !confirm('Enable external profile review? Profiles and manual tags can be sent to OpenRouter. Rules, Laya and local note reading stay active. Private notes stay on this Mac. Deeper web research stays off until enabled separately.')) return;
   SET.modeBusy = true; renderCheckingMode();
   try {
     SET.scout = await api.post('/api/settings/scout', { on: false });
@@ -2350,13 +2416,13 @@ function renderScout() {
   const use = sc.usage.length ? sc.usage.map((u) => `<div class="kv-row"><span>${esc(u.model)}<small class="muted"> · ${esc(u.provider || '')}</small></span>
       <span class="num">${int(u.runs)} runs · ${tok(u.tokens_in + u.tokens_out)} tokens</span></div>`).join('') : '<div class="muted">No runs this week.</div>';
   el.innerHTML = `
-    <div class="set-row"><div><b>Research promising leads</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Web research is unavailable on this Mac'}</span></div>
+    <div class="set-row"><div><b>Enable deeper research</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Web research is unavailable on this Mac'}</span></div>
       <button class="toggle${external && sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${external && sc.on}" aria-label="Extra web checks"${external ? '' : ' disabled'}><i></i></button></div>
-    <div class="set-row"><div><b>Model</b><span class="muted">Saved choice for web research. Changing it does not turn checks on.</span></div>
+    <div class="set-row"><div><b>Research model</b><span class="muted">Used by Hermes for web research only.</span></div>
       <div class="seg" id="scout-model">${sc.models.map((m) => `<button data-m="${esc(m.id)}" class="${sc.model === m.id ? 'on' : ''}" aria-pressed="${sc.model === m.id}" title="${esc(m.label)}">${esc(m.label.split(' (')[0])}</button>`).join('')}</div></div>
-    <div class="set-row"><div><b>Web checks at once</b><span class="muted">About 10–25 s per lead each.</span></div>
+    <div class="set-row"><div><b>Research at once</b><span class="muted">Maximum leads being researched together.</span></div>
       <div class="seg" id="scout-workers">${[2, 3, 4, 6, 8].map((n) => `<button data-w="${n}" class="${sc.workers === n ? 'on' : ''}" aria-pressed="${sc.workers === n}">${n}</button>`).join('')}</div></div>
-    <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">From Hermes' own records. SuperGrok's weekly % is only shown in the Grok app.</span></div>
+    <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">Recorded research usage. Provider allowance is shown in your provider account.</span></div>
     <div class="kv-list">${use}</div>`;
 }
 $('#set-scout')?.addEventListener('click', async (e) => {
@@ -2827,7 +2893,7 @@ const M = {
     if (fresh.length) {
       const order = [];
       const left = new Set(this.seeds.map((s) => s.id));
-      let curr = [...this.seeds].sort((a, b) => b.degree - a.degree)[0]?.id;
+      let curr = this.seeds.find(s => s.is_me)?.id || [...this.seeds].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))[0]?.id;
       while (curr) { order.push(curr); left.delete(curr); curr = (this.overlap.get(curr) || []).find(([id]) => left.has(id))?.[0] || [...left][0]; }
       // A filled spiral keeps source neighbourhoods compact without a rigid grid.
       const aspect = Math.max(0.7, Math.min(2, (this.w || 1000) / (this.h || 700)));
@@ -2839,6 +2905,57 @@ const M = {
         s.x = Math.cos(angle) * radius * Math.sqrt(aspect);
         s.y = Math.sin(angle) * radius / Math.sqrt(aspect);
       });
+      // Refine only source anchors, using recorded shared people and direct
+      // observations. Spiral order alone puts neighbouring sources far apart.
+      // This small, deterministic solve does not touch the large person graph.
+      if (this.seeds.length <= 80 && fresh.length === this.seeds.length) {
+        const weights = new Map(), pairKey = (a, b) => [a, b].sort().join('|');
+        for (const l of this.seedLinks) weights.set(pairKey(l.source, l.target), Math.sqrt(l.shared / this.maxShared));
+        for (const l of this.links) if (this.byId.get(l.target).kind === 'seed') {
+          weights.set(pairKey(l.source, l.target), Math.max(0.7, weights.get(pairKey(l.source, l.target)) || 0));
+        }
+        // Derive shared-source evidence from visible people too, including when
+        // the server omits its optional overlap summary. History is excluded.
+        const shared = new Map();
+        for (const n of this.nodes.length <= 1500 ? this.leads : []) {
+          const ids = this.nbr.get(n.id).filter(id => this.byId.get(id).kind === 'seed');
+          for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+            const key = pairKey(ids[i], ids[j]); shared.set(key, (shared.get(key) || 0) + 1);
+          }
+        }
+        for (const [key, count] of shared) {
+          const [a, b] = key.split('|');
+          const similarity = count / Math.max(1, Math.min(outgoing.get(a).size, outgoing.get(b).size));
+          weights.set(key, Math.max(weights.get(key) || 0, Math.sqrt(similarity)));
+        }
+        const me = this.seeds.find(n => n.is_me);
+        for (let step = 0; weights.size && step < 36; step++) {
+          for (let i = 0; i < this.seeds.length; i++) for (let j = i + 1; j < this.seeds.length; j++) {
+            const a = this.seeds[i], b = this.seeds[j], weight = weights.get(pairKey(a.id, b.id)) || 0;
+            const dx = b.x - a.x || 0.01, dy = b.y - a.y || 0.01, distance = Math.hypot(dx, dy);
+            const target = gap * (weight ? 0.72 + 0.35 * (1 - weight) : 1.1);
+            if (!weight && distance >= target) continue;
+            const shift = Math.max(-8, Math.min(8, (distance - target) * (weight ? 0.055 : 0.09))) / distance;
+            if (a !== me) { a.x += dx * shift; a.y += dy * shift; }
+            if (b !== me) { b.x -= dx * shift; b.y -= dy * shift; }
+          }
+        }
+        // Dense overlap can draw several sources into the same neighbourhood.
+        // Resolve their photo clearance before placing any person around them.
+        for (let step = 0; weights.size && step < 24; step++) {
+          let moved = false;
+          for (let i = 0; i < this.seeds.length; i++) for (let j = i + 1; j < this.seeds.length; j++) {
+            const a = this.seeds[i], b = this.seeds[j], dx = b.x - a.x || 0.01, dy = b.y - a.y || 0.01;
+            const distance = Math.hypot(dx, dy), clearance = a.r + b.r + 12;
+            if (distance >= clearance) continue;
+            const push = (clearance - distance) / distance / (a === me || b === me ? 1 : 2);
+            if (a !== me) { a.x -= dx * push; a.y -= dy * push; }
+            if (b !== me) { b.x += dx * push; b.y += dy * push; }
+            moved = true;
+          }
+          if (!moved) break;
+        }
+      }
     }
     // Keep the source accounts as stable landmarks. Dragging still updates
     // their pinned position, but linked people cannot pull the whole map around.
@@ -2860,7 +2977,7 @@ const M = {
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
     }
     // Find nearby free positions around the true source centroid. The spatial
-    // hash only checks nearby avatars; positions stay organic and never animate.
+    // hash only checks nearby avatars; positions stay organic and refreshes preserve their location.
     if (this.nodes.length <= 1500) {
       const cell = 40, occupied = new Map(), key = (x, y) => `${x},${y}`;
       const place = n => {
@@ -2997,7 +3114,7 @@ const M = {
     if (n.kind === 'seed') for (const id of this.nbr.get(n.id) || []) { const m = this.byId.get(id); if (m && m.L === 1 && m.fx == null) { m.x += dx; m.y += dy; m.vx = m.vy = 0; } }
     this.draw();
   },
-  relax(n, frames = 14, limit = 80) {
+  relax(n, frames = 14, limit = 80, clearance = 0) {
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     // Drag release only adjusts the closest neighbours. The old all-pairs
     // loop could lock the tab when thousands of dots shared a small region.
@@ -3008,7 +3125,7 @@ const M = {
       let moved = false;
       for (const a of [n, ...list]) for (const b of list) {
         if (a === b) continue;
-        const dx = b.x - a.x || 0.01, dy = b.y - a.y || 0.01, d = Math.hypot(dx, dy), min = a.r + b.r + (a.kind === 'seed' || b.kind === 'seed' ? 8 : 2);
+        const dx = b.x - a.x || 0.01, dy = b.y - a.y || 0.01, d = Math.hypot(dx, dy), min = a.r + b.r + (a.kind === 'seed' || b.kind === 'seed' ? 8 : 2) + (a === n || b === n ? clearance : 0);
         if (d >= min) continue;
         const push = (min - d) / d * 0.5;
         if (b.fx == null) { b.x += dx * push; b.y += dy * push; moved = true; }
@@ -3275,11 +3392,14 @@ const M = {
   },
   select(n) {
     this.focus = n;
+    // A brief local opening gives the chosen photo breathing room. It settles
+    // after a few frames, respects reduced motion and never restarts on polling.
+    this.relax(n, 18, 40, 12);
     // A seed that is also a person opens that person's panel (status, tags, note) with its lists below.
     if (n.kind === 'seed' && (n.is_me || !n.pid)) openSeed(n); else openDetail(n.kind === 'seed' ? n.pid : +n.id.slice(2));
     this.draw();
     // Opening the panel changes the usable map width. Keep the chosen node
-    // comfortably visible without moving any of its neighbours.
+    // comfortably visible while preserving the current zoom.
     requestAnimationFrame(() => {
       if (this.focus !== n || !this.shown) return;
       this.resize();

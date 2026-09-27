@@ -23,6 +23,40 @@ class NoteReader(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
+    def test_external_review_keeps_note_reader_local_and_owner_facts_unchanged(self):
+        db.set_setting(self.conn, 'local_laya', False)
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
+        with patch.object(notes, 'interpret', return_value=[]) as call:
+            self.assertTrue(notes.step(self.conn))
+            call.assert_called_once_with('He is my client.')
+        self.assertEqual(notes.result(self.conn, self.pid)['state'], 'ready')
+        self.assertEqual(self.conn.execute('SELECT status FROM marks WHERE person_id=?', (self.pid,)).fetchone()[0], 'no')
+
+    def test_rules_only_does_not_run_note_model(self):
+        db.set_setting(self.conn, 'local_laya', False)
+        db.set_setting(self.conn, 'qualify', False)
+        self.conn.commit()
+        with patch.object(notes, 'interpret') as call:
+            self.assertFalse(notes.step(self.conn))
+            call.assert_not_called()
+        self.assertEqual(notes.result(self.conn, self.pid)['state'], 'disabled')
+
+    def test_switch_to_rules_during_external_mode_note_read_discards_result(self):
+        db.set_setting(self.conn, 'local_laya', False)
+        db.set_setting(self.conn, 'qualify', True)
+        self.conn.commit()
+        def inference(note):
+            other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
+            db.set_setting(other, 'qualify', False)
+            other.commit()
+            other.close()
+            return [{'kind': 'current_client', 'quote': note, 'label': 'Current client'}]
+        with patch.object(notes, 'interpret', side_effect=inference):
+            notes.step(self.conn)
+        self.assertEqual(notes.result(self.conn, self.pid)['state'], 'disabled')
+        self.assertEqual(self.conn.execute('SELECT facts FROM owner_note_reads').fetchone()[0], '[]')
+
     def test_missing_table_is_read_only_pending(self):
         self.assertEqual(notes.result(self.conn, self.pid)['state'], 'pending')
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name='owner_note_reads'").fetchone())

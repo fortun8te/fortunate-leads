@@ -28,7 +28,7 @@ try:
     shot('settings-light-320')
     click_node('link', 'Accounts')
     check('Account health and collection route remain visible', 'document.querySelectorAll("#acc-list [data-lane]").length>0 && document.querySelector(".account-collection-link").getBoundingClientRect().width>0')
-    check('Startup action names only local services', 'document.querySelector("#acc-start").textContent==="Start local services"')
+    check('Startup action names only local services', 'document.querySelector("#acc-start").textContent==="Start local models"')
     shot('accounts-320')
     click_node('link', 'Collection progress')
     check('Collection remains reachable without a sidebar item', 'S.view==="scraper"')

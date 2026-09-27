@@ -17,7 +17,7 @@ test('local processing counts are shown only when provided',()=>{
 test('paused collection does not animate old running rows or claim unverified completion',()=>{
  const elements=new Map();
  const $=key=>{if(!elements.has(key))elements.set(key,{innerHTML:'',textContent:'',contains:()=>false});return elements.get(key)};
- const ctx=vm.createContext({$,S:{sc:{paused:false,stages:[{id:'lists',paused:true,state:'paused'}],ext:{online:true},lists:[{seed:'example',direction:'followers',state:'running',saved_entries:20,expected:30},{seed:'old',direction:'followers',state:'done',saved_entries:30,expected:30,completion:'unverified'}],progress:{lists:{},bios:{left:1},qualify:{}}}},document:{activeElement:null},listFilter:'all',listsAll:false,LIST_STATE:{running:'Reading now',done:'Done'},ST_LABEL:{},int:String,esc:String,ucf:String,left:String,ago:String,backIn:String,eta:()=>null});
+ const ctx=vm.createContext({mountCollectionTargets:()=>{},$,S:{sc:{paused:false,stages:[{id:'lists',paused:true,state:'paused'}],ext:{online:true},lists:[{seed:'example',direction:'followers',state:'running',saved_entries:20,expected:30},{seed:'old',direction:'followers',state:'done',saved_entries:30,expected:30,completion:'unverified'}],progress:{lists:{},bios:{left:1},qualify:{}}}},document:{activeElement:null},listFilter:'all',listsAll:false,LIST_STATE:{running:'Reading now',done:'Done'},ST_LABEL:{},int:String,esc:String,ucf:String,left:String,ago:String,backIn:String,eta:()=>null});
  vm.runInContext(source.slice(source.indexOf('function renderScraper()'),source.indexOf('let listsAll =')),ctx);
  ctx.renderScraper();
  assert.match($('#lists-body').innerHTML,/Paused/);

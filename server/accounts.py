@@ -7,7 +7,7 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
     logged out / challenged, not paused and not in a list cooldown. Otherwise the list is released (`prev_lane` kept)
     and the next lane resumes it from the saved cursor;
   - role lists|bios|both filters the job kinds; a main account (is_main) gets bios only (or lists up to
-    `main_list_share` of the last hour's pages) while another healthy account takes lists; alone, it takes lists too.
+    `main_list_share` of the last hour's pages) while alternates are configured for lists; with no alternates, it takes lists too.
 """
 import json
 import secrets
@@ -275,16 +275,17 @@ def request_budget_left(conn, row, kind, now):
     return used < limit
 
 
-def list_share(conn, rows, now, eligible=None):
-    """The main account's list share: the setting, or 1.0 while no other healthy account takes lists (a lone main
-    account used to get no lists at all, so one connected extension sat 'Idle, queue empty' on a full queue)."""
+def list_share(conn, rows):
+    """Zero share reserves the main even when configured alternates cannot work.
+
+    A pool-wide outage, pause or budget exhaustion is not target-specific access
+    evidence. Only an installation without any alternate list lane falls back
+    to the main automatically; deliberate positive shares remain supported.
+    """
     share = float(db.get_setting(conn, 'main_list_share') or 0)
     if share > 0:
         return share
-    if eligible is not None:
-        return 0.0 if any(not r['is_main'] and eligible(r) for r in rows) else 1.0
-    others = [r for r in rows if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
-              and not identity_cooling(conn, r, 'list', now) and list_budget_left(conn, r, now)
+    others = [r for r in rows if not r['is_main']
               and (r['role'] or 'both') in ('lists', 'both')]
     return 0.0 if others else 1.0
 
@@ -371,7 +372,7 @@ def release(conn, now, only=None):
     if not list_lanes and not profile_lanes:
         return 0
     rows = {r['lane_id']: r for r in conn.execute('SELECT * FROM accounts')}
-    share = list_share(conn, rows.values(), now) if list_lanes else 0.0
+    share = list_share(conn, rows.values()) if list_lanes else 0.0
     ok = {k for k in list_lanes if k in rows and keeps_lists(conn, rows[k], now, share)}
     fine = {k for k in profile_lanes if k in rows and account_available(rows[k], now)
             and identity_owner(conn, rows[k], now)}
@@ -458,7 +459,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
                                   and (r['role'] or 'both') in ('lists', 'both'))
         return list_eligible[key]
 
-    share = list_share(conn, accts, now, eligible=eligible)
+    share = list_share(conn, accts)
     ok = [r['lane_id'] for r in accts if eligible(r) and (not r['is_main'] or share > 0)]
     okm = ','.join('?' * len(ok)) or "''"
     row = next((r for r in accts if r['lane_id'] == lane), None)
@@ -508,10 +509,14 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     if row['is_main'] and not regular_main:
         # Drive this exceptional lookup from the small set of denied lists,
         # rather than scanning every ordinary queued list on each poll.
-        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and eligible(r) and r['ig_id']]
+        alt_ids = sorted({r['ig_id'] for r in accts if not r['is_main'] and r['ig_id']
+                          and (r['role'] or 'both') in ('lists', 'both')})
         denied_alts = ''.join(" AND EXISTS(SELECT 1 FROM list_private_denials a "
                               "WHERE a.seed=j.seed AND a.direction=j.direction AND a.viewer_ig_id=?)"
                               for _ in alt_ids)
+        if any(not r['is_main'] and not r['ig_id']
+               and (r['role'] or 'both') in ('lists', 'both') for r in accts):
+            denied_alts += ' AND 0'  # An unidentified alternate has not proven lack of access.
         fallback = conn.execute(
             f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM
             (SELECT DISTINCT seed,direction FROM list_private_denials) d
@@ -527,25 +532,6 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             (ts, ts, lane, *ok, ts, *viewer_args, *alt_ids, lane)).fetchone()
         if fallback:
             return fallback
-        # An alternate can still read following while its follower endpoint is
-        # redirecting. If all alternates are in that state, the main account is
-        # the only available follower viewer despite the ordinary zero share.
-        follower_alts = [r for r in accts if not r['is_main'] and eligible(r)
-                         and not later(r['list_endpoint_until'], now)]
-        if not follower_alts and not later(row['list_endpoint_until'], now) and 'list' in kinds:
-            fallback = conn.execute(
-                f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
-                LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
-                WHERE j.kind='list' AND j.direction='followers'
-                  AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
-                  AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
-                  AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
-                  AND {viewer_filter}{page_size_filter}
-                ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
-                  l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC, j.id LIMIT 1""",
-                (ts, ts, lane, *ok, ts, *viewer_args, lane)).fetchone()
-            if fallback:
-                return fallback
         if 'profile' not in kinds:
             return None
         kinds = ['profile']
@@ -710,7 +696,9 @@ def alerts(conn, now=None, accts=None):
     elif queued and live and not any(a['role'] in ('lists', 'both') and not a['is_main'] for a in live) \
             and not float(db.get_setting(conn, 'main_list_share') or 0):
         out_.append({'level': 'info', 'lane_id': None,
-                     'text': 'Your main account is the only one online, so it reads lists too — add a second account to protect it'})
+                     'text': ('Your main account is reserved. Reconnect an alternate to continue lists.'
+                              if any(not a['is_main'] and a['role'] in ('lists', 'both') for a in accts)
+                              else 'Your main account is the only one online, so it reads lists too — add a second account to protect it')})
     return out_
 
 

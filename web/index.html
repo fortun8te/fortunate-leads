@@ -15,6 +15,8 @@
 <link rel="preload" href="/api/local-font/areal" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="connections.css">
+<link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="collection.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -116,7 +118,7 @@
     <section class="view" id="view-tags">
       <div class="tg">
         <header class="ph">
-          <div class="ph-t"><h1>Tags</h1><p>Click a tag to see its people.</p></div>
+          <div class="ph-t"><h1>Tags</h1><p>Find your best prospects. Keep the details organized.</p></div>
           <div class="ph-a"><input class="input" id="tg-q" aria-label="Find a tag" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
         </header>
         <div class="tg-groups" id="tg-groups"></div>
@@ -177,7 +179,7 @@
         <div class="panel">
           <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Account</th><th class="hide-sm">List</th><th class="prog">Progress</th><th class="r">People</th><th>Status</th></tr></thead>
+            <thead><tr><th>Account</th><th class="hide-sm">List</th><th class="prog">Progress</th><th class="r">Saved / expected</th><th>Status</th></tr></thead>
             <tbody id="lists-body"></tbody>
           </table></div>
         </div>
@@ -191,16 +193,16 @@
     <section class="view" id="view-accounts">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Instagram accounts</h1><p>Check which accounts can collect leads.</p></div>
-          <div class="ph-a"><button class="btn solid" id="acc-start">Start local services</button><button class="btn" id="acc-add">Connect account</button></div>
+          <div class="ph-t"><h1>Collection accounts</h1><p>Choose the accounts doing the work and the profiles to collect.</p></div>
+          <div class="ph-a"><button class="btn solid" id="acc-start">Start local models</button><button class="btn" id="acc-add">Connect account</button></div>
         </header>
-        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Starts the local helper. Collection and checking mode stay as selected.</p>
+        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Starts Laya and checks the local notes model. Keep your connected Chrome profiles open to collect.</p>
         <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
         <div class="alerts" id="acc-alerts"></div>
         <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>
         <div class="panel">
-          <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Collection progress <span class="num" id="n-queue" hidden></span></a></div>
+          <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
           <div id="acc-list"></div>
         </div>
       </div>
@@ -210,10 +212,31 @@
       <div class="scr settings-page">
         <header class="ph"><div class="ph-t"><h1>Settings</h1></div></header>
         <section class="sg settings-mode">
-          <div class="sg-h"><h2>Checking mode</h2><p>Choose how saved profiles and notes are checked.</p></div>
-          <div class="card">
-            <div class="seg" id="set-mode"><button data-mode="local" disabled>Local models + rules</button><button data-mode="rules" disabled>Rules only</button><button data-mode="external" disabled>External AI</button></div>
+          <div class="sg-h"><h2>Checking mode</h2><p>Collection runs separately. Choose how to check the profiles already saved.</p></div>
+          <div class="checking-content">
+            <div class="checking-options" id="set-mode" aria-label="Checking mode">
+              <button class="checking-option" data-mode="rules" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>Rules only</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">Sort while collecting</span>
+                <span class="checking-description">Checks saved bios, links and tags against your lead criteria.</span>
+                <span class="checking-scope">No AI models. Automatic web research stays off.</span>
+              </button>
+              <button class="checking-option" data-mode="local" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>Local models + rules</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">Private checks on this Mac</span>
+                <span class="checking-description"><strong>Laya</strong> helps rank profiles. <strong>Llama 3.2 · 3B</strong> reads your notes and suggests context.</span>
+                <span class="checking-scope">Includes rules. External AI and automatic web research stay off.</span>
+              </button>
+              <button class="checking-option" data-mode="external" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>External AI</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">More detailed profile review</span>
+                <span class="checking-description">Keeps all local checks, then sends eligible profiles to your selected OpenRouter models.</span>
+                <span class="checking-scope">May use credits. Web research is a separate option.</span>
+              </button>
+            </div>
             <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
+            <p class="checking-note">Laya helps with ranking; it does not confirm facts. Llama's note suggestions do not change your tags or relationship labels.</p>
+            <p class="checking-models" id="set-mode-models"></p>
           </div>
         </section>
         <section class="sg">
@@ -224,18 +247,18 @@
           </div>
         </section>
         <details class="settings-setup" id="external-setup">
-          <summary><span><b>External AI setup</b><small>Models, access keys and optional web research</small></span></summary>
+          <summary><span><b>External AI setup</b><small>Profile review, model choice and optional web research</small></span></summary>
           <div class="settings-setup-body">
             <section class="sg">
-              <div class="sg-h"><h2>When to start</h2></div>
+              <div class="sg-h"><h2>Automatic start</h2></div>
               <div class="card"><div class="set-row"><div><b>After collection finishes</b><span class="muted">Applies only when External AI is selected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div></div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>Web research</h2><p>Optional checks beyond the saved bio.</p></div>
+              <div class="sg-h"><h2>Deeper web research</h2><p>Hermes researches promising leads with the model below. Separate from the Find more button, which refreshes a profile or reads its linked website. Off until enabled.</p></div>
               <div class="card" id="set-scout"><div class="set-row muted" role="status">Loading research settings…</div></div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>OpenRouter access</h2><p>Adding a key does not enable external AI.</p><span class="num muted" id="set-keys-n" hidden></span></div>
+              <div class="sg-h"><h2>OpenRouter access</h2><p>Used for external profile review. Saving a key does not start checks.</p><span class="num muted" id="set-keys-n" hidden></span></div>
               <div class="card flush">
                 <div class="tbl-wrap"><table class="tbl tg-tbl"><thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead><tbody id="set-keys"></tbody></table></div>
                 <div class="set-forms">
@@ -246,7 +269,7 @@
               </div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>Model order</h2><p>Try models in this order. Changing it does not start checks.</p></div>
+              <div class="sg-h"><h2>Profile review models</h2><p>Uses the first available model, trying the next if needed. This does not change the web research model.</p></div>
               <div class="card">
                 <div class="sub-h"><b>Selected models</b><div class="grow"></div><button class="btn" id="set-models-save" disabled>Save order</button></div>
                 <ol class="models" id="set-models"></ol>
@@ -258,17 +281,17 @@
           </div>
         </details>
         <details class="settings-setup" id="advanced-setup">
-          <summary><span><b>Advanced settings</b><small>Collection limits, check thresholds and integrations</small></span></summary>
+          <summary><span><b>Advanced settings</b><small>Account protection and processing preferences</small></span></summary>
           <div class="settings-setup-body">
             <section class="sg">
-              <div class="sg-h"><h2>Collection limits</h2><p>Daily limits for each Instagram account.</p></div>
+              <div class="sg-h"><h2>Account protection</h2><p>Daily request caps and your main account’s share of list collection. Existing Instagram holds still apply.</p></div>
               <div class="card">
                 <form class="budget" id="budget" novalidate><label><span>List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label><label><span>Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label><button class="btn" id="b-save">Save limits</button></form>
                 <form class="budget" id="set-share-f" novalidate><label title="At 0, your main account reads bios only"><span>Main account's share of list pages, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label><button class="btn">Save share</button></form>
               </div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>Check thresholds</h2><p>Controls which leads receive further checks.</p></div>
+              <div class="sg-h"><h2>Processing preferences</h2><p>Set how many external reviews can run together and which profiles receive more checks.</p></div>
               <div class="card"><form class="budget" id="set-q" novalidate><label><span>AI checks at once</span><input class="input" id="set-workers" type="number" min="1" max="32" inputmode="numeric"></label><label><span>Minimum AI check score</span><input class="input" id="set-llm-min" type="number" min="0" max="100" inputmode="numeric"></label><label><span>Minimum bio read score</span><input class="input" id="set-bio-min" type="number" min="0" max="100" inputmode="numeric"></label><button class="btn">Save thresholds</button></form></div>
             </section>
             <section class="sg">

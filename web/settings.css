@@ -1,0 +1,38 @@
+/* Settings explain the processing choices before asking for configuration. */
+.settings-page .settings-mode { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.settings-mode .sg-h { max-width: 660px; }
+.checking-content { min-width: 0; }
+.settings-mode #set-mode { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.settings-mode #set-mode .checking-option { display: flex; flex-direction: column; align-items: stretch; text-align: left; gap: 10px; padding: 18px; border: 1px solid var(--line2); border-radius: 12px; color: var(--fg); background: var(--bg1); box-shadow: none; min-width: 0; line-height: 1.5; font-size: 13px; }
+.settings-mode #set-mode .checking-option.on { border-color: var(--fg2); background: var(--bg2); }
+.settings-mode #set-mode .checking-option:hover:not(:disabled) { border-color: var(--fg3); }
+.settings-mode #set-mode .checking-option:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+.checking-heading { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.checking-heading b { font-size: 15px; font-weight: 600; }
+.checking-heading i { flex: none; width: 14px; height: 14px; border: 1px solid var(--fg3); border-radius: 50%; }
+.checking-option.on .checking-heading i { background: var(--fg); border: 4px solid var(--bg2); box-shadow: 0 0 0 1px var(--fg); }
+.checking-purpose { font-weight: 500; }
+.checking-description { color: var(--fg2); flex: 1; }
+.checking-description strong { font-weight: 600; }
+.checking-scope { color: var(--fg3); font-size: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.checking-content .mode-status { margin: 15px 0 7px; line-height: 1.5; }
+.checking-note, .checking-models { font-size: 12px; color: var(--fg3); line-height: 1.6; margin: 5px 0; overflow-wrap: anywhere; }
+.settings-page .settings-setup { border: 1px solid var(--line); border-radius: 12px; background: var(--bg1); }
+.settings-page .settings-setup > summary { padding: 18px 20px; min-height: 72px; }
+.settings-page .settings-setup-body { border-top: 1px solid var(--line); padding: 22px 20px; gap: 26px; }
+.settings-page .settings-setup .sg { grid-template-columns: 170px minmax(0, 1fr); gap: 20px; }
+.settings-page .settings-setup .sg + .sg { border-top: 1px solid var(--line); padding-top: 22px; }
+.settings-page .settings-setup .card { background: transparent; padding: 0; border: 0; }
+.settings-page .settings-setup .set-forms { padding: 14px 0 0; }
+.settings-page .settings-setup .set-row { gap: 16px; }
+@media (max-width: 1000px) {
+  .settings-mode #set-mode { gap: 8px; }
+  .settings-mode #set-mode .checking-option { padding: 14px; }
+  .checking-heading b { font-size: 14px; }
+}
+@media (max-width: 760px) {
+  .settings-mode #set-mode { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .settings-page .settings-setup .sg { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-page .settings-setup > summary { padding: 16px; }
+  .settings-page .settings-setup-body { padding: 18px 16px; }
+}

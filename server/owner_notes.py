@@ -155,12 +155,18 @@ def _snapshot(conn, pid):
     return note, snapshot_hash(note, status, tags)
 
 
+def enabled(conn):
+    # External review adds to the local pipeline; private note inference still
+    # uses the fixed localhost model and never enters an external prompt.
+    return bool(db.get_setting(conn, 'local_laya', False) or db.get_setting(conn, 'qualify', False))
+
+
 def result(conn, pid):
     note, fingerprint = _snapshot(conn, pid)
     base = {'model': MODEL, 'facts': [], 'updated_at': None}
     if not note.strip():
         return dict(base, state='empty', message='')
-    if not db.get_setting(conn, 'local_laya', False):
+    if not enabled(conn):
         return dict(base, state='disabled', message='Local processing is off. Your note is saved.')
     try:
         row = conn.execute('SELECT * FROM owner_note_reads WHERE person_id=?', (pid,)).fetchone()
@@ -179,7 +185,7 @@ def result(conn, pid):
 
 
 def step(conn):
-    if not db.get_setting(conn, 'local_laya', False):
+    if not enabled(conn):
         return False
     ensure(conn)
     conn.execute("DELETE FROM owner_note_reads WHERE person_id NOT IN (SELECT person_id FROM marks WHERE trim(coalesce(note,''))<>'')")
@@ -209,7 +215,7 @@ def step(conn):
         except (ValueError, KeyError, TypeError):
             facts, state, retry = [], 'failed', time.time() + 300
         conn.execute('BEGIN IMMEDIATE')
-        if _snapshot(conn, pid)[1] == fingerprint and db.get_setting(conn, 'local_laya', False):
+        if _snapshot(conn, pid)[1] == fingerprint and enabled(conn):
             conn.execute('UPDATE owner_note_reads SET state=?,facts=?,updated_at=?,retry_at=? WHERE person_id=? AND snapshot=?',
                          (state, json.dumps(facts, ensure_ascii=False), time.time(), retry, pid, fingerprint))
         conn.commit()
