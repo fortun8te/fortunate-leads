@@ -2891,7 +2891,7 @@ const M = {
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
       const r = seed ? Math.max(9, Math.min(26, 7 + Math.sqrt(n.degree || 0) * 0.62)) : LEAD_R[Math.min(5, L)];
-      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy } : {});
+      return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy, homeX: o.homeX, homeY: o.homeY } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
     this.seeds = this.nodes.filter((n) => n.kind === 'seed');
@@ -2926,7 +2926,8 @@ const M = {
     this.overlap = new Map(this.seeds.map((s) => [s.id, []]));
     for (const l of this.seedLinks) { this.overlap.get(l.source).push([l.target, l.shared]); this.overlap.get(l.target).push([l.source, l.shared]); }
     this.overlap.forEach((a) => a.sort((x, y) => y[1] - x[1]));
-    // Initial layout: seeds on a circle ordered by overlap, leads near the centroid of their seeds.
+    // Initial layout follows the actual canvas shape. A circle on a wide map
+    // wastes most horizontal room and crowds labels into its vertical middle.
     const fresh = this.seeds.filter((s) => s.x == null);
     if (fresh.length) {
       const order = [];
@@ -2934,8 +2935,16 @@ const M = {
       let curr = [...this.seeds].sort((a, b) => b.degree - a.degree)[0]?.id;
       while (curr) { order.push(curr); left.delete(curr); curr = (this.overlap.get(curr) || []).find(([id]) => left.has(id))?.[0] || [...left][0]; }
       const R = 140 + this.seeds.length * 26;
-      order.forEach((id, i) => { const s = this.byId.get(id); if (s.x == null) { const a = (i / order.length) * Math.PI * 2; s.x = Math.cos(a) * R; s.y = Math.sin(a) * R; } });
+      const stretch = Math.sqrt(Math.max(1, Math.min(3, this.w / Math.max(1, this.h))));
+      order.forEach((id, i) => {
+        const s = this.byId.get(id);
+        if (s.x != null) return;
+        const a = (i / order.length) * Math.PI * 2;
+        s.x = Math.cos(a) * R * stretch;
+        s.y = Math.sin(a) * R / stretch;
+      });
     }
+    for (const s of this.seeds) { s.homeX ??= s.x; s.homeY ??= s.y; }
     // A golden-angle spiral spreads dense groups without an all-pairs force.
     // The 10k view keeps this linear-time placement and a bounded click adjustment.
     const placedByGroup = new Map();
@@ -2991,7 +3000,8 @@ const M = {
         }
       })
       .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 1.8).iterations(1).strength(0.8))
-      .force('x', F.forceX(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004)).force('y', F.forceY(0).strength((n) => n.kind === 'seed' ? 0.02 : 0.004))
+      .force('x', F.forceX((n) => n.kind === 'seed' ? n.homeX : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
+      .force('y', F.forceY((n) => n.kind === 'seed' ? n.homeY : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
       .alpha(alpha).alphaDecay(huge ? 0.08 : big ? 0.055 : 0.035).alphaMin(huge ? 0.02 : big ? 0.012 : 0.001).velocityDecay(0.42)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
@@ -3236,16 +3246,19 @@ const M = {
     // Seed squares block labels.
     for (const n of this.seeds) { const r = n.r * k; placed.push([sx(n) - r, sy(n) - r, sx(n) + r, sy(n) + r]); }
     c.textBaseline = 'middle';
-    // Seed labels, always, below the square.
+    // Give your account first choice, then try four sides before hiding a
+    // lower-priority label. This avoids labels crossing nearby source dots.
     c.font = `600 13px ${sans}`;
-    const seedsBy = [...this.seeds].sort((a, b) => b.degree - a.degree);
+    const seedsBy = [...this.seeds].sort((a, b) => Number(b.is_me) - Number(a.is_me) || b.degree - a.degree);
     for (const n of seedsBy) {
       const faded = (hd && !hd.set.has(n.id)) || !n.vis;
       const t = n.is_me ? `YOU · @${n.label}` : '@' + n.label;
-      const w = c.measureText(t).width + 10, x = sx(n) - w / 2, y = sy(n) + n.r * k + 4;
-      if (x > this.w || x + w < 0 || y > this.h || y + 20 < 0) continue;
-      const mine = hd && hd.n === n;
-      if (!mine && !n.is_me && hit(x, y, x + w, y + 20)) continue;
+      const w = c.measureText(t).width + 10, x0 = sx(n), y0 = sy(n), r = n.r * k;
+      const positions = [[x0 - w / 2, y0 + r + 4], [x0 - w / 2, y0 - r - 24],
+        [x0 + r + 5, y0 - 10], [x0 - r - w - 5, y0 - 10]];
+      const spot = positions.find(([x, y]) => x >= 0 && x + w <= this.w && y >= 0 && y + 20 <= this.h && !hit(x, y, x + w, y + 20));
+      if (!spot) continue;
+      const [x, y] = spot;
       placed.push([x, y, x + w, y + 20]);
       c.globalAlpha = faded ? 0.45 : 1;
       c.fillStyle = bg; c.beginPath(); c.roundRect ? c.roundRect(x, y, w, 20, 10) : c.rect(x, y, w, 20); c.fill();

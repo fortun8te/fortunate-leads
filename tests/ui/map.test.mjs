@@ -92,6 +92,26 @@ test('map identifies your account and spaces a dense source group', () => {
   m.build({nodes:[seed('other')],total:0,links:[]});
   assert.equal($('#map-me').hidden,true);
 });
+test('wide map spreads source accounts across the canvas and keeps their anchors on refresh', () => {
+  const {m} = harness();
+  m.w=1500; m.h=600;
+  const sources = Array.from({length:15}, (_, i) => seed('source'+i));
+  const people = Array.from({length:400}, (_, i) => lead(i));
+  const links = people.map((p,i) => ({source:sources[i%sources.length].id,target:p.id,direction:'followers',state:'observed'}));
+  m.build({nodes:[...sources,...people],total:400,links});
+  const nodes=m.seeds;
+  const span=(key)=>Math.max(...nodes.map((n)=>n[key]))-Math.min(...nodes.map((n)=>n[key]));
+  assert.ok(span('x')/span('y')>2.2,'source anchors should use a wide viewport');
+  m.fit();
+  const [x0,,x1]=m.bounds(m.nodes);
+  assert.ok((x1-x0)*m.k > m.w*0.6,'initial map should use most of the available width');
+  const first=nodes[0];
+  const home=[first.homeX,first.homeY];
+  first.x+=35;
+  m.build({nodes:sources.map((n)=>seed(n.label)),total:0,links:[]});
+  assert.equal(m.seeds[0].homeX,home[0]);
+  assert.equal(m.seeds[0].homeY,home[1]);
+});
 test('map reports a bounded sample and search scope', () => {
   const {m,$} = harness();m.scope='all';
   assert.match(m.url(),/limit=400/);
