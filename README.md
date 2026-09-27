@@ -13,6 +13,7 @@ AI qualification.
 - Lead follow-ups, activity and exports: [docs/LEAD_WORKFLOWS.md](docs/LEAD_WORKFLOWS.md)
 - Feature research and scope decisions: [docs/FEATURE_RESEARCH.md](docs/FEATURE_RESEARCH.md)
 - UI polish research, comparisons and checks: [docs/UI-POLISH.md](docs/UI-POLISH.md)
+- Scaling follower collection (per-account egress, logged-out enrichment, throughput model): [docs/scaling-plan.md](docs/scaling-plan.md)
 
 ```sh
 python3 server/server.py    # then open http://127.0.0.1:8777
