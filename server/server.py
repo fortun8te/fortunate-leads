@@ -1501,6 +1501,11 @@ def progress(conn, accts):
         "SELECT coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END, 0)"
         " - l.received, 0)), 0), count(CASE WHEN l.total IS NULL THEN 1 END) FROM lists l "
         "LEFT JOIN people p ON p.handle=l.seed WHERE l.state NOT IN ('done','private','error','partial')").fetchone()
+    incomplete_lists, incomplete_left, capped_lists = conn.execute(
+        "SELECT count(*), coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers "
+        "ELSE p.following END, l.received) - l.received, 0)), 0), "
+        "count(CASE WHEN l.state='partial' AND l.error LIKE 'Instagram limited this list;%' THEN 1 END) "
+        "FROM lists l LEFT JOIN people p ON p.handle=l.seed WHERE l.state IN ('partial','error')").fetchone()
     pages_h = measured_rate(conn, 'SELECT count(*), min(at), max(at) FROM pages WHERE at>=?', now)
     people_h = measured_rate(conn, 'SELECT coalesce(sum(users), 0), min(at), max(at) FROM pages WHERE at>=?', now)
     per_page = people_h / pages_h if pages_h and people_h else 25
@@ -1524,7 +1529,9 @@ def progress(conn, accts):
                           (iso(now - timedelta(hours=1)),)).fetchone()[0]
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
-        'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
+        'lists': {'left': lists_left, 'estimate': bool(unknown),
+                  'incomplete_lists': incomplete_lists, 'incomplete_left': incomplete_left,
+                  'capped_lists': capped_lists, 'per_hour': round(people_h) if people_h else None,
                   'per_minute': lists_min,
                   'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
         'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
@@ -2689,13 +2696,38 @@ class LLMPool:
 
 
 def auto_qualify(conn):
-    """Switch qualification on once every queued list has been collected (setting qualify_auto, default on)."""
+    """Switch AI on only after collection is complete or cannot be continued automatically."""
     if db.get_setting(conn, 'qualify') or not db.get_setting(conn, 'qualify_auto'):
         return False
-    lists = conn.execute("SELECT count(*), count(CASE WHEN state IN ('queued','running') THEN 1 END) FROM lists").fetchone()
-    jobs = conn.execute("SELECT count(*) FROM jobs WHERE kind='list' AND state IN ('queued','leased')").fetchone()[0]
-    if not lists[0] or lists[1] or jobs:
+    if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state IN ('queued','leased') LIMIT 1").fetchone():
         return False
+    lists = conn.execute('SELECT seed,direction,state,error,released_why,run_job_id,cursor FROM lists').fetchall()
+    if not lists:
+        return False
+    # repair_lists creates both directions for every seed; do not switch on in
+    # the interval before its next pass has created a missing list.
+    present = {(row['seed'].lower(), row['direction']) for row in lists}
+    if any((seed.lower(), direction) not in present
+           for (seed,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle,'~')=0")
+           for direction in ('followers', 'following')):
+        return False
+    reopened = db.get_setting(conn, 'lists_reopened') or {}
+    for row in lists:
+        if row['state'] == 'done':
+            if row['cursor'] is not None or not db.list_run_complete(conn, row['run_job_id']):
+                return False
+        elif row['state'] == 'private':
+            continue
+        elif row['state'] == 'partial':
+            # Instagram caps and final access denials cannot yield full coverage.
+            # Other partials stay recoverable until the bounded repair budget is used.
+            terminal = (row['released_why'] == 'private' or
+                        (row['error'] or '').startswith('Instagram limited this list;') or
+                        reopened.get(f"{row['seed'].lower()}|{row['direction']}", 0) >= db.REOPEN_MAX)
+            if not terminal:
+                return False
+        else:
+            return False
     db.set_setting(conn, 'qualify', True)
     conn.commit()
     return True

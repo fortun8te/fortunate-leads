@@ -2157,7 +2157,7 @@ function renderScraper() {
   else if (cool && capped) { now = 'Daily limit reached'; sub = `Back ${backIn(x.cooldown_until)}. Add another Instagram account under Accounts to keep going today.`; }
   else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Resting'; sub = `Instagram asked us to slow down. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
-  else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} people so far.`; }
+  else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} list entries saved so far.`; }
   else { now = 'Online, waiting for work'; sub = 'Add accounts to scrape below.'; }
   const accs = sc.accounts || [];
   const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} this hour` : 'offline'}</span></span>`).join('')
@@ -2170,23 +2170,31 @@ function renderScraper() {
     + tile('Scraped in total', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
   const minuteRate = (value, noun) => value == null ? `measuring ${noun}` : `${int(value)} ${noun} in the last minute`;
-  const recv = ls.reduce((a, l) => a + (l.received || 0), 0), tot = recv + (L.left || 0);
+  const recv = ls.reduce((a, l) => a + (l.received || 0), 0);
+  const incompleteRows = ls.filter((l) => l.state === 'partial' || l.state === 'error');
+  const incompleteLists = L.incomplete_lists ?? incompleteRows.length;
+  const incompleteLeft = L.incomplete_left;
+  const cappedLists = L.capped_lists ?? 0;
+  const tot = recv + (L.left || 0);
   const stage = (title, line, pct, when) => `<div class="stg"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
-    <div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div><div class="muted">${line}</div></div>`;
+    ${pct == null ? '' : `<div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div>`}<div class="muted">${line}</div></div>`;
   const offline = x.online ? '' : 'waiting for the extension';
-  const listsDone = ls.length > 0 && ls.every(l => l.state === 'done');
+  const listsDone = incompleteLists === 0 && ls.length > 0 && ls.every(l => l.state === 'done');
   const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
+    : L.left === 0 && incompleteLists ? 'Incomplete lists need review'
     : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No list entries this minute'
-    : eta(L.eta_h) ? `${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
+    : L.left > 0 && eta(L.eta_h) ? `Active lists: ${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')} · limit ${int(B.per_day)} a day`;
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
     ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
-  // Speed scales with accounts: each extra Instagram account adds roughly one account's measured pace.
-  const lanes = Math.max(1, (sc.accounts || []).filter((a) => a.online && !a.paused).length);
-  const faster = L.eta_h > 72 && L.per_hour ? `<p class="muted">Each extra Instagram account adds about ${int(Math.round(L.per_hour / lanes))} people an hour. Add one under Accounts.</p>` : '';
+  const listLine = `${int(recv)} list entries saved · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
+    + (incompleteLists ? ` · ${int(incompleteLists)} incomplete ${incompleteLists === 1 ? 'list' : 'lists'}` : '')
+    + (incompleteLeft ? ` (about ${int(incompleteLeft)} entries missing)` : '')
+    + (cappedLists ? ` · ${int(cappedLists)} capped ${cappedLists === 1 ? 'list' : 'lists'}` : '')
+    + ` · ${minuteRate(L.per_minute, 'list entries')}`;
   $('#stages').innerHTML = [
-    stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go · ${minuteRate(L.per_minute, 'list entries')}`,
-      listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
+    stage('1. Collect lists', listLine,
+      listsDone ? 100 : incompleteLists ? null : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen),
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
     stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time · ${int(Q.per_minute || 0)} per minute · ${int(Q.per_hour || 0)} per hour`
       : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
