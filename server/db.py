@@ -267,7 +267,8 @@ def init(path):
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
                              ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
-                             ('jobs', 'page_size', 'INT'),
+                             ('jobs', 'page_size', 'INT'), ('jobs', 'target_ig_id', 'TEXT'),
+                             ('collector_events', 'route', 'TEXT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
@@ -328,6 +329,8 @@ def init(path):
     conn.execute('CREATE INDEX IF NOT EXISTS pages_at ON pages(at)')
     conn.execute('CREATE INDEX IF NOT EXISTS pages_lane_at ON pages(lane, at)')
     conn.execute('CREATE INDEX IF NOT EXISTS jobs_lane ON jobs(lane) WHERE lane IS NOT NULL')
+    conn.execute("CREATE INDEX IF NOT EXISTS jobs_profile_target ON jobs(target_ig_id,state) WHERE kind='profile'")
+    conn.execute("CREATE INDEX IF NOT EXISTS jobs_profile_handle ON jobs(handle COLLATE NOCASE,state) WHERE kind='profile'")
     conn.execute("CREATE INDEX IF NOT EXISTS lists_waiting_prev ON lists(prev_lane) "
                  "WHERE lane IS NULL AND prev_lane IS NOT NULL AND state IN ('queued','running')")
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')

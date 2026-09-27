@@ -515,6 +515,8 @@ def ext_profile(conn, q, b):
     p['handle'] = db.norm_handle(p['handle'])
     if not p['handle'] or '~' in p['handle']:
         raise Bad('invalid profile.handle')
+    if job and job['target_ig_id'] and db.normalize_ig_id(p.get('ig_id')) != job['target_ig_id']:
+        raise Bad('profile does not match its leased account identity')
     if job and db.norm_handle(p['handle']) != db.norm_handle(job['handle']):
         identity = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         if not (identity and identity['ig_id'] and str(p.get('ig_id')) == identity['ig_id']):
@@ -571,6 +573,15 @@ def ext_profile(conn, q, b):
         conn.executemany("UPDATE jobs SET state='done',leased_until=NULL WHERE id=?",
                          [(row['id'],) for row in pending if 'captured_at' not in b or row['created_at'] is None
                           or db._profile_time(row['created_at']) <= db._profile_time(ts)])
+    route = b.get('route') if b.get('route') in ('profile_page', 'info', 'passive') else None
+    event_id = b.get('event_id')
+    if route and isinstance(event_id, str) and 0 < len(event_id) <= 100:
+        # The extension keeps this id in its outbox, so a retry counts once.
+        reason = 'saved' if complete and saved['bio_at'] == ts and saved['handle'] == handle else 'stale_capture' if complete else 'partial_profile'
+        conn.execute('INSERT OR IGNORE INTO collector_events(event_id,at,lane,job_id,kind,outcome,reason,route) '
+                     'VALUES(?,?,?,?,?,?,?,?)',
+                     ('profile:' + event_id, received_ts, accounts.lane_of(q, b), job['id'] if job else None,
+                      'profile', 'profile', reason, route))
     conn.commit()
     return {'id': pid}
 
@@ -598,10 +609,11 @@ def ext_error(conn, q, b):
     if kind not in ('list', 'profile'):
         kind = None
     direction = job['direction'] if was_list else (b.get('direction') if kind == 'list' else None)
-    conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,reason,http_status) '
-                 'VALUES(?,?,?,?,?,?,?,?,?)',
+    route = b.get('route') if b.get('route') in ('profile_page', 'info', 'passive') else None
+    conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,reason,http_status,route) '
+                 'VALUES(?,?,?,?,?,?,?,?,?,?)',
                  (event_id, ts, lane, job['id'] if job else None, kind, direction, str(code or 'other')[:40],
-                  str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599)))
+                  str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599), route))
     home_redirect = (code == 'other' and b.get('reason') == 'list_html_home_redirect'
                      and ((reported_job and reported_job['kind'] == 'list')
                           or (not b.get('job_id') and b.get('kind') == 'list')))
@@ -641,6 +653,7 @@ def ext_error(conn, q, b):
             fields['list_endpoint_until'] = route_until
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
+    profile_siblings = accounts.profile_job_siblings(conn, job) if job and job['kind'] == 'profile' else []
     if job and code not in ('other', 'not_found'):
         # rate limits, soft blocks, login walls say nothing about this job: give the lease back to its attempt count,
         # so attempts = leases that ended in 'other' or expired (the ones that may mean the job itself is broken)
@@ -673,7 +686,7 @@ def ext_error(conn, q, b):
             # A hot job must not bounce immediately through every signed-in account.
             # An explicit Instagram Retry-After wins; the lane's *computed* cooldown
             # is separate, so one account does not freeze a target for all accounts.
-            hits = (job['limit_hits'] or 0) + 1
+            hits = max([job['limit_hits'] or 0] + [r['limit_hits'] or 0 for r in profile_siblings]) + 1
             delay = min(30 * 2 ** min(hits - 1, 4), 360) if code == 'rate_limit' else min(15 * 2 ** min(hits - 1, 3), 120)
             retry = datetime.now(timezone.utc) + timedelta(minutes=delay)
             if code == 'rate_limit':
@@ -681,9 +694,13 @@ def ext_error(conn, q, b):
                 if reported and reported > retry:
                     retry = reported
             if job['kind'] == 'profile':
-                conn.execute("UPDATE jobs SET retry_not_before=?, limit_hits=max(limit_hits, ?) "
-                             "WHERE kind='profile' AND handle=? AND state='queued'",
-                             (iso(retry), hits, job['handle']))
+                previous = [r['retry_not_before'] for r in profile_siblings if r['retry_not_before']]
+                retry = max([iso(retry)] + previous, key=utc)
+                conn.executemany("UPDATE jobs SET retry_not_before=?,limit_hits=max(limit_hits,?),"
+                                 "attempts=max(attempts-CASE WHEN state='leased' THEN 1 ELSE 0 END,0),"
+                                 "state='queued',leased_until=NULL,lane=NULL,lease_token=NULL "
+                                 "WHERE id=? AND state IN ('queued','leased')",
+                                 [(retry, hits, r['id']) for r in profile_siblings])
             else:
                 conn.execute('UPDATE jobs SET retry_not_before=?, limit_hits=? WHERE id=?',
                              (iso(retry), hits, job['id']))
@@ -692,8 +709,13 @@ def ext_error(conn, q, b):
             # whole account through repeated local backoffs.
             retry = iso(datetime.now(timezone.utc) + timedelta(minutes=min(2 ** min(job['attempts'], 4), 15)))
             if job['kind'] == 'profile':
-                conn.execute("UPDATE jobs SET retry_not_before=? WHERE kind='profile' AND handle=? AND state='queued'",
-                             (retry, job['handle']))
+                previous = [r['retry_not_before'] for r in profile_siblings if r['retry_not_before']]
+                retry = max([retry] + previous, key=utc)
+                conn.executemany("UPDATE jobs SET retry_not_before=?,"
+                                 "attempts=max(attempts-CASE WHEN state='leased' THEN 1 ELSE 0 END,0),"
+                                 "state='queued',leased_until=NULL,lane=NULL,lease_token=NULL "
+                                 "WHERE id=? AND state IN ('queued','leased')",
+                                 [(retry, r['id']) for r in profile_siblings])
             else:
                 if fields.get('list_endpoint_until'):
                     retry = max(retry, fields['list_endpoint_until'], key=utc)
@@ -715,6 +737,8 @@ def ext_error(conn, q, b):
         accounts.release_all(conn, lane)
     elif 'list_cool_until' in fields:
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
+    if profile_siblings:
+        accounts.coalesce_profile_jobs(conn, job)
     conn.commit()
     return {'stale': True} if stale else {}
 
@@ -1354,12 +1378,18 @@ def api_rule_delete(conn, q, b, rid):
 
 
 def api_read(conn, q, b, pid):
-    handle = person_row(conn, pid)['handle']
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    person = person_row(conn, pid)
+    handle = person['handle']
     if '~' in handle:  # parked row of an account that gave up this handle: there is no profile to read under it
         raise Bad('this account no longer has a handle to read')
-    if not conn.execute("UPDATE jobs SET priority=? WHERE kind='profile' AND handle=? AND state IN ('queued','leased')",
+    target = {'handle': handle, 'target_ig_id': person['ig_id']}
+    accounts.coalesce_profile_jobs(conn, target)
+    if not conn.execute("UPDATE jobs SET priority=? WHERE kind='profile' AND handle=? COLLATE NOCASE AND state IN ('queued','leased')",
                         (READ_PRIORITY, handle)).rowcount:
         conn.execute("INSERT INTO jobs(kind, handle, priority, created_at) VALUES('profile',?,?,?)", (handle, READ_PRIORITY, db.now()))
+    accounts.coalesce_profile_jobs(conn, target)
     conn.commit()
     return {}
 

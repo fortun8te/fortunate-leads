@@ -421,7 +421,7 @@ async function igRequest(gen, tab, url, kind, ctx) {
 const HOLD_MSG = { challenge: 'Instagram security check: complete it in the Instagram tab, then Resume',
   login: 'Log in to Instagram, then Resume' };
 // Records a failed job step. Local codes (network, unsupported, busy) keep the job for a retry and tell the server nothing.
-async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem.gen) {
+async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem.gen, route = null) {
   if (gen !== mem.gen) throw new Superseded();
   const now = Date.now(), sample = res ? FL.sampleOf(res, 1500) : '';
   const local = bad.code === 'network' || bad.code === 'unsupported' || bad.code === 'busy';
@@ -449,6 +449,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem
   await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
     event_id: Date.now().toString(36) + Math.random().toString(36).slice(2), kind: bucket,
     direction: job.direction || null, http_status: res ? res.status : 0,
+    route: route || undefined,
     retry_after: bad.retryAt ? iso(bad.retryAt) : null,
     reason: bad.reason || null,
     message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false, gen);
@@ -559,28 +560,28 @@ async function runList(gen, job, tab) {
 }
 
 // ---- profile reads (bios) ----------------------------------------------------
-// /api/v1/users/{pk}/info/ from the tab. Without a pk: the pk cache from passive capture, else a profile page load
-// (never web_profile_info). If /info/ turns out to refuse web clients it is switched off for 6 h and page loads are used.
+// Read the normal profile page and capture the data Instagram loads for it.
+// Choose this route before any request: a warning never triggers a second route.
 async function runProfile(gen, job, tab) {
   mem.label = '@' + job.handle + ' profile';
-  const st = await loadSt(), cached = await knownId(job.handle);
-  const pk = job.ig_id || (cached && cached.ig_id);
-  let p, capturedAt;
-  if (pk && !(st.infoOffUntil > Date.now())) {
-    const { res, bad } = await igRequest(gen, tab, IG + '/api/v1/users/' + encodeURIComponent(pk) + '/info/', 'profile');
-    if (bad) return fail(job, bad, mem.label, res, 'profile', false, gen);
-    p = FL.mapProfile(FL.userOf(res.json));
-    capturedAt = iso(Date.now());
-  } else {
-    const r = await lookupViaPage(gen, job.handle, 'profile', tab);
-    if (!r.p) return fail(job, r.bad, mem.label + ' (page)', r.res, 'profile', false, gen);
-    p = r.p;
-    capturedAt = iso(Date.now());
-  }
+  const route = 'profile_page';
+  if ((await loadSt()).hold) throw new ControlPaused();
+  const r = await lookupViaPage(gen, job.handle, 'profile', tab);
+  const capturedAt = iso(Date.now()), p = r.p;
+  const warning = r.bad || (r.info ? FL.pageVerdict(r.info) : null);
+  if (warning && ['rate_limit', 'soft_block', 'login', 'challenge', 'not_found'].includes(warning.code))
+    return fail(job, warning, mem.label + ' (page)', r.res, 'profile', false, gen, route);
+  if (!p) return fail(job, r.bad || { code: 'other', reason: 'no_profile_data' }, mem.label + ' (page)', r.res, 'profile', false, gen, route);
+  const expectedId = job.target_ig_id || job.ig_id;
+  if (expectedId && String(p.ig_id || '') !== String(expectedId))
+    return fail(job, { code: 'other', reason: 'profile_identity_mismatch' }, mem.label + ' (page)', r.res, 'profile', false, gen, route);
+  if (typeof p.bio !== 'string')
+    return fail(job, { code: 'other', reason: 'no_bio' }, mem.label + ' (page)', r.res, 'profile', false, gen, route);
   await remember(p);
   await markSeen(p.handle);
   await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.tally(st, Date.now(), 0, 1); });
-  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p, captured_at: capturedAt }, true, gen);
+  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p, captured_at: capturedAt, route,
+    event_id: Date.now().toString(36) + Math.random().toString(36).slice(2) }, true, gen);
 }
 
 // ---- the loop ----------------------------------------------------------------
@@ -749,7 +750,8 @@ async function passive(user) {
   if (!FL.controlAllows(mem, 'profile') || await get('localPaused') || (await loadSt()).hold) return;
   if (!(await markSeen(p.handle))) return;
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
-  await queue('/api/ext/profile', { job_id: null, profile: p, captured_at: capturedAt });
+  await queue('/api/ext/profile', { job_id: null, profile: p, captured_at: capturedAt, route: 'passive',
+    event_id: Date.now().toString(36) + Math.random().toString(36).slice(2) });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

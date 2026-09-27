@@ -338,8 +338,9 @@ class LaneTest(Base):
         self.conn.commit()
         following = self.nxt('b', 'profile')['job']
         self.assertEqual(following['handle'], 'other')
-        blocked = self.conn.execute("SELECT retry_not_before FROM jobs WHERE handle='hot'").fetchall()
-        self.assertEqual(len(blocked), 2)
+        blocked = self.conn.execute("SELECT retry_not_before FROM jobs WHERE handle='hot' AND state='queued'").fetchall()
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs WHERE handle='hot' AND state='cancelled'").fetchone()[0], 1)
         self.assertTrue(all(datetime.fromisoformat(r[0]) > datetime.now(timezone.utc) for r in blocked))
         self.assertTrue(all(datetime.fromisoformat(r[0]) < datetime.now(timezone.utc) + timedelta(hours=1)
                             for r in blocked))  # a lane's long cooldown is not shared by the target

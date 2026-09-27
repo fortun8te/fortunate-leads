@@ -92,7 +92,7 @@ class ProfileFreshness(unittest.TestCase):
     def test_successful_empty_bio_is_a_fresh_read(self):
         self.request()
         jid = self.lease()['id']
-        self.ingest({'handle': 'alice', 'bio': ''}, jid)
+        self.ingest({'handle': 'alice', 'ig_id': '101', 'bio': ''}, jid)
         p = self.assert_read_state('done', False)
         self.assertEqual((p['bio'], p['bio_at'], p['bio_src']), ('', NEW_AT, 'extension'))
         self.assertEqual(p['website'], 'https://alice.example')

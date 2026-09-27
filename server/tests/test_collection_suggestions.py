@@ -87,7 +87,7 @@ class CollectionSuggestions(unittest.TestCase):
         for i in range(30): self.person('fit'+str(i))
         self.assertEqual(len(suggestions.suggest(self.conn,100)['suggestions']),20)
         plan=' '.join(str(tuple(r)) for r in self.conn.execute('EXPLAIN QUERY PLAN '+suggestions.CANDIDATES,
-                      {'rank_pool':2000,'owner_pool':500,'limit':6}))
+                      {'rank_pool':2000,'owner_pool':500,'limit':6,'following_only':False}))
         self.assertIn('verdicts_score',plan)
         self.assertIn('verdicts_prefilter',plan)
         self.assertNotIn('SCAN edges',plan)
@@ -168,6 +168,50 @@ class CollectionSuggestions(unittest.TestCase):
         self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],1)
 
+    def test_future_retry_does_not_starve_fresh_discovery(self):
+        self.person('fresh')
+        row = self.account()
+        self.conn.execute("INSERT INTO jobs(kind,seed,direction,state,retry_not_before) "
+                          "VALUES('list','manual_seed','followers','queued','2099-01-01')")
+        self.assertEqual(suggestions.queue_when_idle(self.conn, row)['handle'], 'fresh')
+        pending = self.conn.execute("SELECT state,retry_not_before FROM jobs WHERE seed='manual_seed'").fetchone()
+        self.assertEqual(tuple(pending), ('queued', '2099-01-01'))
+
+    def test_ready_manual_list_and_active_other_lane_take_precedence(self):
+        self.person('fresh')
+        row = self.account()
+        db.queue_list(self.conn, 'manual_seed', 'following', priority=100)
+        self.assertIsNone(suggestions.queue_when_idle(self.conn, row))
+        until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self.conn.execute("UPDATE jobs SET state='leased',lane='other',leased_until=?", (until,))
+        self.assertIsNone(suggestions.queue_when_idle(self.conn, row))
+
+    def test_follower_route_wait_allows_only_unrelated_following_discovery(self):
+        self.person('followers_only', 95, following=0)
+        self.person('fresh')
+        until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        row = self.account(list_endpoint_until=until)
+        picked = suggestions.queue_when_idle(self.conn, row)
+        self.assertEqual(picked['handle'], 'fresh')
+        self.assertEqual(picked['directions'], ['following'])
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM jobs').fetchone()[0], 1)
+        self.assertEqual(self.conn.execute('SELECT list_endpoint_until FROM accounts').fetchone()[0], until)
+
+    def test_route_filter_precedes_suggestion_limit(self):
+        for i in range(21):
+            self.person('followers_only' + str(i), 95, following=0)
+        self.person('fresh', 70)
+        until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        picked = suggestions.queue_when_idle(self.conn, self.account(list_endpoint_until=until))
+        self.assertEqual((picked['handle'], picked['directions']), ('fresh', ['following']))
+
+    def test_auto_discovery_never_uses_reserved_main(self):
+        self.person('fresh')
+        row = self.account(is_main=1)
+        self.conn.execute("INSERT INTO accounts(lane_id,handle,ig_id,role) VALUES('alt','alt','901','both')")
+        db.set_setting(self.conn, 'main_list_share', 0)
+        self.assertIsNone(suggestions.queue_when_idle(self.conn, row))
+
     def test_pauses_off_shared_hold_and_account_guards_do_not_populate(self):
         self.person('best')
         row=self.account()
@@ -178,7 +222,7 @@ class CollectionSuggestions(unittest.TestCase):
                 self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
                 self.conn.execute('DELETE FROM settings WHERE key=?',(key,))
         for fields in ({'paused':1},{'hold':'login'},{'list_cool_until':until},
-                       {'list_endpoint_until':until},{'last_seen':'2020-01-01T00:00:00+00:00'},
+                       {'last_seen':'2020-01-01T00:00:00+00:00'},
                        {'role':'bios'},{'budget':'{"list":1}', 'today':'{"list":1}'}):
             with self.subTest(account=fields):
                 row=self.account(**fields)
