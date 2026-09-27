@@ -84,22 +84,38 @@ test('pacing: profile gap 35-70 s', () => {
     assert.equal(st.listNextAt, 0); // a bio never holds up the list clock
   }
 });
-test('cooldown escalates 10 → 20 min, then 3 strikes stops until midnight', () => {
+test('cooldown escalates 10 → 20 min, then 3 strikes rest that bucket for 2 h', () => {
   const st = FL.fresh();
   FL.applyHit(st, T0, null); assert.equal(st.cool.list.until, T0 + 10 * MIN);
   FL.applyHit(st, T0 + HOUR, null); assert.equal(st.cool.list.until, T0 + HOUR + 20 * MIN);
   FL.applyHit(st, T0 + 3 * HOUR, null);
-  assert.equal(st.cool.list.until, FL.nextMidnight(T0)); // 10:00 + 3h + 2h < midnight
+  assert.equal(st.cool.list.until, T0 + 5 * HOUR);
   assert.equal(st.cool.profile.until, 0); // bios have their own bucket
 });
-test('cooldown: old hits expire after 24 h, cap 24 h, Retry-After wins when longer', () => {
+test('cooldown: old hits expire after 24 h, cap 6 h, Retry-After wins when longer', () => {
   const st = FL.fresh();
   FL.applyHit(st, T0, null);
   FL.applyHit(st, T0 + DAY + 1, null);
   assert.equal(st.cool.list.hits.length, 1); assert.equal(st.cool.list.until, T0 + DAY + 1 + 10 * MIN);
   const s2 = FL.fresh(); FL.applyHit(s2, T0, T0 + 5 * HOUR); assert.equal(s2.cool.list.until, T0 + 5 * HOUR);
   const s3 = FL.fresh(); s3.cool.list.hits = [T0 - 2 * HOUR, T0 - 3 * HOUR, T0 - 4 * HOUR, T0 - 5 * HOUR, T0 - 6 * HOUR, T0 - 7 * HOUR, T0 - 8 * HOUR];
-  FL.applyHit(s3, T0, null); assert.ok(s3.cool.list.until <= T0 + DAY);
+  FL.applyHit(s3, T0, null); assert.equal(s3.cool.list.until, T0 + 6 * HOUR);
+  const s4 = FL.fresh(); s4.cool.profile.hits = [T0 - MIN, T0 - 2 * MIN];
+  FL.applyHit(s4, T0, T0 + 9 * HOUR, 'profile');
+  assert.equal(s4.cool.profile.until, T0 + 9 * HOUR);
+});
+test('a third hit early in the day rests 2 h instead of nearly a full day', () => {
+  const t = new Date(2026, 8, 27, 1, 43).getTime();
+  const st = FL.fresh();
+  FL.applyHit(st, t - 20 * MIN, null, 'profile');
+  FL.applyHit(st, t - 10 * MIN, null, 'profile');
+  FL.applyHit(st, t, null, 'profile');
+  assert.equal(st.cool.profile.until, t + 2 * HOUR);
+  assert.deepEqual(FL.plan(st, { list: 0, profile: 1 }, t + HOUR),
+    { kinds: [], wait: HOUR, why: 'cooldown' });
+  assert.deepEqual(FL.plan(st, { list: 0, profile: 1 }, t + 2 * HOUR).kinds, ['profile']);
+  FL.applyHit(st, t + 2 * HOUR, null, 'profile');
+  assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
 });
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();

@@ -99,16 +99,28 @@ test('per-bucket cooldowns: a list hit does not stop bios beyond the 5 min lane 
   FL.applyHit(st, T0 + 6 * MIN, null, 'profile');
   assert.equal(st.cool.profile.until, T0 + 16 * MIN); // its own ladder starts at 10 min
 });
-test('3 hits within an hour across buckets stop everything until midnight', () => {
+test('3 hits within an hour across buckets rest both for 2 h', () => {
   const st = FL.fresh();
   FL.applyHit(st, T0, null, 'list');
   FL.applyHit(st, T0 + 20 * MIN, null, 'profile');
-  assert.ok(st.cool.list.until < FL.nextMidnight(T0));
+  assert.equal(st.cool.list.until, T0 + 10 * MIN);
   FL.applyHit(st, T0 + 40 * MIN, null, 'list');
-  assert.equal(st.cool.list.until, FL.nextMidnight(T0));
-  assert.equal(st.cool.profile.until, FL.nextMidnight(T0));
+  assert.equal(st.cool.list.until, T0 + 2 * HOUR + 40 * MIN);
+  assert.equal(st.cool.profile.until, T0 + 2 * HOUR + 40 * MIN);
   assert.equal(FL.rateOf(st, T0 + 41 * MIN).hits_24h, 3);
-  assert.equal(FL.cooldownUntil(st, T0 + 41 * MIN), FL.nextMidnight(T0));
+  assert.equal(FL.cooldownUntil(st, T0 + 41 * MIN), T0 + 2 * HOUR + 40 * MIN);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + HOUR).kinds, []);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, T0 + 2 * HOUR + 40 * MIN).kinds, ['list', 'profile']);
+});
+test('cross-bucket strikes cannot be cleared by a nearby midnight', () => {
+  const midnight = FL.nextMidnight(T0);
+  const st = FL.fresh(), last = midnight - 5 * MIN;
+  FL.applyHit(st, last - 20 * MIN, null, 'list');
+  FL.applyHit(st, last - 10 * MIN, null, 'profile');
+  FL.applyHit(st, last, null, 'list');
+  assert.equal(st.cool.list.until, last + 2 * HOUR);
+  assert.equal(st.cool.profile.until, last + 2 * HOUR);
+  assert.deepEqual(FL.plan(st, { list: 1, profile: 1 }, midnight + MIN).kinds, []);
 });
 test('plan: pacing gaps, profile gap, budgets, cooldown waits', () => {
   const st = FL.fresh(), left = { list: 10, profile: 10 };
