@@ -160,6 +160,13 @@ WHEN OLD.handle IS NOT NEW.handle OR OLD.is_me IS NOT NEW.is_me BEGIN
   WHERE p.handle=OLD.handle AND OLD.is_me=1 AND instr(p.handle,'~')=0;
   DELETE FROM laya_queue WHERE NEW.is_me=1 AND person_id IN (SELECT id FROM people WHERE handle=NEW.handle);
 END;
+-- Legacy databases can already have the owner's profile queued without an is_me seed.
+-- This guard also catches later inserts from the profile/Laya maintenance triggers.
+CREATE TRIGGER IF NOT EXISTS laya_queue_self_guard AFTER INSERT ON laya_queue
+WHEN EXISTS (SELECT 1 FROM people WHERE id=NEW.person_id AND handle='fortun8te' COLLATE NOCASE)
+BEGIN
+  DELETE FROM laya_queue WHERE person_id=NEW.person_id;
+END;
 """
 
 BIO_FIELDS = {'bio', 'bio_at', 'bio_src', 'website', 'category', 'followers', 'following', 'posts', 'is_business'}
@@ -235,6 +242,8 @@ def migrate_statuses(conn):
 def init(path):
     conn = connect(path)
     conn.executescript(SCHEMA)
+    conn.execute("DELETE FROM laya_queue WHERE person_id IN "
+                 "(SELECT id FROM people WHERE handle='fortun8te' COLLATE NOCASE)")
     migrate_tags(conn)
     conn.execute('DROP INDEX IF EXISTS tags_tag')  # superseded by the covering tags_tag_src
     conn.execute('DROP INDEX IF EXISTS edges_person')  # superseded by the covering edges_person_seed

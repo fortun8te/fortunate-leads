@@ -1449,15 +1449,16 @@ def progress(conn, accts):
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
     # The planner queues bios in batches; count everyone it will still plan, not just the current batch.
     unplanned = conn.execute(
-        "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE p.bio_at IS NULL "
+        f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND p.bio_at IS NULL "
         "AND coalesce(p.is_private,0)=0 AND v.prefilter>=? AND instr(p.handle,'~')=0 "
+        "AND p.handle NOT IN (SELECT handle FROM seeds) "
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
     lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
-    q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                          "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+    q_left = conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                          "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
     q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
     q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
@@ -1666,8 +1667,8 @@ def api_pause(conn, q, b):
 
 
 def ai_left(conn):
-    return conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                        "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+    return conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                        "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                         (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
 
 
@@ -2264,13 +2265,12 @@ def laya_step(conn):
 FEWSHOT_MAX = 8
 FEWSHOT_CHANGE = 5    # re-run LLM verdicts when the good/client/no marks moved by this many (or 20 %)
 FEWSHOT_RERUN = 35    # ... but only those at or near warm (45): a new example set will not lift a clear cold one
-FEWSHOT_NOTE_MAX = getattr(qualify, 'FEWSHOT_NOTE_MAX', 200)
 FEWSHOT_TAG_MAX = getattr(qualify, 'FEWSHOT_TAG_MAX', 6)
 
 
 def feedback_example(conn, pid):
     """A small, identity-stable example from Michael's mark and manual tags only."""
-    r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status,m.note FROM people p
+    r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status FROM people p
         JOIN marks m ON m.person_id=p.id WHERE p.id=? AND m.status IN ('interested','talking','client','no')
         AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
         AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)""", (pid,)).fetchone()
@@ -2281,7 +2281,7 @@ def feedback_example(conn, pid):
         (pid, FEWSHOT_TAG_MAX))]
     return {'person_id': r['id'], 'handle': r['handle'], 'name': (r['name'] or '')[:80],
             'bio': r['bio'][:200], 'label': 'no' if r['status'] == 'no' else 'good',
-            'status': r['status'], 'note': re.sub(r'\s+', ' ', r['note'] or '').strip()[:FEWSHOT_NOTE_MAX],
+            'status': r['status'],
             'manual_tags': [t for t in tags if t]}
 
 

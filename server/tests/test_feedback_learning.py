@@ -30,7 +30,7 @@ class FeedbackLearningTest(unittest.TestCase):
         self.conn.commit()
         return pid
 
-    def test_client_note_and_manual_tags_feed_future_examples_with_provenance(self):
+    def test_client_and_manual_tags_feed_future_examples_but_note_stays_local(self):
         self.assertEqual(server.fewshot(self.conn), [])
         own = self.person('fortun8te')
         server.api_mark(self.conn, {}, {'status': 'client', 'note': 'My own account'}, own)
@@ -44,16 +44,17 @@ class FeedbackLearningTest(unittest.TestCase):
         self.assertEqual(len(examples), 1)  # a new client does not wait for five marks
         self.assertEqual(examples[0]['person_id'], pid)
         self.assertEqual(examples[0]['status'], 'client')
-        self.assertEqual(examples[0]['note'], 'Great retention and founder relationship')
         self.assertEqual(examples[0]['manual_tags'], ['DTC skincare'])
         text = qualify.fewshot_text(examples)
-        self.assertIn('Great retention and founder relationship', text)
+        self.assertNotIn('Great retention and founder relationship', text)
         self.assertIn('DTC skincare', text)
         self.assertNotIn('AI: Fit strong', text)
         self.assertNotIn('My own account', text)
         self.assertIn('owner feedback', text.lower())
+        person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
+        self.assertIn('Great retention and founder relationship', qualify._packet(person, [], []))
 
-    def test_note_and_tag_edits_change_future_prompt_without_mass_rerun(self):
+    def test_note_stays_local_and_tag_edit_changes_future_prompt_without_mass_rerun(self):
         pid = self.person('brand')
         server.api_mark(self.conn, {}, {'status': 'client', 'note': 'First reason'}, pid)
         first = server.fewshot(self.conn)
@@ -62,12 +63,29 @@ class FeedbackLearningTest(unittest.TestCase):
                           (pid, prior_version))
         self.conn.commit()
         server.api_mark(self.conn, {}, {'note': 'Revised reason'}, pid)
+        note_only = server.fewshot(self.conn)
+        self.assertEqual(qualify.prompt_version(note_only), prior_version)
+        person = server.with_owner(self.conn, dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
+        self.assertIn('Revised reason', qualify._packet(person, [], []))
         server.api_tag_edit(self.conn, {}, {'add': ['Repeat orders']}, pid)
         second = server.fewshot(self.conn)
         self.assertNotEqual(qualify.prompt_version(second), prior_version)
-        self.assertIn('Revised reason', qualify.fewshot_text(second))
+        self.assertNotIn('Revised reason', qualify.fewshot_text(second))
         self.assertIn('Repeat orders', qualify.fewshot_text(second))
         self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'm')
+
+    def test_legacy_saved_example_note_is_removed_before_future_prompt(self):
+        pid = self.person('brand')
+        server.api_mark(self.conn, {}, {'status': 'client', 'note': 'Do not repeat this private note'}, pid)
+        example = server.feedback_example(self.conn, pid)
+        old_example = {**example, 'note': 'Do not repeat this private note'}
+        db.set_setting(self.conn, 'fewshot', {'n': 1, 'examples': [old_example],
+                                              'version': qualify.prompt_version([old_example])})
+        self.conn.commit()
+        examples = server.fewshot(self.conn)
+        self.assertNotIn('note', examples[0])
+        self.assertNotIn('Do not repeat this private note', qualify.fewshot_text(examples))
+        self.assertNotIn('note', db.get_setting(self.conn, 'fewshot')['examples'][0])
 
     def test_examples_follow_stable_person_id_not_a_transferred_handle(self):
         old = self.person('brand', ig_id='100')
@@ -107,6 +125,37 @@ class FeedbackLearningTest(unittest.TestCase):
             self.assertTrue(server.laya_step(self.conn))
         self.assertEqual(seen, [other])
         self.assertNotIn(own, seen)
+
+    def test_stale_self_laya_queue_is_cleaned_without_a_signature_change(self):
+        # Simulate a database created before the self queue guard existed.
+        self.conn.execute('DROP TRIGGER IF EXISTS laya_queue_self_guard')
+        own = self.person('FORTUN8TE')
+        other = self.person('goodbrand')
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT person_id FROM laya_queue ORDER BY person_id')],
+                         [own, other])
+        db.set_setting(self.conn, 'laya_queue_signature', 'unchanged')
+        self.conn.commit()
+        self.conn.close()
+        self.conn = db.init(str(Path(self.tmp.name) / 'leads.sqlite'))
+        self.assertEqual(db.get_setting(self.conn, 'laya_queue_signature'), 'unchanged')
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT person_id FROM laya_queue')], [other])
+        self.conn.execute("UPDATE people SET bio='changed' WHERE id=?", (own,))
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT person_id FROM laya_queue')], [other])
+
+    def test_self_is_not_counted_as_remaining_bio_or_ai_work(self):
+        own = self.person('fortun8te')
+        other = self.person('goodbrand')
+        db.set_setting(self.conn, 'bio_min', 0)
+        db.set_setting(self.conn, 'llm_min', 0)
+        for pid in (own, other):
+            ts = self.conn.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0]
+            self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) "
+                              "VALUES(?,90,90,'rules',?)", (pid, ts))
+        self.conn.commit()
+        snapshot = server.progress(self.conn, [])
+        self.assertEqual(snapshot['bios']['left'], 1)
+        self.assertEqual(snapshot['qualify']['left'], 1)
+        self.assertEqual(server.ai_left(self.conn), 1)
 
     def test_hermes_candidates_skip_self_without_sharing_owner_feedback(self):
         deepscout.ensure(self.conn)

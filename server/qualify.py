@@ -603,7 +603,6 @@ SCHEMA = """Reply with one compact JSON object only, no prose:
 LLM_BUDGET = 150  # seconds for one verdict across all models; the socket timeout alone does not bound a slow-drip reply
 LLM_BATCH = 8     # profiles per model call (1M-context free models; halves requests per person) (one JSON reply with a result per id); failures fall back per person
 FEWSHOT_MAX = 8   # examples per label from Michael's own marks
-FEWSHOT_NOTE_MAX = 200
 FEWSHOT_TAG_MAX = 6
 
 RUBRIC = """Scoring rubric (fit 0-100) for Fortunate's ideal client:
@@ -720,7 +719,7 @@ def _packet(person, tags, edges, net=None):
 
 
 def fewshot_text(examples):
-    """Bounded owner feedback examples. Notes and manual tags express taste, not proof about another profile."""
+    """Bounded owner feedback examples. Private notes stay on their own profile."""
     good = [e for e in examples or [] if e.get('label') == 'good'][:FEWSHOT_MAX]
     bad = [e for e in examples or [] if e.get('label') == 'no'][:FEWSHOT_MAX]
     if not good and not bad:
@@ -730,14 +729,11 @@ def fewshot_text(examples):
         value += ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]
         if e.get('status') in OWNER_STATUS:
             value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
-        if e.get('note'):
-            note = re.sub(r'\s+', ' ', str(e['note'])).strip()[:FEWSHOT_NOTE_MAX]
-            value += ' | Michael\'s note: ' + json.dumps(note, ensure_ascii=False)
         if e.get('manual_tags'):
             value += ' | Michael\'s manual tags: ' + ', '.join(
                 json.dumps(str(t)[:64], ensure_ascii=False) for t in e['manual_tags'][:FEWSHOT_TAG_MAX])
         return value
-    out = ["Michael's past owner feedback (learn his preferences; notes and tags are not factual proof about new profiles):"]
+    out = ["Michael's past owner feedback (learn his preferences; manual tags are not factual proof about new profiles):"]
     if good:
         out += ['Marked Interested / Talking / Client (he wants these):'] + [line(e) for e in good]
     if bad:
@@ -747,7 +743,7 @@ def fewshot_text(examples):
 
 def fewshot_version(examples):
     # Include exactly the owner-sourced fields that alter the example prompt.
-    fields = ('person_id', 'handle', 'name', 'bio', 'label', 'status', 'note', 'manual_tags')
+    fields = ('person_id', 'handle', 'name', 'bio', 'label', 'status', 'manual_tags')
     key = [[e.get(field) for field in fields] for e in examples or []]
     return hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()[:8] if key else '0'
 

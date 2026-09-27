@@ -113,7 +113,7 @@ Staged pipeline (all stages run in background threads; HTTP handlers and ingest 
    `role, niche, brand_handle, decision_maker, fit, evidence[], reason, extra_tags`; evidence quotes not found in the profile are
    dropped. Tags from the verdict: role, niche, `Founder` (decision-maker of a brand), `Fit: strong` (buyer, fit ≥ 75), `Fit: good`
    (buyer/connector, fit ≥ 55). Few-shot: up to 8 interested/talking/client and 8 `no` marks with a bio. A new Client enters
-   future LLM prompts immediately; selected examples update when their note, manual tags, status, or profile changes. Other
+   future LLM prompts immediately; selected examples update when their manual tags, status, or profile changes. Other
    new marks enter when the mark count moves by ≥ 5 (or 20 %). That larger change also re-runs LLM verdicts from another
    prompt version with score ≥ 35 (warm or near it). Bounded pool: `llm_workers` concurrent
    calls (default 4) spread across providers/keys.
@@ -252,9 +252,10 @@ Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_a
 person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
 `input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
 judgement re-runs the model for that person.
-Selected examples also carry a bounded note (200 characters) and up to six manual tags into future bulk LLM prompts,
-labelled as Michael's preferences rather than proof about another profile. Automatic tags are excluded. A note or tag
-edit changes future prompt versions without re-running every prior verdict. The example tracks the person ID, so a
+Selected examples carry up to six manual tags into future bulk LLM prompts, labelled as Michael's preferences rather
+than proof about another profile. Automatic tags are excluded. Notes remain in the prompt only when qualifying their
+own person; they do not enter examples shown with other leads. A manual tag edit changes future prompt versions without
+re-running every prior verdict. The example tracks the person ID, so a
 transferred handle cannot inherit the old owner's mark. `@fortun8te` is treated as Michael's account even if its seed
 row is missing; it is excluded from Laya, bulk LLM and Leadscout candidates. Leadscout/Hermes still receives only public
 profile fields for its independent evidence check; owner notes and tags are not included in its prompt. These examples
