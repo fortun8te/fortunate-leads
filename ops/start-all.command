@@ -39,8 +39,7 @@ else
   }
 fi
 
-chrome_state="$HOME/Library/Application Support/Google/Chrome/Local State"
-profiles="$("$FL_PYTHON" "$FL_REPO/ops/chrome_profiles.py" "$chrome_state")" || exit 1
+profiles="$("$FL_PYTHON" "$FL_REPO/ops/chrome_profiles.py" --configured)" || exit 1
 profile_count="$(printf '%s\n' "$profiles" | awk 'NF { n++ } END { print n+0 }')"
 account_count="$("$FL_PYTHON" - "$FL_DB" <<'PY'
 import sqlite3, sys

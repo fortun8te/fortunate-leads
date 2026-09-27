@@ -1,5 +1,6 @@
 """Resolve only the explicitly configured Chrome profiles used by start-all."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,18 @@ def configured_names(config_path=CONFIG):
             len(set(names)) != len(names)):
         raise ValueError('Chrome startup profiles must be a non-empty list of unique names')
     return names
+
+
+def configured_directories(config_path=CONFIG):
+    """Use preverified profile directories when the background service lacks Chrome registry access."""
+    config = json.loads(Path(config_path).read_text(encoding='utf-8'))
+    names = configured_names(config_path)
+    directories = config.get('chrome_profile_dirs')
+    if (not isinstance(directories, list) or len(directories) != len(names) or
+            any(not isinstance(directory, str) or not re.fullmatch(r'(?:Default|Profile [1-9][0-9]*)', directory)
+                for directory in directories) or len(set(directories)) != len(directories)):
+        raise ValueError('Configured Chrome profile directories must uniquely match the named accounts')
+    return directories
 
 
 def resolve_profiles(chrome_state, config_path=CONFIG):
@@ -39,6 +52,13 @@ def resolve_profiles(chrome_state, config_path=CONFIG):
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
+    if args == ['--configured']:
+        try:
+            print('\n'.join(configured_directories()))
+        except (OSError, ValueError, TypeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if len(args) != 1:
         print('Usage: chrome_profiles.py CHROME_LOCAL_STATE', file=sys.stderr)
         return 2

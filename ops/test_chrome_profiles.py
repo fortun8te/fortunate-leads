@@ -38,6 +38,15 @@ class ChromeProfilesTest(unittest.TestCase):
 
     def test_checked_in_configuration_matches_the_existing_launcher_scope(self):
         self.assertEqual(chrome_profiles.configured_names(), ['Michael', 'BOT', 'BOT2'])
+        self.assertEqual(chrome_profiles.configured_directories(), ['Profile 2', 'Profile 5', 'Profile 6'])
+
+    def test_configured_directories_reject_duplicate_or_mismatched_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'configured.json'
+            config.write_text(json.dumps({'chrome_profiles': ['BOT', 'BOT2'],
+                                          'chrome_profile_dirs': ['Profile 5', 'Profile 5']}))
+            with self.assertRaisesRegex(ValueError, 'uniquely match'):
+                chrome_profiles.configured_directories(config)
 
 
 if __name__ == '__main__':
