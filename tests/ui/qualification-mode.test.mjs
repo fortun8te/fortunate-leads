@@ -34,3 +34,11 @@ test('qualification mode action navigates to settings without changing AI state'
   assert.equal(h.context.view, 'settings');
   assert.equal(h.context.S.sc.qualify, false);
 });
+test('review identifies rules separately from model progress and does not use total as a rule count',()=>{
+ const h=harness({processing:{mode:'R',generation:1}});
+ vm.runInContext('Q.sum={verdicts:103523,rules:102000,ai:1523}',h.context);h.render();
+ assert.match(h.$('#ql-prog').innerHTML,/Rules checked 102000 profiles/);
+ assert.doesNotMatch(h.$('#ql-prog').innerHTML,/103523 people checked/);
+ vm.runInContext('Q.sum={verdicts:103523}',h.context);h.render();
+ assert.match(h.$('#ql-prog').innerHTML,/Rules count unavailable/);
+});

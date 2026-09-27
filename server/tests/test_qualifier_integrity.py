@@ -70,6 +70,8 @@ class QualifierIntegrity(unittest.TestCase):
         with self.model():
             self.assertEqual(self.run_model(pid), 1)
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM tags WHERE tag='AI: Top fit'").fetchone())
+        self.assertTrue(server.external_queue.retry(self.conn, pid))
+        self.conn.commit()
         with self.model('unrelated', 10):
             self.assertEqual(self.run_model(pid), 1)
         tags = {r[0] for r in self.conn.execute('SELECT tag FROM tags WHERE person_id=?', (pid,))}
@@ -133,7 +135,7 @@ class QualifierIntegrity(unittest.TestCase):
             return q._verdict({'role': 'buyer', 'fit': 90, 'evidence': ['Skincare brand']}, person, [], 'fake', 'v')
         with patch.object(server.external_harness, 'broad', side_effect=changed):
             self.assertEqual(self.run_model(pid), 0)
-        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'local:test')
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'local:' + server.local_model.MODEL)
 
     def test_identical_reread_does_not_requeue_rules_but_changed_bio_does(self):
         profile = {'handle': 'glow', 'bio': 'Founder of a skincare brand',

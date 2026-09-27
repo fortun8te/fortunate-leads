@@ -14,6 +14,7 @@ import db
 import laya
 import qual_api
 import server
+from test_server import external_ready
 
 
 class PublicControlIntegration(unittest.TestCase):
@@ -106,8 +107,7 @@ class PublicControlIntegration(unittest.TestCase):
         control.set_stage(self.conn, 'ai', False)
         self.conn.commit()
 
-        self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear','now')", (pid,))
-        self.conn.commit()
+        external_ready(self.conn, [pid])
 
         def pause_during_cached_research(conn, _person):
             control.set_stage(conn, 'ai', True)
@@ -137,7 +137,7 @@ class PublicControlIntegration(unittest.TestCase):
             self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
             model.assert_called_once()
         self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0],
-                         'rules')
+                         'local:' + server.local_model.MODEL)
 
     def test_deeper_keeps_page_facts_without_model_when_ai_off(self):
         control.stop_all(self.conn)

@@ -36,3 +36,15 @@ test('raw server errors cannot leak into concise collection reasons',()=>{
    assert.doesNotMatch(safe,/secret|SQL|Users|<html>|trace|429/);
  }
 });
+test('shared Instagram pause explains its retry time without promising completion',()=>{
+ const ctx=vm.createContext({int:String,esc:String,Date,backgroundAIControlsHTML:()=>'',localProcessingSummary:()=> 'K2 waiting'});
+ vm.runInContext(source.slice(source.indexOf('function collectionReason('),source.indexOf('function accountAccess(')),ctx);
+ vm.runInContext(source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()')),ctx);
+ const sc={stages:[{id:'lists',state:'waiting',wait:{scope:'workspace',why:'Instagram requested a pause',until:'2099-01-01T20:08:00Z'}},{id:'bios',state:'waiting'}]};
+ const html=ctx.collectionCoverageHTML(sc);
+ assert.match(html,/Waiting for Instagram to allow requests/);
+ assert.match(html,/Retries automatically at.*Progress is saved/);
+ assert.doesNotMatch(html,/finished at|complete at|left/);
+ const manual=ctx.collectionCoverageHTML({...sc,paused:true});
+ assert.match(manual,/Paused by you/);assert.doesNotMatch(manual,/Retries automatically/);
+});

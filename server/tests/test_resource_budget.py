@@ -84,6 +84,30 @@ class ResourceBudgetTest(unittest.TestCase):
                 with second.lease('laya'):
                     self.fail('cross-process duty cycle ignored')
 
+    def test_retry_deadline_distinguishes_pressure_busy_and_rest(self):
+        with self.governor.lease('notes'):
+            with self.assertRaises(resources.Deferred) as busy:
+                with self.governor.lease('laya'):
+                    pass
+            self.assertEqual(busy.exception.retry_after, 1)
+            self.now += 4.5
+        self.now += 1
+        with self.assertRaises(resources.Deferred) as rest:
+            with self.governor.lease('notes'):
+                pass
+        self.assertEqual(rest.exception.retry_after, 3.5)
+        self.now += 3.2
+        with self.assertRaises(resources.Deferred) as minimum:
+            with self.governor.lease('notes'):
+                pass
+        self.assertEqual(minimum.exception.retry_after, 1)
+        self.sample['memory_free_percent'] = 10
+        self.governor.state(force=True)
+        with self.assertRaises(resources.Deferred) as pressure:
+            with self.governor.lease('notes'):
+                pass
+        self.assertEqual(pressure.exception.retry_after, 10)
+
     def test_low_memory_does_not_call_model_start(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('k2_test_service', Path(__file__).resolve().parents[2] / 'ops/k2-service.py')

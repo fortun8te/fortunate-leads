@@ -552,7 +552,7 @@ def status(conn):
         f"AND NOT EXISTS (SELECT 1 FROM deep_research_runs r WHERE r.person_id=p.id AND r.retry_after>? AND {RUN_MATCH})",
         (SCOUT_MIN, now, now)).fetchone()[0]
     return {'on': processing_modes.allows(conn, 'deep_dive'), 'available': available(),
-            'model': db.get_setting(conn, 'scout_model') or 'space-bunny', 'workers': db.get_setting(conn, 'scout_workers') or 3,
+            'model': db.get_setting(conn, 'scout_model') or 'grok', 'workers': db.get_setting(conn, 'scout_workers') or 3,
             'models': [{'id': k, 'label': v['label']} for k, v in MODELS.items()],
             'done_today': conn.execute("SELECT count(*) FROM deep_research WHERE at>=date('now')").fetchone()[0],
             'done': conn.execute('SELECT count(*) FROM deep_research').fetchone()[0],

@@ -78,3 +78,9 @@ test('active inference and normal pacing are not shown as resource pauses',()=>{
  assert.equal(h.ctx.backgroundAIState({...base,runtime:{resources:{allowed:false,busy:false,thermal_limited:true}}}),'Waiting for Mac');
  assert.equal(h.ctx.backgroundAIState({...base,runtime:{resources:{allowed:false,busy:false,error:'Unable to read pressure'}}}),'Waiting for Mac');
 });
+test('terminal note failures are shown separately without claiming running work',()=>{
+ const h=harness();h.SET.localProcessing={enabled:true,ready:true,state:'ready',reviewed:4,queue:0,notes_pending:0,notes_failed:2};
+ assert.equal(h.ctx.backgroundAIState(),'Ready');
+ assert.match(h.ctx.localProcessingSummary(),/2 notes need review/);
+ assert.doesNotMatch(h.ctx.localProcessingSummary(),/2 notes waiting/);
+});

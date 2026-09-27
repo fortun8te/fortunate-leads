@@ -23,7 +23,9 @@ class Unavailable(RuntimeError):
 
 
 class Busy(Unavailable):
-    pass
+    def __init__(self, message, retry_after=1):
+        super().__init__(message)
+        self.retry_after = max(1.0, float(retry_after))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -120,7 +122,7 @@ def complete_json(system, user, schema, max_tokens=900, timeout=45):
             finally:
                 _record_activity()
     except resource_budget.Deferred as exc:
-        raise Busy(str(exc)) from exc
+        raise Busy(str(exc), exc.retry_after) from exc
 
 
 def _complete_json(system, user, schema, max_tokens=900, timeout=45):
@@ -131,7 +133,7 @@ def _complete_json(system, user, schema, max_tokens=900, timeout=45):
     if not isinstance(schema, dict) or not 1 <= max_tokens <= 1600 or not 1 <= timeout <= 90:
         raise ValueError('Invalid local inference limits')
     if time.monotonic() < _retry_at:
-        raise Busy('K2 is recovering; this check will retry later')
+        raise Busy('K2 is recovering; this check will retry later', _retry_at - time.monotonic())
     if not _lock.acquire(blocking=False):
         raise Busy('K2 is checking another profile or note')
     try:

@@ -122,7 +122,7 @@ class ProcessingPipeline(unittest.TestCase):
     def test_owner_note_gets_first_slot_before_bulk_profile_review(self):
         self.conn.execute('INSERT INTO marks VALUES(?,?,?,?)', (self.pid, None, 'He is my friend.', db.now()))
         self.conn.commit()
-        self.runtime.return_value = {'facts': [{'kind': 'friend', 'quote': 'He is my friend.'}]}
+        self.runtime.return_value = {'facts': [{'kind': 'friend', 'sentence': 0}]}
         self.assertTrue(server.local_processing_step(self.conn))
         self.assertEqual(self.runtime.call_count, 1)
         self.assertEqual(self.review_count(), 0)

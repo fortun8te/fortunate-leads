@@ -178,6 +178,45 @@ class ProcessingStateTests(unittest.TestCase):
         self.assertEqual(state.seed_step(self.conn,10,policy='new-model'),0)
         self.assertEqual(state.queue_status(self.conn)['pending'],0)
 
+    def test_clearing_bio_removes_phantom_work_and_review_but_keeps_manual_data(self):
+        p = self.person()
+        state.put_review(self.conn,p['id'],{'input_hash':'h','status':'accepted'})
+        state.enqueue(self.conn,p['id'])
+        self.conn.execute("INSERT INTO marks VALUES(?,'client','Keep private note','now')",(p['id'],))
+        self.conn.execute("INSERT INTO tags VALUES(?,'Friend','relationship','manual')",(p['id'],))
+        self.conn.execute("UPDATE people SET bio='   ' WHERE id=?",(p['id'],))
+        self.assertEqual(state.queue_status(self.conn)['pending'],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM local_reviews').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT note FROM marks').fetchone()[0],'Keep private note')
+        self.assertEqual(self.conn.execute("SELECT tag FROM tags WHERE source='manual'").fetchone()[0],'Friend')
+        self.conn.execute("UPDATE people SET bio='New business bio' WHERE id=?",(p['id'],))
+        self.assertEqual([r['person_id'] for r in state.next_pending(self.conn)],[p['id']])
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM local_reviews').fetchone()[0],0)
+
+    def test_old_trigger_migrates_and_legacy_cleanup_is_bounded(self):
+        people = [self.person('legacy'+str(i)) for i in range(4)]
+        self.conn.execute('DROP TRIGGER processing_people_update')
+        self.conn.execute("""CREATE TRIGGER processing_people_update AFTER UPDATE OF bio ON people
+            BEGIN INSERT OR IGNORE INTO local_queue(person_id) SELECT NEW.id WHERE coalesce(NEW.bio,'')!=''; END""")
+        for p in people:
+            state.put_review(self.conn,p['id'],{'input_hash':'h','status':'accepted'})
+            state.enqueue(self.conn,p['id'])
+            self.conn.execute('UPDATE people SET bio=NULL WHERE id=?',(p['id'],))
+        self.conn.execute('DELETE FROM local_queue WHERE person_id=?',(people[-1]['id'],))
+        state.ensure(self.conn)
+        self.assertEqual(state.cleanup_empty_step(self.conn,2),2)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM local_reviews').fetchone()[0],2)
+        self.assertEqual(state.cleanup_empty_step(self.conn,2),2)
+        self.assertEqual(state.cleanup_empty_step(self.conn,2),0)
+        self.assertEqual(state.queue_status(self.conn)['pending'],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM local_reviews').fetchone()[0],0)
+        # The replacement trigger prevents recurrence after migration completes.
+        pid = people[0]['id']
+        self.conn.execute("UPDATE people SET bio='Restored bio' WHERE id=?",(pid,))
+        self.assertEqual(state.queue_status(self.conn)['pending'],1)
+        self.conn.execute('UPDATE people SET bio=NULL WHERE id=?',(pid,))
+        self.assertEqual(state.queue_status(self.conn)['pending'],0)
+
     def test_deleting_person_removes_queued_and_saved_local_work(self):
         p = self.person()
         self.rules(p)

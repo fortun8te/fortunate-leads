@@ -72,6 +72,8 @@ class NoteReader(unittest.TestCase):
         self.assertNotEqual(notes.result(self.conn, self.pid)['state'], 'ready')
 
     def test_missing_table_is_read_only_pending(self):
+        # Simulate an older database before startup schema setup.
+        self.conn.execute('DROP TABLE owner_note_reads')
         self.assertEqual(notes.result(self.conn, self.pid)['state'], 'pending')
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name='owner_note_reads'").fetchone())
 
@@ -180,8 +182,8 @@ class NoteReader(unittest.TestCase):
     def test_shared_local_runtime_receives_private_note_and_schema(self):
         with patch.object(notes.local_model, 'complete_json', return_value={'facts': []}) as call:
             self.assertEqual(notes.interpret('A private note.'), [])
-            self.assertEqual(call.call_args.args, (notes.SYSTEM, 'A private note.', notes.SCHEMA))
-            self.assertEqual(call.call_args.kwargs['max_tokens'], 600)
+            self.assertEqual(call.call_args.args, (notes.SYSTEM, json.dumps(['A private note.']), notes.SCHEMA))
+            self.assertEqual(call.call_args.kwargs['max_tokens'], 900)
 
     def test_local_context_excludes_relationship_guesses_and_expires_with_note(self):
         quote = 'He runs a clothing business.'
@@ -201,10 +203,69 @@ class NoteReader(unittest.TestCase):
         self.conn.execute('UPDATE marks SET note=?', ('Something else.',))
         self.assertIsNone(notes.local_context(self.conn, self.pid))
 
+    def test_deterministic_failure_is_terminal_until_explicit_retry_or_edit(self):
+        with patch.object(notes, 'interpret', side_effect=ValueError('truncated')) as call:
+            self.assertTrue(notes.step(self.conn))
+            with patch.object(notes.time, 'time', return_value=10 ** 12):
+                self.assertFalse(notes.step(self.conn))
+            self.assertEqual(call.call_count, 1)
+            self.assertTrue(notes.result(self.conn, self.pid)['can_retry'])
+            self.assertTrue(notes.retry(self.conn, self.pid))
+            self.conn.commit()
+            self.assertTrue(notes.step(self.conn))
+            self.assertEqual(call.call_count, 2)
+            self.conn.execute('UPDATE marks SET note=?', ('A changed note.',))
+            self.conn.commit()
+            self.assertTrue(notes.step(self.conn))
+            self.assertEqual(call.call_count, 3)
+
+    def test_transient_unavailable_retries_after_delay(self):
+        with patch.object(notes, 'interpret', side_effect=[notes.Unavailable(), []]) as call:
+            self.assertTrue(notes.step(self.conn))
+            self.assertFalse(notes.step(self.conn))
+            with patch.object(notes.time, 'time', return_value=10 ** 12):
+                self.assertTrue(notes.step(self.conn))
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(notes.result(self.conn, self.pid)['state'], 'ready')
+            self.assertFalse(notes.retry(self.conn, self.pid))
+
+    def test_sentence_references_restore_exact_quotes_and_keep_negation(self):
+        note = 'He is not my client. He was my client last year.'
+        response = {'facts': [{'kind': 'current_client', 'sentence': 0},
+                              {'kind': 'past_client', 'sentence': 1}]}
+        with patch.object(notes.local_model, 'complete_json', return_value=response):
+            facts = notes.interpret(note)
+        self.assertEqual([(f['kind'], f['quote']) for f in facts],
+                         [('past_client', 'He was my client last year.')])
+        for index in [True, -1, 2, '0']:
+            with patch.object(notes.local_model, 'complete_json', return_value={
+                    'facts': [{'kind': 'past_client', 'sentence': index}]}):
+                with self.assertRaises(ValueError):
+                    notes.interpret(note)
+
+    def test_overlong_note_does_not_start_inference(self):
+        with patch.object(notes.local_model, 'complete_json') as call:
+            with self.assertRaises(ValueError):
+                notes.interpret('x' * 5001)
+            call.assert_not_called()
+
+    def test_pause_during_note_inference_discards_result(self):
+        def inference(note):
+            other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
+            db.set_setting(other, 'processing_paused', True)
+            other.commit()
+            other.close()
+            return [{'kind': 'current_client', 'quote': note, 'label': 'Current client'}]
+        with patch.object(notes, 'interpret', side_effect=inference):
+            notes.step(self.conn)
+        self.assertEqual(self.conn.execute('SELECT facts FROM owner_note_reads').fetchone()[0], '[]')
+
     def test_busy_model_is_deferred_without_failure(self):
-        with patch.object(notes, 'interpret', side_effect=notes.local_model.Busy()):
+        with patch.object(notes, 'interpret', side_effect=notes.local_model.Busy('Resource rest', retry_after=17)):
             self.assertTrue(notes.step(self.conn))
         self.assertEqual(notes.result(self.conn, self.pid)['state'], 'pending')
+        row = self.conn.execute('SELECT retry_at,updated_at FROM owner_note_reads').fetchone()
+        self.assertGreater(row['retry_at'] - row['updated_at'], 16)
 
 
 if __name__ == '__main__':
