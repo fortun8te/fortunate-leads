@@ -57,18 +57,18 @@
       this.buffer = gl.createBuffer();
       if (!this.buffer) throw new Error('WebGL buffer unavailable');
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, this.data, gl.STATIC_DRAW);
-      this.lost = gl.isContextLost();
+      this.lost = gl.isContextLost() === true;
     }
     set(nodes) {
       const data = new Float32Array(nodes.length * 3);
       nodes.forEach((n, i) => { data[i * 3] = n.x; data[i * 3 + 1] = n.y; data[i * 3 + 2] = n.r; });
       // Preserve the newest coordinates even when set() runs during context loss.
       this.data = data; this.count = nodes.length;
-      if (this.lost || this.gl.isContextLost()) return;
+      if (this.lost || this.gl.isContextLost() === true) return;
       const gl = this.gl; gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     }
     draw(w, h, x, y, k, color) {
-      if (this.lost || this.gl.isContextLost()) return false;
+      if (this.lost || this.gl.isContextLost() === true) return false;
       const gl = this.gl, dpr = Math.min(root.devicePixelRatio || 1, 2), p = this.program;
       if (this.canvas.width !== Math.round(w * dpr) || this.canvas.height !== Math.round(h * dpr)) { this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr); }
       gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(p);
