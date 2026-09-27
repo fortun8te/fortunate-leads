@@ -138,6 +138,8 @@ function flushBox() {
           return true;
         });
         if (!removed) continue; // another enqueue shed a passive head while it was in flight
+        if (r === 'ok' && path === '/api/ext/list-page' && sending.body?.direction === 'followers')
+          await editSt((st) => FL.listPageSucceeded(st, 'followers'));
         if (r !== 'ok') {
           await editSt((s) => { s.lastError = 'Server rejected a saved result; see debug log'; });
           await trail('outbox parked', { path, reason: r });
@@ -208,8 +210,7 @@ async function status(st) {
   const s = FL.statusOf(st, { ...mem, localPaused: !!(await get('localPaused')) }, now);
   chrome.action.setBadgeText({ text: s.badge });
   chrome.action.setBadgeBackgroundColor({ color: s.badge === '!' ? '#b3261e' : '#555' });
-  const bucket = (k) => ({ until: Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0) > now ?
-      Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0) : 0,
+  const bucket = (k) => ({ until: st.cool[k].until > now ? st.cool[k].until : 0,
     hits: st.cool[k].hits.filter((t) => now - t < FL.DAY).length,
     left: Number.isFinite(left[k]) ? left[k] : null, readyAt: FL.readyAt(st, k) });
   await set({ view: { ...s, today: st.today, budget, job: mem.job ? mem.label : '', nextAt: Math.min(FL.readyAt(st, 'list'), FL.readyAt(st, 'profile')),
@@ -351,6 +352,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false) {
     retry_after: bad.retryAt ? iso(bad.retryAt) : null,
     reason: bad.reason || null,
     message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
+  if (homeRedirect && st.listEndpointUntil > now) await heartbeat(true);
 }
 // Waits for the pace gap while keeping heartbeats going; false if paused, blocked or superseded meanwhile.
 async function waitUntil(gen, ts) {
@@ -433,7 +435,6 @@ async function runList(gen, job, tab) {
   const freshTotal = FL.pageTotal(res.json);
   if (freshTotal != null) { total = freshTotal; totalSource = 'current_run'; }
   const page = FL.parsePage(res.json), now = Date.now();
-  await editSt((st) => FL.listPageSucceeded(st));
   const stalled = !!(cursor && page.next_cursor === cursor && !page.done);
   await editProg(key, (p) => ({ ...(cursor && p.jobId === job.id ? p : {}), jobId: job.id, cursor, next: page.next_cursor, received: ctx.received + page.users.length,
     pages: (cursor ? p.pages || 0 : 0) + 1, total, totalSource, countAttempted: !!prog.countAttempted, emptyAt: null, limited: page.limited, at: now }));

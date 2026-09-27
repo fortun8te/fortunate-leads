@@ -118,7 +118,7 @@ test('a third hit early in the day rests 2 h instead of nearly a full day', () =
   FL.applyHit(st, t + 2 * HOUR, null, 'profile');
   assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
 });
-test('one failing list direction stays open for the other; both failing rest lists', () => {
+test('three public follower redirects pause followers only and a follower page clears it', () => {
   const st = FL.fresh();
   FL.recordListRedirect(st, 'one', 'followers', true, T0);
   FL.recordListRedirect(st, 'one', 'followers', true, T0 + MIN);
@@ -126,20 +126,22 @@ test('one failing list direction stays open for the other; both failing rest lis
   FL.recordListRedirect(st, 'two', 'followers', true, T0 + 3 * MIN);
   assert.equal(st.listEndpointUntil, 0);
   FL.recordListRedirect(st, 'three', 'followers', true, T0 + 4 * MIN);
-  assert.equal(st.listEndpointUntil, 0);
+  assert.equal(st.listEndpointUntil, T0 + 34 * MIN);
   for (const seed of ['four', 'five', 'six']) FL.recordListRedirect(st, seed, 'following', true, T0 + 4 * MIN);
   assert.equal(st.listEndpointUntil, T0 + 34 * MIN);
   assert.equal(st.cool.list.until, 0); // no invented Instagram rate limit
-  assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['profile']);
-  assert.equal(FL.statusOf(st, {}, T0 + 4 * MIN).text.includes('List API unavailable'), true);
+  assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['list', 'profile']);
+  assert.equal(FL.statusOf(st, {}, T0 + 4 * MIN).text.includes('Followers paused'), true);
   st.cool.list.until = T0 + 2 * HOUR;
   const shown = FL.statusOf(st, {}, T0 + 4 * MIN);
   assert.match(shown.text, /Instagram list limit until/);
   assert.equal(shown.badge, '2h'); // later real limit is the effective list wait
   st.cool.list.until = 0;
-  FL.recordListRedirect(st, 'seven', 'following', true, T0 + 35 * MIN);
+  FL.recordListRedirect(st, 'seven', 'followers', true, T0 + 35 * MIN);
   assert.equal(st.listEndpointUntil, T0 + 95 * MIN); // failed recovery probe: longer rest
-  FL.listPageSucceeded(st);
+  FL.listPageSucceeded(st, 'following');
+  assert.equal(st.listEndpointUntil, T0 + 95 * MIN);
+  FL.listPageSucceeded(st, 'followers');
   assert.equal(st.listEndpointUntil, 0);
   assert.equal(st.listRedirects.length, 0);
   assert.equal(st.listEndpointStrikes, 0);

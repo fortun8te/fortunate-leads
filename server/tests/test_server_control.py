@@ -125,20 +125,21 @@ class ControlTest(LaneTest):
         self.assertTrue(self.stage(out, 'bios')['paused'])
         self.assertFalse(out['accounts'][0]['paused'])
 
-    def test_list_endpoint_issue_is_account_specific_and_preserves_bios(self):
+    def test_follower_redirect_pause_keeps_following_and_bios_available(self):
         self.seeds('s1', 's2')
         self.bio_job()
         first = self.nxt('a')['job']
         self.assertEqual(first['kind'], 'list')
         profile = self.nxt('a', 'profile')['job']
         self.assertEqual(profile['kind'], 'profile')
+        self.seeds('other', direction='following')
         until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'running',
                   'cool': {'list': None, 'profile': None}, 'list_endpoint_until': until})
-        self.assertIsNone(self.nxt('a', 'list')['job'])
+        self.assertEqual(self.nxt('a', 'list')['job']['direction'], 'following')
         import control
         row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
-        self.assertIn('Instagram returned its home page', control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))[0])
+        self.assertIsNone(control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc)))
         kept = self.conn.execute('SELECT state,lane FROM jobs WHERE id=?', (profile['id'],)).fetchone()
         self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertEqual(self.nxt('b', 'list')['job']['kind'], 'list')
@@ -147,14 +148,13 @@ class ControlTest(LaneTest):
                   'list_endpoint_until': until})
         row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
         why, seconds = control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))
-        self.assertIn('rate limit', why)
-        self.assertIn('public list redirects', why)
+        self.assertIn('slow down', why)
         self.assertGreater(seconds, 110 * 60)
         kept = self.conn.execute('SELECT state,lane FROM jobs WHERE id=?', (profile['id'],)).fetchone()
         self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertTrue(self.conn.execute('SELECT 1 FROM jobs WHERE id=? AND state IN (\'queued\',\'leased\')', (first['id'],)).fetchone())
 
-    def test_old_list_lease_does_not_mask_endpoint_wait(self):
+    def test_follower_pause_does_not_mark_all_lists_waiting(self):
         self.seeds('s1')
         job = self.nxt('a')['job']
         until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
@@ -166,9 +166,7 @@ class ControlTest(LaneTest):
         self.conn.commit()
         out = self.ctl()
         for item in (self.stage(out, 'lists'), out['accounts'][0]):
-            self.assertEqual(item['state'], 'waiting')
-            self.assertIn('home page', item['now'])
-            self.assertGreater(item['wait']['seconds'], 25 * 60)
+            self.assertNotEqual(item['state'], 'waiting')
 
     def test_old_profile_lease_does_not_mask_rate_limit_wait(self):
         self.bio_job()

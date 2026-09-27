@@ -68,6 +68,19 @@ class LaneTest(Base):
         self.assertEqual(self.call('/api/settings/accounts', {'main_list_share': 0.25})[1]['main_list_share'], 0.25)
         self.assertEqual(self.call('/api/accounts')[1]['main_list_share'], 0.25)
 
+    def test_follower_redirect_pause_hands_saved_cursor_to_other_viewer(self):
+        self.seeds('target', direction='followers')
+        first = self.nxt('a', 'list')['job']
+        self.page('a', first, 5, 'next')
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle'})
+        until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'running',
+                  'list_endpoint_until': until, 'cool': {'list': None, 'profile': None}})
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        handed = self.nxt('b', 'list')['job']
+        self.assertEqual((handed['id'], handed['cursor'], handed['received']),
+                         (first['id'], 'next', 5))
+
     def test_recent_follower_redirects_allow_one_following_probe(self):
         self.seeds('f1', 'f2', 'f3', direction='followers')
         self.seeds('other', direction='following')

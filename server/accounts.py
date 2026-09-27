@@ -130,8 +130,7 @@ def account_available(row, now):
 
 def healthy(row, now):
     """May this lane keep (or take) a list?"""
-    return account_available(row, now) and not later(row['list_cool_until'], now) \
-        and not later(row['list_endpoint_until'], now)
+    return account_available(row, now) and not later(row['list_cool_until'], now)
 
 
 def list_budget_left(conn, row, now):
@@ -178,7 +177,8 @@ def viewer_may_access_list(conn, row, seed, direction):
 
 def eligible_for_list(conn, row, seed, direction, now):
     """The viewer can take this list right now."""
-    return healthy(row, now) and list_budget_left(conn, row, now) and viewer_may_access_list(
+    return healthy(row, now) and not (direction == 'followers' and later(row['list_endpoint_until'], now)) \
+        and list_budget_left(conn, row, now) and viewer_may_access_list(
         conn, row, seed, direction)
 
 
@@ -210,8 +210,6 @@ def why_released(row, now):
         return 'paused'
     if row['role'] == 'bios' or row['is_main']:
         return 'role'
-    if later(row['list_endpoint_until'], now):
-        return 'list_endpoint'
     if later(row['list_cool_until'], now):
         return 'cooldown'
     return 'offline'
@@ -236,8 +234,7 @@ def release(conn, now, only=None):
         # A role/share/pause change cannot undo a request already sent to Instagram. A login wall,
         # list limit, offline lane, or expired lease can be handed off immediately.
         finishing = (row and (j['leased_until'] or '') > ts and not row['hold']
-                     and (j['kind'] != 'list' or (not later(row['list_cool_until'], now)
-                                                and not later(row['list_endpoint_until'], now)))
+                     and (j['kind'] != 'list' or not later(row['list_cool_until'], now))
                      and (row['paused'] or (healthy(row, now) if j['kind'] == 'list' else account_available(row, now))))
         if finishing:
             if j['kind'] == 'list':
@@ -281,8 +278,7 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)
-            and (k != 'list' or not later(row['list_endpoint_until'], now))]
+    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -297,6 +293,11 @@ def pick_job(conn, lane, kinds, now):
     row = next((r for r in accts if r['lane_id'] == lane), None)
     if not row:
         return None
+    # This viewer's follower endpoint may redirect while following still works.
+    # Keep the other direction eligible and let a healthy viewer take its queued followers.
+    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if later(row['list_endpoint_until'], now) else ''
+    owner_filter = (" OR (j.direction='followers' AND EXISTS(SELECT 1 FROM accounts owner "
+                    "WHERE owner.lane_id=l.lane AND owner.list_endpoint_until>?))")
     regular_main = True
     if row['is_main'] and 'list' in kinds and share < 1:
         since = iso(now - timedelta(hours=1))
@@ -343,12 +344,12 @@ def pick_job(conn, lane, kinds, now):
             LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
             WHERE (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
               AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
-              AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
-              AND {viewer_filter}{denied_alts}
+              AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
+              AND {viewer_filter}{denied_alts}{follower_filter}
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
               l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
               coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-            (ts, ts, lane, *ok, *viewer_args, *alt_ids, lane)).fetchone()
+            (ts, ts, lane, *ok, ts, *viewer_args, *alt_ids, lane)).fetchone()
         if fallback:
             return fallback
         if 'profile' not in kinds:
@@ -360,13 +361,13 @@ def pick_job(conn, lane, kinds, now):
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
-          AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}))
-          AND (j.kind='profile' OR {viewer_filter})
+          AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
+          AND (j.kind='profile' OR {viewer_filter}){follower_filter}
         ORDER BY j.kind='list' DESC,
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, ts, lane, *ok, *viewer_args, prefer_following, lane)).fetchone()
+        (*kinds, ts, ts, lane, *ok, ts, *viewer_args, prefer_following, lane)).fetchone()
 
 
 def took(conn, lane, job):
@@ -389,7 +390,7 @@ def name_of(row):
 
 
 def list_wait_until(row, now):
-    waits = [v for v in (row['list_cool_until'], row['list_endpoint_until']) if later(v, now)]
+    waits = [v for v in (row['list_cool_until'],) if later(v, now)]
     return max(waits, key=utc) if waits else None
 
 

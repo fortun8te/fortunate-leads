@@ -171,7 +171,7 @@ test('follower-only public home redirects leave following available without clai
     await ctx.run({...job(), id: 20 + i, seed});
   }
   assert.equal(data.st.listRedirects.length, 3);
-  assert.equal(data.st.listEndpointUntil, 0);
+  assert.ok(data.st.listEndpointUntil > Date.now());
   assert.equal(data.st.cool.list.until, 0);
   assert.ok(data.box.every(x => x.body.reason === 'list_html_home_redirect'));
   assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['list', 'profile']);
