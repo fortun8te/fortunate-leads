@@ -517,7 +517,12 @@ def ext_profile(conn, q, b):
         identity = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         if not (identity and identity['ig_id'] and str(p.get('ig_id')) == identity['ig_id']):
             raise Bad('profile does not match its leased identity')
-    if not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
+    if ('website' in p and isinstance(p.get('bio'), str)
+            and (p['website'] is None or isinstance(p['website'], str) and not p['website'].strip())):
+        # A complete read can explicitly remove a link. Omitted fields and
+        # partial reads remain unknown; unsafe URLs never replace saved links.
+        p['website'] = ''
+    elif not (isinstance(p.get('website'), str) and re.match(r'https?://[^\s]+$', p['website'].strip(), re.I)):
         p.pop('website', None)  # javascript:, data:, bare text: never stored, never rendered as a link
     else:
         p['website'] = p['website'].strip()
