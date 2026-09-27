@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS verdicts(person_id INT PRIMARY KEY, prefilter INT, sc
 -- One committed model verdict per row. Profile revisions and rule rescoring never alter this history.
 CREATE TABLE IF NOT EXISTS ai_scoring_events(id INTEGER PRIMARY KEY, person_id INT NOT NULL, scored_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ai_scoring_events_at ON ai_scoring_events(scored_at);
+CREATE INDEX IF NOT EXISTS ai_scoring_events_person ON ai_scoring_events(person_id);
 CREATE TABLE IF NOT EXISTS laya(person_id INT PRIMARY KEY, input_hash TEXT, answers TEXT, fit INT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS marks(person_id INT PRIMARY KEY, status TEXT, note TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS owner_context(person_id INT PRIMARY KEY, relationships TEXT NOT NULL DEFAULT '[]', familiarity TEXT, updated_at TEXT);
@@ -925,7 +926,9 @@ def merge_people(conn, keep, drop):
                     chosen = kept
                     if table == 'site_reads' and site_priority(dropped) > site_priority(kept):
                         chosen = dropped
-                        columns = ('url', 'final_url', 'title', 'summary', 'signals', 'error', 'model', 'at')
+                        columns = tuple(key for key in
+                                        ('url', 'final_url', 'title', 'summary', 'signals', 'error', 'model', 'at', 'content_hash')
+                                        if key in dropped.keys())
                         conn.execute('UPDATE site_reads SET ' + ','.join(key + '=?' for key in columns) + ' WHERE person_id=?',
                                      (*[dropped[key] for key in columns], keep))
                         # Keep site evidence paired with the chosen read.
@@ -986,6 +989,25 @@ def merge_people(conn, keep, drop):
         mark_network_dirty(conn, [keep])
         import note_mentions
         note_mentions.merge(conn, keep, drop)
+        # people.id may be reused after deleting the highest rowid. Move audit
+        # history and invalidate input-bound caches before that identity vanishes.
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ('processing_review_events', 'ai_scoring_events'):
+            if table in tables:
+                conn.execute(f'UPDATE {table} SET person_id=? WHERE person_id=?', (keep, drop))
+        if 'processing_ai_history' in tables:
+            conn.execute('''UPDATE OR IGNORE processing_ai_history
+                SET person_id=?,verdict=json_set(verdict,'$.person_id',?) WHERE person_id=?''',
+                (keep, keep, drop))
+            # A colliding archived result is already retained on the survivor.
+            conn.execute('DELETE FROM processing_ai_history WHERE person_id=?', (drop,))
+            conn.execute('''DELETE FROM processing_ai_history AS h WHERE person_id=? AND id NOT IN (
+                SELECT recent.id FROM processing_ai_history recent
+                WHERE recent.person_id=h.person_id AND recent.model=h.model
+                ORDER BY recent.id DESC LIMIT 2)''', (keep,))
+        for table in ('external_attempts', 'web_research', 'owner_note_reads'):
+            if table in tables:
+                conn.execute(f'DELETE FROM {table} WHERE person_id=?', (drop,))
         conn.execute('DELETE FROM people WHERE id=?', (drop,))
     except Exception:
         conn.execute('ROLLBACK TO merge_people')

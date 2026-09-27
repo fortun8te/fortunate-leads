@@ -261,7 +261,7 @@ class ServerTest(Base):
         self.assertEqual({n['id'] for n in m['nodes'] if n['kind'] == 'seed'}, {'s:s1', 's:s2'})
         self.assertIn({'source': 's:s1', 'target': f"p:{ids['ben']}", 'direction': 'followers'},
                       [{k: link[k] for k in ('source', 'target', 'direction')} for link in m['links']])
-        self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
+        self.assertEqual(set(m['nodes'][0]), {'id', 'kind', 'label', 'name', 'tier', 'score', 'pic', 'degree', 'followers', 'status', 'lists',
                                               'tags', 'seeds', 'is_me', 'pid', 'note', 'owner_status', 'relationships', 'familiarity', 'relationship_owner', 'owner_relationship', 'relationship_evidence'})
         self.assertEqual(self.call(f"/img/{ids['ben']}")[0], 404)
 

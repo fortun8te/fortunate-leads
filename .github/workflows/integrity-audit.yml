@@ -1,0 +1,52 @@
+name: Integrity audit
+
+on:
+  push:
+    branches: [main, review/2026-09-27-integrity-audit]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrity-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FL_NO_ORSLOT: '1'
+  TZ: UTC
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          # A migration regression reads an actual historical database module.
+          fetch-depth: 0
+      - name: Runtime versions
+        run: |
+          python3 --version
+          node --version
+      - name: Python server regression tests
+        run: python3 -m unittest discover -s server/tests -v
+      - name: Sidecar regression tests
+        if: always()
+        run: python3 -m unittest sidecar/test_laya.py -v
+      - name: Extension regression tests across timezones
+        if: always()
+        run: |
+          for tz in UTC Europe/Amsterdam America/New_York Pacific/Auckland; do
+            echo "Testing TZ=$tz"
+            TZ="$tz" node --test extension/test/*.test.mjs
+          done
+      - name: Web regression tests
+        if: always()
+        shell: bash
+        run: |
+          mapfile -d '' tests < <(find tests web -type f -name '*.test.mjs' -print0)
+          test "${#tests[@]}" -gt 0
+          node --test "${tests[@]}"

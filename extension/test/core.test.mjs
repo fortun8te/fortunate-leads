@@ -120,7 +120,7 @@ test('a third hit early in the day rests 2 h instead of nearly a full day', () =
   assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
 });
 test('normalize releases a pre-upgrade midnight strike hold after the new bounded rest', () => {
-  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const hit = new Date(2026, 8, 26, 1, 43).getTime(); // before the UTC policy cutoff in every timezone
   const midnight = FL.nextMidnight(hit);
   const st = FL.fresh();
   st.cool.profile = { until: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
@@ -133,7 +133,7 @@ test('normalize releases a pre-upgrade midnight strike hold after the new bounde
   assert.deepEqual(FL.plan(normalized, { list: 0, profile: 1 }, hit + 7 * HOUR).kinds, ['profile']);
 });
 test('normalize migrates a cross-bucket midnight hold using retained strike history', () => {
-  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const hit = new Date(2026, 8, 26, 1, 43).getTime(); // before the UTC policy cutoff in every timezone
   const midnight = FL.nextMidnight(hit);
   const st = FL.fresh();
   st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit] };
@@ -143,7 +143,7 @@ test('normalize migrates a cross-bucket midnight hold using retained strike hist
   assert.equal(normalized.cool.profile.until, hit);
 });
 test('normalize preserves midnight Retry-After without strike evidence and a recorded retry deadline', () => {
-  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const hit = new Date(2026, 8, 26, 1, 43).getTime(); // before the UTC policy cutoff in every timezone
   const midnight = FL.nextMidnight(hit);
   const one = FL.fresh();
   one.cool.list = { until: midnight, hits: [hit] };
@@ -153,7 +153,7 @@ test('normalize preserves midnight Retry-After without strike evidence and a rec
   assert.equal(FL.normalize(explicit, hit + HOUR).cool.profile.until, midnight);
 });
 test('normalize runs the midnight migration once and leaves later provider deadlines intact', () => {
-  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const hit = new Date(2026, 8, 26, 1, 43).getTime(); // before the UTC policy cutoff in every timezone
   const midnight = FL.nextMidnight(hit);
   const st = FL.fresh();
   st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
