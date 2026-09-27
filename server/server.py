@@ -2273,7 +2273,10 @@ FEWSHOT_TAG_MAX = getattr(qualify, 'FEWSHOT_TAG_MAX', 6)
 def feedback_example(conn, pid):
     """A small, identity-stable example from Michael's mark and manual tags only."""
     r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status FROM people p
-        JOIN marks m ON m.person_id=p.id WHERE p.id=? AND m.status IN ('interested','talking','client','no')
+        LEFT JOIN marks m ON m.person_id=p.id WHERE p.id=?
+        AND (m.status IN ('interested','talking','client','no') OR
+             (m.status IS NOT 'no' AND EXISTS(SELECT 1 FROM tags t WHERE t.person_id=p.id
+                AND t.source='manual' AND t.tag='client' COLLATE NOCASE)))
         AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
         AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)""", (pid,)).fetchone()
     if not r:
@@ -2283,8 +2286,8 @@ def feedback_example(conn, pid):
         (pid, FEWSHOT_TAG_MAX))]
     return {'person_id': r['id'], 'handle': r['handle'], 'name': (r['name'] or '')[:80],
             'bio': r['bio'][:200], 'label': 'no' if r['status'] == 'no' else 'good',
-            'status': r['status'],
-            'manual_tags': [t for t in tags if t]}
+            'status': r['status'], 'feedback_source': 'status_mark' if r['status'] in (*POSITIVE, 'no') else 'manual_client_tag',
+            'manual_tags': [t for t in tags if t and not (r['status'] == 'no' and t.casefold() == 'client')]}
 
 
 def fewshot(conn):
@@ -2294,13 +2297,21 @@ def fewshot(conn):
     prior = cur.get('examples') or []
     selected_n = cur.get('n', 0)
     count_due = bool(cur) and abs(n - selected_n) >= max(FEWSHOT_CHANGE, selected_n // 5)
-    old_format = any('person_id' not in e for e in prior)
+    old_format = any('person_id' not in e or 'feedback_source' not in e for e in prior)
     latest_client = conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
         WHERE m.status='client' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
           AND p.handle!='fortun8te' COLLATE NOCASE
           AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
         ORDER BY m.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
-    new_client = latest_client and latest_client[0] not in {e.get('person_id') for e in prior}
+    tagged_client = conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+        LEFT JOIN marks m ON m.person_id=p.id
+        WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
+          AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
+          AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+        ORDER BY CASE WHEN m.status IN ('interested','talking','client') THEN 1 ELSE 0 END,
+                 p.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
+    prior_ids = {e.get('person_id') for e in prior}
+    new_client = any(row and row[0] not in prior_ids for row in (latest_client, tagged_client))
     rebuild = not cur or count_due or old_format or new_client
     ex = []
     if not rebuild:
@@ -2309,14 +2320,31 @@ def fewshot(conn):
             rebuild = True
     if rebuild:
         ex = []
-        for statuses in (POSITIVE_SQL, "('no')"):
-            ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
-                WHERE m.status IN {statuses} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+        marked_ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+                WHERE m.status IN {POSITIVE_SQL} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
                   AND p.handle!='fortun8te' COLLATE NOCASE
                   AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
                 ORDER BY CASE m.status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 ELSE 2 END,
                          m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
-            ex.extend(e for e in (feedback_example(conn, pid) for pid in ids) if e)
+        tagged_ids = [r[0] for r in conn.execute("""SELECT p.id FROM tags t JOIN people p ON p.id=t.person_id
+            LEFT JOIN marks m ON m.person_id=p.id
+            WHERE t.source='manual' AND t.tag='client' COLLATE NOCASE AND m.status IS NOT 'no'
+              AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
+              AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+            ORDER BY CASE WHEN m.status IN ('interested','talking','client') THEN 1 ELSE 0 END,
+                     p.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
+        good_ids = marked_ids[:FEWSHOT_MAX]
+        extra_tagged = [pid for pid in tagged_ids if pid not in good_ids]
+        if extra_tagged and len(good_ids) == FEWSHOT_MAX:
+            good_ids.pop()  # one slot for Michael's manual Client tag, even when marks fill the cap
+        good_ids.extend(extra_tagged[:FEWSHOT_MAX - len(good_ids)])
+        ex.extend(e for e in (feedback_example(conn, pid) for pid in good_ids) if e)
+        no_ids = [r[0] for r in conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+            WHERE m.status='no' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+              AND p.handle!='fortun8te' COLLATE NOCASE
+              AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+            ORDER BY m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
+        ex.extend(e for e in (feedback_example(conn, pid) for pid in no_ids) if e)
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
     if ex == prior and version == cur.get('version') and not count_due:
         return ex
