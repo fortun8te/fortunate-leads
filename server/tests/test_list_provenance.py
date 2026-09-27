@@ -74,6 +74,17 @@ class ListProvenanceTest(unittest.TestCase):
         self.page(self.start(), ['alice'], done=False, next_cursor='b', total=3)
         self.page(self.next(), ['bob'], total=2, total_source='cached')
         self.assertEqual((self.row()['state'], self.row()['received']), ('partial', 2))
+        self.assertEqual(self.conn.execute("SELECT state FROM jobs WHERE kind='list'").fetchone()[0], 'partial')
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['requeued'], 0)
+
+    def test_instagram_cap_finishes_attempt_without_claiming_full_list(self):
+        job = self.start('followers')
+        self.page(job, ['alice', 'bob'], limited=True, total=100)
+        self.assertEqual((self.row('followers')['state'], self.row('followers')['received'],
+                          self.row('followers')['total']), ('partial', 2, 100))
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
+        self.assertIsNone(self.next())
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['requeued'], 0)
 
     def test_cursor_cycle_saves_last_page_and_stops(self):
         self.page(self.start(), ['alice'], done=False, next_cursor='a', total=4)
@@ -169,7 +180,20 @@ class ListProvenanceTest(unittest.TestCase):
         server.ext_error(self.conn, self.q, dict(job_id=job['id'], lease_token=job['lease_token'], code='private',
                                                  reason='profile_private_wall'))
         self.assertEqual((self.row()['state'], self.row()['received'], self.row()['cursor']), ('partial', 1, 'a'))
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
         self.assertEqual(self.active(), {'alice'})
+
+    def test_opening_old_db_corrects_only_current_partial_job(self):
+        current = self.start('followers')
+        self.page(current, ['alice'], total=100)
+        self.conn.execute("UPDATE jobs SET state='done' WHERE id=?", (current['id'],))
+        old = self.conn.execute("INSERT INTO jobs(kind,seed,direction,state) VALUES('list','seed','followers','done')").lastrowid
+        self.conn.commit()
+        self.conn.close()
+        self.conn = db.init(Path(self.tmp.name) / 'lists.sqlite')
+        states = dict(self.conn.execute('SELECT id,state FROM jobs WHERE id IN (?,?)', (current['id'], old)))
+        self.assertEqual(states, {current['id']: 'partial', old: 'done'})
+        self.assertEqual((self.row('followers')['state'], self.row('followers')['received']), ('partial', 1))
 
     def test_repair_reopens_unverified_done_even_with_matching_display_count(self):
         job = self.start()
