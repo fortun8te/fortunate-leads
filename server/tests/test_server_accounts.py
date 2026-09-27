@@ -267,6 +267,38 @@ class LaneTest(Base):
         self.assertIsNone(self.nxt('b', 'list')['job'])
         self.assertEqual(self.nxt('a', 'list')['job']['seed'], 's1')
 
+    def test_main_takes_followers_when_every_alt_endpoint_is_waiting(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle'})
+        until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        for who in ('b', 'c'):
+            self.post(who, '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle',
+                                                  'list_endpoint_until': until})
+        self.seeds('target', direction='followers')
+        self.seeds('other', direction='following')
+        self.conn.execute("UPDATE lists SET lane='lane-b', cursor='next', received=25 "
+                          "WHERE seed='target' AND direction='followers'")
+        self.conn.commit()
+        self.assertEqual(self.nxt('b', 'list')['job']['seed'], 'other')
+        self.assertIsNone(self.nxt('c', 'list')['job'])
+        job = self.nxt('a', 'list')['job']
+        self.assertEqual((job['seed'], job['cursor'], job['received']), ('target', 'next', 25))
+
+    def test_server_does_not_lease_during_account_cooldown(self):
+        self.seeds('target', direction='following')
+        until = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'cooldown',
+                  'cool': {'list': until, 'profile': None}})
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        self.assertEqual(self.nxt('b', 'list')['job']['seed'], 'target')
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
+        self.conn.commit()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'cooldown',
+                  'cool': {'list': until, 'profile': until}})
+        self.assertIsNone(self.nxt('a', 'profile')['job'])
+        self.assertEqual(self.nxt('b', 'profile')['job']['handle'], 'someone')
+
     def test_default_lane_backwards_compatible(self):
         self.seeds('s1')
         job = self.call('/api/ext/next')[1]['job']

@@ -95,6 +95,16 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertEqual(self.active(), {'alice', 'bob', 'carol'})
         self.assertIsNone(self.next())
 
+    def test_stalled_cursor_keeps_each_page_observation(self):
+        self.page(self.start(), ['alice'], done=False, next_cursor='a', total=2)
+        self.page(self.next(), ['alice', 'bob'], done=False, next_cursor='a', total=2)
+        observations = self.conn.execute(
+            "SELECT count(*) FROM edge_observations o JOIN people p ON p.id=o.person_id "
+            "WHERE p.handle='alice' AND o.seed='seed' AND o.direction='following'").fetchone()[0]
+        self.assertEqual(observations, 2)
+        self.assertEqual((self.row()['state'], self.row()['received']), ('partial', 2))
+        self.assertEqual(self.conn.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+
     def test_duplicate_callback_never_double_counts(self):
         job = self.start()
         self.page(job, ['alice'], done=False, next_cursor='a', total=2)

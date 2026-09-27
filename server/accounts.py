@@ -278,7 +278,8 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)]
+    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)
+            and not later(row['list_cool_until'] if k == 'list' else row['profile_cool_until'], now)]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -352,6 +353,27 @@ def pick_job(conn, lane, kinds, now):
             (ts, ts, lane, *ok, ts, *viewer_args, *alt_ids, lane)).fetchone()
         if fallback:
             return fallback
+        # An alternate can still read following while its follower endpoint is
+        # redirecting. If all alternates are in that state, the main account is
+        # the only available follower viewer despite the ordinary zero share.
+        follower_alts = [r for r in accts if not r['is_main'] and healthy(r, now)
+                         and list_budget_left(conn, r, now)
+                         and (r['role'] or 'both') in ('lists', 'both')
+                         and not later(r['list_endpoint_until'], now)]
+        if not follower_alts and not later(row['list_endpoint_until'], now) and 'list' in kinds:
+            fallback = conn.execute(
+                f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
+                LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
+                WHERE j.kind='list' AND j.direction='followers'
+                  AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
+                  AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
+                  AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
+                  AND {viewer_filter}
+                ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
+                  l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC, j.id LIMIT 1""",
+                (ts, ts, lane, *ok, ts, *viewer_args, lane)).fetchone()
+            if fallback:
+                return fallback
         if 'profile' not in kinds:
             return None
         kinds = ['profile']

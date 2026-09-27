@@ -414,9 +414,15 @@ async function runList(gen, job, tab) {
   const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + (job.direction === 'following' ? 50 : 25) +
     (cursor ? '&max_id=' + encodeURIComponent(cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   // Another lane may have moved this list on since we last saw it: the server's count is then the one to trust.
-  const ctx = FL.listContext(job, prog, total);
+  const ctx = FL.listContext(job, prog, total, totalSource);
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
+    if (bad.reason === 'empty_page_before_total') {
+      // Keep this lease and cursor. The request already advanced the normal list
+      // clock; a second empty terminal page is sent to the server as partial.
+      await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }));
+      return;
+    }
     if (bad.code === 'private' || bad.reason === 'list_html_home_redirect' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
         (bad.code === 'other' && /^empty_/.test(bad.reason || ''))) {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;

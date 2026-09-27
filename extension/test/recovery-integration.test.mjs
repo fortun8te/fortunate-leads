@@ -77,6 +77,36 @@ test('server cycle acknowledgement retains the final people and stops local repl
   assert.equal(data.box.length, 0);
 });
 
+test('short terminal empty page retries one leased cursor without cooling the lane or leasing again', async () => {
+  const data = {laneId: 'fixture-lane'};
+  let requests = 0;
+  const terminal = {users: [], has_more: false, status: 'ok'};
+  const ctx = worker(data, {
+    lookup: async () => ({p: {ig_id: '12', handle: 'seed', followers: 2535}}),
+    page: async (_gen, _tab, _url, kind, listCtx) => {
+      requests++;
+      const res = {status: 200, json: terminal, text: JSON.stringify(terminal)};
+      return {res, bad: FL.classify(res, kind, Date.now(), listCtx)};
+    },
+  });
+  const leased = {...job('after-first-page'), received: 25};
+  await ctx.run(leased);
+  assert.equal(requests, 1);
+  assert.equal(data.box?.length || 0, 0);
+  assert.equal(data.cur.job.id, leased.id);
+  assert.equal(data.st?.cool?.list?.until || 0, 0);
+  assert.equal(data.prog['seed/followers'].emptyAt, leased.cursor);
+  await ctx.run(leased);
+  assert.equal(requests, 2);
+  assert.equal(data.cur, null);
+  assert.equal(data.box.length, 1);
+  assert.equal(data.box[0].path, '/api/ext/list-page');
+  assert.equal(data.box[0].body.done, true);
+  assert.equal(data.box[0].body.requested_cursor, leased.cursor);
+  assert.equal(data.box[0].body.total_source, 'current_run');
+  assert.equal(data.st?.cool?.list?.until || 0, 0);
+});
+
 test('transient failures and malformed acknowledgements never discard a leased result', async () => {
   const data = {laneId: 'fixture-lane', box: FL.enqueue([], '/api/ext/list-page', {job_id: 9, lease_token: 'old', users: [user(1)]})};
   let response;

@@ -66,9 +66,10 @@
     return 'ok';
   }
 
-  // Empty list pages: Instagram's quiet way of blocking (RESEARCH.md §3). ctx = {cursor, total, received, emptyAt}.
-  // emptyAt = the cursor ('' for page 1) at which an empty-page block already happened once; the same empty page
-  // again after the cooldown is reported as 'other' so one broken list can't stop the scraper day after day.
+  // Empty list pages: Instagram's quiet way of blocking (RESEARCH.md §3).
+  // ctx = {cursor, total, totalSource, received, emptyAt}.
+  // emptyAt tracks the cursor that already returned an empty page. A repeat with
+  // has_more is an error; a repeat terminal empty page is saved as partial coverage.
   function listCheck(json, ctx, out) {
     const users = usersOf(json);
     if (!users) return out('other', 'no_users_field');
@@ -87,6 +88,12 @@
       if (ctx.cursor && total && Number(ctx.received) >= total * 0.98) return null; // empty tail of a list we already have
       return again ? out('other', 'empty_page_again') : out('soft_block', 'empty_page_with_more');
     }
+    // Only a count verified in this run (or carried by this response) can contradict
+    // a terminal page. The first contradiction is retried locally after normal pacing;
+    // the second reaches the server, which records the incomplete run as partial.
+    const verifiedTotal = count(edge && edge.count) ?? (ctx.totalSource === 'current_run' ? count(ctx.total) : null);
+    if (ctx.cursor && verifiedTotal && Number(ctx.received) < verifiedTotal * 0.98 && !again)
+      return out('other', 'empty_page_before_total');
     if (!ctx.cursor && total > 0) return again ? out('other', 'empty_first_page_again') : out('soft_block', 'empty_first_page');
     return null; // genuine end: empty tail, or a list that really is empty
   }
@@ -175,9 +182,9 @@
     if (!job.cursor && prog && prog.next) return {};
     return prog || {};
   }
-  function listContext(job, prog, total) {
+  function listContext(job, prog, total, totalSource) {
     const cursor = job.cursor || null;
-    return { cursor, total, received: cursor ? (Number.isFinite(job.received) ? job.received : prog.received || 0) : 0,
+    return { cursor, total, totalSource, received: cursor ? (Number.isFinite(job.received) ? job.received : prog.received || 0) : 0,
       emptyAt: (prog.next ?? null) === cursor ? prog.emptyAt ?? null : null };
   }
 
