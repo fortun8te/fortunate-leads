@@ -139,6 +139,21 @@ def _valid_output(value, person):
     return True
 
 
+def failure_result(person, note_context, error):
+    """Remember a deterministic failure for this exact input without scoring it.
+
+    Edits, model changes and prompt changes invalidate this result through the
+    same content hash as successful reviews. Service unavailability is transient
+    and must remain a timed retry in the worker instead.
+    """
+    runtime = _runtime()
+    return {'status': 'unverified', 'verdict': None,
+            'input_hash': input_hash(person, note_context), 'prompt': PROMPT_VERSION,
+            'model': runtime.MODEL, 'model_version': runtime.MODEL_DIGEST,
+            'escalation_reason': 'local_unverified',
+            'error': ' '.join(str(error).split())[:240] or 'Local review could not be verified'}
+
+
 def evaluate(person, tags, edges, net=None, generate=None, note_context=None):
     """Return a typed outcome. Missing/failed evidence never overwrites rules.
 
@@ -161,7 +176,7 @@ def evaluate(person, tags, edges, net=None, generate=None, note_context=None):
     value = (generate or runtime.complete_json)(system, user, SCHEMA,
                                                max_tokens=MAX_OUTPUT_TOKENS, timeout=45)
     if not _valid_output(value, safe):
-        return dict(result, error='invalid_output')
+        return failure_result(person, note_context, 'invalid_output')
     if value['role'] == 'unclear':
         # Ambiguity must not become a high-fit recommendation merely because a
         # name, follower count or private hint sounds promising.
@@ -170,7 +185,7 @@ def evaluate(person, tags, edges, net=None, generate=None, note_context=None):
     # role/badge claim. Previously generated tags never become evidence.
     verdict = qualify._verdict(value, safe, tags, 'local:' + runtime.MODEL, PROMPT_VERSION, net)
     if verdict is None:
-        return dict(result, error='unsupported_output')
+        return failure_result(person, note_context, 'unsupported_output')
     reason = value.get('research_needed')
     if verdict['role'] == 'unclear':
         reason = reason or 'business_unclear'

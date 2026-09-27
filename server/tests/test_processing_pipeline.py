@@ -140,6 +140,72 @@ class ProcessingPipeline(unittest.TestCase):
         self.assertEqual(self.runtime.call_count, 1)
         self.assertEqual(len(state.next_pending(self.conn)), 0)
 
+    def test_invalid_output_is_terminal_and_preserves_existing_score(self):
+        self.conn.execute("INSERT INTO verdicts(person_id,score,model,reason) VALUES(?,48,'rules','Keep rules')",(self.pid,))
+        self.conn.commit()
+        self.runtime.return_value = {'not': 'the required output'}
+        self.assertTrue(server.local_processing_step(self.conn))
+        review = self.conn.execute('SELECT status,verdict,escalation_reason FROM local_reviews').fetchone()
+        self.assertEqual(tuple(review),('unverified','null','local_unverified'))
+        self.assertEqual(tuple(self.conn.execute('SELECT score,model,reason FROM verdicts').fetchone()),
+                         (48,'rules','Keep rules'))
+        self.assertFalse(server.local_processing_step(self.conn))
+        self.assertEqual(self.runtime.call_count,1)
+        # Even an incidental requeue reuses the failed result for unchanged input.
+        state.enqueue(self.conn,self.pid)
+        self.conn.commit()
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.runtime.call_count,1)
+        self.assertEqual(len(state.next_pending(self.conn)),0)
+
+    def test_truncation_is_terminal_but_profile_edit_retries(self):
+        self.runtime.side_effect = ValueError('Local completion was truncated')
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'unverified')
+        self.assertFalse(server.local_processing_step(self.conn))
+        self.assertEqual(self.runtime.call_count,1)
+        self.conn.execute("UPDATE people SET bio=bio||' New product line.' WHERE id=?",(self.pid,))
+        self.conn.commit()
+        self.runtime.side_effect = None
+        self.runtime.return_value = self.output
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.runtime.call_count,2)
+        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'complete')
+
+    def test_unverified_output_does_not_replace_previous_local_score(self):
+        self.assertTrue(server.local_processing_step(self.conn))
+        before = tuple(self.conn.execute('SELECT score,model,reason FROM verdicts').fetchone())
+        self.conn.execute("UPDATE people SET bio=bio||' More profile context.' WHERE id=?",(self.pid,))
+        self.conn.commit()
+        self.runtime.return_value = dict(self.output,evidence=['Invented quote not in the profile'])
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'unverified')
+        self.assertEqual(tuple(self.conn.execute('SELECT score,model,reason FROM verdicts').fetchone()),before)
+
+    def test_busy_and_unavailable_are_still_timed_retries(self):
+        for error in (server.local_model.Busy('In use',retry_after=3),server.local_model.Unavailable('Service unavailable')):
+            with self.subTest(error=type(error).__name__):
+                self.conn.execute('UPDATE local_queue SET retry_at=0')
+                self.conn.commit()
+                self.runtime.side_effect = error
+                server.local_processing_step(self.conn)
+                self.assertEqual(self.review_count(),0)
+                pending = self.conn.execute('SELECT retry_at,last_error FROM local_queue').fetchone()
+                self.assertIsNotNone(pending)
+                self.assertGreater(pending['retry_at'],0)
+                self.assertEqual(pending['last_error'],str(error))
+                self.assertEqual(state.next_pending(self.conn),[])
+
+    def test_failure_result_is_current_and_has_bounded_error(self):
+        person = server.with_owner(self.conn,dict(self.conn.execute('SELECT * FROM people WHERE id=?',(self.pid,)).fetchone()))
+        result = server.local_qualification.failure_result(person,None,' bad \n output '*100)
+        self.assertLessEqual(len(result['error']),240)
+        self.assertNotIn('\n',result['error'])
+        self.assertIsNone(result['verdict'])
+        self.assertTrue(server.local_qualification.current_result(result,person))
+        self.assertEqual(result['model'],server.local_model.MODEL)
+        self.assertEqual(result['model_version'],server.local_model.MODEL_DIGEST)
+
     def test_local_review_preserves_confirmed_relationships_and_manual_tags(self):
         relations = json.dumps(['worked_with', 'client', 'friend'])
         self.conn.execute('INSERT INTO owner_context VALUES(?,?,?,?)', (self.pid, relations, 'close', db.now()))

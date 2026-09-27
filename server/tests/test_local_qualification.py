@@ -70,7 +70,7 @@ class LocalQualification(unittest.TestCase):
         for value in bad:
             with self.subTest(value=str(value)[:80]):
                 result = self.evaluate(value)
-                self.assertEqual(result['status'], 'retry')
+                self.assertEqual(result['status'], 'unverified')
                 self.assertIsNone(result['verdict'])
 
     def test_invented_evidence_is_rejected(self):
@@ -80,7 +80,7 @@ class LocalQualification(unittest.TestCase):
 
     def test_optional_at_prefix_and_handle_case_are_same_instagram_identity(self):
         self.assertEqual(self.evaluate(dict(self.output, handle='@REAL_BRAND'))['status'], 'complete')
-        self.assertEqual(self.evaluate(dict(self.output, handle='@@real_brand'))['status'], 'retry')
+        self.assertEqual(self.evaluate(dict(self.output, handle='@@real_brand'))['status'], 'unverified')
 
     def test_prior_ai_tags_are_not_prompt_evidence(self):
         self.runtime.complete_json.return_value = self.output
