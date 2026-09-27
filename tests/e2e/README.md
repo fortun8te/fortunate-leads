@@ -11,7 +11,7 @@ Options:
 - `--outage-min N`: how long the server stays offline. The default is 4.
 - `--keep`: keep the temp dir.
 - `--verbose`: print the timeline, the passed checks and the extension's own trail.
-- `--lanes N`: several accounts instead (see below). `--lanes 1,2,4` runs each count in its own process and prints the time to 10k connections side by side.
+- `--lanes N`: 1–16 accounts instead (see below). `--lanes 1,2,4` runs each count in its own process and prints the time to 10k connections side by side. For a larger-account check, run `--lanes 4,10 --hours 3`.
 
 ## Lanes (`--lanes N`)
 

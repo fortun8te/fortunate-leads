@@ -956,6 +956,6 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   process.exit(ok ? 0 : 1);
 }
 
-const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 8) : [];
+const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 16) : [];
 (laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
   .catch((e) => { console.error(e); cleanup(); process.exit(2); });
