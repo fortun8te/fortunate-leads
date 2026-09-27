@@ -47,11 +47,14 @@ test('list: end detection (has_more false, empty tail, missing has_more)', () =>
 });
 test('empty terminal page far below the observed count gets a guarded retry', () => {
   const terminal = res({ users: [], has_more: false, status: 'ok' });
-  const ctx = { cursor: 'after-first-page', total: 2535, received: 25 };
+  const ctx = { cursor: 'after-first-page', total: 2535, totalSource: 'current_run', received: 25 };
   assert.deepEqual(FL.classify(terminal, 'list', T0, ctx),
-    { code: 'soft_block', retryAt: null, reason: 'empty_page_before_total' });
-  assert.deepEqual(FL.classify(terminal, 'list', T0, { ...ctx, emptyAt: ctx.cursor }),
-    { code: 'other', retryAt: null, reason: 'empty_page_before_total_again' });
+    { code: 'other', retryAt: null, reason: 'empty_page_before_total' });
+  assert.equal(FL.classify(terminal, 'list', T0, { ...ctx, emptyAt: ctx.cursor }), null);
+  assert.equal(FL.classify(terminal, 'list', T0, { ...ctx, totalSource: 'cached' }), null);
+  assert.deepEqual(FL.classify(res({ data: { user: { edge_followed_by: {count: 2535, edges: [],
+    page_info: {has_next_page: false}}}}, status: 'ok' }), 'list', T0, { ...ctx, totalSource: 'cached' }),
+    { code: 'other', retryAt: null, reason: 'empty_page_before_total' });
 });
 test('list: contradictory or unusable pages cannot silently finish a crawl', () => {
   const noCursor = { users: [u(1)], has_more: true, status: 'ok' };
