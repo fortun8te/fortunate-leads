@@ -453,23 +453,22 @@ async function runList(gen, job, tab) {
   const ctx = FL.listContext(job, prog, total, totalSource);
   const { res, bad } = await igRequest(gen, tab, url, 'list', ctx);
   if (bad) {
+    // Report the warning before any further Instagram request, including privacy checks.
+    if (bad.reason === 'list_html_home_redirect')
+      return fail(job, bad, mem.label, res, 'list', false, gen);
     if (bad.reason === 'empty_page_before_total') {
       // Keep this lease and cursor. The request already advanced the normal list
       // clock; a second empty terminal page is sent to the server as partial.
       await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }), gen);
       return;
     }
-    if (bad.code === 'private' || bad.reason === 'list_html_home_redirect' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
+    if (bad.code === 'private' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
         (bad.code === 'other' && /^empty_/.test(bad.reason || ''))) {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
       if (FL.privateWall(proof.info, job.seed, proof.p))
         return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list', false, gen);
-      if (bad.reason === 'list_html_home_redirect') {
-        const p = proof.p;
-        const publicTarget = !!p && p.is_private === false && p.handle?.toLowerCase() === job.seed.toLowerCase();
-        return fail(job, bad, mem.label, res, 'list', publicTarget, gen);
-      }
+
     }
     if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }), gen);
     return fail(job, bad, mem.label, res, 'list', false, gen);

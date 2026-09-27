@@ -16,6 +16,32 @@ agent_checkout_owned "$FL_LABEL" server/server.py || {
   echo 'The installed server belongs to another checkout; no service was started.' >&2; exit 1;
 }
 
+# Fail closed before opening Instagram, including direct launcher use.
+check_collection_hold() {
+  "$FL_PYTHON" - "$FL_DB" "${1:-}" <<'PYHOLD'
+import json, sqlite3, sys
+from datetime import datetime, timezone
+from pathlib import Path
+try:
+    path = Path(sys.argv[1]).resolve()
+    if sys.argv[2] == 'allow-missing' and not path.exists():
+        sys.exit(0)
+    with sqlite3.connect('file:' + path.as_posix() + '?mode=ro', uri=True) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='cooldown'").fetchone()
+    value = json.loads(row[0]) if row else None
+    if value is not None and value != '':
+        if not isinstance(value, str):
+            raise ValueError('Stored safety hold is invalid')
+        until = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if until > datetime.now(timezone.utc):
+            raise ValueError('Instagram is on a shared safety hold until ' + value)
+except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+    print('Start engine stopped: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+PYHOLD
+}
+check_collection_hold allow-missing || exit 1
+
 echo 'Starting Fortunate Leads...'
 if wait_http /api/counts 3; then
   agent_owns_port || {
@@ -66,6 +92,7 @@ profile_count=0
 
 while IFS= read -r profile_dir; do
   [ -n "$profile_dir" ] || continue
+  check_collection_hold || exit 1
   open -a 'Google Chrome' --args "--profile-directory=$profile_dir" 'https://www.instagram.com/'
   profile_count=$((profile_count + 1))
 done <<< "$profiles"
@@ -73,6 +100,7 @@ done <<< "$profiles"
 agent_owns_port || {
   echo 'The server changed before startup; no stages were started.' >&2; exit 1;
 }
+check_collection_hold || exit 1
 curl -fsS -m 15 -o /dev/null -H "Origin: http://127.0.0.1:$FL_PORT" \
   -H 'Content-Type: application/json' -d '{"action":"start_all"}' \
   "http://127.0.0.1:$FL_PORT/api/control" || {

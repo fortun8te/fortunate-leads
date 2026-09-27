@@ -141,7 +141,7 @@ test('storage failure while recording a job error preserves its resumable lease'
   assert.equal(data.box, undefined);
 });
 
-test('HTML list redirect with verified private wall hands off this viewer', async () => {
+test('HTML list redirect is reported before another privacy lookup', async () => {
   const data = {laneId: 'fixture-lane'};
   let lookups = 0;
   const ctx = worker(data, {
@@ -153,10 +153,10 @@ test('HTML list redirect with verified private wall hands off this viewer', asyn
   });
   await ctx.run(job());
   assert.equal(data.box[0].path, '/api/ext/error');
-  assert.equal(data.box[0].body.code, 'private');
-  assert.equal(data.box[0].body.reason, 'profile_private_wall');
+  assert.equal(data.box[0].body.code, 'other');
+  assert.equal(data.box[0].body.reason, 'list_html_home_redirect');
   assert.equal(data.st.cool.list.until, 0);
-  assert.equal(lookups, 2);
+  assert.equal(lookups, 1);
 });
 
 test('profile wall must persist across two reads at the target URL', async () => {
@@ -172,7 +172,7 @@ test('profile wall must persist across two reads at the target URL', async () =>
   assert.equal(FL.privateWall(await transient.checked('seed', null), 'seed', null), false);
 });
 
-test('HTML list redirect without wall quarantines only the target and keeps other work eligible', async () => {
+test('HTML list redirect reports a shared warning without an extra lookup', async () => {
   const data = {laneId: 'fixture-lane'};
   let lookups = 0;
   const ctx = worker(data, {
@@ -187,10 +187,10 @@ test('HTML list redirect without wall quarantines only the target and keeps othe
   assert.equal(data.st.streak.other, 0);
   assert.equal(data.st.cool.list.until, 0);
   assert.match(data.st.lastError, /Instagram returned its home page/);
-  assert.equal(lookups, 2);
+  assert.equal(lookups, 1);
 });
 
-test('follower-only public home redirects leave following available without claiming a rate limit', async () => {
+test('home redirects do not infer public access before reporting', async () => {
   const data = {laneId: 'fixture-lane'};
   const ctx = worker(data, {
     page: async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
@@ -201,8 +201,8 @@ test('follower-only public home redirects leave following available without clai
   for (const [i, seed] of ['public_one', 'public_two', 'public_three'].entries()) {
     await ctx.run({...job(), id: 20 + i, seed});
   }
-  assert.equal(data.st.listRedirects.length, 3);
-  assert.ok(data.st.listEndpointUntil > Date.now());
+  assert.equal(data.st.listRedirects.length, 0);
+  assert.equal(data.st.listEndpointUntil, 0);
   assert.equal(data.st.cool.list.until, 0);
   assert.ok(data.box.every(x => x.body.reason === 'list_html_home_redirect'));
   assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['list', 'profile']);
