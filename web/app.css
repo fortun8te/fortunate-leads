@@ -1500,3 +1500,10 @@ button:disabled { cursor:default; opacity:.5; }
   .tg-top { padding: 18px; }
   .tg-main, .tg-rest { grid-template-columns: 1fr; gap: 24px; }
 }
+
+/* Search stays compact and gives named targets without hunting for a dot. */
+.map-search-results { display: flex; gap: 6px; padding: 0 16px 10px; overflow-x: auto; flex: 0 0 auto; max-width: 100%; }
+.map-search-results[hidden], #pane-map.comparing .map-search-results { display: none; }
+.map-search-hit { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); cursor: pointer; }
+.map-search-hit span { color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-search-hit:hover, .map-search-hit:focus-visible { border-color: var(--fg3); background: var(--bg2); }

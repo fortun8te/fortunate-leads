@@ -12,7 +12,7 @@ import db
 _SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS local_queue(
         person_id INTEGER PRIMARY KEY, retry_at REAL NOT NULL DEFAULT 0,
-        last_error TEXT, revision INTEGER NOT NULL DEFAULT 1)''',
+        last_error TEXT, revision INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0)''',
     'CREATE INDEX IF NOT EXISTS local_queue_ready ON local_queue(retry_at,person_id)',
     '''CREATE TABLE IF NOT EXISTS local_reviews(
         person_id INTEGER PRIMARY KEY, input_hash TEXT NOT NULL, prompt TEXT,
@@ -33,16 +33,22 @@ _SCHEMA = (
 )
 
 
-def _queue_sql(pid):
-    return f'''INSERT INTO local_queue(person_id)
-        SELECT id FROM people WHERE id={pid} AND trim(coalesce(bio,''))!=''
-        ON CONFLICT(person_id) DO UPDATE SET retry_at=0,last_error=NULL,revision=revision+1;'''
+def _queue_sql(pid, priority=0):
+    return f'''INSERT INTO local_queue(person_id,priority)
+        SELECT id,{priority} FROM people WHERE id={pid} AND trim(coalesce(bio,''))!=''
+        ON CONFLICT(person_id) DO UPDATE SET retry_at=0,last_error=NULL,revision=revision+1,
+            priority=max(local_queue.priority,excluded.priority);'''
 
 
 def ensure(conn):
     """Idempotent startup schema. Does not commit a surrounding migration."""
     for sql in _SCHEMA:
         conn.execute(sql)
+    if 'failure_reason' not in {r[1] for r in conn.execute('PRAGMA table_info(local_reviews)')}:
+        conn.execute('ALTER TABLE local_reviews ADD COLUMN failure_reason TEXT')
+    if 'priority' not in {r[1] for r in conn.execute('PRAGMA table_info(local_queue)')}:
+        conn.execute('ALTER TABLE local_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    conn.execute('CREATE INDEX IF NOT EXISTS local_queue_priority_ready ON local_queue(priority,retry_at,person_id)')
     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS processing_people_insert AFTER INSERT ON people
         BEGIN {_queue_sql('NEW.id')} END''')
     columns = ('handle','name','bio','website','category','followers','following','posts',
@@ -69,16 +75,23 @@ def ensure(conn):
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
             continue
         for event, ref in (('INSERT','NEW'), ('UPDATE','NEW'), ('DELETE','OLD')):
+            name = f'processing_{table}_{event.lower()}'
+            previous = conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
+            if previous and 'priority' not in previous[0]:
+                conn.execute(f'DROP TRIGGER {name}')
             condition = ''
+            if event == 'UPDATE' and table in ('marks', 'owner_context'):
+                columns = ('status', 'note') if table == 'marks' else ('relationships', 'familiarity')
+                condition = ' WHEN ' + ' OR '.join(f'OLD.{c} IS NOT NEW.{c}' for c in columns)
             if table == 'tags':
-                condition = (" WHEN OLD.source='manual' OR NEW.source='manual'" if event == 'UPDATE'
+                condition = (" WHEN (OLD.source='manual' OR NEW.source='manual') AND (OLD.tag IS NOT NEW.tag OR OLD.grp IS NOT NEW.grp OR OLD.source IS NOT NEW.source)" if event == 'UPDATE'
                              else f" WHEN {ref}.source='manual'")
             elif table == 'owner_note_reads':
                 # Running/retry state bookkeeping must not create extra profile work.
                 condition = (" WHEN NEW.state='ready' AND (OLD.state IS NOT NEW.state OR OLD.facts IS NOT NEW.facts)"
                              if event == 'UPDATE' else f" WHEN {ref}.state='ready'")
             conn.execute(f'''CREATE TRIGGER IF NOT EXISTS processing_{table}_{event.lower()}
-                AFTER {event} ON {table}{condition} BEGIN {_queue_sql(ref + '.person_id')} END''')
+                AFTER {event} ON {table}{condition} BEGIN {_queue_sql(ref + '.person_id', priority=1)} END''')
 
 
 def enqueue(conn, person_id):
@@ -159,10 +172,17 @@ def seed_step(conn, limit=500, policy=None):
 def next_pending(conn, limit=1, now=None):
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
         raise ValueError('limit must be a whole number between 1 and 100')
-    return conn.execute('''SELECT q.person_id,q.revision,q.retry_at,q.last_error
-        FROM local_queue q JOIN people p ON p.id=q.person_id
-        WHERE q.retry_at<=? AND trim(coalesce(p.bio,''))!=''
-        ORDER BY q.retry_at,q.person_id LIMIT ?''', (time.time() if now is None else now, limit)).fetchall()
+    # Two small indexed ranges avoid sorting the full bulk queue to find an owner edit.
+    ready_at = time.time() if now is None else now
+    rows = []
+    for priority in (1, 0):
+        rows.extend(conn.execute('''SELECT q.person_id,q.revision,q.retry_at,q.last_error
+            FROM local_queue q JOIN people p ON p.id=q.person_id
+            WHERE q.priority=? AND q.retry_at<=? AND trim(coalesce(p.bio,''))!=''
+            ORDER BY q.retry_at,q.person_id LIMIT ?''', (priority, ready_at, limit-len(rows))).fetchall())
+        if len(rows) == limit:
+            break
+    return rows
 
 
 def queue_status(conn):
@@ -187,15 +207,16 @@ def put_review(conn, person_id, result, revision=None, private_context_hash=None
         if not row or row[0] != revision:
             return False
     conn.execute('''INSERT INTO local_reviews
-        (person_id,input_hash,prompt,model,model_version,status,verdict,escalation_reason,updated_at,private_context_hash)
-        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET
+        (person_id,input_hash,prompt,model,model_version,status,verdict,escalation_reason,updated_at,private_context_hash,failure_reason)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET
         input_hash=excluded.input_hash,prompt=excluded.prompt,model=excluded.model,
         model_version=excluded.model_version,status=excluded.status,verdict=excluded.verdict,
         escalation_reason=excluded.escalation_reason,updated_at=excluded.updated_at,
-        private_context_hash=excluded.private_context_hash''',
+        private_context_hash=excluded.private_context_hash,failure_reason=excluded.failure_reason''',
         (person_id,result['input_hash'],result.get('prompt'),result.get('model'),result.get('model_version'),
          result['status'],json.dumps(result.get('verdict'),ensure_ascii=False),
-         result.get('escalation_reason'),db.now(),private_context_hash))
+         result.get('escalation_reason'),db.now(),private_context_hash,
+         str(result['error'])[:240] if result.get('error') else None))
     conn.execute('DELETE FROM local_queue WHERE person_id=?', (person_id,))
     return True
 

@@ -15,7 +15,7 @@ function harness() {
     return elements.get(id);
   };
   const c = vm.createContext({$, api, store:{get:()=>true}, debounce:f=>f, filterCount:()=>0,
-    fitOf:n=>n.fit || 'unread', int:String, plural:(n,s)=>`${n} ${s}`, S:{f:{},view:'map'},
+    esc:String, fitOf:n=>n.fit || 'unread', int:String, plural:(n,s)=>`${n} ${s}`, S:{f:{},view:'map'},
     emptyFilter:()=>({}), toQuery:()=>new URLSearchParams(), URLSearchParams,
     Image:class {constructor(){images.push(this);}}, document:{createElement:()=>({getContext:()=>null})},
     openDetail(){}, openSeed(){}});
@@ -324,4 +324,62 @@ test('selection gently opens nearby avatars, stops, and respects reduced motion'
     return nearby.x;
   };
   assert.equal(run(false),run(true));
+});
+
+test('typing immediately invalidates an older map response before debounce finishes', async () => {
+  const {m,api,c}=harness(),pending=[];
+  c.toQuery=f=>new URLSearchParams({q:f.q || ''});
+  api.get=url=>new Promise(resolve=>pending.push({url,resolve}));
+  const old=m.load();
+  m.search('alice');
+  pending[0].resolve({rev:1,nodes:[seed('a'),lead(1)],links:[],total:1});
+  await old;
+  assert.equal(m.nodes.length,0,'old query must not flash results while typing');
+  assert.equal(m.query,'alice');
+});
+
+test('3k map starts with separate avatars and keeps their positions on refresh', () => {
+  const {m}=harness();m.w=1400;m.h=800;
+  const sources=Array.from({length:22},(_,i)=>seed('source'+i));
+  const people=Array.from({length:3000},(_,i)=>lead(i));
+  const data=()=>({nodes:[...sources.map(n=>({...n})),...people.map(n=>({...n}))],total:100000,links:people.map((p,i)=>({source:sources[i%22].id,target:p.id,state:'observed'}))});
+  m.build(data());
+  let overlaps=0;
+  for(let i=0;i<m.nodes.length;i++)for(let j=i+1;j<m.nodes.length;j++) {
+    const a=m.nodes[i],b=m.nodes[j];if(Math.hypot(a.x-b.x,a.y-b.y)<a.r+b.r)overlaps++;
+  }
+  assert.equal(overlaps,0,'initial 3k avatars overlap');
+  const before=m.nodes.map(n=>[n.x,n.y]);m.build(data());
+  assert.deepEqual(m.nodes.map(n=>[n.x,n.y]),before);
+});
+
+test('clearing search restores the overview camera and existing avatar positions', () => {
+  const {m}=harness();
+  const data=()=>({nodes:[seed('a'),lead(1)],links:[],total:1});
+  m.build(data());m.k=.7;m.x=85;m.y=93;m.byId.get('p:1').x=124;
+  m.search('alice');m.build({nodes:[lead(9)],links:[],total:1});
+  m.k=2;m.x=1000;m.y=2000;
+  m.search('');m.build(data());
+  assert.equal(m.k,.7);assert.equal(m.x,85);assert.equal(m.y,93);
+  assert.equal(m.byId.get('p:1').x,124);
+});
+
+test('search responses arriving out of order retain the newest matching profiles', async () => {
+  const {m,api,c}=harness(),pending=[];
+  c.toQuery=f=>new URLSearchParams({q:f.q || ''});
+  api.get=url=>new Promise(resolve=>pending.push({url,resolve}));
+  m.search('ali');const old=m.load();m.search('alice');const latest=m.load();
+  pending[1].resolve({rev:2,nodes:[lead(2)],links:[],total:1});await latest;
+  pending[0].resolve({rev:1,nodes:[lead(1)],links:[],total:1});await old;
+  assert.deepEqual([...m.byId.keys()],['p:2']);
+  assert.match(m.rev,/q=alice/);
+});
+
+test('normalized search finds a source by name and prioritizes an exact handle', () => {
+  const {m,$}=harness();m.query='https://www.instagram.com/alice/';
+  const data={nodes:[{...seed('alice_source'),name:'Alice Jones'}, {...lead(2),handle:'alice',name:'Alice'}],links:[],total:2,search_query:'alice'};
+  m.rawData=data;m.build(data);
+  assert.ok(m.byId.has('s:alice_source'),'matching source must not disappear with disconnected matches');
+  const html=$('#map-search-results').innerHTML;
+  assert.ok(html.indexOf('data-map-person="p:2"')<html.indexOf('data-map-person="s:alice_source"'));
 });

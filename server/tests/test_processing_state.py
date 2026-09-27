@@ -28,6 +28,13 @@ class ProcessingStateTests(unittest.TestCase):
         pid = db.upsert_person(self.conn, {'handle': handle, 'bio': bio})
         return dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone())
 
+    def test_failed_review_keeps_bounded_reason_and_success_clears_it(self):
+        p = self.person()
+        state.put_review(self.conn, p['id'], {'input_hash': 'a', 'status': 'unverified', 'error': 'x' * 500})
+        self.assertEqual(self.conn.execute('SELECT failure_reason FROM local_reviews').fetchone()[0], 'x' * 240)
+        state.put_review(self.conn, p['id'], {'input_hash': 'b', 'status': 'complete'})
+        self.assertIsNone(self.conn.execute('SELECT failure_reason FROM local_reviews').fetchone()[0])
+
     def verdict(self, p, model='local:k2', score=90, pre=88):
         self.conn.execute('''INSERT OR REPLACE INTO verdicts
             (person_id,prefilter,score,tier,role,reason,model,input_hash,updated_at,content_fit)
@@ -110,6 +117,53 @@ class ProcessingStateTests(unittest.TestCase):
         self.assertEqual(pres, {p['id']:41,missing['id']:None})
         self.assertEqual(self.conn.execute('SELECT updated_at FROM verdicts WHERE person_id=?',
                          (missing['id'],)).fetchone()[0],'')
+
+    def test_owner_edit_precedes_bulk_but_respects_retry(self):
+        for i in range(3000):
+            self.person(f'bulk_{i}')
+        urgent = self.person('owner_edited')['id']
+        self.conn.execute("INSERT INTO marks VALUES(?,NULL,'Owner context','now')", (urgent,))
+        selected = state.next_pending(self.conn)[0]
+        self.assertEqual(selected['person_id'], urgent)
+        # Background enqueue must never demote the owner's edit.
+        state.enqueue(self.conn, urgent)
+        selected = state.next_pending(self.conn)[0]
+        self.assertEqual(selected['person_id'], urgent)
+        state.retry(self.conn, urgent, selected['revision'], 'Resource busy', delay=60)
+        self.assertNotEqual(state.next_pending(self.conn)[0]['person_id'], urgent)
+        self.assertEqual(state.next_pending(self.conn, now=10**12)[0]['person_id'], urgent)
+
+    def test_unchanged_owner_updates_do_not_requeue_completed_review(self):
+        p = self.person()
+        self.conn.execute("INSERT INTO marks VALUES(?,NULL,'Known note','before')", (p['id'],))
+        self.conn.execute('DELETE FROM local_queue')
+        self.conn.execute("UPDATE marks SET updated_at='after' WHERE person_id=?", (p['id'],))
+        self.assertEqual(state.next_pending(self.conn), [])
+        self.conn.execute("UPDATE marks SET note='New context' WHERE person_id=?", (p['id'],))
+        self.assertEqual(state.next_pending(self.conn)[0]['person_id'], p['id'])
+
+    def test_legacy_queue_adds_priority_without_losing_work(self):
+        p = self.person()
+        self.conn.execute('DROP TABLE local_queue')
+        self.conn.execute('''CREATE TABLE local_queue(person_id INTEGER PRIMARY KEY,
+            retry_at REAL NOT NULL DEFAULT 0,last_error TEXT,revision INTEGER NOT NULL DEFAULT 1)''')
+        self.conn.execute("INSERT INTO local_queue VALUES(?,99999999999,'Busy',7)", (p['id'],))
+        state.ensure(self.conn)
+        row = self.conn.execute('SELECT * FROM local_queue').fetchone()
+        self.assertEqual((row['priority'],row['revision'],row['retry_at']), (0,7,99999999999))
+
+    def test_priority_migration_preserves_retry_and_is_idempotent(self):
+        p = self.person()
+        self.conn.execute("UPDATE local_queue SET retry_at=99999999999,revision=9,last_error='Busy'")
+        self.conn.execute('DROP TRIGGER processing_marks_insert')
+        self.conn.execute('''CREATE TRIGGER processing_marks_insert AFTER INSERT ON marks
+            BEGIN INSERT OR IGNORE INTO local_queue(person_id) VALUES(NEW.person_id); END''')
+        state.ensure(self.conn)
+        state.ensure(self.conn)
+        row = self.conn.execute('SELECT * FROM local_queue').fetchone()
+        self.assertEqual((row['retry_at'],row['revision'],row['last_error']), (99999999999,9,'Busy'))
+        self.conn.execute("INSERT INTO marks VALUES(?,NULL,'New owner note','now')", (p['id'],))
+        self.assertEqual(self.conn.execute('SELECT priority FROM local_queue').fetchone()[0], 1)
 
     def test_queue_coalesces_updates_but_revisions_preserve_newer_work(self):
         p = self.person()

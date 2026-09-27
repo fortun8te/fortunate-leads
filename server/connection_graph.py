@@ -7,7 +7,43 @@ not probabilities. Historical union edges cannot establish current absence or fr
 import math
 import re
 import uuid
+from urllib.parse import urlsplit, unquote
 from datetime import datetime, timezone
+
+
+def map_search(query):
+    """Identity search for the map, independent of bios, tags and display limits.
+
+    Return bound SQL fragments so handles containing underscores stay literal.
+    Exact handles lead, then handle/name prefixes, then identity substrings.
+    """
+    text = str(query or '').strip()
+    if not text:
+        return None
+    if len(text) > 512:
+        raise ValueError('Search for a name or Instagram handle.')
+    candidate = text if '://' in text else 'https://' + text
+    parsed = urlsplit(candidate)
+    if parsed.hostname and parsed.hostname.lower() in ('instagram.com', 'www.instagram.com', 'm.instagram.com'):
+        parts = [unquote(part) for part in parsed.path.split('/') if part]
+        if len(parts) != 1 or not re.fullmatch(r'[A-Za-z0-9_.]{1,30}', parts[0]):
+            raise ValueError('Use an Instagram profile link, not a post or reel.')
+        text = parts[0]
+    elif '://' in text or text.lower().startswith(('www.', 'instagram.com/')):
+        raise ValueError('Search for a name, handle or Instagram profile link.')
+    text = text.lstrip('@').strip().casefold()
+    if not text:
+        return None
+    escaped = re.sub(r'([\\%_])', r'\\\1', text)
+    prefix, contains = escaped + '%', '%' + escaped + '%'
+    return {
+        'text': text,
+        'where': "(p.handle LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\')",
+        'args': (contains, contains),
+        'rank': "CASE WHEN p.handle=? THEN 0 WHEN p.handle LIKE ? ESCAPE '\\' THEN 1 "
+                "WHEN lower(p.name)=? THEN 2 WHEN p.name LIKE ? ESCAPE '\\' THEN 3 ELSE 4 END",
+        'rank_args': (text, prefix, text, prefix),
+    }
 
 
 def _timestamp(value):

@@ -113,25 +113,28 @@ def maintain_service(paused=False):
             _lock.release()
 
 
-def complete_json(system, user, schema, max_tokens=900, timeout=45):
+def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
     try:
         with resource_budget.lease('k2'):
             _record_activity()
             try:
-                return _complete_json(system, user, schema, max_tokens, timeout)
+                return _complete_json(system, user, schema, max_tokens, timeout, reasoning_budget_tokens)
             finally:
                 _record_activity()
     except resource_budget.Deferred as exc:
         raise Busy(str(exc), exc.retry_after) from exc
 
 
-def _complete_json(system, user, schema, max_tokens=900, timeout=45):
+def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
     """Return JSON, leaving domain validation to the caller. No hidden retries."""
     global _retry_at
     if not isinstance(system, str) or not isinstance(user, str) or len(system) + len(user) > 14000:
         raise ValueError('Local input is too large')
     if not isinstance(schema, dict) or not 1 <= max_tokens <= 1600 or not 1 <= timeout <= 90:
         raise ValueError('Invalid local inference limits')
+    if reasoning_budget_tokens is not None and (type(reasoning_budget_tokens) is not int
+            or not 0 <= reasoning_budget_tokens < max_tokens):
+        raise ValueError('Invalid local reasoning budget')
     if time.monotonic() < _retry_at:
         raise Busy('K2 is recovering; this check will retry later', _retry_at - time.monotonic())
     if not _lock.acquire(blocking=False):
@@ -147,12 +150,17 @@ def _complete_json(system, user, schema, max_tokens=900, timeout=45):
         tokens = tokenized.get('tokens') if isinstance(tokenized, dict) else None
         if not isinstance(tokens, list) or len(tokens) + max_tokens + 64 > 4096:
             raise ValueError('Local input exceeds the model context budget')
-        response = _request('/v1/chat/completions', {
+        payload = {
             'model': MODEL, 'messages': messages,
             'temperature': 0, 'max_tokens': max_tokens, 'stream': False,
             'reasoning_effort': 'low',
             'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': 'local_result', 'strict': True, 'schema': schema}}}, timeout=timeout)
+                'name': 'local_result', 'strict': True, 'schema': schema}}}
+        if reasoning_budget_tokens is not None:
+            # Supported by the pinned IFM runtime. Low effort changes the model's
+            # thinking style; this separate cap reserves room for its JSON answer.
+            payload['reasoning_budget_tokens'] = reasoning_budget_tokens
+        response = _request('/v1/chat/completions', payload, timeout=timeout)
         choices = response.get('choices') if isinstance(response, dict) else None
         if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
             raise ValueError('Invalid local completion')

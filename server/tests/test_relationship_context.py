@@ -29,6 +29,47 @@ class RelationshipContext(unittest.TestCase):
     def mark(self, **values):
         return server.api_mark(self.conn, {}, values, self.pid)
 
+    def test_pending_rank_tracks_owner_edits_without_polling_bulk_or_paused_ai(self):
+        server.processing_modes.set_mode(self.conn, 'RLAI')
+        self.conn.commit()
+        self.assertFalse(self.read()['ranking_pending'])
+        self.mark(relationships=['friend'])
+        self.assertTrue(self.read()['ranking_pending'])
+        server.processing_maintenance(self.conn)
+        self.assertTrue(self.read()['ranking_pending'])
+        server.processing_modes.set_paused(self.conn, True)
+        self.conn.commit()
+        self.assertFalse(self.read()['ranking_pending'])
+
+    def test_omitted_familiarity_is_unknown_and_relationship_still_counts(self):
+        self.mark(relationships=['friend'])
+        person = server.with_owner(self.conn, dict(self.conn.execute(
+            'SELECT * FROM people WHERE id=?', (self.pid,)).fetchone()))
+        self.assertIsNone(person['familiarity'])
+        self.assertTrue(owner.has_connection(person))
+        self.assertGreaterEqual(qualify.prefilter(person, [], laya_fit=0), 45)
+        self.assertNotIn('Owner-recorded familiarity:', '\n'.join(qualify.owner_lines(person)))
+        self.mark(familiarity='close')
+        self.mark(familiarity=None)
+        self.assertIsNone(self.read()['familiarity'])
+        self.assertEqual(self.read()['relationships'], ['friend'])
+
+    def test_owner_edit_refreshes_ahead_of_unreviewed_bulk_profiles(self):
+        for i in range(100):
+            db.upsert_person(self.conn, {'handle': f'bulk_case_{i}', 'bio': 'Personal account'})
+        edited = db.upsert_person(self.conn, {'handle': 'edited_last', 'bio': 'Personal account'})
+        self.conn.commit()
+        server.api_tag_edit(self.conn, {}, {'add': ['Founder']}, edited)
+        self.assertIsNotNone(self.conn.execute(
+            'SELECT 1 FROM processing_rule_queue WHERE person_id=?', (edited,)).fetchone())
+        server.processing_maintenance(self.conn)
+        saved = self.conn.execute('SELECT * FROM verdicts WHERE person_id=?', (edited,)).fetchone()
+        self.assertIsNotNone(saved)
+        self.assertIsNone(self.conn.execute(
+            'SELECT 1 FROM processing_rule_queue WHERE person_id=?', (edited,)).fetchone())
+        self.assertIsNotNone(self.conn.execute(
+            'SELECT 1 FROM local_queue WHERE person_id=?', (edited,)).fetchone())
+
     def test_relationship_only_record_survives_restart_and_note_clear(self):
         self.mark(relationships=['friend'], familiarity='briefly')
         self.mark(note='')

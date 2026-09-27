@@ -14,9 +14,10 @@ import math
 import qualify
 
 
-PROMPT_VERSION = 'local-profile-v2:' + qualify.PROMPT_VERSION
+PROMPT_VERSION = 'local-profile-v3-reasoning-budget:' + qualify.PROMPT_VERSION
 MAX_PACKET_CHARS = 3600
 MAX_OUTPUT_TOKENS = 700
+MAX_REASONING_TOKENS = 200
 ESCALATIONS = {
     'business_unclear': 'The saved profile does not explain the business clearly.',
     'role_unclear': 'The person’s role in the business needs evidence.',
@@ -174,7 +175,8 @@ def evaluate(person, tags, edges, net=None, generate=None, note_context=None):
         return dict(result, status='insufficient_evidence', escalation_reason='context_too_large',
                     message='Saved context exceeds this local review’s input limit.')
     value = (generate or runtime.complete_json)(system, user, SCHEMA,
-                                               max_tokens=MAX_OUTPUT_TOKENS, timeout=45)
+                                               max_tokens=MAX_OUTPUT_TOKENS, timeout=45,
+                                               reasoning_budget_tokens=MAX_REASONING_TOKENS)
     if not _valid_output(value, safe):
         return failure_result(person, note_context, 'invalid_output')
     if value['role'] == 'unclear':

@@ -35,6 +35,21 @@ class LocalModelTest(unittest.TestCase):
         self.assertEqual(body['reasoning_effort'], 'low')
         self.assertEqual(body['max_tokens'], 600)
         self.assertEqual(call.call_args.kwargs['timeout'], 45)
+        self.assertNotIn('reasoning_budget_tokens', body)
+
+    def test_profile_reasoning_budget_reserves_answer_room_without_more_context(self):
+        with patch.object(model, '_request', side_effect=self.replies()) as call:
+            model.complete_json('sys', 'bio', {'type': 'object'}, 700, reasoning_budget_tokens=200)
+        body = call.call_args.args[1]
+        self.assertEqual(body['reasoning_budget_tokens'], 200)
+        self.assertEqual(body['max_tokens'], 700)
+
+    def test_invalid_reasoning_budget_never_calls_model(self):
+        for budget in (-1, 700, True, 1.5):
+            with self.subTest(budget=budget), patch.object(model, '_request') as call:
+                with self.assertRaisesRegex(ValueError, 'reasoning budget'):
+                    model.complete_json('sys', 'bio', {}, 700, reasoning_budget_tokens=budget)
+                call.assert_not_called()
 
     def test_single_inference_lane_never_queues_duplicate_call(self):
         model._lock.acquire()

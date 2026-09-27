@@ -70,3 +70,22 @@ test('failed note offers explicit retry only when server permits it',async()=>{
  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{path:'/api/person/7/note-retry',body:{}},'refresh']);
  assert.equal(ctx.notePolls.get(7).attempts,0);
 });
+
+test('edited ranking refresh polls briefly, stops on completion and restarts for another edit', async () => {
+  const timers=[];
+  let person={id:7,note:null,mark_rev:'r1',ranking_pending:true};
+  const ctx=vm.createContext({S:{open:7,person:{id:7},rows:[{id:7}]},Map,
+    setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length;},clearTimeout(){},
+    document:{hidden:false},api:{get:async()=>({...person})},noteQueue:{reconcile(){}},renderDetail(){},renderRows(){}});
+  vm.runInContext(personRefresh,ctx);
+  for(let i=0;i<22;i++) await ctx.refreshPerson(7);
+  assert.equal(timers.length,20,'bounded polling never spins indefinitely');
+  assert.equal(timers[0].delay,3000);
+  person.mark_rev='r2';
+  await ctx.refreshPerson(7);
+  assert.equal(timers.length,21,'another owner edit restarts its brief refresh');
+  person.ranking_pending=false;person.score=88;
+  await ctx.refreshPerson(7);
+  assert.equal(timers.length,21,'completed ranking stops polling');
+  assert.equal(ctx.S.rows[0].score,88,'updated rank reaches the visible row');
+});
