@@ -24,22 +24,26 @@ function mount(tags = [mention]) {
     plural: (n, word) => `${n} ${word}s`, avatar: () => '', igLink: () => '', safeUrl: () => null,
     swatch: () => '', tagTok: tag => `#"${tag}"`, words: value => [value],
     // Lead workflow helpers that renderDetail calls; not under test here.
-    detailViewState: new Map(), detailAccess: { capture() {}, restore() {} }, noteQueue: { peek() {} }, noteStatus: () => '',
+    detailAccess: { capture() {}, restore() {} }, noteQueue: { peek() {} }, noteStatus: () => '',
+    rememberDetailView() {}, detailView: () => ({ sections: {}, tag: '' }),
     rememberWorkflowForm() {}, wireWorkflow() {}, workflowHTML: () => '', workflowSummaryHTML: () => '',
+    fitBadge: () => '', detailProfileState: () => ({ source: 'Source not recorded' }),
+    connectionEvidenceHTML: () => '', websiteEvidence: () => '', scoutHTML: () => '', evidenceOf: () => [],
+    ucf: value => value,
     tagChip: tag => { renderedTags.push(tag.tag); return `<span>${tag.tag}</span>`; }
   });
   vm.runInContext(section('const tagName =', '// ---------- state ----------'), context);
   vm.runInContext(section('let sugg =', 'function moveSuggest'), context);
-  vm.runInContext(section('function seedEdges(', "$('#detail').addEventListener('click', async"), context);
+  vm.runInContext(section('function renderDetail()', "$('#detail').addEventListener('click', async"), context);
   return { context, person, suggestions, detail, renderedTags };
 }
 
 test('mention-only profiles show a factual mention with no inferred follow or familiarity', () => {
   const ui = mount();
   assert.equal(vm.runInContext('youLink(S.person)', ui.context), 'Mentions you');
-  const html = vm.runInContext('connHTML(S.person)', ui.context);
-  assert.match(html, /Mentions you/);
-  assert.doesNotMatch(html, /Follows you|You follow|Instagram link|knows you|friend/i);
+  vm.runInContext('renderDetail()', ui.context);
+  assert.match(ui.detail.innerHTML, /Mentions you/);
+  assert.doesNotMatch(ui.detail.innerHTML, /Follows you|You follow|knows you|friend/i);
   // The same helper also supports string tags supplied by overview nodes.
   assert.equal(vm.runInContext("youLink({tags:['mentions you']})", ui.context), 'Mentions you');
 });
@@ -54,7 +58,7 @@ test('detail shows the automatic mention tag and preserves manual source tags', 
   vm.runInContext('renderDetail()', ui.context);
   // Each tag renders once; the manual one carries its remove button.
   assert.deepEqual(ui.renderedTags, ['Already know them', 'mentions you']);
-  assert.match(ui.detail.innerHTML, /class="you-line">Mentions you/);
+  assert.match(ui.detail.innerHTML, /class="d-connection-you">Mentions you/);
   assert.equal(ui.person.edges.length, 0);
 });
 

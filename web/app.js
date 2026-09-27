@@ -459,8 +459,9 @@ const swatch = (kind, extra = '', grp = '') => `<i class="sw ${KIND[kind] ?? ''}
 function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
+  const hue = tagHue(t);
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || t.tag)}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi t-${tagTier(t)}${hue ? ' ' + hue : ''}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -856,7 +857,9 @@ const PARTNER_TAGS = new Set(['Agency', 'Freelancer', 'Creative', 'Supplier']);
 const SOFT_TAGS = new Set(['Creator', 'Coach', 'Personal', 'SaaS', 'Not DTC', 'Not a brand']);
 function tagTier(t) {
   const name = tagName(t);
-  // Personal labels stay neutral; adding one is not an automatic fit verdict.
+  // An explicitly marked client is an established relationship, not a fit verdict.
+  if ((t.source === 'manual' || t.kind === 'manual') && /^(client|customer)$/i.test(name)) return 'client';
+  // Other personal labels stay neutral; adding one is not an automatic fit verdict.
   if (t.source === 'manual' || t.kind === 'manual') return 'own';
   if (FLAG_TAGS.has(name)) return 'flag';
   if (HERO_TAGS.has(name)) return 'hero';
@@ -871,20 +874,76 @@ function tagTier(t) {
   if (t.grp === 'source' || t.grp === 'size' || isViaTag(name)) return 'min';
   return 'ctx';
 }
-const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
+const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, client: 8, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
+// Color belongs to a stable product family, never the individual tag text or
+// where it happens to appear. Manual labels retain their own visual priority.
+const NICHE_HUES = {
+  Beauty: 'h-beauty', Skincare: 'h-beauty',
+  'Food & Drink': 'h-food', Coffee: 'h-food',
+  Apparel: 'h-style', Jewelry: 'h-style', Accessories: 'h-style',
+  Supplements: 'h-wellness', Fitness: 'h-wellness', Wellness: 'h-wellness',
+  Home: 'h-lifestyle', Pets: 'h-lifestyle',
+};
+function tagHue(t) {
+  if (tagTier(t) !== 'niche') return '';
+  return NICHE_HUES[tagName(t).replace(/^AI: /, '')] || '';
+}
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
-  const label = isViaTag(t.tag) ? t.tag.slice(4) : t.tag;
+  const label = tagLabel(t.tag);
   const tier = tagTier(t);
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  const hue = tagHue(t);
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${hue ? ' ' + hue : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+}
+// The source stays in the tooltip and filter value; the visible chip says what
+// the label means. Repeating "AI:" on every chip hides the actual distinction.
+function tagLabel(name) {
+  return isViaTag(name) ? name.slice(4) : name.replace(/^AI: /, '');
 }
 const ORDER = { manual: 0, rule: 1, auto: 2 };
 const GORDER = { ai: -1, role: 0, niche: 1, signal: 2, custom: 3, size: 5, source: 6 };
-// Tags that describe the person, not how they were found or what the fit badge already says.
+const ROW_RELATIONSHIP = new Set(['knows you', 'follows you', 'mentions you']);
+const ROW_WEAK_CONNECTION = new Set(['you follow', 'Instagram link']);
+const ROW_GENERIC = new Set(['Verified', 'Business']);
+const ROW_COMMERCE = new Set(['AI: Runs ads', 'AI: Ad tracking detected', 'AI: Has online shop', 'Shopify', 'Shop Link', 'DTC']);
+// Show different kinds of evidence in a short row. A founder/decision-maker
+// pair, for example, takes one slot; the full set remains on the lead detail.
+function rowTagFacet(t) {
+  if (t.source === 'manual') return 'manual:' + t.tag.toLowerCase();
+  if (ROW_RELATIONSHIP.has(t.tag)) return 'relationship';
+  if (t.tag === 'you follow') return 'outgoing';
+  if (t.tag === 'Instagram link') return 'link';
+  if (t.grp === 'niche' || tagTier(t) === 'niche') return 'niche';
+  if (ROW_COMMERCE.has(t.tag)) return 'commerce';
+  if (FLAG_TAGS.has(t.tag)) return 'caution';
+  if (PARTNER_TAGS.has(t.tag)) return 'partner';
+  if (MARKET_TAGS.has(t.tag)) return 'market';
+  if (DECISION_TAGS.has(t.tag) || ROLE_TAGS.has(t.tag) || t.grp === 'role') return 'role';
+  if (HERO_TAGS.has(t.tag) || MAYBE_TAGS.has(t.tag)) return 'verdict';
+  if (/^AI: (Pre-launch|Early stage|Growing|Established)$/.test(t.tag)) return 'stage';
+  return 'other:' + (t.grp || 'custom');
+}
+const ROW_FACET_ORDER = { manual: 0, relationship: 1, niche: 2, commerce: 3, caution: 4, partner: 5, market: 6, role: 7, verdict: 8, stage: 9, outgoing: 10, other: 11, link: 12 };
+const rowFacetRank = (t) => ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
+// Tags that describe the person, not ordinary source/size metadata or a fit
+// badge already shown elsewhere in the row.
 function rowTags(r) {
-  return (r.tags || []).filter((t) => t.grp !== 'source' && t.grp !== 'size' && !isFitTag(t.tag))
-    .sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
+  return (r.tags || []).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)) && !isFitTag(t.tag))
+    .sort((a, b) => rowFacetRank(a) - rowFacetRank(b) || ORDER[a.source] - ORDER[b.source] || TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || Number(a.tag.startsWith('AI: ')) - Number(b.tag.startsWith('AI: ')) || a.tag.localeCompare(b.tag));
+}
+function rowTagSelection(r, limit = 3) {
+  const tags = rowTags(r), shown = [], hidden = [], facets = new Set();
+  const informative = tags.some((t) => t.tag !== 'AI: Top fit' && !ROW_WEAK_CONNECTION.has(t.tag) && !ROW_GENERIC.has(t.tag));
+  for (const t of tags) {
+    const facet = rowTagFacet(t);
+    // The score already says "top fit". A profile link is access, not a
+    // relationship. Keep both in the overflow when real evidence exists.
+    const redundant = informative && (ROW_WEAK_CONNECTION.has(t.tag) || ROW_GENERIC.has(t.tag) || t.tag === 'AI: Top fit' && (r.business_fit != null || r.score != null));
+    if (!redundant && shown.length < limit && !facets.has(facet)) { shown.push(t); facets.add(facet); }
+    else hidden.push(t);
+  }
+  return { shown, hidden };
 }
 function whyHTML(r) {
   if (r.reason) return esc(r.reason);
@@ -900,11 +959,12 @@ function rowHTML(r, i, h) {
   const n = lists(r);
   const picked = S.pick.has(r.id);
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', picked ? 'picked' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
-  const tags = rowTags(r);
+  const tags = rowTagSelection(r);
+  const mobileHidden = [...tags.shown.slice(2), ...tags.hidden];
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.slice(0, 2).map((t) => tagChip(t)).join('')}${tags.length > 2 ? `<span class="more">+${tags.length - 2}</span>` : ''}</div></div>
-    <div class="tags c-tags">${tags.slice(0, 3).map((t) => tagChip(t)).join('')}${tags.length > 3 ? `<span class="more" title="${esc(tags.slice(3).map((t) => t.tag).join(' · '))}">+${tags.length - 3}</span>` : ''}</div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.shown.slice(0, 2).map((t) => tagChip(t)).join('')}${mobileHidden.length ? `<span class="more" title="${esc(mobileHidden.map((t) => t.tag).join(' · '))}">+${mobileHidden.length}</span>` : ''}</div></div>
+    <div class="tags c-tags">${tags.shown.map((t) => tagChip(t)).join('')}${tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <div class="c-fit">${rowFitHTML(r)}</div>
     <span class="c-st">${statHTML(r.status)}</span>
@@ -1816,7 +1876,10 @@ const T = {
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['niche', 'signal', 'size', 'source']);
-    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(isViaTag(t.tag) ? t.tag.slice(4) : t.tag)}</span><b class="num">${fmt(t.total)}</b></button>`;
+    const chip = (t) => {
+      const hue = tagHue(t);
+      return `<button class="tchip t-${tagTier(t) || 'mid'}${hue ? ' ' + hue : ''}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
+    };
     const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
       list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
@@ -3206,7 +3269,7 @@ const M = {
       if (dim) pass((n) => !on(n) && !n.judge && n.fit === f, fitColor[f], 0.18);
       pass((n) => on(n) && !n.judge && n.fit === f, fitColor[f], 1);
     }
-    for (const [j, color] of [['bad', css('--t-caution')], ['good', css('--t-strong')]]) {
+    for (const [j, color] of [['bad', css('--t-caution')], ['good', css('--t-map-strong')]]) {
       if (dim) pass((n) => !on(n) && n.judge === j, color, 0.2);
       pass((n) => on(n) && n.judge === j, color, 1);
     }

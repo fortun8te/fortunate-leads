@@ -573,31 +573,28 @@ async function main() {
 
 // ---------------------------------------------------------------- checks and report
 function modelCooldowns() {
-  // Independent model of the documented policy (README / RESEARCH.md §4), not core.js: per bucket 10 min doubling per hit
-  // in 24 h, cap 24 h, Retry-After wins if longer, 3 hits in 24 h = until local midnight; every hit pauses the lane 5 min;
-  // 3 hits within an hour across buckets = both until midnight.
-  const P = FL.PACE, bucketed = !!(P0.lastSt && P0.lastSt.cool);
+  // Independent model of the current policy, not core.js: each request kind starts at 10 min and doubles for
+  // repeated hits within 24 h, capped at 6 h. Three hits require at least 2 h of rest for that kind. A longer
+  // Retry-After wins. The other kind remains available.
+  const bucketed = !!(P0.lastSt && P0.lastSt.cool);
   const m = { hits: { list: [], profile: [] }, until: { list: 0, profile: 0 } }, windows = [], problems = [];
-  const midnight = (t) => { const d = new RealDate(t); d.setHours(24, 0, 0, 0); return d.getTime(); };
   for (const h of hits) {
     const b = bucketed ? h.bucket : 'list';
     m.hits[b].push(h.at);
     const n = m.hits[b].filter((t) => h.at - t < DAY).length;
-    let until = h.at + Math.min(10 * MIN * 2 ** (n - 1), DAY);
+    let until = h.at + Math.min(10 * MIN * 2 ** (n - 1), 6 * HOUR);
     if (h.retryAt && h.retryAt > until) until = h.retryAt;
-    if (n >= 3) until = Math.max(until, midnight(h.at));
+    if (n >= 3) until = Math.max(until, h.at + 2 * HOUR);
     m.until[b] = Math.max(m.until[b], until);
-    if (bucketed && [...m.hits.list, ...m.hits.profile].filter((t) => h.at - t < HOUR).length >= 3) for (const k of ['list', 'profile']) m.until[k] = Math.max(m.until[k], midnight(h.at));
     const got = coolOf(h.post);
     for (const k of bucketed ? ['list', 'profile'] : ['list']) {
       if (got[k].until !== m.until[k]) problems.push(`hit at ${dhm(h.at)} (${h.inject}): ${k} cooldown until ${dhm(got[k].until)}, policy says ${dhm(m.until[k])}`);
     }
-    if (P.hitPause && !(h.post.nextAt >= h.at + P.hitPause)) problems.push(`hit at ${dhm(h.at)}: lane not paused ${P.hitPause / MIN} min`);
     // Replay core.js applyHit on the exact pre-hit state: the stored result must be what applyHit computes.
     const pre = FL.normalize ? FL.normalize(clone(h.pre), h.at) : { ...FL.fresh(), ...clone(h.pre) };
     const exp = coolOf(FL.applyHit(pre, h.at, h.retryAt, h.bucket));
     for (const k of ['list', 'profile']) if (exp[k].until !== got[k].until) problems.push(`hit at ${dhm(h.at)}: stored ${k} until ${dhm(got[k].until)} != core.applyHit ${dhm(exp[k].until)}`);
-    windows.push({ bucket: b, from: h.at, to: m.until[b], why: h.inject }, ...(P.hitPause ? [{ bucket: '*', from: h.at, to: h.at + P.hitPause, why: 'hit pause' }] : []));
+    windows.push({ bucket: b, from: h.at, to: m.until[b], why: h.inject });
   }
   return { windows, problems, bucketed };
 }
@@ -731,7 +728,7 @@ async function report(seeds) {
   console.log('pages          ' + `${freshPages} list pages ingested (${counters.listPagePosts} posts incl. ${dups.length} safe replays)`);
   console.log('people         ' + `${db.people} people, ${db.edge_rows} edges, ${db.bios} bios read`);
   console.log('hits           ' + hits.map((h) => `${dhm(h.at)} ${h.bucket}/${h.inject}`).join(', '));
-  console.log('cooldown       ' + `lists ${cdMin('list')} min, bios ${cdMin('profile')} min, hit pauses ${cdMin('*')} min (within the run)`);
+  console.log('cooldown       ' + `lists ${cdMin('list')} min, bios ${cdMin('profile')} min (within the run)`);
   console.log('holds          ' + holds.map((h) => `${dhm(h.start)} ${h.code} ${h.end ? Math.round((h.end - h.start) / MIN) + ' min via ' + h.policy + (h.stuckMin != null ? ` (then stuck ${h.stuckMin} min: "${h.stuckText}")` : '') : 'NOT CLEARED'}`).join(', '));
   console.log('restarts       ' + restarts.map((r) => `${dhm(r.t)} ${r.reason}`).join('; '));
   console.log('server         ' + `${serverLog.length} extension calls, ${serverLog.filter((e) => e.error).length} failed while offline, outage ${outage ? dhm(outage.t) + '–' + dhm(back && back.t) : 'none'}, ${counters.ticks} background ticks`);

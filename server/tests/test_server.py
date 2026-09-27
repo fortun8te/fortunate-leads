@@ -676,12 +676,16 @@ class TagsViewsMapTest(Base):
         pid = db.upsert_person(self.conn, {'handle': 'hang'})
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
+        j = self.call('/api/ext/next')[1]['job']
         for i in range(server.PROFILE_MAX_ATTEMPTS):
-            j = self.call('/api/ext/next')[1]['job']
             self.assertEqual(j['handle'], 'hang', i)
             self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (j['id'],))
             self.conn.commit()
-        self.assertIsNone(self.call('/api/ext/next')[1]['job'])
+            self.assertIsNone(self.call('/api/ext/next')[1]['job'])
+            if i + 1 < server.PROFILE_MAX_ATTEMPTS:
+                self.conn.execute("UPDATE jobs SET retry_not_before='2000-01-01' WHERE id=?", (j['id'],))
+                self.conn.commit()
+                j = self.call('/api/ext/next')[1]['job']
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (j['id'],)).fetchone()[0], 'error')
 
     def test_planner_fit_first_then_lists(self):

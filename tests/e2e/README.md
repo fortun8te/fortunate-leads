@@ -51,7 +51,7 @@ Instagram failures come from `SCHEDULE` in `driver.mjs`, keyed by request number
 - HTTP 500
 - `checkpoint_required`
 - an HTML login page
-- a soft block (`users:[]` with `has_more`). This is the third list hit, so lists stop until midnight.
+- a soft block (`users:[]` with `has_more`). This is the third list hit, so lists rest for at least 2 h while bios remain available.
 - on bios: a 429 with `Retry-After: 3600`, then `useragent mismatch`, which switches bios to page loads for 6 h
 - a profile page that never loads
 
@@ -70,8 +70,8 @@ The operator resumes holds 12 to 15 min after they appear, following `HOLD_POLIC
 - Edges per list match exactly the set of users the fake served in usable answers. There are no duplicate edge rows.
 - Pages resent after the cursor advances get `stale` back (older servers may say `duplicate`); neither response changes the count.
 - After each restart, the next request for that list uses the right cursor, and no list starts over from page 1.
-- Each observed hit matches an independent model of the policy (10 min doubling per hit, cap 24 h, Retry-After, 3 hits until midnight, 5 min lane pause). It also matches `core.js applyHit` replayed on the exact state from before the hit.
-- No Instagram request happens during a cooldown window, a hold or a pause, before `nextAt`, or while another request holds the lane.
+- Each observed hit matches an independent model of the policy (10 min doubling per hit, cap 6 h, a 2 h minimum rest after 3 hits of one request kind, and longer Retry-After deadlines). It also matches `core.js applyHit` replayed on the exact state from before the hit.
+- No Instagram request happens during its request kind's cooldown window, a hold or a pause, before `nextAt`, or while another request holds the lane.
 - Gaps between requests are at least `PACE.listGap[0]`, and gaps between bio reads are at least `PACE.profileGap[0]`.
 - Every item that entered the outbox was acknowledged by the server. The outbox ends empty, and the server returns no 4xx to the extension.
 - `/api/ext/*` refuses a foreign Origin. `web_profile_info` is never called. The extension throws no uncaught errors. Resume works from the popup. Local list progress matches the server's count.

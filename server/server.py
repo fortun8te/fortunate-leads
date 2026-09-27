@@ -53,7 +53,8 @@ PIC_HOSTS = ('.cdninstagram.com', '.fbcdn.net')
 PIC_MAX = 2 * 1024 * 1024
 READ_PRIORITY = 10000
 LEASE_MIN = 10
-PROFILE_MAX_ATTEMPTS = 5   # a profile job whose lease keeps expiring (tab crash, hang) is parked as 'error' after this
+PROFILE_MAX_ATTEMPTS = 8   # expired profile leases get delayed retries, then stop after this many attempts
+QUALIFY_MAX_ATTEMPTS = 5
 BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
 PLAN_BATCH = 200   # profile jobs kept queued at a time when the profile budget is unlimited
@@ -125,6 +126,17 @@ def ext_next(conn, q, b):
     conn.execute('BEGIN IMMEDIATE')
     # asking for work means no login wall holds it any more
     row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None)
+    # An expired tab lease is a transient failure. Handle it before account
+    # handoff, which otherwise clears an offline lane's expired lease and loses
+    # its retry count.
+    expired = conn.execute("SELECT id,attempts FROM jobs WHERE kind='profile' AND state='leased' AND leased_until<?",
+                           (ts,)).fetchall()
+    for stuck in expired:
+        attempts = stuck['attempts']
+        final = attempts >= PROFILE_MAX_ATTEMPTS
+        retry = None if final else iso(now + timedelta(minutes=min(2 ** max(attempts - 1, 0), 60)))
+        conn.execute("UPDATE jobs SET state=?,leased_until=NULL,lane=NULL,lease_token=NULL,retry_not_before=? WHERE id=?",
+                     ('error' if final else 'queued', retry, stuck['id']))
     accounts.release(conn, now)
     accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
@@ -147,9 +159,6 @@ def ext_next(conn, q, b):
     if not kinds:
         conn.commit()
         return dict(st, job=None)
-    # expired leases are re-leased below; a profile read that never comes back after N leases is parked, not retried forever
-    conn.execute("UPDATE jobs SET state='error', leased_until=NULL WHERE kind='profile' AND state='leased' AND leased_until<? "
-                 "AND attempts>=?", (ts, PROFILE_MAX_ATTEMPTS))
     job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=version_number >= (3, 9, 12))
     if not job:
         conn.commit()
@@ -542,8 +551,9 @@ def ext_error(conn, q, b):
         else:
             # A home-page HTML redirect does not prove that this list is unavailable.
             # Keep trying this target after its delay while other lists can run.
+            max_attempts = PROFILE_MAX_ATTEMPTS if job['kind'] == 'profile' else 5
             final = code in ('private', 'not_found') or (code == 'other' and b.get('reason') != 'list_html_home_redirect'
-                                                       and job['attempts'] >= 5)
+                                                       and job['attempts'] >= max_attempts)
         collected = (conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
                                   (job['seed'], job['direction'])).fetchone() if was_list else None)
         job_state = ('partial' if was_list and final and collected and collected['received'] else
@@ -2217,17 +2227,49 @@ def requalify(conn, p, me, net=None):
 
 def qualify_batch(conn, limit=1000):
     rows = conn.execute('SELECT p.* FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
-                        'WHERE v.person_id IS NULL OR v.updated_at < p.updated_at LIMIT ?', (limit,)).fetchall()
+                        "WHERE v.person_id IS NULL OR (coalesce(v.model,'')!='error' AND v.updated_at < p.updated_at) "
+                        "OR (v.model='error' AND (coalesce(v.input_hash,'')!=p.updated_at "
+                        "OR (v.reason LIKE 'retry %' AND v.updated_at<=?))) LIMIT ?",
+                        (db.now(), limit)).fetchall()
     me = me_handle(conn)
-    rules.sync(conn, [r['id'] for r in rows])  # rule tags first, so the verdict sees them
-    nets = network_context(conn, [r['id'] for r in rows], me) if rows else {}
-    for r in rows:
+    # One bulk rule sync is much cheaper than querying rules and tags for every
+    # person. If it fails, roll back the whole sync and isolate the bad person
+    # below so the rest of the batch can still make progress.
+    rule_sync_failed = False
+    if rows:
+        conn.execute('SAVEPOINT qualify_rules')
         try:
-            requalify(conn, dict(r), me, nets.get(r['id']))
+            rules.sync(conn, [r['id'] for r in rows])
+            conn.execute('RELEASE SAVEPOINT qualify_rules')
         except Exception:
             traceback.print_exc()
-            conn.execute("INSERT OR REPLACE INTO verdicts(person_id, tier, model, updated_at) VALUES(?,'unread','error',?)",
-                         (r['id'], r['updated_at']))
+            conn.execute('ROLLBACK TO SAVEPOINT qualify_rules')
+            conn.execute('RELEASE SAVEPOINT qualify_rules')
+            rule_sync_failed = True
+    nets = network_context(conn, [r['id'] for r in rows], me) if rows else {}
+    for r in rows:
+        conn.execute('SAVEPOINT qualify_person')
+        try:
+            if rule_sync_failed:
+                rules.sync(conn, [r['id']])
+            requalify(conn, dict(r), me, nets.get(r['id']))
+            conn.execute('RELEASE SAVEPOINT qualify_person')
+        except Exception:
+            traceback.print_exc()
+            conn.execute('ROLLBACK TO SAVEPOINT qualify_person')
+            conn.execute('RELEASE SAVEPOINT qualify_person')
+            previous = conn.execute('SELECT model,input_hash,reason FROM verdicts WHERE person_id=?', (r['id'],)).fetchone()
+            attempt = 1
+            if previous and previous['model'] == 'error' and previous['input_hash'] == r['updated_at']:
+                match = re.fullmatch(r'(?:retry|failed) (\d+)/\d+', previous['reason'] or '')
+                if match:
+                    attempt = int(match[1]) + 1
+            final = attempt >= QUALIFY_MAX_ATTEMPTS
+            delay = min(10 * 3 ** (attempt - 1), 900)
+            next_at = r['updated_at'] if final else iso(datetime.now(timezone.utc) + timedelta(seconds=delay))
+            conn.execute("INSERT OR REPLACE INTO verdicts(person_id,tier,model,input_hash,reason,updated_at) "
+                         "VALUES(?,'unread','error',?,?,?)",
+                         (r['id'], r['updated_at'], f"{'failed' if final else 'retry'} {attempt}/{QUALIFY_MAX_ATTEMPTS}", next_at))
     conn.commit()
     return len(rows)
 
@@ -2696,6 +2738,11 @@ def plan_profiles(conn):
     """Keep the profile queue topped up to the bio budget of the lanes that read bios. Qualification on: everyone above
     `bio_min`, best prefilter first. Still collecting (qualify off, auto on): only the people already in several lists."""
     auto_qualify(conn)
+    # Recover jobs parked by older releases after five expired leases. The new
+    # ceiling is eight, so this is a one-time requeue per existing job.
+    conn.execute("UPDATE jobs SET state='queued',retry_not_before=? WHERE kind='profile' AND state='error' "
+                 "AND attempts=5 AND retry_not_before IS NULL",
+                 (iso(datetime.now(timezone.utc) + timedelta(minutes=15)),))
     # Bio reads are scraping, not AI: they run whether Qualify is on or off. While lists are still collecting,
     # only people already in several lists get one.
     early = not db.get_setting(conn, 'qualify') and bool(conn.execute(

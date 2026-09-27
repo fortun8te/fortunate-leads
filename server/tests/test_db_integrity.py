@@ -65,6 +65,43 @@ class IntegrityTest(unittest.TestCase):
         db.upsert_person(c, {'handle': 'new', 'ig_id': '1', 'bio': '', 'bio_at': '2026-04-01'}, '2026-04-01')
         self.assertEqual(c.execute('SELECT bio FROM people').fetchone()[0], '')
 
+    def test_repeat_observation_does_not_write_or_advance_profile_revision(self):
+        c = self.conn
+        profile = {'handle': '@Alice', 'ig_id': '101', 'name': 'Alice', 'bio': 'Founder',
+                   'bio_at': '2026-01-01', 'bio_src': 'extension', 'followers': 42}
+        pid = db.upsert_person(c, profile, '2026-01-01')
+        revision = int(db.get_setting(c, 'lead_data_rev'))
+        writes = c.total_changes
+        self.assertEqual(db.upsert_person(c, profile, '2026-01-02'), pid)
+        self.assertEqual(c.total_changes, writes)
+        self.assertEqual(int(db.get_setting(c, 'lead_data_rev')), revision)
+        self.assertEqual(c.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0], '2026-01-01')
+
+        db.upsert_person(c, {**profile, 'followers': 43}, '2026-01-03')
+        person = c.execute('SELECT followers,updated_at FROM people WHERE id=?', (pid,)).fetchone()
+        self.assertEqual(tuple(person), (43, '2026-01-03'))
+        self.assertGreater(int(db.get_setting(c, 'lead_data_rev')), revision)
+
+    def test_new_observation_time_and_source_do_not_requalify_unchanged_bio(self):
+        c = self.conn
+        pid = db.upsert_person(c, {'handle': 'alice', 'bio': 'Founder', 'bio_at': '2026-01-01',
+                                   'bio_src': 'meta_bd'}, '2026-01-01')
+        revision = int(db.get_setting(c, 'lead_data_rev'))
+        db.upsert_person(c, {'handle': 'alice', 'bio': 'Founder', 'bio_at': '2026-01-02',
+                             'bio_src': 'extension'}, '2026-01-02')
+        person = c.execute('SELECT bio,bio_at,bio_src,updated_at FROM people WHERE id=?', (pid,)).fetchone()
+        self.assertEqual(tuple(person), ('Founder', '2026-01-02', 'extension', '2026-01-01'))
+        self.assertGreater(int(db.get_setting(c, 'lead_data_rev')), revision)  # freshness is visible
+
+        writes = c.total_changes
+        db.upsert_person(c, {'handle': 'alice', 'bio': 'Stale', 'bio_at': '2026-01-01',
+                             'bio_src': 'old'}, '2026-01-01')
+        self.assertEqual(c.total_changes, writes)
+        db.upsert_person(c, {'handle': 'alice', 'bio': 'New business', 'bio_at': '2026-01-03',
+                             'bio_src': 'extension'}, '2026-01-03')
+        person = c.execute('SELECT bio,bio_at,bio_src,updated_at FROM people WHERE id=?', (pid,)).fetchone()
+        self.assertEqual(tuple(person), ('New business', '2026-01-03', 'extension', '2026-01-03'))
+
     def test_resume_copies_run_members_and_keeps_history(self):
         c = self.conn
         db.queue_list(c, 'seed', 'followers')
