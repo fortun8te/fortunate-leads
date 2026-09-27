@@ -7,7 +7,7 @@ const c=vm.createContext({int:String,esc:String});
 vm.runInContext(source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()')),c);
 test('coverage separates list attempts from unknown targets and unique people',()=>{
  const html=c.collectionCoverageHTML({coverage:{lists:{saved_entries:600,expected_entries:500,known_targets:1,unknown_targets:2,total_lists:3}},local_laya:true,qualify:false,progress:{lists:{per_minute:12}}});
- assert.match(html,/600 this attempt/);assert.match(html,/500 expected in 1 known lists/);assert.match(html,/2 targets unknown/);assert.match(html,/12 rows returned this minute/);assert.doesNotMatch(html,/600 \/ 500|600 people/);assert.match(html,/External AI<\/span><b>Off/);
+ assert.match(html,/600 this attempt/);assert.match(html,/500 expected in 1 known lists/);assert.match(html,/2 targets unknown/);assert.match(html,/12 rows returned this minute/);assert.doesNotMatch(html,/600 \/ 500|600 people/);assert.doesNotMatch(html,/External review<\/span>/);assert.match(html,/2\. Read profiles/);assert.match(html,/3\. Local checks/);
 });
 test('local processing counts are shown only when provided',()=>{
  assert.doesNotMatch(c.collectionCoverageHTML({local_laya:true,qualify:false}),/0 processed/);
@@ -24,3 +24,18 @@ test('paused collection does not animate old running rows or claim unverified co
  assert.match($('#lists-body').innerHTML,/Needs review/);
  assert.doesNotMatch($('#lists-body').innerHTML,/dot run|bar-p done|width:100%/);
 });
+
+
+test('bio stage distinguishes unknown, paused, progressing, and caught up without an invented denominator',()=>{
+ const source={progress:{bios:{left:120,per_minute:0,eta_h:3}},stages:[{id:'bios',state:'paused',paused:true}]};
+ const paused=c.collectionCoverageHTML(source);
+ assert.match(paused,/120 profiles waiting/);assert.match(paused,/Paused · 0 bios read this minute/);assert.doesNotMatch(paused,/left in current queue|120 \/|External review/);
+ assert.match(c.collectionCoverageHTML({}),/Measuring queue/);
+ assert.match(c.collectionCoverageHTML({progress:{bios:{left:0,per_minute:0}}}),/Up to date/);
+ assert.match(c.collectionCoverageHTML({qualify:true}),/External review also enabled/);
+ const running=vm.createContext({int:String,esc:String,eta:()=> 'about 2 h'});
+ vm.runInContext(sourceCode(),running);
+ const active=running.collectionCoverageHTML({progress:{bios:{left:100,per_minute:3,eta_h:2}},stages:[{id:'bios',state:'running',paused:false}]});
+ assert.match(active,/100 profiles waiting/);assert.match(active,/Reading Instagram profiles · 3 bios read this minute · about 2 h left in current queue/);
+});
+function sourceCode(){return source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()'));}

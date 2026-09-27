@@ -331,6 +331,7 @@ def init(path):
         mark_network_dirty(conn, (r[0] for r in conn.execute("SELECT DISTINCT person_id FROM edges")))
         conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_legacy_v1','true')")
     init_map_person_degree(conn)
+    init_map_membership_revision(conn)
     # Revisions catch edits that counts/timestamps cannot distinguish, including
     # out-of-process imports. Settings is excluded to avoid recursive updates.
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
@@ -338,6 +339,20 @@ def init(path):
                             'followups', 'activity'))
     conn.commit()
     return conn
+
+
+def init_map_membership_revision(conn):
+    """Keep overlap caches valid across profile edits without rescanning all edges."""
+    # Bump on installation/repair too: a rebuilt membership table may differ
+    # from an older cache even when its restored revision value happens to match.
+    conn.execute("INSERT INTO settings(key,value) VALUES('map_membership_rev','1') "
+                 "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1")
+    for operation in ('INSERT', 'UPDATE', 'DELETE'):
+        name = 'map_overlap_rev_' + operation.lower()
+        conn.execute(f'DROP TRIGGER IF EXISTS {name}')
+        when = ' WHEN OLD.person_id IS NOT NEW.person_id OR OLD.seed IS NOT NEW.seed' if operation == 'UPDATE' else ''
+        conn.execute(f'CREATE TRIGGER {name} AFTER {operation} ON map_seed_member{when} BEGIN '
+                     "UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='map_membership_rev'; END")
 
 
 def init_map_person_degree(conn):

@@ -74,3 +74,14 @@ class PermitApiTest(Base):
         self.conn.commit()
         self.assertFalse(self.request(job)[1]['granted'])
         self.assertEqual(db.get_setting(self.conn, 'instagram_request_gate')['active']['token'], result['token'])
+
+    def test_account_limit_changed_after_leasing_blocks_actual_request(self):
+        job = self.lease()['job']
+        self.conn.execute('UPDATE accounts SET budget=?, today=? WHERE lane_id=?',
+                          ('{"list":200,"profile":100}', '{"list":200}', 'lane1'))
+        self.conn.commit()
+        code, result = self.request(job)
+        self.assertEqual(code, 200)
+        self.assertFalse(result['granted'])
+        self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate')['active'])
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'leased')

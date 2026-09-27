@@ -26,6 +26,7 @@ function mount() {
     fitBadge: () => '', rowFitHTML: () => '', connHTML: () => '', whyHTML: () => '', statHTML: () => '',
     LeadWorkflow: { localToday: () => '2026-09-27' },
   });
+  vm.runInContext(section('const RELATIONSHIP_LABELS =', 'const seedList ='), context);
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
   vm.runInContext(section('function tagItem(', 'function tagSection('), context);
   vm.runInContext(section('function rowHTML(', 'function renderRows()'), context);

@@ -125,9 +125,22 @@ const youLink = (r) => { const tags = r.tags || []; const names = tags.map(tagNa
   if (tags.some((t) => t.tag === 'knows you' && t.source === 'manual')) facts.push(YOU['knows you']);
   return facts.join(' · ');
 };
+const RELATIONSHIP_LABELS = { follows: 'Follows you', followed: 'You follow', mutual: 'Follow each other' };
+function observedRelationship(r) {
+  const value = Object.hasOwn(r, 'owner_relationship') ? r.owner_relationship : r.relationship;
+  return Object.hasOwn(RELATIONSHIP_LABELS, value) ? value : null;
+}
+function relationshipHTML(r) {
+  const value = observedRelationship(r);
+  if (!value) return '';
+  const owner = r.relationship_owner || 'fortun8te';
+  const evidence = (r.relationship_evidence || []).filter(e => e.seed?.toLowerCase() === owner.toLowerCase());
+  const detail = evidence.map(e => `@${owner} ${e.direction === 'followers' ? 'followers' : 'following'} list${e.observed_at ? ' · observed ' + new Date(e.observed_at).toLocaleString() : ' · observation time unavailable'}`).join('; ');
+  return `<span class="owner-follow" data-relationship="${value}" title="${esc(detail || 'Observed in collected lists for @' + owner + '. Observation time unavailable.')}" aria-label="${esc(RELATIONSHIP_LABELS[value] + '. ' + (detail || 'Observed in collected lists for @' + owner))}">${esc(RELATIONSHIP_LABELS[value])}</span>`;
+}
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
 // ---------- state ----------
-const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
+const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', relationship: '', tier: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
   f: emptyFilter(), sort: store.get('sort', 'fit'),
@@ -145,6 +158,7 @@ function toQuery(f = S.f, sort = S.sort, withSort = true) {
   if (f.any.length) p.set('any', f.any.join(','));
   if (f.not.length) p.set('not', f.not.join(','));
   if (f.status) p.set('status', f.status);
+  if (f.relationship) p.set('relationship', f.relationship);
   if (f.follow_up) p.set('follow_up', f.follow_up);
   if (f.tier) p.set('tier', f.tier);
   if (f.q) p.set('q', f.q);
@@ -162,12 +176,13 @@ function fromQuery(qs) {
   const numOr = (k) => p.get(k) != null && p.get(k) !== '' && !isNaN(+p.get(k)) ? +p.get(k) : null;
   return {
     f: { tags: list('tags'), any: list('any'), not: list('not'), status: p.get('status') || '', tier: FIT_TIER[TIER_FIT[p.get('tier')]] || '', q: p.get('q') || '', min: +p.get('min_lists') || 0,
+      relationship: ['follows', 'followed', 'mutual'].includes(p.get('relationship')) ? p.get('relationship') : '',
       follow_up: ['due', 'overdue', 'scheduled', 'completed', 'none'].includes(p.get('follow_up')) ? p.get('follow_up') : '',
       bio: ['0', '1'].includes(p.get('has_bio')) ? p.get('has_bio') : '', seed: (p.get('seed') || '').replace(/^@/, ''), fmin: numOr('followers_min'), fmax: numOr('followers_max') },
     sort: p.get('sort') || 'fit',
   };
 }
-const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.follow_up + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
+const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.relationship + !!f.follow_up + !!f.tier + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
 const modeOf = (t) => S.f.tags.includes(t) ? 'inc' : S.f.any.includes(t) ? 'any' : S.f.not.includes(t) ? 'exc' : null;
 function setMode(t, mode) {
   S.f.tags = S.f.tags.filter((x) => x !== t); S.f.any = S.f.any.filter((x) => x !== t); S.f.not = S.f.not.filter((x) => x !== t);
@@ -197,6 +212,7 @@ function tagTok(t, mode) {
 function tokens() {
   const out = [];
   for (const mode of MODES) for (const t of S.f[mode === 'inc' ? 'tags' : mode === 'any' ? 'any' : 'not']) out.push({ k: 'tag', tag: t, mode, text: tagTok(t, mode) });
+  if (S.f.relationship) out.push({ k: 'relationship', text: RELATIONSHIP_LABELS[S.f.relationship] });
   if (S.f.follow_up) out.push({ k: 'follow_up', text: 'followup:' + S.f.follow_up });
   if (S.f.status) out.push({ k: 'status', text: 'status:' + S.f.status });
   if (S.f.tier) out.push({ k: 'tier', text: 'priority:' + TIER_PRIORITY[S.f.tier] });
@@ -221,6 +237,7 @@ function parseToken(w, strict) {
     const mode = m[1] === '~' || m[1] === '|' ? 'any' : m[1] === '-' ? 'exc' : 'inc';
     return () => setMode(canonTag('via @' + m[2]) || 'via @' + m[2].toLowerCase(), mode);
   }
+  if ((m = w.match(/^relationship:(follows|followed|mutual)$/i))) return () => { S.f.relationship = m[1].toLowerCase(); };
   if ((m = w.match(/^followup:(due|overdue|scheduled|completed|none)$/i))) return () => { S.f.follow_up = m[1].toLowerCase(); };
   if ((m = w.match(/^status:(\w+)$/i))) {
     let s = m[1].toLowerCase(); if (s === 'unmarked') s = 'none'; s = LEGACY_STATUS[s] || s;
@@ -517,15 +534,33 @@ function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scr
 $('#filters-btn').onclick = (e) => { e.stopPropagation(); toggleSide(); };
 $('#scrim').onclick = () => setDrawer(false);
 
+// Both views share the same observed-follow filter and URL state.
+for (const container of ['.qbar', '.map-toolbar']) {
+  const host = $(container);
+  if (!host) continue;
+  const select = document.createElement('select');
+  select.className = 'select relationship-filter'; select.dataset.relationshipFilter = '';
+  select.setAttribute('aria-label', 'Observed follows with your account');
+  select.innerHTML = '<option value="">All connections</option>' + Object.entries(RELATIONSHIP_LABELS).map(([value,label]) => `<option value="${value}">${label}</option>`).join('');
+  select.addEventListener('change', () => {
+    S.f.relationship = select.value;
+    if (select.value && !S.f.status) S.f.status = 'all';
+    filtersChanged();
+  });
+  host.append(select);
+}
+
 // ---------- query bar ----------
 function renderTokens() {
   const clear = $('#clear-filters');
   if (clear) { clear.hidden = !filterCount(); clear.onclick = clearFilters; }
+  $$('[data-relationship-filter]').forEach(el => { el.value = S.f.relationship || ''; });
   $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}"><button class="tok-label" type="button" data-t="${i}" aria-label="${esc(t.k === 'tag' ? `${t.text}: ${t.mode === 'exc' ? 'excluded' : t.mode === 'any' ? 'match any' : 'required'}. Change filter mode` : `Edit ${t.text} filter`)}">${esc(t.text)}</button><button class="x" type="button" data-rm="${i}" title="Remove" aria-label="Remove ${esc(t.text)} filter">&times;</button></span>`).join('');
   if (document.activeElement !== $('#q') && $('#q').value.trim() !== S.f.q) $('#q').value = S.f.q;
 }
 function removeToken(t) {
   if (t.k === 'tag') setMode(t.tag, null);
+  else if (t.k === 'relationship') S.f.relationship = '';
   else if (t.k === 'follow_up') S.f.follow_up = '';
   else if (t.k === 'status') S.f.status = '';
   else if (t.k === 'tier') S.f.tier = '';
@@ -550,7 +585,7 @@ $('#qbox').addEventListener('click', (e) => {
   const tk = e.target.closest('[data-t]');
   if (tk) {
     const t = all[+tk.dataset.t];
-    if (t.k === 'tag') clickTag(t.tag, e); else editToken(t);
+    if (t.k === 'tag') clickTag(t.tag, e); else if (t.k === 'relationship') $('[data-relationship-filter]')?.focus(); else editToken(t);
     return;
   }
   if (e.target.closest('#suggest')) return;
@@ -830,7 +865,7 @@ const ROW_FACET_ORDER = { client: 0, manual: 1, relationship: 2, caution: 3, ver
 const rowFacetRank = (t) => isExceptionalTag(t) ? -3 : isProspectTag(t) ? -2 : t.source === 'manual' && rowTagFacet(t) !== 'client' ? 1 : ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
 // Keep the prospect judgement visible alongside the most useful profile facts.
 function rowTags(r) {
-  return (r.tags || []).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)))
+  return (r.tags || []).filter(t => !(Object.hasOwn(r, 'owner_relationship') && t.source !== 'manual' && ['follows you','you follow'].includes(t.tag))).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)))
     .sort((a, b) => rowFacetRank(a) - rowFacetRank(b) || ORDER[a.source] - ORDER[b.source] || TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || Number(a.tag.startsWith('AI: ')) - Number(b.tag.startsWith('AI: ')) || a.tag.localeCompare(b.tag));
 }
 const chipIdentity = (t) => tagLabel(t.tag).trim().toLocaleLowerCase();
@@ -854,7 +889,7 @@ function rowTagSelection(r, limit = 3) {
 // verdicts and duplicate labels behind a small disclosure. Manual tags stay
 // visible and removable even when an automatic tag has the same label.
 function detailTagSelection(p) {
-  const tags = (p.tags || []).filter((t) => !(t.tag === 'knows you' && t.source !== 'manual') &&
+  const tags = (p.tags || []).filter(t => !(Object.hasOwn(p, 'owner_relationship') && t.source !== 'manual' && ['follows you','you follow'].includes(t.tag))).filter((t) => !(t.tag === 'knows you' && t.source !== 'manual') &&
     (t.grp !== 'source' || t.source === 'manual' || t.tag === 'Instagram link' || t.tag === 'mentions you'))
     .sort((a, b) => Number(b.source === 'manual') - Number(a.source === 'manual') || rowFacetRank(a) - rowFacetRank(b) ||
       ORDER[a.source] - ORDER[b.source] || a.tag.localeCompare(b.tag));
@@ -886,7 +921,7 @@ function rowHTML(r, i, h) {
   const mobileHidden = [...tags.shown.slice(2), ...tags.hidden];
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}</div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.shown.slice(0, 2).map((t) => tagChip(t)).join('')}${mobileHidden.length ? `<span class="more" title="${esc(mobileHidden.map((t) => t.tag).join(' · '))}">+${mobileHidden.length}</span>` : ''}</div></div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${relationshipHTML(r)}<span>${whyHTML(r)}</span></div><div class="row-mobile-tags">${tags.shown.slice(0, 2).map((t) => tagChip(t)).join('')}${mobileHidden.length ? `<span class="more" title="${esc(mobileHidden.map((t) => t.tag).join(' · '))}">+${mobileHidden.length}</span>` : ''}</div></div>
     <div class="tags c-tags">${tags.shown.map((t) => tagChip(t)).join('')}${tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <div class="c-fit">${rowFitHTML(r)}</div>
@@ -1022,7 +1057,7 @@ async function refreshPerson(id) {
     const r = S.rows.find((x) => x.id === id);
     if (r) Object.assign(r, { tags: p.tags, status: p.status, tier: p.tier, score: p.score, business_fit: p.business_fit,
       connection_strength: p.connection_strength, reason: p.reason, note: p.note, mark_rev: p.mark_rev,
-      owner_status: p.owner_status, owner_conflict: p.owner_conflict, reachable: p.reachable, manual_tags: p.manual_tags });
+      owner_relationship: p.owner_relationship, relationship_owner: p.relationship_owner, relationship_evidence: p.relationship_evidence, owner_status: p.owner_status, owner_conflict: p.owner_conflict, reachable: p.reachable, manual_tags: p.manual_tags });
   } catch (e) {
     if (S.open !== id || !S.person || personReads.get(id) !== version) return;
     S.person.loading = false; S.person.failed = true;
@@ -1128,7 +1163,7 @@ function renderDetail() {
   rememberWorkflowForm();
   const reason = p.reason || v.reason;
   const ev = evidenceOf(v);
-  const you = p.relationship === 'mutual' ? 'You follow each other (seen)' : p.relationship === 'follows' ? 'They follow you (seen)' : p.relationship === 'followed' ? 'You follow them (seen)' : youLink(p);
+  const you = observedRelationship(p) ? '' : youLink({...p, relationship: Object.hasOwn(p, 'owner_relationship') ? 'unknown' : p.relationship});
   const role = p.role || v.role;
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
@@ -1140,7 +1175,7 @@ function renderDetail() {
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <div class="d-primary">
       ${p.handle ? `<a class="btn solid d-instagram" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Open Instagram ↗</a>` : ''}
-      <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>
+      <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>${relationshipHTML(p)}
       ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
     </div>
     ${overviewTags.length || p.bio ? `<section class="d-sec d-overview">${overviewTags.length ? `<div class="d-tags d-overview-tags">${overviewTags.map(t => tagChip(t)).join('')}</div>` : ''}${p.bio ? `<p class="d-overview-bio">${esc(p.bio)}</p>` : ''}</section>` : ''}
@@ -1874,7 +1909,7 @@ async function loadScraperStatus() {
   if (S.view === 'qual') Q.renderProg();
 }
 let listFilter = 'all';
-const LIST_STATE = { partial: 'Partial', running: 'Reading now', queued: 'Waiting', paused: 'Paused', error: 'Failed', private: 'Private account', done: 'Done' };
+const LIST_STATE = { partial: 'Partial', running: 'Collecting', queued: 'Not started', paused: 'Paused', error: 'Failed', private: 'Private account', done: 'Done' };
 function eta(h) {
   if (h == null) return null;
   if (h <= 0) return 'done';
@@ -1969,7 +2004,7 @@ function renderScraper() {
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
   const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.completion === 'complete'), issues: ls.filter((l) => ['partial', 'unverified', 'blocked'].includes(l.completion) || ['error', 'private', 'paused', 'partial'].includes(l.state)) };
   const focusedListFilter = $('#lists-f').contains(document.activeElement) ? document.activeElement.dataset.v : null;
-  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
+  $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${({all:'All',active:'In queue',done:'Complete',issues:'Incomplete'})[k]} <span class="num">${v.length}</span></button>`).join('');
   if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
   const order = { running: 0, queued: 1, partial: 2, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
@@ -1980,7 +2015,7 @@ function renderScraper() {
     const expected = l.expected ?? l.total;
     const complete = l.completion === 'complete';
     const pct = expected ? Math.min(complete ? 100 : 99, (saved / expected) * 100) : null;
-    const label = l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : LIST_STATE[l.state] || ucf(l.state);
+    const label = complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : l.state === 'queued' && saved > 0 ? 'Partial · queued' : l.state === 'queued' ? 'Not started' : LIST_STATE[l.state] || ucf(l.state);
     const reason = l.completion_reason || l.error;
     return `<tr><td><b>@${esc(l.seed)}</b><small class="list-direction-mobile">${l.direction === 'followers' ? 'Followers' : 'Following'}</small>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
       <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : complete ? 'done' : l.state === 'running' && listActive ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
@@ -2032,22 +2067,26 @@ function parseHandles(s) {
   }
   return [...out];
 }
+let seedAdding = false;
 const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v);
 function syncSeed() {
   const n = parseHandles($('#seed-in').value).length;
   $('#seed-n').textContent = n ? plural(n, 'account') : '';
-  $('#seed-add').disabled = !n || !seedDirs().length;
+  $('#seed-add').disabled = seedAdding || !n || !seedDirs().length;
+  $('#seed-add').textContent = seedAdding ? 'Adding…' : 'Add to queue';
 }
 $('#seed-in').addEventListener('input', syncSeed);
 $('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); syncSeed(); } });
 $('#seed-add').onclick = async () => {
-  const handles = parseHandles($('#seed-in').value);
-  if (!handles.length) return;
+  const handles = parseHandles($('#seed-in').value), directions = seedDirs();
+  if (seedAdding || !handles.length || !directions.length) return;
+  seedAdding = true; syncSeed();
   try {
-    const r = await api.post('/api/scraper/seeds', { handles, directions: seedDirs() });
-    toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued` : 'Already queued') : 'Queued');
+    const r = await api.post('/api/scraper/seeds', { handles, directions });
+    toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued${S.sc?.paused ? '. Use Start collection when ready.' : ''}` : 'Already queued') : 'Queued');
     $('#seed-in').value = ''; syncSeed(); loadScraper();
   } catch (e) { toast('Could not queue'); }
+  finally { seedAdding = false; syncSeed(); }
 };
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
@@ -2126,6 +2165,50 @@ function accountRow(a) {
   </section>`;
 }
 
+// Suggestions only use saved data. A person enters the queue after an explicit Add.
+const collectionSuggestions = {items:[], loadedAt:0, loading:false, busy:new Set(), added:new Set(), error:''};
+function collectionSuggestionsHTML(items, busy = new Set()) {
+  return items.map(item => {
+    const directions = (item.directions || []).filter(d => ['followers','following'].includes(d));
+    if (!/^[a-z0-9._]{1,30}$/i.test(item.handle || '') || !directions.length) return '';
+    const what = directions.length === 2 ? 'Followers + following' : directions[0] === 'followers' ? 'Followers' : 'Following';
+    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><small>${esc(what)} · ${esc(item.reason || 'Matches your saved leads')}</small></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to collection"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button></div>`;
+  }).join('');
+}
+function renderCollectionSuggestions() {
+  const box = $('#collection-suggestions');
+  if (!box) return;
+  const state = collectionSuggestions;
+  box.innerHTML = `<div class="collection-suggestion-heading"><h3>Suggested next</h3><span class="muted">From your saved leads</span></div>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Looking through saved profiles…' : 'New suggestions appear as profiles are checked.'}</p>`}`;
+}
+async function loadCollectionSuggestions(force = false) {
+  const state = collectionSuggestions;
+  if (state.loading || (!force && Date.now() - state.loadedAt < 60000)) return;
+  state.loading = true;
+  try {
+    const result = await api.get('/api/scraper/suggestions?limit=6');
+    state.items = Array.isArray(result.suggestions) ? result.suggestions.filter(item => !state.added.has(item.handle)).slice(0,6) : [];
+    state.error = '';
+  } catch { state.error = 'Suggestions are unavailable. You can still add a profile above.'; }
+  finally { state.loading = false; state.loadedAt = Date.now(); renderCollectionSuggestions(); }
+}
+async function addSuggestedTarget(handle) {
+  const state = collectionSuggestions, item = state.items.find(row => row.handle === handle);
+  if (!item || state.busy.has(handle)) return;
+  const directions = (item.directions || []).filter(d => ['followers','following'].includes(d));
+  if (!directions.length) return;
+  state.busy.add(handle); state.error = ''; renderCollectionSuggestions();
+  try {
+    const result = await api.post('/api/scraper/seeds', {handles:[handle], directions});
+    state.added.add(handle);
+    state.items = state.items.filter(row => row.handle !== handle);
+    toast(result.queued === 0 ? 'Already queued' : `@${handle} added to the collection queue`);
+    loadScraper();
+    await loadCollectionSuggestions(true);
+  } catch { state.error = `Could not add @${handle}. Try again.`; }
+  finally { state.busy.delete(handle); renderCollectionSuggestions(); }
+}
+
 // Move the existing source form and list table between views. Event handlers and
 // input state stay on the same nodes, and both views use the same queue API.
 let collectionTargetHomes;
@@ -2133,6 +2216,9 @@ function mountCollectionTargets() {
   const form = $('#seed-panel'), table = $('#lists-body')?.closest('.panel');
   if (!form || !table) return;
   if (!collectionTargetHomes) {
+    $('#seed-in').placeholder = '@handle or instagram.com/handle, one per line';
+    $('#seed-in').setAttribute('aria-label', 'Target profile handles or Instagram links');
+    $('#seed-add').textContent = 'Add to queue';
     collectionTargetHomes = [form, table].map(node => {
       const home = document.createComment('collection targets');
       node.before(home);
@@ -2144,16 +2230,28 @@ function mountCollectionTargets() {
     workspace = document.createElement('section');
     workspace.id = 'acc-targets';
     workspace.className = 'collection-targets';
-    workspace.setAttribute('aria-label', 'Accounts to collect');
-    workspace.innerHTML = '<header class="collection-target-heading"><div><h2>Accounts to collect</h2><p class="muted">These are the profiles whose followers and following lists you want saved.</p></div><button class="btn" id="acc-target-add">Add accounts</button></header>';
+    workspace.setAttribute('aria-label', 'Target profiles');
+    workspace.innerHTML = '<header class="collection-target-heading"><div><h2>Target profiles</h2><p class="muted">Collect their followers, who they follow, or both.</p></div><button class="btn" id="acc-target-add">Add profiles</button></header>';
     $('#acc-coverage').after(workspace);
-    workspace.querySelector('button').onclick = () => {
+    const suggestions = document.createElement('section');
+    suggestions.id = 'collection-suggestions';
+    suggestions.setAttribute('aria-label', 'Suggested target profiles');
+    workspace.append(suggestions);
+    suggestions.addEventListener('click', e => {
+      const button = e.target.closest('button[data-suggested-handle]');
+      if (button && !button.disabled) addSuggestedTarget(button.dataset.suggestedHandle);
+    });
+    renderCollectionSuggestions();
+    workspace.querySelector('#acc-target-add').onclick = () => {
       form.scrollIntoView({block:'center', behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
       $('#seed-in').focus({preventScroll:true});
     };
   }
   if (S.view === 'accounts') {
     for (const {node} of collectionTargetHomes) if (node.parentNode !== workspace) workspace.append(node);
+    const suggestions = $('#collection-suggestions');
+    if (suggestions.previousSibling !== table) table.after(suggestions);
+    loadCollectionSuggestions();
   } else if (S.view === 'scraper') {
     for (const {node, home} of collectionTargetHomes) if (node.previousSibling !== home) home.after(node);
   }
@@ -2169,15 +2267,25 @@ function collectionCoverageHTML(sc) {
   const stage = (sc.stages || sc.control?.stages)?.find(s => s.id === 'lists');
   const target = coverage?.known_targets ? `${coverage.estimated_targets !== 0 ? 'About ' : ''}${int(coverage.expected_entries)} expected${coverage.unknown_targets ? ` in ${int(coverage.known_targets)} known lists` : ''}` : '';
   const state = sc.paused || stage?.paused ? 'Collection paused' : stage?.state === 'waiting' ? stage.now || 'Waiting for an account' : coverage?.total_lists && coverage.complete_lists === coverage.total_lists ? 'All lists collected' : coverage?.partial_lists ? `${int(coverage.partial_lists)} lists incomplete` : '';
-  const listDetail = [state, target, coverage?.unknown_targets ? `${int(coverage.unknown_targets)} targets unknown` : ''].filter(Boolean).join(' · ') || 'Collection in progress';
+  const progress = sc.progress?.lists;
+  const activeLists = (sc.lists || []).filter(list => ['running','queued'].includes(list.state) && list.completion !== 'complete');
+  const activeTargetsKnown = activeLists.length > 0 && activeLists.every(list => Number.isFinite(list.expected ?? list.total));
+  const reliableEta = !sc.paused && !stage?.paused && stage?.state === 'running' && activeTargetsKnown && progress?.per_minute > 0 && progress?.left > 0 && Number.isFinite(progress?.eta_h) && progress.eta_h > 0 ? eta(progress.eta_h) : null;
+  const listDetail = [state, target, coverage?.unknown_targets ? `${int(coverage.unknown_targets)} targets unknown` : '', reliableEta ? `Active queue: ${reliableEta} left` : ''].filter(Boolean).join(' · ') || 'Collection in progress';
   const local = sc.coverage?.local;
   const localKnown = local?.processed_profiles != null && local?.eligible_profiles != null;
   const localLine = localKnown ? `${int(local.processed_profiles)} / ${int(local.eligible_profiles)} profiles checked` : local?.state === 'rebuilding' ? 'Updating counts' : (local?.enabled ?? sc.local_laya) ? 'On this computer' : 'Off';
-  const localDetail = [local?.enabled === false || local?.state === 'off' ? 'Off' : '', local?.pending_profiles != null ? `${int(local.pending_profiles)} waiting` : '', local?.reason || (!localKnown ? 'Local profile review' : ''), local?.sampled_at ? `Last checked ${new Date(local.sampled_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''].filter(Boolean).join(' · ');
-  const external = sc.qualify ? `${int(sc.progress?.qualify?.left || 0)} waiting` : 'Off';
-  return `<div class="coverage-item"><span>List entries</span><b>${esc(summary)}</b><small>${esc(listDetail)}${rate != null ? ` · ${int(rate)} rows returned this minute` : ''}</small></div>
-    <div class="coverage-item"><span>Local profile review</span><b>${esc(localLine)}</b><small>${esc(localDetail)}</small></div>
-    <div class="coverage-item"><span>External AI</span><b>${esc(external)}</b><small>${sc.qualify ? 'External review enabled' : 'No external requests'}</small></div>`;
+  const localDetail = [local?.enabled === false || local?.state === 'off' ? 'Off' : '', local?.pending_profiles != null ? `${int(local.pending_profiles)} waiting` : '', local?.reason || (!localKnown ? 'Local profile review' : ''), local?.sampled_at ? `Last checked ${new Date(local.sampled_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : '', sc.qualify ? 'External review also enabled' : ''].filter(Boolean).join(' · ');
+  const bios = sc.progress?.bios;
+  const bioStage = (sc.stages || sc.control?.stages)?.find(stage => stage.id === 'bios');
+  const bioLine = bios?.left == null ? 'Measuring queue' : bios.left === 0 ? 'Up to date' : `${int(bios.left)} profiles waiting`;
+  const bioPaused = sc.paused || bioStage?.paused;
+  const bioState = bioPaused ? 'Paused' : bioStage?.state === 'waiting' ? bioStage.now || 'Waiting for an account' : bioStage?.state === 'running' ? 'Reading Instagram profiles' : bioStage?.now || '';
+  const bioEta = !bioPaused && bioStage?.state === 'running' && bios?.left > 0 && bios?.per_minute > 0 && Number.isFinite(bios?.eta_h) && bios.eta_h > 0 ? eta(bios.eta_h) : null;
+  const bioDetail = [bioState, bios?.per_minute != null ? `${int(bios.per_minute)} bios read this minute` : '', bioEta ? `${bioEta} left in current queue` : ''].filter(Boolean).join(' · ') || 'Reads bios from the people saved in your lists';
+  return `<div class="coverage-item"><span>1. Collect lists</span><b>${esc(summary)}</b><small>${esc(listDetail)}${rate != null ? ` · ${int(rate)} rows returned this minute` : ''}</small></div>
+    <div class="coverage-item"><span>2. Read profiles</span><b>${esc(bioLine)}</b><small>${esc(bioDetail)}</small></div>
+    <div class="coverage-item"><span>3. Local checks</span><b>${esc(localLine)}</b><small>${esc(localDetail)}</small></div>`;
 }
 
 function renderAccounts() {
@@ -2587,6 +2695,7 @@ function qualificationConnections(r) {
   const byHandle = new Map();
   for (const edge of r.connection_edges || []) {
     if (!edge?.handle || !['followers', 'following'].includes(edge.direction)) continue;
+    if (r.owner_relationship && edge.handle.toLowerCase() === r.relationship_owner?.toLowerCase()) continue;
     const key = String(edge.handle).toLowerCase();
     if (!byHandle.has(key)) byHandle.set(key, { handle: edge.handle, dirs: new Set(), isMe: false });
     const item = byHandle.get(key);
@@ -2603,7 +2712,7 @@ function qualificationConnections(r) {
     // Older sample payloads have list names but not direction.
     lines.push(...[...new Set(r.via || [])].map((handle) => 'Seen in @' + handle + "'s list"));
   }
-  if (!lines.length) return '<p class="muted">No observed follows yet</p>';
+  if (!lines.length) return r.owner_relationship ? '' : '<p class="muted">No observed follows yet</p>';
   const row = (line) => `<li>${esc(line)}</li>`;
   return `<ul class="ql-connections">${lines.map(row).join('')}</ul>`;
 }
@@ -2647,7 +2756,7 @@ const Q = {
       <div class="ql-why"><p>${esc(r.reason || 'No assessment yet.')}</p><p class="ql-by">${ai ? 'AI review' : 'Rule-based review'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
       <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
         ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
-      <div class="ql-network">${qualificationConnections(r)}</div>
+      <div class="ql-network">${relationshipHTML(r)}${qualificationConnections(r)}</div>
       ${ev.length || siteHTML ? `<div class="ql-evidence">${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</div>` : ''}
       <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Open person</button>
         <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a>

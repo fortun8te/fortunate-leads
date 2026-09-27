@@ -797,12 +797,29 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
             state['queue'] = []
         queue = [item for item in state.get('queue', []) if item['seen'] > stamp - REQUEST_LEASE_SECONDS]
         # A paused/disconnected waiting account must not block healthy waiters.
-        live = {row['lane_id'] for row in conn.execute('SELECT * FROM accounts')
+        live = {row['lane_id']: row for row in conn.execute('SELECT * FROM accounts')
                 if not row['paused'] and not row['hold'] and row['last_seen']
                 and utc(row['last_seen']).timestamp() > stamp - REQUEST_LEASE_SECONDS}
         allowed = {kind for kind, stage in (('list', 'lists'), ('profile', 'bios'))
                    if not db.get_setting(conn, 'paused') and not db.get_setting(conn, 'paused_' + stage)}
-        queue = [item for item in queue if item['lane'] in live and item['kind'] in allowed]
+        eligibility = {}
+
+        def may_request(candidate, request_kind):
+            key = (candidate, request_kind)
+            if key not in eligibility:
+                row = live.get(candidate)
+                eligibility[key] = bool(row is not None and request_kind in allowed
+                                        and role_allows(row, request_kind)
+                                        and identity_owner(conn, row, now)
+                                        and not identity_handoff_pending(conn, row, now)
+                                        and not identity_cooling(conn, row, request_kind, now)
+                                        and request_budget_left(conn, row, request_kind, now))
+            return eligibility[key]
+
+        # Controls can change while a cached job waits for its turn. Remove
+        # ineligible waiters as well as refusing their own acquire, otherwise
+        # they would remain at the front and stall every healthy account.
+        queue = [item for item in queue if may_request(item['lane'], item['kind'])]
         next_at = state.get('next_at', 0)
         if token is not None:
             released = bool(active and active['lane'] == lane and active['token'] == token)
@@ -818,7 +835,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
                 cooldown = utc(cooling) if cooling else None
             except (ValueError, TypeError, AttributeError):
                 cooldown = None
-            if lane not in live or kind not in allowed or (cooling and (cooldown is None or cooldown > now)):
+            if not may_request(lane, kind) or (cooling and (cooldown is None or cooldown > now)):
                 result = {'granted': False, 'wait_ms': 15000}
             elif active and active['lane'] == lane:
                 result = {'granted': False, 'wait_ms': 2000}
