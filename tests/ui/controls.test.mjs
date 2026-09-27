@@ -5,12 +5,14 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/controls.js', import.meta.url), 'utf8');
 const settle = () => new Promise(resolve => setImmediate(resolve));
-const state = (paused = false) => ({
+const state = (paused = false, waitStage = null) => ({
   all_paused: false,
   stages: ['lists', 'bios', 'ai'].map(id => ({
     id, label: { lists: 'Collect lists', bios: 'Read bios', ai: 'AI scoring' }[id],
     paused: id === 'lists' && paused,
-    state: id === 'lists' && paused ? 'paused' : 'running', now: 'Working', help: 'Stage help',
+    state: id === 'lists' && paused ? 'paused' : id === waitStage?.id ? 'waiting' : 'running',
+    now: id === waitStage?.id ? waitStage.now : 'Working',
+    wait: id === waitStage?.id ? waitStage.wait : null, help: 'Stage help',
   })),
 });
 
@@ -42,7 +44,7 @@ function harness() {
     },
   };
   vm.runInNewContext(source, {
-    window: {}, document, Date, confirm: () => true,
+    window: { addEventListener() {} }, document, Date, confirm: () => true,
     clearInterval() {}, setInterval(callback) { interval = callback; return 1; },
     fetch(url, options) { return new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })); },
   });
@@ -124,4 +126,29 @@ test('completion does not steal focus when the user moves elsewhere', async () =
   h.document.activeElement = elsewhere;
   h.respond(1, state(true)); await settle(); h.respond(2, state(true)); await settle();
   assert.equal(h.document.activeElement, elsewhere);
+});
+
+test('wait pills distinguish Instagram limits, daily caps, and routine request gaps without echoing countdowns', async () => {
+  const ig = await ready();
+  ig.poll();
+  ig.respond(1, state(false, { id: 'lists', now: 'Instagram asked us to slow down, back in 21.0 h.',
+    wait: { why: 'Instagram asked us to slow down, resting', seconds: 21 * 3600 } }));
+  await settle();
+  assert.match(ig.el.innerHTML, /Instagram limit · back/);
+  assert.doesNotMatch(ig.el.innerHTML, /back in 21\.0 h/);
+  assert.doesNotMatch(ig.el.innerHTML, /fl-ctl-now[^>]*>Collect lists: Instagram asked us to slow down/);
+
+  const cap = await ready(); cap.poll();
+  cap.respond(1, state(false, { id: 'bios', now: 'Daily request budget reached, back in 3.0 h.',
+    wait: { why: 'Daily request budget reached', seconds: 3 * 3600 } }));
+  await settle();
+  assert.match(cap.el.innerHTML, /daily cap · back/);
+  assert.doesNotMatch(cap.el.innerHTML, /Instagram limit/);
+
+  const gap = await ready(); gap.poll();
+  gap.respond(1, state(false, { id: 'lists', now: 'Waiting between requests, back in 45 s.',
+    wait: { why: 'Waiting between requests', seconds: 45 } }));
+  await settle();
+  assert.match(gap.el.innerHTML, /request gap · next in 45 s/);
+  assert.doesNotMatch(gap.el.innerHTML, /Instagram limit/);
 });

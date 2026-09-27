@@ -40,7 +40,7 @@ test('navigation uses a settings gear and removes the keyboard help button while
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /Instagram cooldown/);
+  })), /Instagram limit active[\s\S]*See the top status bar for the wait time/);
   assert.match(view.accountRow(account({ status: 'needs_login', hold: 'login' })), /Open this Chrome profile and sign in/);
   assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);
   assert.doesNotMatch(view.accountRow(account({ status: 'running' })), /private source|private list/i);
