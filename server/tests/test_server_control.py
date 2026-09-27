@@ -2,6 +2,8 @@ import os; os.environ.setdefault('FL_NO_ORSLOT', '1')  # tests never see the rea
 """The control strip model: three independent stages, per-account pause, Stop everything."""
 import sys
 import unittest
+from unittest.mock import patch
+import control
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,6 +26,46 @@ class ControlTest(LaneTest):
         pid = db.upsert_person(self.conn, {'ig_id': '7', 'handle': 'dave'})
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
+
+    def test_collection_toggle_preserves_models_account_controls_and_attention(self):
+        self.nxt('a')
+        self.conn.execute("UPDATE accounts SET paused=1, hold='challenge' WHERE lane_id='lane-a'")
+        attention = {'lane': 'lane-a', 'message': 'Check the account tab before resuming.'}
+        db.set_setting(self.conn, 'instagram_request_attention', attention)
+        self.conn.commit()
+        for local, external, auto in ((True, False, False), (False, True, True)):
+            for key, value in (('local_laya', local), ('qualify', external), ('qualify_auto', auto)):
+                db.set_setting(self.conn, key, value)
+            self.conn.commit()
+            for action, paused in (('pause', True), ('resume', False)):
+                out = self.ctl(stage='collection', action=action)
+                self.assertEqual([s['paused'] for s in out['stages'][:2]], [paused, paused])
+                self.assertEqual([db.get_setting(self.conn, key) for key in ('local_laya', 'qualify', 'qualify_auto')], [local, external, auto])
+                row = self.conn.execute("SELECT paused,hold FROM accounts WHERE lane_id='lane-a'").fetchone()
+                self.assertEqual(tuple(row), (1, 'challenge'))
+                self.assertEqual(out['instagram_request_attention'], attention)
+
+    def test_collection_toggle_rolls_back_both_stages_on_storage_failure(self):
+        original = db.set_setting
+        def fail_second(conn, key, value):
+            if key == 'paused_bios':
+                raise RuntimeError('write failed')
+            return original(conn, key, value)
+        with patch.object(db, 'set_setting', side_effect=fail_second):
+            with self.assertRaisesRegex(RuntimeError, 'write failed'):
+                control.apply(self.conn, {'stage': 'collection', 'action': 'pause'})
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_collection_resume_cannot_clear_shared_warning(self):
+        self.ctl(stage='collection', action='pause')
+        db.set_setting(self.conn, 'cooldown', '2099-01-01T00:00:00Z')
+        self.conn.commit()
+        code, _ = self.call('/api/control', {'stage': 'collection', 'action': 'resume'})
+        self.assertEqual(code, 400)
+        self.assertEqual(db.get_setting(self.conn, 'cooldown'), '2099-01-01T00:00:00Z')
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
 
     def test_shape(self):
         out = self.ctl()

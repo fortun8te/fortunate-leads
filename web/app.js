@@ -414,7 +414,7 @@ function tagItem(t, label) {
   const m = modeOf(t.tag);
   const n = t.count;
   const title = `${t.tag} · ${t.kind}${t.sources.length > 1 ? ' + ' + t.sources.filter((s) => s !== t.kind).join(', ') : ''}`;
-  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" title="${esc(title)}" aria-pressed="${!!m}">${swatch(t.kind, t.grp === 'source' ? 'src' : '', t.grp)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
+  return `<button class="fi t-${tagTier(t)}${m ? ' ' + m : ''}${!m && !n ? ' zero' : ''}" data-tag="${esc(t.tag)}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" title="${esc(title)}" aria-pressed="${!!m}">${tagIcon(t)}<span>${esc(label || tagLabel(t.tag))}</span><b>${fmt(n)}</b></button>`;
 }
 function tagSection(key, title, list, labelFn) {
   const q = S.tagFind.toLowerCase();
@@ -438,7 +438,7 @@ function renderFilters() {
   let h = `<div class="fsec"><h4>Filters<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}</h4>
     <button class="fi${qs === '' ? ' on' : ''}" data-view="" aria-pressed="${qs === ''}"><span>Open leads</span></button>
     <button class="fi${LeadDaily.isDueView(S.f, S.sort) ? ' on' : ''}" data-view="${esc(LeadDaily.dueQuery())}" aria-pressed="${LeadDaily.isDueView(S.f, S.sort)}"><span>Due follow-ups</span></button></div>
-    <div class="fsec"><h4>Status</h4>
+    <div class="fsec"><h4>Relationship</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
     ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}" title="${esc(SDESC[s])}"><span>${slabel(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b>${fmt(c.none)}</b></button>
@@ -521,7 +521,7 @@ $('#scrim').onclick = () => setDrawer(false);
 function renderTokens() {
   const clear = $('#clear-filters');
   if (clear) { clear.hidden = !filterCount(); clear.onclick = clearFilters; }
-  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}" data-t="${i}" title="${t.k === 'tag' ? 'Click: all, any, none' : 'Click to edit'}"><span>${esc(t.text)}</span><button class="x" data-rm="${i}" title="Remove" aria-label="Remove ${esc(t.text)} filter">&times;</button></span>`).join('');
+  $('#tokens').innerHTML = tokens().map((t, i) => `<span class="tok ${t.k === 'tag' ? t.mode : 'prm'}"><button class="tok-label" type="button" data-t="${i}" aria-label="${esc(t.k === 'tag' ? `${t.text}: ${t.mode === 'exc' ? 'excluded' : t.mode === 'any' ? 'match any' : 'required'}. Change filter mode` : `Edit ${t.text} filter`)}">${esc(t.text)}</button><button class="x" type="button" data-rm="${i}" title="Remove" aria-label="Remove ${esc(t.text)} filter">&times;</button></span>`).join('');
   if (document.activeElement !== $('#q') && $('#q').value.trim() !== S.f.q) $('#q').value = S.f.q;
 }
 function removeToken(t) {
@@ -749,12 +749,37 @@ function tagTier(t) {
   return 'ctx';
 }
 const TIER_ORDER = { hero: 0, decision: 1, flag: 2, maybe: 3, role: 4, plus: 5, market: 6, partner: 7, client: 8, own: 8, niche: 9, review: 10, ctx: 11, '': 11, min: 12 };
+// Figma emphasis describes importance, independently of a tag's source or filter state.
+// Only an explicit owner label can use the rare orange tier; a model score cannot.
+const EXCEPTIONAL_TAGS = new Set(['exceptional fit', 'exceptional opportunity', 'design partner']);
+function tagImportance(t) {
+  const name = tagName(t);
+  if ((t.source === 'manual' || t.kind === 'manual') && EXCEPTIONAL_TAGS.has(name.toLowerCase())) return 'exceptional';
+  if (name === 'AI: Top fit') return 'priority';
+  if (['Scout: Strong', 'Fit: strong'].includes(name) || tagTier(t) === 'client') return 'strong';
+  if (['Scout: Possible', 'Fit: good'].includes(name)) return 'accent';
+  if (isViaTag(name) || ['source', 'size'].includes(t.grp)) return 'background';
+  if (FLAG_TAGS.has(name) || SOFT_TAGS.has(name) || ['Verified', 'Business', 'Email', 'Link hub'].includes(name)) return 'quiet';
+  return 'standard';
+}
+function tagTone(t) {
+  if (t.source === 'manual' || t.kind === 'manual') return '';
+  const name = tagName(t);
+  if (DECISION_TAGS.has(name) || name === 'AI: Runs ads') return 'positive';
+  if (['Check fit', 'Missing context', 'Scout: Check fit', 'Scout: Missing context'].includes(name)) return 'review';
+  return '';
+}
+function tagIcon(t) {
+  const level = tagImportance(t);
+  const icon = level === 'exceptional' ? 'sparkles' : ['priority', 'strong'].includes(level) ? 'verified' : '';
+  return icon ? `<span class="tag-icon" data-icon="${icon}" aria-hidden="true"></span>` : '';
+}
 function tagChip(t, rm) {
   const k = KIND[t.source] ?? '';
   const m = modeOf(t.tag);
   const label = tagLabel(t.tag);
   const tier = tagTier(t);
-  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}"><span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
+  return `<button class="tag ${k} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tier ? ' t-' + tier : ''}${m ? ' is-filtered' : ''}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-filter-mode="${m || ''}" data-tag="${esc(t.tag)}" aria-pressed="${!!m}" title="${esc(t.tag)} · ${esc(t.source)}${m ? ' · filter ' + m : ''}">${tagIcon(t)}<span>${esc(label)}</span>${rm ? `<i class="x" data-rmtag="${esc(t.tag)}" title="Remove">&times;</i>` : ''}</button>`;
 }
 // The source stays in the tooltip and filter value; the visible chip says what
 // the label means. Repeating "AI:" on every chip hides the actual distinction.
@@ -1027,7 +1052,7 @@ function websiteEvidence(site) {
   if (!site) return '';
   const url = safeUrl(site.final_url) || safeUrl(site.url);
   const tags = !site.stale && Array.isArray(site.tags) ? site.tags.filter((t) => typeof t === 'string') : [];
-  return `<section class="ql-site"><div class="ql-sh"><b>Website evidence</b>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site.title || url)}</a>` : ''}${site.at ? `<em>Checked ${esc(site.at.slice(0, 10))}</em>` : ''}</div>
+  return `<section class="ql-site"><div class="ql-sh"><b>${site.summary_source === 'page_excerpt' ? 'From website' : 'Website evidence'}</b>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site.title || url)}</a>` : ''}${site.at ? `<em>Checked ${esc(site.at.slice(0, 10))}</em>` : ''}</div>
     ${site.stale ? '<p class="muted">Older website evidence. Check the site again before using these claims.</p>' : `${site.summary ? `<p>${esc(site.summary)}</p>` : ''}${tags.length ? `<div class="ql-facts">${tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}`}
     ${site.error ? `<p class="muted">${esc(ucf(site.error))}</p>` : ''}</section>`;
 }
@@ -1078,7 +1103,8 @@ function renderDetail() {
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
   const tags = detailTagSelection(p);
   const manualTags = [...tags.primary, ...tags.related].filter((t) => t.source === 'manual' && !(p.status === 'client' && /^client$/i.test(t.tag)));
-  const evidenceTags = [...tags.primary, ...tags.related].filter((t) => t.source !== 'manual');
+  const overviewTags = tags.primary.filter((t) => t.source !== 'manual');
+  const evidenceTags = tags.related.filter((t) => t.source !== 'manual');
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const panel = $('#detail');
@@ -1104,14 +1130,13 @@ function renderDetail() {
       <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>
       ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
     </div>
+    ${overviewTags.length || p.bio ? `<section class="d-sec d-overview">${overviewTags.length ? `<div class="d-tags d-overview-tags">${overviewTags.map(t => tagChip(t)).join('')}</div>` : ''}${p.bio ? `<p class="d-overview-bio">${esc(p.bio)}</p>` : ''}</section>` : ''}
     <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what you discussed, what matters…">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     <section class="d-sec d-labels-section d-status-section"><h4>Relationship</h4>
       <div class="marks" role="group" aria-label="Relationship">${STATUSES.map((s) => `<button id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" aria-label="${esc(slabel(s))}: ${esc(SDESC[s])}" class="${s}${p.status === s ? ' on' : ''}"><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
-      <details class="d-label-editor" data-detail-section="labels" data-owner="${p.id}" ${view.sections.labels || tagVal ? 'open' : ''}><summary>Add label</summary>
-        <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Friend, collaborator…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
-      </details>
+      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
     </section>
 
     ${workflowSummaryHTML(p)}
@@ -1566,7 +1591,7 @@ document.addEventListener('keydown', (e) => {
     if (k === '/') { e.preventDefault(); $('#connection-target').focus(); }
     return;
   }
-  if (k === '/') { e.preventDefault(); $('#q').focus(); return; }
+  if (k === '/') { e.preventDefault(); (S.view === 'map' ? $('#map-q') : $('#q')).focus(); return; }
   if (k === '#') { e.preventDefault(); const q = $('#q'); q.value = (q.value.trim() ? q.value.trim() + ' ' : '') + '#'; q.focus(); suggest(); return; }
   if (k === '[') { toggleSide(); return; }
   if (k === 'c') { clearFilters(); return; }
@@ -1609,7 +1634,7 @@ $('#help').onclick = () => setHelp(false);
 
 // ---------- tags manager ----------
 const T = {
-  list: [], rules: [], src: '', q: '', checked: new Set(), editing: null, confirm: null,
+  list: [], rules: [], q: '', editing: null, confirm: null,
   async show() { await Promise.all([this.load(), this.loadRules()]); },
   async load() {
     try { this.list = mergeTags(await api.get('/api/tags')); this.failed = false; } catch (e) { this.failed = !this.list.length; }
@@ -1619,10 +1644,9 @@ const T = {
     try { this.rules = await api.get('/api/tag-rules'); this.rulesErr = null; } catch (e) { this.rulesErr = e.status === 404 ? 'missing' : 'failed'; if (this.rulesErr === 'missing') this.rules = null; }
     this.renderRules();
   },
-  // Rename, merge and delete act on manual tags only. Rule tags follow their rule; auto tags follow the qualifier.
+  // Manual labels can be renamed or deleted; generated tags follow their source.
   editable: (t) => t.sources.includes('manual'),
   render() {
-    const focusedTag = $('#tg-body').contains(document.activeElement) ? document.activeElement.dataset.ck : null;
     const q = this.q.toLowerCase();
     this.renderGroups(q);
     const rows = this.list.filter((t) => this.editable(t) && (!q || t.tag.toLowerCase().includes(q)))
@@ -1631,30 +1655,20 @@ const T = {
     const ed = this.editing;
     $('#tg-body').innerHTML = rows.length ? rows.map((t) => {
       const can = this.editable(t);
-      const on = this.checked.has(t.tag);
-      const label = `<button class="tag ${KIND[t.kind]} g-${esc(t.grp || 'custom')}${t.grp === 'source' ? ' src' : ''}${tagTier(t) ? ' t-' + tagTier(t) : ''}" data-go="${esc(t.tag)}" title="Show leads with this tag"><span>${esc(t.tag)}</span></button>`;
+      const label = `<button class="tag ${KIND[t.kind]}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-go="${esc(t.tag)}" title="Show leads with this tag">${tagIcon(t)}<span>${esc(tagLabel(t.tag))}</span></button>`;
       const name = ed === t.tag ? `<form class="ren" data-ren="${esc(t.tag)}"><input class="input" id="ren-in" value="${esc(t.tag)}" autocomplete="off" spellcheck="false"><button class="btn solid" id="ren-go">Rename</button><button type="button" class="btn" data-cancel>Cancel</button></form>` : label;
-      return `<tr class="${on ? 'on' : ''}${t.total ? '' : ' dim'}">
-        <td class="c-ck">${can ? `<button class="ck${on ? ' on' : ''}" data-ck="${esc(t.tag)}" role="checkbox" aria-checked="${on}" aria-label="Select ${esc(t.tag)}"></button>` : ''}</td>
+      return `<tr class="${t.total ? '' : 'dim'}">
         <td>${name}</td>
         <td class="r num">${int(t.total)}</td>
         <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
-    }).join('') : `<tr><td colspan="4" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and type a tag under their profile.'}</td></tr>`;
-    const selectable = rows.filter((t) => this.editable(t));
-    const visibleChecked = selectable.filter((t) => this.checked.has(t.tag)).length;
-    const allOn = selectable.length > 0 && visibleChecked === selectable.length;
-    $('#tg-all').className = 'ck' + (allOn ? ' on' : visibleChecked ? ' part' : '');
-    $('#tg-all').setAttribute('aria-checked', allOn ? 'true' : visibleChecked ? 'mixed' : 'false');
-    if (focusedTag) $$('#tg-body [data-ck]').find((b) => b.dataset.ck === focusedTag)?.focus({ preventScroll: true });
+    }).join('') : `<tr><td colspan="3" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and add a label.'}</td></tr>`;
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
-    this.renderMerge();
   },
-  // Overview: the tags that make a lead first, then every other automatic tag grouped in plain words. Click = filter Leads.
   renderGroups(q) {
     const auto = this.list.filter((t) => t.kind === 'auto' && (!q || t.tag.toLowerCase().includes(q)));
     const fit = auto.filter((t) => ['hero', 'maybe'].includes(tagTier(t)));
-    const business = auto.filter((t) => ['decision', 'role', 'plus', 'market', 'partner'].includes(tagTier(t)));
-    const caution = auto.filter((t) => ['flag', 'review'].includes(tagTier(t)));
+    const business = auto.filter((t) => ['decision', 'role', 'plus', 'market'].includes(tagTier(t)));
+    const caution = auto.filter((t) => tagTier(t) === 'flag' || tagTone(t) === 'review');
     const highlighted = new Set([...fit, ...business, ...caution]);
     const rest = auto.filter((t) => !highlighted.has(t));
     const groups = [
@@ -1664,38 +1678,26 @@ const T = {
     const pick = (g) => g === 'via' ? rest.filter((t) => isViaTag(t.tag)) : g === 'source' ? rest.filter((t) => t.grp === 'source' && !isViaTag(t.tag))
       : rest.filter((t) => (t.grp || 'custom') === g);
     const known = new Set(['niche', 'signal', 'size', 'source']);
-    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}"><span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
+    const chip = (t) => `<button class="tchip t-${tagTier(t) || 'mid'}" data-importance="${tagImportance(t)}" data-tone="${tagTone(t)}" data-go="${esc(t.tag)}" title="Show the ${int(t.total)} people tagged ${esc(t.tag)}">${tagIcon(t)}<span>${esc(tagLabel(t.tag))}</span><b class="num">${fmt(t.total)}</b></button>`;
     const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
       list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || (q ? 20 : 10);
+      const lim = this.more?.[key] || (q ? 20 : 12);
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
         <div class="tg-chips">${list.slice(0, lim).map(chip).join('')}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
     };
-    $('#tg-groups').innerHTML = (!auto.length ? `<p class="muted tg-empty">${q ? 'No matching automatic tags.' : 'Automatic tags appear as people are qualified.'}</p>` : '')
+    $('#tg-groups').innerHTML = (!auto.length ? `<p class="muted tg-empty">${q ? 'No matching tags.' : 'Tags appear as profiles are checked.'}</p>` : '')
       + sec('fit', 'Best prospects', fit, 'tg-top')
-      + sec('business', 'Business signals', business)
-      + sec('caution', 'Needs a look', caution, 'tg-caution')
-      + (rest.length ? `<details class="adv tg-more"${q ? ' open' : ''}><summary>Other automatic tags <span class="num muted">${rest.length}</span></summary><div class="tg-rest">${groups.map(([k, t]) => sec(k, t, pick(k))).join('')}
-        ${sec('other', 'Other', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></details>` : '');
+      + `<div class="tg-main">${sec('business', 'Business signals', business)}${sec('caution', 'Needs review', caution, 'tg-caution')}</div>`
+      + (rest.length ? `<div class="tg-context"><h3>Everything else</h3><div class="tg-rest">${groups.map(([k, t]) => sec(k, t, pick(k))).join('')}
+        ${sec('other', 'Other', rest.filter((t) => !known.has(t.grp) && !isViaTag(t.tag)))}</div></div>` : '');
   },
   syncRen() {
     const i = $('#ren-in'); if (!i) return;
     const v = i.value.trim();
     const exists = v && v !== this.editing && this.list.some((t) => t.tag.toLowerCase() === v.toLowerCase());
     $('#ren-go').textContent = exists ? 'Merge' : 'Rename';
-  },
-  renderMerge() {
-    const el = $('#tg-merge');
-    const n = this.checked.size;
-    if (n < 1) { el.hidden = true; return; }
-    const tags = [...this.checked];
-    const best = tags.map((t) => this.list.find((x) => x.tag === t)).filter(Boolean).sort((a, b) => b.total - a.total)[0];
-    const prev = $('#mg-to')?.value;
-    el.innerHTML = `<b>${plural(n, 'tag')}</b>${n > 1 ? `<span>Merge into</span><input class="input" id="mg-to" list="tag-dl" value="${esc(prev || best?.tag || '')}" autocomplete="off"><button class="btn" id="mg-go">Merge</button>` : ''}
-      <button class="btn" id="mg-del">${n > 1 ? 'Delete all' : 'Delete'}</button><span class="grow"></span><button class="btn" id="mg-x">Done</button>`;
-    el.hidden = false;
   },
   async rename(from, to) {
     to = to.trim();
@@ -1712,21 +1714,9 @@ const T = {
     for (const tag of tags) {
       try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast('Could not delete ' + tag); return; }
       this.fixFilter(tag, null);
-      this.checked.delete(tag);
     }
     this.confirm = null;
     toast(tags.length === 1 ? `Deleted ${tags[0]}` : `Deleted ${tags.length} tags`);
-    this.after();
-  },
-  async merge(tags, to) {
-    to = to.trim();
-    if (!to) return;
-    for (const t of tags) if (t !== to) {
-      try { await api.post('/api/tags/rename', { from: t, to }); } catch (e) { toast('Could not merge ' + t); return; }
-      this.fixFilter(t, to);
-    }
-    this.checked.clear();
-    toast(`Merged into ${to}`);
     this.after();
   },
   fixFilter(from, to) {
@@ -1743,12 +1733,6 @@ const T = {
   },
 };
 $('#tg-q').addEventListener('input', (e) => { T.q = e.target.value; T.more = {}; T.render(); });
-$('#tg-all').onclick = () => {
-  const q = T.q.toLowerCase();
-  const rows = T.list.filter((t) => T.editable(t) && (!q || t.tag.toLowerCase().includes(q)));
-  if (T.checked.size) T.checked.clear(); else rows.forEach((t) => T.checked.add(t.tag));
-  T.render();
-};
 function goTag(tag) { S.f = emptyFilter(); S.f.tags = [tag]; $('#q').value = ''; S.view = 'leads'; filtersChanged(); setView('leads'); }
 $('#view-tags').addEventListener('click', (e) => {
   const go = e.target.closest('[data-go]');
@@ -1756,11 +1740,9 @@ $('#view-tags').addEventListener('click', (e) => {
   const tm = e.target.closest('[data-tmore]');
   if (tm) {
     const key = tm.dataset.tmore;
-    T.more = Object.assign(T.more || {}, { [key]: (T.more?.[key] || (T.q ? 20 : 10)) + 50 });
+    T.more = Object.assign(T.more || {}, { [key]: (T.more?.[key] || (T.q ? 20 : 12)) + 50 });
     return T.render();
   }
-  const ck = e.target.closest('[data-ck]');
-  if (ck) { const t = ck.dataset.ck; if (T.checked.has(t)) T.checked.delete(t); else T.checked.add(t); return T.render(); }
   const ed = e.target.closest('[data-edit]');
   if (ed) { T.editing = ed.dataset.edit; T.confirm = null; return T.render(); }
   if (e.target.closest('[data-cancel]')) { T.editing = null; return T.render(); }
@@ -1772,14 +1754,6 @@ $('#view-tags').addEventListener('click', (e) => {
     setTimeout(() => { if (T.confirm === t) { T.confirm = null; T.render(); } }, 3000);
     return;
   }
-  if (e.target.id === 'mg-go') return T.merge([...T.checked], $('#mg-to').value);
-  if (e.target.id === 'mg-del') {
-    const b = e.target;
-    if (b.dataset.sure) return T.remove([...T.checked]);
-    b.dataset.sure = '1'; b.textContent = 'Confirm delete'; b.classList.add('solid');
-    return;
-  }
-  if (e.target.id === 'mg-x') { T.checked.clear(); return T.render(); }
   const rd = e.target.closest('[data-rdel]');
   if (rd) return deleteRule(rd.dataset.rdel);
 });
@@ -1790,7 +1764,6 @@ $('#view-tags').addEventListener('submit', (e) => {
 $('#view-tags').addEventListener('input', (e) => { if (e.target.id === 'ren-in') T.syncRen(); });
 $('#view-tags').addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && e.target.id === 'ren-in') { e.stopPropagation(); T.editing = null; T.render(); }
-  if (e.key === 'Enter' && e.target.id === 'mg-to') { e.preventDefault(); T.merge([...T.checked], e.target.value); }
 });
 
 // Rules: live preview of hits.
@@ -1902,6 +1875,10 @@ function renderScraper() {
     }
   }
   const x = sc.ext || {}, ls = sc.lists || [], pr = sc.progress || {};
+  const listStage = (sc.stages || sc.control?.stages)?.find(s => s.id === 'lists');
+  const listPaused = !!sc.paused || !!listStage?.paused;
+  const listHeld = listStage && ['cooldown', 'blocked', 'waiting', 'held'].includes(listStage.state);
+  const listActive = !listPaused && !listHeld;
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
@@ -1909,7 +1886,8 @@ function renderScraper() {
   const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
-  else if (sc.paused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
+  else if (listPaused) { now = 'Paused'; sub = 'Use the Lists or Bios controls at the top to resume collecting.'; }
+  else if (listHeld) { now = listStage.now || 'Collection waiting'; sub = listStage.reason || ''; }
   else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool && capped) { now = 'Daily limit reached'; sub = `Back ${backIn(x.cooldown_until)}. Add another Instagram account under Accounts to keep going today.`; }
@@ -1920,7 +1898,7 @@ function renderScraper() {
   const accs = sc.accounts || [];
   const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} this hour` : 'offline'}</span></span>`).join('')
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
-  if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && !sc.paused ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
+  if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && listActive ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
   const h1 = sc.soak?.['1h'] || {};
   const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
   $('#scr-counts').innerHTML = tile('Scraped in the last hour', int(h1.new_people ?? h1.people ?? 0), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
@@ -1928,7 +1906,7 @@ function renderScraper() {
     + tile('Scraped in total', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
   const minuteRate = (value, noun) => value == null ? `measuring ${noun}` : `${int(value)} ${noun} in the last minute`;
-  const recv = ls.reduce((a, l) => a + (l.received || 0), 0);
+  const recv = sc.coverage?.lists?.saved_entries ?? ls.reduce((a, l) => a + (l.saved_entries ?? l.received ?? 0), 0);
   const incompleteRows = ls.filter((l) => l.state === 'partial' || l.state === 'error');
   const incompleteLists = L.incomplete_lists ?? incompleteRows.length;
   const incompleteLeft = L.incomplete_left;
@@ -1937,27 +1915,27 @@ function renderScraper() {
   const stage = (title, line, pct, when) => `<div class="stg"><div class="st-top"><b>${title}</b><span class="muted">${when || ''}</span></div>
     ${pct == null ? '' : `<div class="bar-p ${pct >= 100 ? 'done' : 'run'}"><i style="width:${Math.min(100, pct || 0)}%"></i></div>`}<div class="muted">${line}</div></div>`;
   const offline = x.online ? '' : 'waiting for the extension';
-  const listsDone = incompleteLists === 0 && ls.length > 0 && ls.every(l => l.state === 'done');
-  const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
+  const listsDone = ls.length > 0 && ls.every(l => l.completion === 'complete');
+  const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : listPaused ? 'Paused' : listHeld ? listStage.now || 'Waiting'
     : L.left === 0 && incompleteLists ? 'Incomplete lists need review'
-    : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No list entries this minute'
+    : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No rows returned this minute'
     : L.left > 0 && eta(L.eta_h) ? `Active lists: ${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')}`
     + (B.per_day ? ` · workspace cap ${int(B.per_day)} a day` : ' · no workspace cap');
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
     ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
-  const listLine = `${int(recv)} list entries saved · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
+  const listLine = `${int(recv)} list entries saved this attempt · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
     + (incompleteLists ? ` · ${int(incompleteLists)} incomplete ${incompleteLists === 1 ? 'list' : 'lists'}` : '')
     + (incompleteLeft ? ` (about ${int(incompleteLeft)} entries missing)` : '')
     + (cappedLists ? ` · ${int(cappedLists)} capped ${cappedLists === 1 ? 'list' : 'lists'}` : '')
-    + ` · ${minuteRate(L.per_minute, 'list entries')}`;
+    + ` · ${minuteRate(L.per_minute, 'rows returned')}`;
   $('#stages').innerHTML = [
     stage('1. Collect lists', listLine,
       listsDone ? 100 : incompleteLists ? null : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen),
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
-    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time · ${int(Q.per_minute || 0)} per minute · ${int(Q.per_hour || 0)} per hour`
-      : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
-      Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
+    stage('Local profile review', sc.coverage?.local?.processed_profiles != null ? `${int(sc.coverage.local.processed_profiles)} / ${int(sc.coverage.local.eligible_profiles)} profiles checked · ${int(sc.coverage.local.pending_profiles)} waiting` : sc.coverage?.local?.reason || (sc.local_laya ? 'Checking saved profiles on this computer.' : 'Local model checks are off.'), null, sc.local_laya ? 'On' : 'Off'),
+    stage('External AI', sc.qualify ? `${int(Q.left || 0)} people waiting · ${minuteRate(Q.per_minute, 'reviews')}` : 'No profiles are being sent to external AI.',
+      null, sc.qualify ? Q.left ? 'On' : 'Up to date' : 'Off'),
   ].join('');
   $('#ext-ver').textContent = x.version ? 'Extension v' + x.version : '';
   const tl = x.today?.list, bl = x.budget?.list, tp = x.today?.profile, bp = x.budget?.profile;
@@ -1965,7 +1943,7 @@ function renderScraper() {
     ['Today', `${int(tl)} list pages${bl ? ` of ${int(bl)}` : ' (no cap)'}, ${int(tp)} bios${bp ? ` of ${int(bp)}` : ' (no cap)'}`],
     ['Last error', x.last_error || 'None'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
-  const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.state === 'done'), issues: ls.filter((l) => ['error', 'private', 'paused', 'partial'].includes(l.state)) };
+  const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.completion === 'complete'), issues: ls.filter((l) => ['partial', 'unverified', 'blocked'].includes(l.completion) || ['error', 'private', 'paused', 'partial'].includes(l.state)) };
   const focusedListFilter = $('#lists-f').contains(document.activeElement) ? document.activeElement.dataset.v : null;
   $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${ucf(k)} <span class="num">${v.length}</span></button>`).join('');
   if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
@@ -1974,11 +1952,16 @@ function renderScraper() {
   const rows = listsAll ? all : all.slice(0, 8);
   const empty = ls.length ? { active: 'No active lists.', done: 'No completed lists.', issues: 'No issues.' }[listFilter] : 'No lists yet. Add an account above.';
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
-    const pct = l.total ? Math.min(100, (l.received / l.total) * 100) : null;
-    return `<tr><td><b>@${esc(l.seed)}</b></td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
-      <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
-      <td class="r num">${int(l.received)}${l.total ? ' of ' + int(l.total) : ''}</td>
-      <td><span class="state ${esc(l.state)}" title="${esc(l.error || '')}">${l.state === 'running' ? '<i class="dot run"></i>' : ''}${esc(LIST_STATE[l.state] || ucf(l.state))}</span></td></tr>`;
+    const saved = l.saved_entries ?? l.received;
+    const expected = l.expected ?? l.total;
+    const complete = l.completion === 'complete';
+    const pct = expected ? Math.min(complete ? 100 : 99, (saved / expected) * 100) : null;
+    const label = l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : LIST_STATE[l.state] || ucf(l.state);
+    const reason = l.completion_reason || l.error;
+    return `<tr><td><b>@${esc(l.seed)}</b>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
+      <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : complete ? 'done' : l.state === 'running' && listActive ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
+      <td class="r num">${int(saved)}${expected != null ? ' / ' + (l.expected_source === 'estimate' ? '~' : '') + int(expected) : ' / ?'}</td>
+      <td><span class="state ${esc(complete ? 'done' : l.state === 'done' ? 'partial' : l.state)}">${l.state === 'running' && listActive ? '<i class="dot run"></i>' : ''}${esc(label)}</span></td></tr>`;
   }).join('') + (all.length > rows.length ? `<tr><td colspan="5"><button class="btn ghost" id="lists-all">Show all ${int(all.length)}</button></td></tr>` : '')
     : `<tr><td colspan="5" class="muted">${empty}</td></tr>`;
 }
@@ -2119,9 +2102,32 @@ function accountRow(a) {
   </section>`;
 }
 
+function collectionCoverageHTML(sc) {
+  if (!sc) return '';
+  const coverage = sc.coverage?.lists;
+  const rate = sc.progress?.lists?.per_minute;
+  const summary = coverage
+    ? `${int(coverage.saved_entries)} this attempt`
+    : 'Measuring saved entries';
+  const stage = (sc.stages || sc.control?.stages)?.find(s => s.id === 'lists');
+  const target = coverage?.known_targets ? `${coverage.estimated_targets !== 0 ? 'About ' : ''}${int(coverage.expected_entries)} expected${coverage.unknown_targets ? ` in ${int(coverage.known_targets)} known lists` : ''}` : '';
+  const state = sc.paused || stage?.paused ? 'Collection paused' : stage?.state === 'waiting' ? stage.now || 'Waiting for an account' : coverage?.total_lists && coverage.complete_lists === coverage.total_lists ? 'All lists collected' : coverage?.partial_lists ? `${int(coverage.partial_lists)} lists incomplete` : '';
+  const listDetail = [state, target, coverage?.unknown_targets ? `${int(coverage.unknown_targets)} targets unknown` : ''].filter(Boolean).join(' · ') || 'Collection in progress';
+  const local = sc.coverage?.local;
+  const localKnown = local?.processed_profiles != null && local?.eligible_profiles != null;
+  const localLine = localKnown ? `${int(local.processed_profiles)} / ${int(local.eligible_profiles)} profiles checked` : local?.state === 'rebuilding' ? 'Updating counts' : (local?.enabled ?? sc.local_laya) ? 'On this computer' : 'Off';
+  const localDetail = [local?.enabled === false || local?.state === 'off' ? 'Off' : '', local?.pending_profiles != null ? `${int(local.pending_profiles)} waiting` : '', local?.reason || (!localKnown ? 'Local profile review' : ''), local?.sampled_at ? `Last checked ${new Date(local.sampled_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''].filter(Boolean).join(' · ');
+  const external = sc.qualify ? `${int(sc.progress?.qualify?.left || 0)} waiting` : 'Off';
+  return `<div class="coverage-item"><span>List entries</span><b>${esc(summary)}</b><small>${esc(listDetail)}${rate != null ? ` · ${int(rate)} rows returned this minute` : ''}</small></div>
+    <div class="coverage-item"><span>Local profile review</span><b>${esc(localLine)}</b><small>${esc(localDetail)}</small></div>
+    <div class="coverage-item"><span>External AI</span><b>${esc(external)}</b><small>${sc.qualify ? 'External review enabled' : 'No external requests'}</small></div>`;
+}
+
 function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
+  const coverage = $('#acc-coverage');
+  if (coverage) coverage.innerHTML = collectionCoverageHTML(sc);
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
   $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local services';
   $('#acc-alerts').innerHTML = alerts.filter((x, i) => x.code !== 'list_endpoint_wait' &&
@@ -2533,7 +2539,7 @@ function qualificationConnections(r) {
   }
   if (!lines.length) return '<p class="muted">No observed follows yet</p>';
   const row = (line) => `<li>${esc(line)}</li>`;
-  return `<ul class="ql-connections">${lines.slice(0, 3).map(row).join('')}</ul>${lines.length > 3 ? `<details class="ql-extra"><summary>Show ${lines.length - 3} more</summary><ul class="ql-connections">${lines.slice(3).map(row).join('')}</ul></details>` : ''}`;
+  return `<ul class="ql-connections">${lines.map(row).join('')}</ul>`;
 }
 const Q = {
   view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0,
@@ -2576,10 +2582,11 @@ const Q = {
       <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
         ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
       <div class="ql-network">${qualificationConnections(r)}</div>
-      ${ev.length || siteHTML ? `<details class="ql-extra"><summary>Evidence</summary>${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</details>` : ''}
+      ${ev.length || siteHTML ? `<div class="ql-evidence">${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</div>` : ''}
       <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Open person</button>
         <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a>
-        <span class="grow"></span>${r.website ? `<button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Check website'}</button>` : ''}</div>
+        <span class="grow"></span><button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Find more'}</button></div>
+      ${r.deeper_result ? `<p class="ql-result ${r.deeper_result.state === 'error' ? 'bad' : 'muted'}" role="status">${esc(r.deeper_result.note)}</p>` : ''}
     </article>`;
   },
   render() {
@@ -2598,9 +2605,14 @@ const Q = {
     try {
       const d = await api.post(`/api/qual/${id}/deeper`);
       const r = this.rows.find((x) => x.id === id);
-      if (r && d.site) r.site = d.site;
-      toast(ucf(d.note || 'Done'));
-    } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not dig deeper'); }
+      if (r) { if (d.site) r.site = d.site; r.deeper_result = {state:d.state, note:d.note || 'Check complete'}; }
+      toast(d.note || 'Check complete');
+    } catch (e) {
+      const r = this.rows.find((x) => x.id === id);
+      const message = e.message || 'Could not check this profile';
+      if (r) r.deeper_result = {state:'error',note:message};
+      toast(message);
+    }
     this.busy.delete(id); this.render();
     if (restoreFocus && document.activeElement === document.body && S.view === 'qual') {
       $(`#ql-list [data-deep="${id}"]`)?.focus({ preventScroll: true });
@@ -2625,7 +2637,7 @@ $('#ql-list').addEventListener('click', (e) => {
 });
 
 // ---------- map ----------
-const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
+const LEAD_R = [0, 11, 12, 13, 14, 15];
 // Profile photos for the map, pre-cropped to circles on small canvases.
 const MAP_PIC_LIMIT = 3200;
 const PICS = new Map(); let picsLoading = 0; const picQueue = [];
@@ -2691,10 +2703,10 @@ function mapDots(leads, k, x, y, w, h, important) {
   return dots.concat(priority);
 }
 const M = {
-  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'leads',
+  sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'all',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: true,
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
-  limit: 400, rawData: null, audienceKey: null, dataRev: null,
+  limit: 400, query: '', rawData: null, audienceKey: null, dataRev: null,
   show() {
     if ($('#connections-panel')?.hidden === false) { this.hide(); return; }
     this.shown = true;
@@ -2703,6 +2715,7 @@ const M = {
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin() && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.restart();
     $('#map-density').value = String(this.limit);
+    if ($('#map-q')) $('#map-q').value = this.query;
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
   resize() {
@@ -2718,7 +2731,7 @@ const M = {
   },
   reloadSoon: debounce(() => M.load(), 250),
   url() {
-    const p = LeadWorkflow.runtimeQuery(toQuery(S.f, S.sort, false));
+    const p = LeadWorkflow.runtimeQuery(toQuery({ ...emptyFilter(), q: this.query }, 'score', false));
     p.set('scope', this.scope); p.set('limit', this.limit);
     return '/api/map?' + p;
   },
@@ -2763,7 +2776,7 @@ const M = {
     this.relayout = false;
     if (!old.size) this.autoFit = true;
     // When filtered, seeds with nobody in the result only add noise: leave them out.
-    if (filterCount() && d.nodes.some((n) => n.kind !== 'seed')) {
+    if (this.query && d.nodes.some((n) => n.kind !== 'seed')) {
       const used = new Set((d.links || []).map((l) => l.source));
       d = Object.assign({}, d, { nodes: d.nodes.filter((n) => n.kind !== 'seed' || used.has(n.id)) });
     }
@@ -2772,7 +2785,7 @@ const M = {
       const o = old.get(n.id);
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
-      const r = seed ? Math.max(9, Math.min(26, 7 + Math.sqrt(n.degree || 0) * 0.62)) : LEAD_R[Math.min(5, L)];
+      const r = seed ? 17 : d.nodes.length > 1500 ? 4 + Math.min(5, L) : LEAD_R[Math.min(5, L)];
       return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy, homeX: o.homeX, homeY: o.homeY } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
@@ -2816,14 +2829,15 @@ const M = {
       const left = new Set(this.seeds.map((s) => s.id));
       let curr = [...this.seeds].sort((a, b) => b.degree - a.degree)[0]?.id;
       while (curr) { order.push(curr); left.delete(curr); curr = (this.overlap.get(curr) || []).find(([id]) => left.has(id))?.[0] || [...left][0]; }
-      const R = 140 + this.seeds.length * 26;
-      const stretch = Math.sqrt(Math.max(1, Math.min(3, this.w / Math.max(1, this.h))));
+      // A filled spiral keeps source neighbourhoods compact without a rigid grid.
+      const aspect = Math.max(0.7, Math.min(2, (this.w || 1000) / (this.h || 700)));
+      const gap = Math.max(100, Math.sqrt(this.leads.length / Math.max(1, order.length)) * (this.nodes.length > 1500 ? 16 : 29));
       order.forEach((id, i) => {
         const s = this.byId.get(id);
         if (s.x != null) return;
-        const a = (i / order.length) * Math.PI * 2;
-        s.x = Math.cos(a) * R * stretch;
-        s.y = Math.sin(a) * R / stretch;
+        const angle = i * 2.399963229728653, radius = Math.sqrt(i) * gap * 0.55;
+        s.x = Math.cos(angle) * radius * Math.sqrt(aspect);
+        s.y = Math.sin(angle) * radius / Math.sqrt(aspect);
       });
     }
     // Keep the source accounts as stable landmarks. Dragging still updates
@@ -2842,19 +2856,51 @@ const M = {
       const group = ss.map((s) => s.id).sort().join('|') || 'unlinked';
       const i = placedByGroup.get(group) || 0;
       placedByGroup.set(group, i + 1);
-      const a = i * 2.399963229728653, rr = 38 + Math.sqrt(i) * 14;
+      const a = i * 2.399963229728653, rr = 28 + Math.sqrt(i) * (this.nodes.length > 1500 ? 14 : 25);
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
+    }
+    // Find nearby free positions around the true source centroid. The spatial
+    // hash only checks nearby avatars; positions stay organic and never animate.
+    if (this.nodes.length <= 1500) {
+      const cell = 40, occupied = new Map(), key = (x, y) => `${x},${y}`;
+      const place = n => {
+        const k = key(Math.floor(n.x / cell), Math.floor(n.y / cell));
+        if (!occupied.has(k)) occupied.set(k, []);
+        occupied.get(k).push(n);
+      };
+      const free = (n, x, y) => {
+        const cx = Math.floor(x / cell), cy = Math.floor(y / cell);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          for (const other of occupied.get(key(cx + dx, cy + dy)) || []) {
+            const reach = n.r + other.r + 5;
+            if ((other.x - x) ** 2 + (other.y - y) ** 2 < reach * reach) return false;
+          }
+        }
+        return true;
+      };
+      for (const n of this.nodes) if (n.kind === 'seed' || old.has(n.id)) place(n);
+      for (const n of this.leads) {
+        if (old.has(n.id)) continue;
+        const ox = n.x, oy = n.y;
+        let i = 0;
+        while (!free(n, n.x, n.y)) {
+          const angle = ++i * 2.399963229728653, radius = 24 * Math.sqrt(i);
+          n.x = ox + Math.cos(angle) * radius;
+          n.y = oy + Math.sin(angle) * radius;
+        }
+        place(n);
+      }
     }
     const nl = this.leads.length;
     const total = Math.max(nl, Number(d.total) || 0);
-    $('#map-count').textContent = `${int(nl)} of ${int(total)} matching people shown · ${plural(this.seeds.length, 'source account')}${d.keptSelected ? ' · selected person kept on map' : ''}`;
+    $('#map-count').textContent = `${int(nl)} / ${int(total)} people${d.keptSelected ? ' · selected person kept on map' : ''}`;
     const absent = this.historyLinks.filter((l) => l.state === 'absent').length;
     const unverified = this.historyLinks.length - absent;
     $('#map-count').title = `Displayed connections: ${int(this.links.length)} observed, ${int(absent)} absent, ${int(unverified)} unverified. Historical links do not count toward current neighbours or source degrees. Other matching people may be outside this sample; choose a larger Show setting to see more.`;
     const me = this.seeds.find((n) => n.is_me);
     const meButton = $('#map-me');
     meButton.hidden = !me;
-    if (me) meButton.textContent = `You · @${me.label}`;
+    if (me) meButton.title = `Centre on @${me.label}`;
     if (this.focus) this.focus = this.byId.get(this.focus.id) || null;
     if (this.hover) this.hover = this.byId.get(this.hover.id) || null;
     // A data refresh may change tags or counts without changing the graph.
@@ -2879,11 +2925,11 @@ const M = {
     this.sim = F.forceSimulation(this.nodes)
       .force('link', F.forceLink(all).id((n) => n.id)
         .distance((l) => l.ss ? 520 - 360 * Math.sqrt(l.shared / this.maxShared) : l.source.r + 26 + (l.target.L > 1 ? 30 : 10) + Math.sqrt(l.source.vis || 1) * 1.6)
-        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : (huge ? 0.008 : 0.18) / Math.max(1, l.target.L)))
+        .strength((l) => l.ss ? 0.04 + 0.5 * (l.shared / this.maxShared) : (huge ? 0.008 : 0.045) / Math.max(1, l.target.L)))
       // The 10k sample already starts in seed-centred clusters. On that scale,
       // all-node charge and collision dominate each tick without adding useful
       // detail at overview zoom; links and the seed force still refine it.
-      .force('charge', huge ? null : F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -14).distanceMax(big ? 200 : 300).theta(big ? 1.1 : 0.9))
+      .force('charge', huge ? null : F.forceManyBody().strength((n) => n.kind === 'seed' ? -30 : -26).distanceMax(big ? 200 : 300).theta(big ? 1.1 : 0.9))
       .force('seeds', (alpha) => {
         // Seeds repel only each other, so leads can sit close to their seeds.
         const ss = this.seeds;
@@ -2894,16 +2940,16 @@ const M = {
           a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
         }
       })
-      .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 3).iterations(big ? 1 : 3).strength(1))
+      .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 5).iterations(big ? 1 : 4).strength(1))
       .force('x', F.forceX((n) => n.kind === 'seed' ? n.homeX : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
       .force('y', F.forceY((n) => n.kind === 'seed' ? n.homeY : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
-      .alpha(alpha).alphaDecay(huge ? 0.08 : 0.07).alphaMin(huge ? 0.02 : 0.015).velocityDecay(huge ? 0.42 : 0.65)
+      .alpha(this.nodes.length <= 1500 ? 0 : alpha).alphaDecay(huge ? 0.08 : 0.07).alphaMin(huge ? 0.02 : 0.015).velocityDecay(huge ? 0.42 : 0.65)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
     // The seed-centroid layout is usable immediately. D3 settles in later
     // frames; a synchronous tick loop could block input for hundreds of ms.
     if (alpha >= 1) this.fit();
-    if (!this.shown || !alpha || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.stop();
+    if (this.nodes.length <= 1500 || !this.shown || !alpha || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.stop();
   },
   schedule() {
     if (this.raf) return;
@@ -2926,7 +2972,7 @@ const M = {
     if (!list.length || !this.w) return;
     const [x0, y0, x1, y1] = this.bounds(list);
     // Room for seed labels at the sides and the legend at the bottom.
-    const px = this.w < 600 ? 44 : 80, pt = 24, pb = this.w < 600 ? 40 : 64;
+    const px = this.w < 600 ? 20 : 32, pt = 32, pb = 32;
     this.k = Math.min(3, Math.max(0.05, Math.min((this.w - px * 2) / (x1 - x0 || 1), (this.h - pt - pb) / (y1 - y0 || 1))));
     this.x = this.w / 2 - ((x0 + x1) / 2) * this.k; this.y = pt + (this.h - pt - pb) / 2 - ((y0 + y1) / 2) * this.k;
     this.fitted = true;
@@ -3005,7 +3051,7 @@ const M = {
     const hd = this.hood();
     const match = this.matchSet;
     const dim = !!hd || (match && match.size > 0);
-    const overview = this.leads.length > 250 && k < 0.85;
+    const overview = this.leads.length > 250 && k < 1.5;
     const on = (n) => hd ? hd.set.has(n.id) : match && match.size ? match.has(n.id) : true;
     // Viewport culling bounds in world coords.
     const vx0 = -this.x / k - 20, vy0 = -this.y / k - 20, vx1 = (this.w - this.x) / k + 20, vy1 = (this.h - this.y) / k + 20;
@@ -3070,6 +3116,9 @@ const M = {
     // Leads: dots coloured by fit, sized by lists; one batched path per fit, dimmed pass first.
     const minPx = (this.leads.length > 1500 ? 1.7 : 2.2) / k;
     const fitColor = Object.fromEntries(FITS.map((f) => [f, css('--fit-' + f)]));
+    fitColor.strong = css('--t-map-strong');
+    fitColor.good = fg3;
+    fitColor.weak = fg4;
     fitColor.unread = fg4;   // on the dark canvas the list colour for unread is too faint to find
     const circle = (n, r) => { c.moveTo(n.x + r, n.y); c.arc(n.x, n.y, r, 0, Math.PI * 2); };
     const pass = (filter, fill, alpha) => {
@@ -3088,13 +3137,16 @@ const M = {
     }
     // Photos on top of the dots once they are big enough to read.
     for (const n of dots) {
-      if (!n.pic) continue;
       const r = Math.max(n.r, minPx);
       if (r * k < 6) continue;
-      const img = mapPic(n.pic);
-      if (!img) continue;
+      const img = n.pic && mapPic(n.pic);
       c.globalAlpha = dim && !on(n) ? 0.18 : 1;
-      c.drawImage(img, n.x - r, n.y - r, r * 2, r * 2);
+      if (img) c.drawImage(img, n.x - r, n.y - r, r * 2, r * 2);
+      else if (r * k >= 8) {
+        c.fillStyle = bg; c.font = `600 ${Math.min(r, 12 / k)}px ${sans}`;
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText((n.name || n.handle || n.label || '?').slice(0, 2).toUpperCase(), n.x, n.y);
+      }
     }
     // Marked rings.
     c.globalAlpha = 1; c.strokeStyle = fg; c.lineWidth = 1.4 / k; c.beginPath();
@@ -3107,14 +3159,17 @@ const M = {
     if (selected) { c.strokeStyle = fg; c.lineWidth = 2 / k; c.beginPath(); circle(selected, selected.r + 6 / k); c.stroke(); }
     // Source accounts remain available as landmarks, with quieter overview dots.
     for (const n of this.seeds) {
-      const quiet = overview && !n.is_me && !hd && !(match && match.has(n.id));
+      const quiet = this.leads.length > 1500 && overview && !n.is_me && !hd && !(match && match.has(n.id));
       const r = quiet ? Math.min(n.r, 5 / k) : n.r;
       const faded = (hd && !hd.set.has(n.id)) || !n.vis;
       c.globalAlpha = faded ? 0.3 : quiet ? 0.38 : 1;
       const img = !quiet && n.pic && mapPic(n.pic);
       c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2);
       if (img) c.drawImage(img, n.x - r, n.y - r, r * 2, r * 2);
-      else { c.fillStyle = n.is_me ? bg : fg; c.fill(); }
+      else {
+        c.fillStyle = n.is_me ? bg : fg; c.fill();
+        if (r * k >= 9) { c.fillStyle = n.is_me ? fg : bg; c.font = `600 ${Math.min(r, 12 / k)}px ${sans}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText((n.label || '?').slice(0, 2).toUpperCase(), n.x, n.y); }
+      }
       c.strokeStyle = n.is_me ? fg : bg; c.lineWidth = n.is_me ? Math.max(3, 3 / k) : 2 / k;
       c.beginPath(); c.arc(n.x, n.y, r, 0, Math.PI * 2); c.stroke();
       if (n.is_me) {
@@ -3128,7 +3183,7 @@ const M = {
     this.drawLabels(hd, match, fg, fg2, fg3, bg, sans);
     if (overview && !hd) {
       c.fillStyle = fg3; c.font = '12px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
-      c.fillText('Select a person to reveal their source accounts', 16, 28);
+      // Provenance lives in the selected profile, keeping the canvas clear.
     }
     if (this.loaded && !this.leads.length) { c.fillStyle = fg3; c.font = '14px ' + sans; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('No people match these filters', 16, 28); }
   },
@@ -3144,7 +3199,7 @@ const M = {
     // Give your account first choice, then try four sides before hiding a
     // lower-priority label. This avoids labels crossing nearby source dots.
     c.font = `600 13px ${sans}`;
-    const sourceOverview = this.leads.length > 250 && k < 0.85;
+    const sourceOverview = this.leads.length > 250 && k < 1.5;
     const seedsBy = [...this.seeds].sort((a, b) => Number(b.is_me) - Number(a.is_me) || b.vis - a.vis);
     let sourceLabels = 0;
     for (const n of seedsBy) {
@@ -3178,7 +3233,7 @@ const M = {
     const few = this.leads.length <= 120;
     if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong' || n.judge === 'good');
     cand.sort((a, b) => imp(b) - imp(a));
-    const overview = this.leads.length > 250 && k < 0.85;
+    const overview = this.leads.length > 250 && k < 1.5;
     const max = hd ? (hd.n.kind === 'seed' ? 24 : 12) : (match && match.size) ? 24 : few ? 160 :
       Math.round(Math.min(overview ? 12 : 120, (this.w * this.h / 26000) * Math.max(1, k * k)));
     let shown = 0;
@@ -3360,6 +3415,11 @@ function seedCardClick(e) {
 window.addEventListener('connections-viewchange', () => {
   if (S.view === 'map') M.show();
 });
+// One search for the visible map, using the same server-backed people query.
+$('#map-q')?.addEventListener('input', debounce((e) => {
+  M.query = e.target.value.trim();
+  M.relayout = true; M.stale = true; M.load();
+}, 250));
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
 $('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) { M.select(me); M.centerOn(me, 1.4); } };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
@@ -3370,7 +3430,7 @@ $('#map-density').onchange = (e) => {
 };
 $('#zoom-in').onclick = () => M.zoomBy(1.4);
 $('#zoom-out').onclick = () => M.zoomBy(1 / 1.4);
-$('#map-scope').addEventListener('click', (e) => {
+$('#map-scope')?.addEventListener('click', (e) => {
   const b = e.target.closest('[data-v]');
   if (!b || b.dataset.v === M.scope) return;
   $$('#map-scope button').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });

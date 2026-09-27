@@ -144,6 +144,9 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
         if stage == 'ai' and db.get_setting(conn, 'local_laya'):
             return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
+        attention = db.get_setting(conn, 'instagram_request_attention')
+        if stage != 'ai' and isinstance(attention, dict) and attention.get('message'):
+            return dict(out, state='paused', now=attention['message'], attention=attention)
         return dict(out, state='paused', now=why)
     if stage == 'ai':
         if not queue:
@@ -221,6 +224,7 @@ def snapshot(conn, ai_left=None):
     both = all(s['paused'] for s in stages[:2])
     return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
             'all_paused': all(s['paused'] for s in stages), 'local_laya': bool(db.get_setting(conn, 'local_laya')),
+            'instagram_request_attention': db.get_setting(conn, 'instagram_request_attention'),
             'at': iso(now)}
 
 
@@ -254,10 +258,27 @@ def apply(conn, b):
         conn.commit()
         return
     stage = b.get('stage')
+    if stage == 'collection':
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        try:
+            if not pause:
+                raw = db.get_setting(conn, 'cooldown')
+                until = utc(raw) if raw else None
+                if raw and (until is None or until > datetime.now(timezone.utc)):
+                    raise ValueError('Instagram is on a shared safety hold. Collection remains paused.')
+                db.set_setting(conn, 'paused', False)
+            for name in ('lists', 'bios'):
+                db.set_setting(conn, 'paused_' + name, pause)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return
     if stage == 'all':
         stop_all(conn) if pause else resume_all(conn)
     elif stage in STAGES:
         set_stage(conn, stage, pause)
     else:
-        raise ValueError('stage must be lists, bios, ai or all (or give an account)')
+        raise ValueError('stage must be collection, lists, bios, ai or all (or give an account)')
     conn.commit()

@@ -4,19 +4,20 @@ GET  /api/qual?view=all|ai|rules&q=&sort=recent|score&offset=&limit=
      -> {"summary": {...}, "total", "rows": [lead row + verdict details + site read]}
 POST /api/qual/{id}/deeper
      -> {"ok", "bio_queued": bool, "site": site read | null, "note": str}
-     Queues a fresh bio read and, when the person has a website / link in bio, fetches it here (public hosts only,
-     8 s timeout, 400 KB cap, at most 3 redirects, one hop out of a link hub) and summarises it with the qualify LLM helper.
+     Reuses fresh evidence, queues a missing/stale bio only when collection is allowed, and reads a public website.
+     Page facts work without AI. External summaries require the explicit external AI setting.
 """
 import codecs
 import hashlib
 import html
+import http.client
 import ipaddress
 import json
 import re
 import socket
-import urllib.error
+import threading
+import time
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 
@@ -25,10 +26,28 @@ import control
 import meta_network
 import llm
 import qualify
+from deepscout import _public_address, _DeadlineSocket
 
 FETCH_TIMEOUT = 8
 FETCH_CAP = 400 * 1024
 SITE_CACHE_AGE = timedelta(hours=24)
+SITE_ERROR_AGE = timedelta(minutes=5)
+_READ_LOCKS = [threading.RLock() for _ in range(64)]
+
+
+def _read_lock(conn, pid):
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    return _READ_LOCKS[hash((path or id(conn), pid)) % len(_READ_LOCKS)]
+
+
+def _recent_at(value, age):
+    try:
+        at = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return timedelta(0) <= datetime.now(timezone.utc) - at < age
+    except (AttributeError, ValueError, TypeError):
+        return False
 HUBS = ('linktr.ee', 'beacons.ai', 'lnk.bio', 'linkin.bio', 'taplink.cc', 'stan.store', 'bio.link', 'campsite.bio',
         'hoo.be', 'komi.io', 'linkbio.co', 'solo.to', 'msha.ke', 'snipfeed.co', 'many.link', 'tap.bio', 'allmylinks.com')
 SOCIAL = ('instagram.com', 'tiktok.com', 'youtube.com', 'youtu.be', 'facebook.com', 'fb.me', 'twitter.com', 'x.com',
@@ -64,52 +83,78 @@ def _public(host):
     return bool(infos)
 
 
-def _check(url):
+def _check(url, resolve=True):
     u = urllib.parse.urlsplit(url)
-    if u.scheme not in ('http', 'https') or not u.hostname or u.port not in (None, 80, 443):
+    if (u.scheme not in ('http', 'https') or not u.hostname or u.username or u.password
+            or u.port not in (None, 443 if u.scheme == 'https' else 80)):
         raise ValueError('only normal web links can be read')
     if meta_network.is_meta_host(u.hostname):
         raise ValueError('Meta pages are not fetched as websites; use saved profile evidence')
-    if not _public(u.hostname):
+    if resolve and not _public(u.hostname):
         raise ValueError('that address is not a public website')
     return u
 
 
-class _Redirects(urllib.request.HTTPRedirectHandler):
-    max_redirections = 3
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _check(newurl)   # every hop must be a public web address too
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_OPENER = urllib.request.build_opener(_Redirects, urllib.request.HTTPSHandler(context=llm._ssl()))
-
-
 def fetch(url):
-    """-> (final_url, html text). Raises ValueError with a plain message."""
-    _check(url)
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 '
-                                               '(KHTML, like Gecko) Version/17.0 Safari/605.1.15', 'Accept': 'text/html,*/*;q=0.5'})
+    """Connect directly to each vetted IP; retain the URL host for Host and verified TLS.
+
+    Uses the existing scout's public-address validator and deadline reader. No
+    proxy or HTTP client's implicit DNS resolution is involved in the connection.
+    """
+    deadline = time.monotonic() + FETCH_TIMEOUT
     try:
-        with _OPENER.open(req, timeout=FETCH_TIMEOUT) as r:
-            ctype = r.headers.get('Content-Type', '')
-            if ctype and 'html' not in ctype and 'text' not in ctype:
-                raise ValueError('the link is not a web page')
-            body = r.read(FETCH_CAP)
-            charset = r.headers.get_content_charset()
-            if not charset:
-                match = re.search(rb'<meta\b[^>]*\bcharset\s*=\s*["\']?([\w.-]+)', body[:4096], re.I)
-                charset = match.group(1).decode('ascii', 'ignore') if match else 'utf-8'
+        for _ in range(4):  # initial request plus at most three independent redirects
+            parsed = _check(url, resolve=False)
+            host = parsed.hostname.encode('idna').decode('ascii')
+            port = 443 if parsed.scheme == 'https' else 80
+            address = _public_address(host, port)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('timed out')
+            connection = http.client.HTTPConnection(host, port, timeout=remaining)
             try:
-                codecs.lookup(charset)
-            except LookupError:
-                charset = 'utf-8'
-            return r.geturl(), body.decode(charset, 'replace')
-    except urllib.error.HTTPError as e:
-        raise ValueError(f'the website answered with error {e.code}') from None
-    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
-        raise ValueError('timed out' if 'timed out' in str(e) else 'could not reach the website') from None
+                # address is a validated numeric IP, so a second DNS answer cannot redirect it.
+                raw = socket.create_connection((address, port), timeout=remaining)
+                if parsed.scheme == 'https':
+                    try:
+                        raw.settimeout(max(0.001, deadline - time.monotonic()))
+                        raw = llm._ssl().wrap_socket(raw, server_hostname=host)
+                    except Exception:
+                        raw.close()
+                        raise
+                connection.sock = _DeadlineSocket(raw, deadline)
+                target = (parsed.path or '/') + (('?' + parsed.query) if parsed.query else '')
+                connection.request('GET', target, headers={'Host': '[' + host + ']' if ':' in host else host,
+                    'User-Agent': 'Fortunate-Leads/1', 'Accept': 'text/html,text/plain', 'Accept-Encoding': 'identity'})
+                response = connection.getresponse()
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.getheader('Location')
+                    if not location:
+                        raise ValueError('redirect has no destination')
+                    url = urllib.parse.urljoin(url, location)
+                    continue
+                if response.status != 200:
+                    raise ValueError(f'the website answered with error {response.status}')
+                ctype = response.getheader('Content-Type', '').lower()
+                if ctype and 'html' not in ctype and 'text' not in ctype:
+                    raise ValueError('the link is not a web page')
+                body = response.read(FETCH_CAP + 1)
+                if len(body) > FETCH_CAP:
+                    raise ValueError('the website exceeds the page size limit')
+                charset = response.headers.get_content_charset()
+                if not charset:
+                    match = re.search(rb'<meta\b[^>]*\bcharset\s*=\s*["\']?([\w.-]+)', body[:4096], re.I)
+                    charset = match.group(1).decode('ascii', 'ignore') if match else 'utf-8'
+                try:
+                    codecs.lookup(charset)
+                except LookupError:
+                    charset = 'utf-8'
+                return url, body.decode(charset, 'replace')
+            finally:
+                connection.close()
+        raise ValueError('too many redirects')
+    except (socket.timeout, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
+        raise ValueError('timed out' if 'timed out' in str(exc) else 'could not reach the website') from None
 
 
 def _host(url):
@@ -273,12 +318,18 @@ def _site_evidence(conn, pid, url, names):
 
 
 def read_site(conn, pid, url, force=False):
+    with _read_lock(conn, pid):
+        return _read_site(conn, pid, url, force)
+
+
+def _read_site(conn, pid, url, force=False):
     _ensure(conn)
     url = url.strip()
     previous = conn.execute('SELECT * FROM site_reads WHERE person_id=?', (pid,)).fetchone()
     paused = control.stage_paused(conn, 'ai')
     reusable = previous and (not previous['error'] or (paused and previous['error'] == 'AI scoring is off; page facts are still shown'))
-    if not force and reusable and _recent_read(previous, url):
+    recent_failure = previous and previous['url'] == url and previous['error'] and _recent_at(previous['at'], SITE_ERROR_AGE)
+    if not force and (recent_failure or (reusable and _recent_read(previous, url))):
         return site_row(conn, pid)
     try:
         old_sig = json.loads(previous['signals'] or '{}') if previous else {}
@@ -301,8 +352,8 @@ def read_site(conn, pid, url, force=False):
         payload = [final, title, desc, text, sig]
         content_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         if text or title:
-            if control.stage_paused(conn, 'ai'):
-                err = 'AI scoring is off; page facts are still shown'
+            if paused or control.stage_paused(conn, 'ai'):
+                summary = desc or text[:500] or None
             elif (previous and previous['url'] == url and previous['content_hash'] == content_hash
                   and not previous['error'] and previous['model']):
                 # A forced reread with identical evidence needs no new model call.
@@ -312,9 +363,12 @@ def read_site(conn, pid, url, force=False):
             else:
                 data, model = summarise(final, title, desc, text, sig)
                 data = _valid_summary(data)
+                if control.stage_paused(conn, 'ai'):
+                    data, model = None, None
                 if data is None:
                     model = None
-                    err = 'the AI was not available; page facts are still shown'
+                    summary = desc or text[:500] or None
+                    err = None if control.stage_paused(conn, 'ai') else 'the AI was not available; page facts are still shown'
     except ValueError as e:
         err = str(e)
     summary = summary or re.sub(r'\s+', ' ', str((data or {}).get('summary') or '')).strip()[:500] or None
@@ -350,6 +404,7 @@ def site_row(conn, pid):
     stale = not _recent_read(r, r['url'])
     return {'url': r['url'], 'final_url': r['final_url'], 'title': r['title'], 'summary': r['summary'], 'signals': sig,
             'error': r['error'], 'model': r['model'], 'at': r['at'], 'stale': stale,
+            'summary_source': 'external_ai' if r['model'] else 'page_excerpt',
             'tags': [x[0] for x in conn.execute('SELECT tag FROM site_evidence WHERE person_id=? AND url=? ORDER BY tag',
                                                 (pid, r['url']))] if not stale else []}
 
@@ -413,17 +468,42 @@ def routes(srv):
     def api_deeper(conn, q, b, pid):
         _ensure(conn)
         row = srv.person_row(conn, pid)
-        queued = True
+        lock = _read_lock(conn, pid)
+        if not lock.acquire(blocking=False):
+            return {'state': 'pending', 'bio_queued': False, 'site': site_row(conn, pid),
+                    'bio': {'state': 'pending', 'message': 'This profile is already being checked.'},
+                    'external_ai': not control.stage_paused(conn, 'ai'), 'reused': True,
+                    'note': 'This profile is already being checked.'}
         try:
-            srv.api_read(conn, q, {}, pid)
-        except srv.Bad:
+            held = control.stage_paused(conn, 'bios') or bool(srv.workspace_cooldown(conn, datetime.now(timezone.utc)))
+            active = conn.execute("SELECT 1 FROM jobs WHERE kind='profile' AND handle=? AND state IN ('queued','leased')",
+                                  (row['handle'],)).fetchone()
+            fresh = _recent_at(row['bio_at'], SITE_CACHE_AGE)
             queued = False
-        site = None
-        url = (row['website'] or '').strip()
-        if url:
-            site = read_site(conn, pid, url)
-        note = ('Bio re-read queued' if queued else 'Bio cannot be re-read') + (
-            '; website read' if site and not site.get('error') else f"; website: {site['error']}" if site else '; no website in bio')
-        return {'bio_queued': queued, 'site': site, 'note': note}
+            if fresh:
+                bio = {'state': 'fresh', 'message': 'Reused the profile saved within the last 24 hours.'}
+            elif held:
+                bio = {'state': 'held', 'message': 'Instagram collection is on hold. No new profile request was added.'}
+            elif active:
+                bio = {'state': 'pending', 'message': 'A profile read is already waiting.'}
+            elif '~' in row['handle']:
+                bio = {'state': 'unavailable', 'message': 'This account no longer has a readable handle.'}
+            else:
+                srv.api_read(conn, q, {}, pid)
+                queued = True
+                bio = {'state': 'pending', 'message': 'A profile read is queued.'}
+            url = (row['website'] or '').strip()
+            previous = site_row(conn, pid) if url else None
+            site = read_site(conn, pid, url) if url else None
+            reused = bool(previous and site and previous['at'] == site['at'])
+            useful = bool(site and not site['error'] and (site['title'] or site['summary'] or any(site['signals'].values())))
+            state = 'pending' if bio['state'] == 'pending' else 'ready' if useful else 'error' if site and site['error'] else 'no_additional_data'
+            website = ('Reused the saved website check.' if reused and useful else 'Website facts saved.' if useful else
+                       'Website could not be read: ' + site['error'] if site and site['error'] else 'No additional website information available.')
+            return {'state': state, 'bio_queued': queued, 'bio': bio, 'site': site,
+                    'external_ai': not control.stage_paused(conn, 'ai'), 'reused': reused,
+                    'note': bio['message'] + ' ' + website}
+        finally:
+            lock.release()
 
     return [('GET', r'/api/qual', api_qual), ('POST', r'/api/qual/(\d+)/deeper', api_deeper)]

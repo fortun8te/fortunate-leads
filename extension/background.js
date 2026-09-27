@@ -196,7 +196,7 @@ async function queueDone(path, body, success = true, gen = mem.gen) {
 async function applyServer(j) {
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
   if (j && j.stages) mem.stages = j.stages;
-  if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.15') + ' before collecting.'; });
+  if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.16') + ' before collecting.'; });
   if (!j || typeof j.paused !== 'boolean') return;
   mem.serverPaused = j.paused;
   const st = await loadSt();
@@ -344,8 +344,18 @@ async function acquireSharedRequest(kind) {
     const cur = await get('cur');
     if (cur?.job?.id === mem.job?.id) await set({ cur: { ...cur, at: Date.now() } });
   }
-  if (!grant?.granted || !grant.token || !Number.isFinite(Date.parse(grant.expires_at)) || Date.parse(grant.expires_at) <= Date.now()) {
+  if (!grant?.granted || !grant.token || !Number.isFinite(Date.parse(grant.expires_at))) {
     mem.sharedWaitUntil = Date.now() + Math.max(1000, Math.min(15000, Number(grant?.wait_ms) || 15000));
+    throw new ControlPaused();
+  }
+  if (await get('localPaused') || !FL.controlAllows(mem, kind)) {
+    await releaseSharedRequest(grant.token);
+    throw new ControlPaused();
+  }
+  // A delayed response must leave enough time for the longest normal action.
+  if (Date.parse(grant.expires_at) - Date.now() < 45000) {
+    await releaseSharedRequest(grant.token); // no browser action has started
+    mem.sharedWaitUntil = Date.now() + 15000;
     throw new ControlPaused();
   }
   return grant.token;
@@ -355,7 +365,9 @@ async function releaseSharedRequest(token) {
   catch { mem.offline = true; } // the server lease expires; never assume an uncertain release succeeded
 }
 async function navigateWithPermit(kind, action) {
+  const gen = mem.gen;
   const token = await acquireSharedRequest(kind);
+  if (gen !== mem.gen) { await releaseSharedRequest(token); throw new ControlPaused(); }
   let completed = false;
   try {
     let tab;
@@ -377,6 +389,7 @@ async function igRequest(gen, tab, url, kind, ctx) {
   if (gen !== mem.gen) throw new Superseded();
   if (FL.laneBusy(await get('lane'), Date.now())) return { res: { status: 0, text: 'lane busy' }, bad: { code: 'busy' } };
   const permit = await acquireSharedRequest(kind);
+  if (gen !== mem.gen) { await releaseSharedRequest(permit); throw new Superseded(); }
   await set({ lane: { until: Date.now() + 90e3, url } });
   let res, keepLane = false;
   try {
@@ -670,6 +683,7 @@ async function lookupViaPage(gen, handle, kind, near) {
   const key = handle.toLowerCase(), url = IG + '/' + encodeURIComponent(handle) + '/', t0 = Date.now();
   let tab;
   const permit = await acquireSharedRequest(kind);
+  if (gen !== mem.gen) { await releaseSharedRequest(permit); throw new Superseded(); }
   await set({ lane: { until: Date.now() + 60e3, url } });
   try {
     const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
@@ -695,9 +709,14 @@ async function lookupViaPage(gen, handle, kind, near) {
     return { p: null, bad: { code: 'network', reason: 'lookup_tab' }, res: { status: 0, text: String((e && e.message) || e) } };
   } finally {
     delete waiters[key];
-    if (tab) { mem.lookups.delete(tab.id); chrome.tabs.remove(tab.id).catch(() => {}); await set({ lookupTab: null }); }
-    await set({ lane: null });
-    await releaseSharedRequest(permit);
+    let closed = !tab;
+    if (tab) {
+      mem.lookups.delete(tab.id);
+      try { await chrome.tabs.remove(tab.id); closed = true; await set({ lookupTab: null }); }
+      catch { /* Keep the permit: an unconfirmed close may leave the page running. */ }
+    }
+    await set({ lane: closed ? null : { until: Date.now() + 90e3, url, after: 'close_failed' } });
+    if (closed) await releaseSharedRequest(permit);
   }
 }
 

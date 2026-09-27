@@ -19,11 +19,11 @@ class MetaResearchBoundaryTest(unittest.TestCase):
 
     def test_website_reader_rejects_direct_and_redirected_meta_before_dns(self):
         for host in ('instagram.com', 'm.facebook.com', 'threads.net', 'a.cdninstagram.com'):
-            with patch.object(qual_api, '_public') as dns, patch.object(qual_api._OPENER, 'open') as network:
+            with patch.object(qual_api, '_public_address') as dns, patch.object(qual_api.socket, 'create_connection') as network:
                 with self.assertRaisesRegex(ValueError, 'saved profile evidence'):
                     qual_api.fetch('https://' + host + '/alice/')
                 with self.assertRaisesRegex(ValueError, 'saved profile evidence'):
-                    qual_api._Redirects().redirect_request(None, None, 302, '', {}, 'https://' + host + '/alice/')
+                    qual_api._check('https://' + host + '/alice/', resolve=False)
                 dns.assert_not_called()
                 network.assert_not_called()
 

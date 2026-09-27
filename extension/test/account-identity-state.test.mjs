@@ -14,7 +14,7 @@ function harness(account, st, clock = { now: Date.now() }) {
   const ctx = vm.createContext({ FL, Date: TestDate, Set, URLSearchParams, AbortController, setTimeout, clearTimeout,
     importScripts() {},
     chrome: {
-      runtime: { getManifest: () => ({ version: '3.9.15' }), onMessage: { addListener() {} } },
+      runtime: { getManifest: () => ({ version: '3.9.16' }), onMessage: { addListener() {} } },
       tabs: { query: async () => [{ id: 1, status: 'complete', discarded: false, url: 'https://www.instagram.com/' }] },
       scripting: { executeScript: async () => [{ result: { host: 'www.instagram.com', ready: 'complete',
         cookie: observed ? `ds_user_id=${observed}` : '',

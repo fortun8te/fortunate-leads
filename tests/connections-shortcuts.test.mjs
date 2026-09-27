@@ -28,6 +28,7 @@ function mount() {
     '#detail': { contains: () => false },
     '#tag-in': { focus: record('tag-focus') },
     '#q': { focus: record('search-focus') },
+    '#map-q': { focus: record('map-search-focus') },
     '#connection-target': { focus: record('target-focus') }
   };
   const location = { hash: '#/map' };
@@ -86,3 +87,5 @@ test('typing a shortcut in an input never acts on the overview selection', () =>
   for (const key of ['m', '1', 'o', 't']) ui.press(key, 'INPUT');
   assert.deepEqual(ui.effects, []);
 });
+
+test('map shortcut focuses its visible search', () => { const ui=mount();ui.classes.delete('comparing');ui.press('/');assert.deepEqual(ui.effects,[['map-search-focus']]); });

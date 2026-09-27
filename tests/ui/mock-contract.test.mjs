@@ -118,3 +118,20 @@ test('checking mode roundtrips through settings, scraper and status without mixi
   assert.equal((await api('settings/qualify', { on: true, local_laya: true })).status, 400);
   assert.equal((await api('scraper/status')).data.local_laya, false);
 });
+
+test('direct collection control preserves checking modes and account pauses', async () => {
+  const api=demo();
+  let current=(await api('control')).data;
+  await api('control',{account:current.accounts[0].lane_id,action:'pause'});
+  for (const external of [false,true]) {
+    await api('control',{stage:'ai',action:external?'resume':'pause'});
+    const before=(await api('control')).data;
+    for (const action of ['pause','resume']) {
+      const {data:after}=await api('control',{stage:'collection',action});
+      assert.equal(after.local_laya,before.local_laya);
+      assert.equal(after.stages.find(s=>s.id==='ai').paused,before.stages.find(s=>s.id==='ai').paused);
+      assert.deepEqual(after.accounts.map(a=>a.paused),before.accounts.map(a=>a.paused));
+      assert.ok(after.stages.filter(s=>s.id!=='ai').every(s=>s.paused===(action==='pause')));
+    }
+  }
+});

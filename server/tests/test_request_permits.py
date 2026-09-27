@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import accounts
+import control
 import db
 
 
@@ -21,7 +22,7 @@ class RequestPermitTest(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.now = datetime.now(timezone.utc)
         for i in range(25):
-            accounts.touch(self.conn, f'lane{i}', {'ig_id': str(100+i), 'handle': f'acct{i}'}, version='3.9.15')
+            accounts.touch(self.conn, f'lane{i}', {'ig_id': str(100+i), 'handle': f'acct{i}'}, version='3.9.16')
         self.conn.commit()
 
     def acquire(self, i, seconds=0, kind='list'):
@@ -57,13 +58,72 @@ class RequestPermitTest(unittest.TestCase):
             self.assertTrue(permit['granted'], i)
             token, owner = permit['token'], i
 
-    def test_crashed_holder_expires_and_old_release_cannot_clear_new_owner(self):
+    def test_expired_unconfirmed_request_pauses_every_lane_until_manual_resume(self):
+        db.set_setting(self.conn, 'local_laya', True)
+        self.conn.commit()
         first = self.acquire(0)
         self.assertFalse(self.acquire(1, 89)['granted'])
-        next_ = self.acquire(1, 91)
+        for seconds in (91, 92, 180, 600):
+            self.assertFalse(self.acquire(1, seconds)['granted'])
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+        self.assertTrue(db.get_setting(self.conn, 'local_laya'))
+        self.assertIn('Check the account tab', db.get_setting(self.conn, 'instagram_request_attention')['message'])
+        snapshot = control.snapshot(self.conn)
+        self.assertEqual(snapshot['instagram_request_attention']['lane'], 'lane0')
+        for stage in snapshot['stages'][:2]:
+            self.assertTrue(stage['paused'])
+            self.assertIn('Check the account tab', stage['now'])
+        self.assertNotIn('Check the account tab', snapshot['stages'][2]['now'])
+        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=601))['released'])
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))  # late callback cannot resume
+        db.set_setting(self.conn, 'paused_lists', False)
+        db.set_setting(self.conn, 'paused_bios', False)
+        self.conn.commit()
+        self.assertIsNotNone(control.snapshot(self.conn)['instagram_request_attention'])
+        next_ = self.acquire(1, 602)
+        self.assertIsNone(control.snapshot(self.conn)['instagram_request_attention'])
         self.assertTrue(next_['granted'])
-        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=92))['released'])
+        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=603))['released'])
         self.assertEqual(db.get_setting(self.conn, 'instagram_request_gate')['active']['token'], next_['token'])
+
+    def test_concurrent_expiry_waiters_cannot_start_over_unconfirmed_request(self):
+        self.acquire(0)
+        later = self.now + timedelta(seconds=91)
+        self.conn.execute('UPDATE accounts SET last_seen=?', (accounts.iso(later),))
+        self.conn.commit()
+        barrier = threading.Barrier(10)
+        def work(i):
+            conn = db.connect(self.path)
+            try:
+                barrier.wait()
+                return accounts.request_permit(conn, f'lane{i}', kind='list', now=later)
+            finally:
+                conn.close()
+        with ThreadPoolExecutor(max_workers=10) as workers:
+            results = list(workers.map(work, range(1, 11)))
+        self.assertFalse(any(result['granted'] for result in results))
+        self.assertTrue(all(result['wait_ms'] == 15000 for result in results))
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_confirmed_late_completion_before_another_acquire_needs_no_manual_pause(self):
+        first = self.acquire(0)
+        self.assertTrue(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=91))['released'])
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(self.acquire(1, 92)['granted'])
+        self.assertTrue(self.acquire(1, 93)['granted'])
+
+    def test_shared_warning_or_paused_stage_cannot_be_bypassed_by_direct_acquire(self):
+        db.set_setting(self.conn, 'paused_lists', True)
+        self.conn.commit()
+        self.assertFalse(self.acquire(0)['granted'])
+        db.set_setting(self.conn, 'cooldown', accounts.iso(self.now+timedelta(minutes=15)))
+        self.conn.commit()
+        self.assertFalse(self.acquire(1, kind='profile')['granted'])
+        db.set_setting(self.conn, 'cooldown', 'invalid')
+        self.conn.commit()
+        self.assertFalse(self.acquire(1, kind='profile')['granted'])
 
     def test_paused_kind_or_account_is_removed_from_wait_queue(self):
         first = self.acquire(0)

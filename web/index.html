@@ -12,8 +12,9 @@
   } catch (e) {}
   if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
 </script>
-<link rel="preload" href="vendor/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/api/local-font/areal" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="connections.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -73,37 +74,20 @@
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
         </div>
 
-        <div class="mpane comparing" id="pane-map">
-          <div class="mbar">
-            <button class="btn" id="connections-toggle" aria-expanded="true" aria-controls="connections-panel">Explore map</button>
-            <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People found in multiple source lists, plus likely brands.">Suggested</button><button data-v="all" aria-pressed="false">All</button></div>
-            <label class="map-density" for="map-density">Show <select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option></select></label>
-            <div class="grow"></div>
-            <span class="num muted hide-sm" id="map-count"></span>
-            <button class="btn map-me" id="map-me" title="Find your account on the map" hidden></button>
-            <button class="btn" id="map-fit" title="Zoom to fit (f)">Fit</button>
+        <div class="mpane" id="pane-map">
+          <div class="map-toolbar mbar">
+            <label class="map-search"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="map-q" type="search" aria-label="Find a person on the map" placeholder="Find a person" autocomplete="off" spellcheck="false"></label>
+            <button class="btn map-me" id="map-me" aria-label="Centre on your account" title="Centre on your account" hidden><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg></button>
+            <button class="btn" id="map-fit" aria-label="Fit map" title="Fit map"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button>
+            <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
           </div>
-          <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles"></section>
-          <p class="map-guide" id="map-guide">Dots are accounts. Compare profiles to see who follows whom. <a href="#/leads">Read as a list</a></p>
+          <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
           <div class="stage" id="stage">
-            <canvas id="canvas" role="img" aria-describedby="map-guide" aria-label="Connection map. Open Leads to review people and connections using the same filters."></canvas>
+            <canvas id="canvas" role="img" aria-label="Connection map. Open Leads for an accessible list of people and their recorded connections."></canvas>
             <div class="hover" id="hover" hidden></div>
             <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
-            <div class="legend" id="legend">
-              <span><i class="lg-me"></i>Your account</span>
-              <span><i class="lg-seed"></i>Source accounts</span>
-              <span><i class="fdot lg-good"></i>Good tags</span>
-              <span><i class="fdot lg-bad"></i>Red flags</span>
-              <span><i class="fdot f-weak"></i>Not judged</span>
-              <details class="legend-details"><summary>Line key</summary><div>
-              <span><i class="lg-mk"></i>Has a status</span>
-              <span title="Recorded in a collected list"><i class="lg-ln"></i>Person follows account</span>
-              <span title="Recorded in a collected list"><i class="lg-ln dash"></i>Account follows person</span>
-              <span title="Seen before, but not checked again"><i class="lg-ln dash"></i>Earlier: unverified</span>
-              <span title="Not found in a completed later check"><i class="lg-ln dotted"></i>Earlier: absent</span>
-              <span><i class="lg-ss"></i>Shared recorded accounts</span>
-              </div></details>
-            </div>
+            <label class="map-density" for="map-density"><select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option></select></label>
+            <span class="map-count num muted" id="map-count" aria-live="polite"></span>
           </div>
         </div>
       </div>
@@ -118,8 +102,8 @@
         </header>
         <div class="ql-prog" id="ql-prog"></div>
         <div class="ql-bar">
-          <div class="seg" id="ql-view"><button data-v="ai" class="on">Checked by AI</button><button data-v="rules">Keywords only</button><button data-v="all">Everyone</button></div>
           <input class="input" id="ql-q" aria-label="Find a person in qualification" type="search" placeholder="Find a person" autocomplete="off" spellcheck="false">
+          <div class="seg" id="ql-view"><button data-v="ai" class="on">Checked by AI</button><button data-v="rules">Keywords only</button><button data-v="all">Everyone</button></div>
           <div class="grow"></div>
           <select class="select" id="ql-sort" aria-label="Sort qualification results"><option value="score">Highest priority</option><option value="recent">Newest first</option></select>
           <span class="num muted" id="ql-n"></span>
@@ -139,9 +123,8 @@
         <details class="adv tg-manage"><summary>Manage your tags and rules</summary>
         <div class="panel">
           <div class="p-head"><h3>Your own tags</h3><span class="num muted" id="tg-n"></span><div class="grow"></div><span class="muted hide-sm">Add them on a person, tidy them up here</span></div>
-          <div class="tg-merge" id="tg-merge" hidden></div>
           <div class="tbl-wrap"><table class="tbl tg-tbl">
-            <thead><tr><th class="c-ck"><button class="ck" id="tg-all" role="checkbox" aria-checked="false" aria-label="Select all tags"></button></th><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
+            <thead><tr><th>Tag</th><th class="r">People</th><th class="r"></th></tr></thead>
             <tbody id="tg-body"></tbody>
           </table></div>
         </div>
@@ -212,6 +195,7 @@
           <div class="ph-a"><button class="btn solid" id="acc-start">Start local services</button><button class="btn" id="acc-add">Connect account</button></div>
         </header>
         <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Starts the local helper. Collection and checking mode stay as selected.</p>
+        <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
         <div class="alerts" id="acc-alerts"></div>
         <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>

@@ -126,7 +126,9 @@ class PublicControlIntegration(unittest.TestCase):
         model.assert_not_called()
         self.assertTrue(result['site']['signals']['cart'])
         self.assertIsNone(result['site']['model'])
-        self.assertIn('AI scoring is off', result['site']['error'])
+        self.assertIsNone(result['site']['error'])
+        self.assertEqual(result['site']['summary_source'], 'page_excerpt')
+        self.assertEqual(result['site']['summary'], 'Add to cart')
 
     def test_pause_during_site_fetch_stops_new_model_call(self):
         control.set_stage(self.conn, 'ai', False)

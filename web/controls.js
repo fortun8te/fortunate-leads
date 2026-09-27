@@ -6,7 +6,7 @@
   const POLL = 5e3;
   const n = (v) => Math.round(v || 0).toLocaleString('en-US');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const SHORT = { lists: 'Lists', bios: 'Bios', ai: 'External AI' };
+  const SHORT = { collection: 'Collection', lists: 'Lists', bios: 'Bios', ai: 'External AI' };
   const PER = { lists: 'people', bios: 'bios', ai: 'scores' };
   let data = null, busy = false, offline = false, timer = 0, tick = 0;
   let requestVersion = 0, actionError = '', expanded = false;
@@ -51,6 +51,7 @@
   }
   function word(s) {
     if (offline) return 'last known: ' + s.state;
+    if (s.attention?.message) return 'needs attention';
     if (s.state === 'paused') return s.id === 'ai' ? 'off' : 'paused';
     if (s.state === 'waiting') {
       return waitWord(s.wait?.why, left(s), clock);
@@ -84,27 +85,27 @@
     }).join('');
     const running = data.stages.filter((s) => !s.paused).length;
     const failed = data.stages.some((s) => s.state === 'error' || s.state === 'failed');
-    const notice = actionError || (offline ? 'Server offline: showing the last known state.' :
-      failed ? 'A stage needs attention.' : '');
-    const all = data.all_paused
-      ? `<button class="fl-ctl-all" data-stage="all" data-action="resume" title="Resume list and bio collection. External AI stays off." ${busy || offline ? 'disabled' : ''}>Resume collection</button>`
-      : `<button class="fl-ctl-all stop" data-stage="all" data-action="pause" title="Stop collection, local processing and external AI." ${busy || offline ? 'disabled' : ''}>Stop all</button>`;
-    const collection = data.stages.filter((s) => s.id !== 'ai');
-    const collectionState = offline ? 'Unknown' : collection.every((s) => s.paused) ? 'Off'
+    const attention = data.instagram_request_attention?.message || data.stages.find((s) => s.attention?.message)?.attention.message || '';
+    const notice = [actionError, offline ? 'Server offline: showing the last known state.' : attention || (failed ? 'A stage needs attention.' : '')].filter(Boolean).join(' ');
+    const collection = data.stages.filter((s) => s.id === 'lists' || s.id === 'bios');
+    const collectionPaused = collection.length === 2 && collection.every((s) => s.paused);
+    const collectionAction = collectionPaused ? 'resume' : 'pause';
+    const collectionLabel = collectionPaused ? 'Start collection' : 'Pause collection';
+    const collectionState = offline ? 'Unknown' : attention ? 'Needs attention' : collection.every((s) => s.paused) ? 'Off'
       : collection.some((s) => ['error', 'failed'].includes(s.state)) ? 'Needs attention'
       : collection.some((s) => s.state === 'running') ? 'On'
       : collection.some((s) => s.state === 'waiting') ? 'Waiting' : 'Idle';
     const external = data.stages.find((s) => s.id === 'ai');
     const mode = offline || !external || typeof data.local_laya !== 'boolean' ? 'Unknown'
       : !external.paused ? 'External AI' : data.local_laya ? 'Local' : 'Rules';
-    el.innerHTML = `<details class="fl-ctl-details"${expanded ? ' open' : ''}>
+    el.innerHTML = `<div class="fl-ctl-top"><details class="fl-ctl-details"${expanded ? ' open' : ''}>
       <summary class="fl-ctl-summary">
         <span class="fl-ctl-summary-item"><span>Collection</span><b>${collectionState}</b></span>
         <span class="fl-ctl-summary-item" title="Selected mode, not current activity. Local models read saved profiles and notes on this Mac."><span>Mode</span><b>${mode}</b></span>
         <span class="fl-ctl-disclosure">Controls <i aria-hidden="true"></i></span>
       </summary>
-      <div class="fl-ctl-panel"><div class="fl-ctl-pills">${pills}</div><div class="fl-ctl-actions"><a href="#/settings">Checking mode</a><a href="#/scraper">Collection details</a>${all}</div></div>
-    </details>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${failed && !offline && !actionError ? ' <a href="#/scraper">View collection details.</a>' : ''}</span>` : ''}`;
+      <div class="fl-ctl-panel"><div class="fl-ctl-pills">${pills}</div><div class="fl-ctl-actions"><a href="#/settings">Checking mode</a><a href="#/scraper">Collection details</a></div></div>
+    </details><button class="fl-ctl-direct btn" data-stage="collection" data-action="${collectionAction}" title="${collectionLabel}. Local and external checking settings stay unchanged." ${busy || offline || collection.length !== 2 ? 'disabled' : ''}>${busy ? 'Saving…' : collectionLabel}</button></div>${notice ? `<span class="fl-ctl-now" role="alert" aria-atomic="true">${esc(notice)}${attention && !offline ? ' <a href="#/accounts">Check accounts</a>' : failed && !offline && !actionError ? ' <a href="#/scraper">View collection details.</a>' : ''}</span>` : ''}`;
     el.dataset.running = String(running);
     if (focusStage) el.querySelector(`[data-stage="${focusStage}"]`)?.focus({ preventScroll: true });
     else if (focusSummary) el.querySelector('summary')?.focus({ preventScroll: true });
@@ -121,7 +122,7 @@
       if (!r.ok) throw new Error(r.status);
       const j = await r.json();
       if (!Array.isArray(j.stages)) throw new Error('Invalid status');
-      const key = JSON.stringify(j.stages) + j.all_paused + j.local_laya;
+      const key = JSON.stringify(j.stages) + j.all_paused + j.local_laya + JSON.stringify(j.instagram_request_attention);
       if (version !== requestVersion) return;
       const same = data && !offline && key === data.key;   // unchanged: keep the buttons, just count down
       data = Object.assign(j, { got: Date.now(), key });

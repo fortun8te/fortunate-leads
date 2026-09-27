@@ -29,7 +29,7 @@ function mount() {
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
   vm.runInContext(section('function tagItem(', 'function tagSection('), context);
   vm.runInContext(section('function rowHTML(', 'function renderRows()'), context);
-  const ui = vm.runInContext('({ tagTier, tagChip, tagItem, rowHTML, rowTagSelection, detailTagSelection })', context);
+  const ui = vm.runInContext('({ tagTier, tagImportance, tagTone, tagIcon, tagChip, tagItem, rowHTML, rowTagSelection, detailTagSelection })', context);
   return { context, groupNode, ui };
 }
 
@@ -167,15 +167,16 @@ test('detail keeps user tags prominent and makes repeated labels accessible', ()
     ['AI: Top fit', 'AI: Skincare', 'Verified', 'Instagram link', 'Fit: strong', 'AI: Decision maker'].sort());
 });
 
-test('Tags overview shows three decision groups and folds context tags', () => {
+test('Tags overview keeps the Figma groups directly visible', () => {
   const { context, groupNode } = mount();
   const rows = [tag('Brand', 'role'), tag('Shop Link'), tag('Too big'), tag('Creator', 'role'), tag('Jewelry', 'niche')];
   context.rows = rows;
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`, context);
   const html = groupNode.innerHTML;
   assert.doesNotMatch(html, /Best prospects/);
-  assert.match(html, /Business signals[\s\S]*Needs a look[\s\S]*Other automatic tags[\s\S]*Products/);
+  assert.match(html, /Business signals[\s\S]*Needs review[\s\S]*Everything else[\s\S]*Products/);
   assert.match(html, /tchip t-niche/);
+  assert.doesNotMatch(html, /<details/);
   assert.match(html, /tchip t-flag[^>]*>\<span\>Too big/);
   assert.match(html, /tchip t-review[^>]*>\<span\>Creator/);
 });
@@ -189,4 +190,24 @@ test('Tags search shows a bounded page and reveals additional matches on request
   vm.runInContext("groups.more = { signal: 70 }; groups.renderGroups('signal');", context);
   assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 70);
   assert.match(groupNode.innerHTML, /\+5 more/);
+});
+
+
+test('Figma emphasis is independent of selection and preserves explicit owner importance', () => {
+  const { ui } = mount();
+  assert.equal(ui.tagImportance(tag('AI: Top fit')), 'priority');
+  assert.equal(ui.tagImportance(tag('Fit: strong')), 'strong');
+  assert.equal(ui.tagImportance(tag('Fit: good')), 'accent');
+  assert.equal(ui.tagImportance(tag('Apparel', 'niche')), 'standard');
+  assert.equal(ui.tagImportance(tag('Too big')), 'quiet');
+  assert.equal(ui.tagImportance(tag('via @seed', 'source')), 'background');
+  assert.equal(ui.tagImportance(tag('Exceptional opportunity', 'custom', 'manual')), 'exceptional');
+  assert.notEqual(ui.tagImportance(tag('Exceptional opportunity')), 'exceptional');
+  assert.equal(ui.tagImportance(tag('Client', 'custom', 'manual')), 'strong');
+  assert.equal(ui.tagTone(tag('Founder')), 'positive');
+  assert.equal(ui.tagTone(tag('Missing context')), 'review');
+  assert.equal(ui.tagTone(tag('Too big')), '');
+  assert.equal(ui.tagIcon(tag('Apparel', 'niche')), '');
+  assert.match(ui.tagIcon(tag('AI: Top fit')), /data-icon="verified"/);
+  assert.match(ui.tagChip(tag('Brand', 'role')), /data-importance="standard"[\s\S]*data-filter-mode="inc"/);
 });
