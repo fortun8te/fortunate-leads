@@ -49,7 +49,7 @@
       <div class="scrim" id="scrim" hidden></div>
       <div class="pane">
         <header class="ph ph-work">
-          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div></div>
+          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span><span class="lead-load-count num" id="work-loaded"></span></div></div>
         </header>
         <div class="qbar">
           <button class="btn fbtn" id="filters-btn" aria-controls="filters" aria-expanded="false" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
@@ -82,16 +82,27 @@
             <label class="map-search"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="map-q" type="search" aria-label="Find a person on the map" placeholder="Find a person" autocomplete="off" spellcheck="false"></label>
             <button class="btn map-me" id="map-me" aria-label="Centre on your account" title="Centre on your account" hidden><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg></button>
             <button class="btn" id="map-fit" aria-label="Fit map" title="Fit map"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button>
+            <details class="map-options"><summary class="btn">Map options</summary><div class="map-options-panel">
+              <label>Bubble size<select class="select" id="map-size"><option value="lists">Source lists</option><option value="followers">Followers</option></select></label>
+              <label>Distance<select class="select" id="map-distance"><option value="sources">Source connections</option><option value="familiarity">Recorded familiarity</option></select></label>
+              <p id="map-distance-note" hidden>Closer means you marked them as more familiar. Unrecorded people sit outside. Follows alone do not imply familiarity.</p>
+              <label>Tag<input id="map-tag" list="tag-dl" placeholder="Add a tag filter"></label>
+              <label>Min followers<input id="map-followers-min" type="number" min="0" placeholder="Any"></label>
+              <label>Max followers<input id="map-followers-max" type="number" min="0" placeholder="Any"></label>
+            </div></details>
             <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
           </div>
           <div id="map-search-results" class="map-search-results" aria-label="Matching profiles" hidden></div>
           <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
           <div class="stage" id="stage">
+            <div id="map-overview" class="map-overview" hidden></div>
+            <canvas id="map-points" aria-hidden="true" hidden></canvas>
             <canvas id="canvas" role="img" aria-label="Connection map. Open Leads for an accessible list of people and their recorded connections."></canvas>
             <div class="hover" id="hover" hidden></div>
             <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
-            <label class="map-density" for="map-density"><select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option></select></label>
+            <label class="map-density" for="map-density"><select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option><option value="10000">10,000 people</option><option value="30000">30,000 people</option><option value="100000">100,000 people</option><option value="0">All saved · overview</option></select></label>
             <span class="map-count num muted" id="map-count" aria-live="polite"></span>
+            <span id="map-render-status" class="map-render-status muted" role="status" hidden>Using basic graphics · large maps may be slower.</span>
           </div>
         </div>
       </div>
@@ -241,6 +252,7 @@
             <p class="checking-models" id="set-mode-models"></p>
             <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Pauses automatically when your Mac needs the memory.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
             <p class="checking-models" id="set-local-progress" role="status"></p>
+            <div id="set-local-activity" class="local-activity" aria-live="polite"></div>
           </div>
         </section>
         <section class="sg">
@@ -329,7 +341,7 @@
   <span><kbd>/</kbd></span><span>Search</span>
   <span>priority:strong</span><span>Strong, good, weak or unread priority tier</span>
   <span><kbd>#</kbd></span><span>Filter by tag</span>
-  <span>Click</span><span>Tag: all of, any of, none of, off</span>
+  <span>Click</span><span>Tag: include or clear</span>
   <span><kbd>shift</kbd> click</span><span>Any of</span>
   <span><kbd>alt</kbd> click</span><span>None of</span>
   <span><kbd>backspace</kbd></span><span>Edit last filter token</span>
@@ -353,7 +365,10 @@
 <script src="daily.js"></script>
 <script src="refresh.js"></script>
 <script src="accessibility.js"></script>
+<script src="map-renderer.js"></script>
+<script src="note-mentions.js"></script>
 <script src="app.js"></script>
+<script src="dm-import.js"></script>
 <script src="connections.js" defer></script>
 <script src="controls.js"></script>
 </body>

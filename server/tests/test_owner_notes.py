@@ -29,7 +29,8 @@ class NoteReader(unittest.TestCase):
         self.conn.commit()
         with patch.object(notes, 'interpret', return_value=[]) as call:
             self.assertTrue(notes.step(self.conn))
-            call.assert_called_once_with('He is my client.')
+            self.assertEqual(call.call_args.args, ('He is my client.',))
+            self.assertEqual(call.call_args.kwargs['context']['subject']['person_id'], self.pid)
         self.assertEqual(notes.result(self.conn, self.pid)['state'], 'ready')
         self.assertEqual(self.conn.execute('SELECT status FROM marks WHERE person_id=?', (self.pid,)).fetchone()[0], 'no')
 
@@ -46,7 +47,7 @@ class NoteReader(unittest.TestCase):
         db.set_setting(self.conn, 'local_laya', False)
         db.set_setting(self.conn, 'qualify', True)
         self.conn.commit()
-        def inference(note):
+        def inference(note, context=None):
             other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
             db.set_setting(other, 'qualify', False)
             other.commit()
@@ -58,7 +59,7 @@ class NoteReader(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT facts FROM owner_note_reads').fetchone()[0], '[]')
 
     def test_mode_downgrade_and_reenable_during_inference_discards_result(self):
-        def inference(note):
+        def inference(note, context=None):
             other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
             notes.processing_modes.set_mode(other, 'R')
             other.commit()
@@ -99,7 +100,7 @@ class NoteReader(unittest.TestCase):
         self.assertEqual(notes.result(self.conn, self.pid)['facts'], [])
 
     def test_edit_during_inference_discards_result(self):
-        def inference(note):
+        def inference(note, context=None):
             other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
             other.execute('UPDATE marks SET note=?', ('Changed while reading.',))
             other.commit()
@@ -250,7 +251,7 @@ class NoteReader(unittest.TestCase):
             call.assert_not_called()
 
     def test_pause_during_note_inference_discards_result(self):
-        def inference(note):
+        def inference(note, context=None):
             other = db.connect(str(Path(self.tmp.name) / 'notes.sqlite'))
             db.set_setting(other, 'processing_paused', True)
             other.commit()

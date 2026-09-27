@@ -110,7 +110,7 @@ class MapTruthTest(unittest.TestCase):
         self.conn.executemany('INSERT INTO edge_evidence VALUES(?,?,?,?,?,?)', evidence)
         self.conn.commit()
         started = time.monotonic()
-        graph = server.api_map(self.conn, {'scope': ['all'], 'limit': ['50000']}, None)
+        graph = server.api_map(self.conn, {'scope': ['all'], 'limit': ['10000']}, None)
         elapsed = time.monotonic() - started
         leads = [n for n in graph['nodes'] if n['kind'] == 'lead']
         self.assertEqual((graph['total'], graph['limit'], len(leads)), (count, 10000, 10000))

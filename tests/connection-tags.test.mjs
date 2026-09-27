@@ -17,6 +17,7 @@ function mount(tags = [mention]) {
   const person = { id: 42, handle: 'mention_only', bio: 'Made with @owner', tags, lists: 0, edges: [] };
   const context = vm.createContext({
     document: { activeElement: query }, $: selector => nodes[selector],
+    store: { get: (_key, fallback) => fallback, set() {} },
     S: { person, tagList: tags }, M: {}, ORDER: { auto: 2, manual: 0 }, GORDER: { source: 0 },
     STATUSES: [], SDESC: {}, FIT_LABEL: {}, TIER_FIT: {},
     isViaTag: tag => tag.startsWith('via @'), lists: row => row.lists || 0,
@@ -32,6 +33,7 @@ function mount(tags = [mention]) {
     ucf: value => value,
     tagChip: tag => { renderedTags.push(tag.tag); return `<span>${tag.tag}</span>`; }
   });
+  vm.runInContext(readFileSync(new URL('../web/note-mentions.js', import.meta.url), 'utf8'), context);
   vm.runInContext(section('const tagName =', '// ---------- state ----------'), context);
   vm.runInContext(section('const isFitTag =', 'const tagName ='), context);
   vm.runInContext(section('const TOP_TAGS =', 'function tagChip('), context);

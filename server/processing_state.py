@@ -29,14 +29,23 @@ _SCHEMA = (
         input_hash TEXT NOT NULL, verdict_updated_at TEXT NOT NULL,
         verdict TEXT NOT NULL, tags TEXT NOT NULL, archived_at TEXT NOT NULL,
         UNIQUE(person_id,model,input_hash,verdict_updated_at))''',
+    'CREATE INDEX IF NOT EXISTS processing_ai_history_person_model ON processing_ai_history(person_id,model,id DESC)',
+    '''CREATE TABLE IF NOT EXISTS processing_review_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, person_id INTEGER NOT NULL,
+        model TEXT NOT NULL, status TEXT NOT NULL, score INTEGER,
+        reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)''',
+    'CREATE INDEX IF NOT EXISTS processing_review_events_person ON processing_review_events(person_id,id DESC)',
     'CREATE INDEX IF NOT EXISTS verdicts_model_person ON verdicts(model,person_id)',
 )
 
 
 def _queue_sql(pid, priority=0):
-    return f'''INSERT INTO local_queue(person_id,priority)
-        SELECT id,{priority} FROM people WHERE id={pid} AND trim(coalesce(bio,''))!=''
+    return f'''INSERT INTO local_queue(person_id,priority,rank_band)
+        SELECT id,{priority}, CASE WHEN coalesce((SELECT content_fit FROM rule_assessments WHERE person_id=people.id),0)>=70 THEN 2
+        WHEN coalesce((SELECT content_fit FROM rule_assessments WHERE person_id=people.id),0)>=45 THEN 1 ELSE 0 END
+        FROM people WHERE id={pid} AND trim(coalesce(bio,''))!=''
         ON CONFLICT(person_id) DO UPDATE SET retry_at=0,last_error=NULL,revision=revision+1,
+            repair_attempt=0,rank_band=excluded.rank_band,
             priority=max(local_queue.priority,excluded.priority);'''
 
 
@@ -48,6 +57,13 @@ def ensure(conn):
         conn.execute('ALTER TABLE local_reviews ADD COLUMN failure_reason TEXT')
     if 'priority' not in {r[1] for r in conn.execute('PRAGMA table_info(local_queue)')}:
         conn.execute('ALTER TABLE local_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    for column in ('rank_band', 'repair_attempt'):
+        if column not in {r[1] for r in conn.execute('PRAGMA table_info(local_queue)')}:
+            conn.execute(f'ALTER TABLE local_queue ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')
+    conn.execute('CREATE INDEX IF NOT EXISTS local_queue_rank_ready ON local_queue(priority,rank_band,retry_at,person_id)')
+    for trigger in conn.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'processing_%'").fetchall():
+        if 'INSERT INTO local_queue' in trigger['sql'] and 'repair_attempt' not in trigger['sql']:
+            conn.execute('DROP TRIGGER ' + trigger['name'])
     conn.execute('CREATE INDEX IF NOT EXISTS local_queue_priority_ready ON local_queue(priority,retry_at,person_id)')
     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS processing_people_insert AFTER INSERT ON people
         BEGIN {_queue_sql('NEW.id')} END''')
@@ -176,13 +192,39 @@ def next_pending(conn, limit=1, now=None):
     ready_at = time.time() if now is None else now
     rows = []
     for priority in (1, 0):
-        rows.extend(conn.execute('''SELECT q.person_id,q.revision,q.retry_at,q.last_error
-            FROM local_queue q JOIN people p ON p.id=q.person_id
-            WHERE q.priority=? AND q.retry_at<=? AND trim(coalesce(p.bio,''))!=''
-            ORDER BY q.retry_at,q.person_id LIMIT ?''', (priority, ready_at, limit-len(rows))).fetchall())
+        for band in (2, 1, 0):
+            rows.extend(conn.execute('''SELECT q.person_id,q.revision,q.retry_at,q.last_error,q.repair_attempt
+                FROM local_queue q JOIN people p ON p.id=q.person_id
+                WHERE q.priority=? AND q.rank_band=? AND q.retry_at<=? AND trim(coalesce(p.bio,''))!=''
+                ORDER BY q.retry_at,q.person_id LIMIT ?''', (priority, band, ready_at, limit-len(rows))).fetchall())
+            if len(rows) == limit:
+                break
         if len(rows) == limit:
             break
     return rows
+
+
+def refresh_rank_step(conn, limit=500):
+    """One-time bounded migration of existing bulk work into business-fit bands."""
+    if db.get_setting(conn, 'local_rank_bands_complete', False):
+        return 0
+    cursor = db.get_setting(conn, 'local_rank_bands_cursor', 0)
+    ids = [r[0] for r in conn.execute('SELECT person_id FROM local_queue WHERE person_id>? ORDER BY person_id LIMIT ?', (cursor, limit))]
+    if ids:
+        conn.execute('''UPDATE local_queue SET rank_band=CASE
+            WHEN coalesce((SELECT content_fit FROM rule_assessments WHERE person_id=local_queue.person_id),0)>=70 THEN 2
+            WHEN coalesce((SELECT content_fit FROM rule_assessments WHERE person_id=local_queue.person_id),0)>=45 THEN 1 ELSE 0 END
+            WHERE person_id>? AND person_id<=?''', (cursor, ids[-1]))
+        db.set_setting(conn, 'local_rank_bands_cursor', ids[-1])
+    if len(ids) < limit:
+        db.set_setting(conn, 'local_rank_bands_complete', True)
+    return len(ids)
+
+
+def request_repair(conn, person_id, revision, error, delay=30):
+    return conn.execute('''UPDATE local_queue SET repair_attempt=1,last_error=?,retry_at=?
+        WHERE person_id=? AND revision=? AND repair_attempt=0''',
+        (str(error)[:80],time.time()+max(1,delay),person_id,revision)).rowcount > 0
 
 
 def queue_status(conn):
@@ -241,6 +283,31 @@ def save_rules(conn, person, prefilter, verdict, auto_tags):
     conn.execute('DELETE FROM processing_rule_queue WHERE person_id=?', (person['id'],))
 
 
+def record_review_event(conn, person_id, model, status, score=None, reason='', created_at=None):
+    """Small decision trail; never put prompts, evidence, or owner notes here."""
+    cursor = conn.execute('''INSERT INTO processing_review_events
+        (person_id,model,status,score,reason,created_at) VALUES(?,?,?,?,?,?)''',
+        (person_id, str(model or '')[:80], str(status or '')[:32], score,
+         str(reason or '')[:200], created_at or db.now()))
+    # AUTOINCREMENT keeps IDs monotonic. This retains at most 10,000 events
+    # without a full-table count or a scan through the other 9,999 on each write.
+    conn.execute('DELETE FROM processing_review_events WHERE id<=?', (cursor.lastrowid - 10_000,))
+    return cursor.lastrowid
+
+
+def recent_history(conn, limit=20, person_id=None):
+    """Newest compact review events, optionally for one person."""
+    limit = max(1, min(int(limit), 100))
+    if person_id is None:
+        rows = conn.execute('''SELECT e.*,p.handle FROM processing_review_events e
+            LEFT JOIN people p ON p.id=e.person_id ORDER BY e.id DESC LIMIT ?''', (limit,))
+    else:
+        rows = conn.execute('''SELECT e.*,p.handle FROM processing_review_events e
+            LEFT JOIN people p ON p.id=e.person_id WHERE e.person_id=? ORDER BY e.id DESC LIMIT ?''',
+            (person_id, limit))
+    return [dict(row) for row in rows]
+
+
 def archive_verdict(conn, person_id):
     """Preserve an active AI result before replacing it. Safe to call repeatedly."""
     row = conn.execute("SELECT * FROM verdicts WHERE person_id=? AND model!='rules'", (person_id,)).fetchone()
@@ -248,11 +315,25 @@ def archive_verdict(conn, person_id):
         return False
     cols = [d[0] for d in conn.execute('SELECT * FROM verdicts LIMIT 0').description]
     verdict = dict(zip(cols, row))
+    # Prompts and raw evidence may contain private owner notes. Decision fields
+    # and tags suffice to inspect an older result without copying that text.
+    verdict.pop('prompt', None)
+    verdict.pop('evidence', None)
     tags = list(conn.execute("SELECT tag,grp FROM tags WHERE person_id=? AND source='auto'", (person_id,)))
-    conn.execute('''INSERT OR IGNORE INTO processing_ai_history
+    inserted = conn.execute('''INSERT OR IGNORE INTO processing_ai_history
         (person_id,model,input_hash,verdict_updated_at,verdict,tags,archived_at) VALUES(?,?,?,?,?,?,?)''',
         (person_id,verdict['model'],verdict.get('input_hash') or '',verdict.get('updated_at') or '',
-         json.dumps(verdict,ensure_ascii=False),json.dumps([list(r) for r in tags]),db.now()))
+         json.dumps(verdict,ensure_ascii=False),json.dumps([list(r) for r in tags]),db.now())).rowcount
+    if inserted:
+        record_review_event(conn, person_id, verdict['model'], verdict.get('tier') or 'unread',
+                            verdict.get('score'), verdict.get('reason') or '')
+    # Normal rescoring must enforce the same bound as mode changes. The index
+    # keeps this lookup local to one person's results for one model.
+    conn.execute('''DELETE FROM processing_ai_history
+        WHERE person_id=? AND model=? AND id NOT IN (
+            SELECT id FROM processing_ai_history WHERE person_id=? AND model=?
+            ORDER BY id DESC LIMIT 2)''',
+        (person_id, verdict['model'], person_id, verdict['model']))
     return True
 
 

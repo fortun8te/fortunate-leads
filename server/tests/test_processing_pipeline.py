@@ -140,36 +140,53 @@ class ProcessingPipeline(unittest.TestCase):
         self.assertEqual(self.runtime.call_count, 1)
         self.assertEqual(len(state.next_pending(self.conn)), 0)
 
-    def test_invalid_output_is_terminal_and_preserves_existing_score(self):
+    def test_invalid_output_gets_one_bounded_repair_then_is_terminal(self):
         self.conn.execute("INSERT INTO verdicts(person_id,score,model,reason) VALUES(?,48,'rules','Keep rules')",(self.pid,))
         self.conn.commit()
         self.runtime.return_value = {'not': 'the required output'}
         self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.review_count(), 0)
+        pending = self.conn.execute('SELECT repair_attempt,last_error,retry_at FROM local_queue').fetchone()
+        self.assertEqual((pending['repair_attempt'],pending['last_error']), (1,'invalid_output'))
+        self.assertGreater(pending['retry_at'], 0)
+        self.assertEqual(self.runtime.call_count, 1)
+        self.conn.execute('UPDATE local_queue SET retry_at=0 WHERE person_id=?', (self.pid,))
+        self.conn.commit()
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertLess(len(self.runtime.call_args_list[1].args[0]),
+                        len(self.runtime.call_args_list[0].args[0]))
         review = self.conn.execute('SELECT status,verdict,escalation_reason FROM local_reviews').fetchone()
         self.assertEqual(tuple(review),('unverified','null','local_unverified'))
         self.assertEqual(tuple(self.conn.execute('SELECT score,model,reason FROM verdicts').fetchone()),
                          (48,'rules','Keep rules'))
         self.assertFalse(server.local_processing_step(self.conn))
-        self.assertEqual(self.runtime.call_count,1)
+        self.assertEqual(self.runtime.call_count,2)
         # Even an incidental requeue reuses the failed result for unchanged input.
         state.enqueue(self.conn,self.pid)
         self.conn.commit()
         self.assertTrue(server.local_processing_step(self.conn))
-        self.assertEqual(self.runtime.call_count,1)
+        self.assertEqual(self.runtime.call_count,2)
         self.assertEqual(len(state.next_pending(self.conn)),0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM local_queue').fetchone()[0], 0)
 
-    def test_truncation_is_terminal_but_profile_edit_retries(self):
+    def test_truncation_repairs_once_and_profile_edit_resets_budget(self):
         self.runtime.side_effect = ValueError('Local completion was truncated')
         self.assertTrue(server.local_processing_step(self.conn))
-        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'unverified')
+        self.assertEqual(self.review_count(), 0)
+        self.assertEqual(self.conn.execute('SELECT repair_attempt FROM local_queue').fetchone()[0], 1)
+        self.conn.execute('UPDATE local_queue SET retry_at=0 WHERE person_id=?', (self.pid,))
+        self.conn.commit()
+        self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0], 'unverified')
         self.assertFalse(server.local_processing_step(self.conn))
-        self.assertEqual(self.runtime.call_count,1)
+        self.assertEqual(self.runtime.call_count,2)
         self.conn.execute("UPDATE people SET bio=bio||' New product line.' WHERE id=?",(self.pid,))
         self.conn.commit()
+        self.assertEqual(self.conn.execute('SELECT repair_attempt FROM local_queue').fetchone()[0], 0)
         self.runtime.side_effect = None
         self.runtime.return_value = self.output
         self.assertTrue(server.local_processing_step(self.conn))
-        self.assertEqual(self.runtime.call_count,2)
+        self.assertEqual(self.runtime.call_count,3)
         self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'complete')
 
     def test_unverified_output_does_not_replace_previous_local_score(self):
@@ -179,8 +196,28 @@ class ProcessingPipeline(unittest.TestCase):
         self.conn.commit()
         self.runtime.return_value = dict(self.output,evidence=['Invented quote not in the profile'])
         self.assertTrue(server.local_processing_step(self.conn))
+        self.assertEqual(self.conn.execute('SELECT repair_attempt FROM local_queue').fetchone()[0], 1)
+        self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0], 'complete')
+        self.conn.execute('UPDATE local_queue SET retry_at=0 WHERE person_id=?', (self.pid,))
+        self.conn.commit()
+        self.assertTrue(server.local_processing_step(self.conn))
         self.assertEqual(self.conn.execute('SELECT status FROM local_reviews').fetchone()[0],'unverified')
         self.assertEqual(tuple(self.conn.execute('SELECT score,model,reason FROM verdicts').fetchone()),before)
+
+    def test_stale_invalid_result_does_not_consume_new_revision_repair_budget(self):
+        before = state.next_pending(self.conn)[0]['revision']
+        def infer(*args, **kwargs):
+            other = db.connect(self.path)
+            state.enqueue(other, self.pid)
+            other.commit()
+            other.close()
+            return {'not': 'the required output'}
+        self.runtime.side_effect = infer
+        self.assertTrue(server.local_processing_step(self.conn))
+        pending = self.conn.execute('SELECT revision,repair_attempt FROM local_queue').fetchone()
+        self.assertGreater(pending['revision'], before)
+        self.assertEqual(pending['repair_attempt'], 0)
+        self.assertEqual(self.review_count(), 0)
 
     def test_busy_and_unavailable_are_still_timed_retries(self):
         for error in (server.local_model.Busy('In use',retry_after=3),server.local_model.Unavailable('Service unavailable')):

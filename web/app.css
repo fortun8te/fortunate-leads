@@ -246,6 +246,7 @@ main { flex: 1; min-height: 0; position: relative; }
 .fmore { padding: 4px 0; color: var(--fg3); font-size: var(--fs-sm); }
 .fmore:hover { color: var(--fg); }
 .ffind { width: 100%; }
+.filter-mode-hint { margin-top: 6px; color: var(--fg3); font-size: var(--fs-xs); line-height: 1.35; }
 .fsave { display: flex; gap: 6px; margin-bottom: 6px; }
 .fsave .input { flex: 1; min-width: 0; }
 .fnone { display: block; padding: 2px 0 6px; color: var(--fg4); }
@@ -832,6 +833,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .ph-title { display: flex; align-items: center; gap: 10px; }
 .view-count { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 6px; color: var(--fg2); font-size: var(--fs-sm); font-weight: 500; }
 .view-count:empty { display: none; }
+.lead-load-count { color: var(--fg3); font-size: var(--fs-sm); }
+.lead-load-count:empty { display: none; }
 .ph h1 { font-size: var(--fs-h1); font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
 .ph p { margin-top: var(--s1); color: var(--fg3); }
 .ph-a { display: flex; align-items: center; gap: var(--s2); flex: none; }
@@ -1471,7 +1474,7 @@ button:disabled { cursor:default; opacity:.5; }
 .d-overview-bio { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--fg2); line-height: 1.5; }
 
 /* The directory uses the same component sizes, spacing and section hierarchy as Figma. */
-#view-tags { background: var(--tag-canvas); }
+#view-tags { background: var(--bg); }
 .tg { max-width: 1200px; margin-inline: auto; padding: 40px 56px; }
 .tg > .ph { padding: 0 0 32px; }
 .tg > .ph h1 { font-size: 36px; line-height: 44px; }
@@ -1507,3 +1510,25 @@ button:disabled { cursor:default; opacity:.5; }
 .map-search-hit { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); cursor: pointer; }
 .map-search-hit span { color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-search-hit:hover, .map-search-hit:focus-visible { border-color: var(--fg3); background: var(--bg2); }
+
+/* Large map layers retain the same canvas controls and compact toolbar. */
+.stage canvas[hidden], #map-overview[hidden] { display: none; }
+#map-points { pointer-events: none; }
+.map-options { position: relative; }
+.map-options summary { list-style: none; cursor: pointer; }
+.map-options-panel { position: absolute; top: 36px; right: 0; width: 250px; z-index: 25; padding: 14px; background: var(--bg); border: 1px solid var(--line2); border-radius: 10px; display: grid; gap: 10px; }
+.map-options-panel label { display: grid; gap: 4px; color: var(--fg2); font-size: 12px; }
+.map-options-panel input, .map-options-panel select { width: 100%; }
+.map-options-panel p { font-size: 12px; color: var(--fg3); margin: 0; }
+.map-overview { position: absolute; inset: 0 0 50px; z-index: 2; padding: 24px; overflow: auto; background: var(--bg); }
+.map-overview p { max-width: 600px; color: var(--fg2); }
+.map-overview-buckets { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.map-overview-buckets button { padding: 18px; display: grid; justify-items: start; gap: 8px; }
+.map-overview-buckets span { color: var(--fg3); }
+.note-mention-picker{position:absolute;z-index:35;max-height:220px;overflow:auto;background:var(--bg1);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0002;min-width:220px;max-width:calc(100vw - 32px)}
+.note-mention-option{display:flex;gap:10px;width:100%;text-align:left;padding:9px 12px;background:transparent;border:0;color:var(--fg)}
+.note-mention-option[aria-selected=true],.note-mention-option:hover{background:var(--bg3)}
+.local-activity{margin-top:16px;border-top:1px solid var(--line);padding-top:16px}
+.local-work-now{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.local-activity p{font-size:13px;margin:8px 0 12px}.local-history-item{width:100%;display:flex;gap:16px;align-items:center;text-align:left;border:0;border-bottom:1px solid var(--line);padding:10px 0;background:transparent;color:var(--fg);font-size:12px}.local-history-item span:first-child{flex:1}.local-history-item time{color:var(--fg3)}.discovery-recent{font-size:12px;margin:8px 0}.collection-suggestion-heading p{font-size:12px;margin:5px 0}
+
+.map-render-status { position: absolute; left: 16px; bottom: 54px; font-size: 12px; pointer-events: none; }

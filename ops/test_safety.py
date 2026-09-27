@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+from datetime import date, timedelta
 import signal
 import sqlite3
 import subprocess
@@ -113,6 +114,9 @@ class SafetyTests(unittest.TestCase):
             dest.mkdir()
             old = dest / 'leads-20200101-000000-1-1.sqlite'
             old.write_bytes(b'old backup')
+            active = dest / 'leads-20200101-000000-3-1.sqlite'
+            active.write_bytes(b'opened backup')
+            pathlib.Path(str(active) + '-wal').write_bytes(b'journal')
             preserved = [dest / 'leads-manual.sqlite', dest / '.leads-backup.stale']
             for path in preserved:
                 path.write_bytes(b'keep')
@@ -123,9 +127,40 @@ class SafetyTests(unittest.TestCase):
                                  env=self.backup_env(root), capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertFalse(old.exists())
+            self.assertTrue(active.exists())
             self.assertTrue(link.is_symlink())
             for path in preserved:
                 self.assertEqual(path.read_bytes(), b'keep')
+
+    def test_many_same_day_backups_keep_older_daily_recovery_points(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            db = root / 'leads.sqlite'
+            with sqlite3.connect(db) as con:
+                self.create_workspace(con)
+            dest = root / 'backups'
+            dest.mkdir()
+            today = date.today()
+            prior = []
+            for days_ago in (2, 1):
+                day = (today - timedelta(days=days_ago)).strftime('%Y%m%d')
+                path = dest / f'leads-{day}-030000-1-1.sqlite'
+                path.write_bytes(b'old snapshot')
+                prior.append(path)
+            same_day = []
+            for hour in range(5):
+                path = dest / f'leads-{today:%Y%m%d}-{hour:02d}0000-1-1.sqlite'
+                path.write_bytes(b'manual snapshot')
+                same_day.append(path)
+            run = subprocess.run(['bash', str(OPS / 'backup.sh'), '--db', str(db),
+                                  '--dest', str(dest), '--keep', '2', '--no-rotate'],
+                                 env=self.backup_env(root), capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertFalse(prior[0].exists())
+            self.assertTrue(prior[1].exists())
+            self.assertFalse(same_day[0].exists())
+            self.assertTrue(same_day[-1].exists())
+            self.assertEqual(len(list(dest.glob('leads-*.sqlite'))), 3)
 
     def test_zero_retention_is_rejected_without_pruning(self):
         with tempfile.TemporaryDirectory() as directory:
