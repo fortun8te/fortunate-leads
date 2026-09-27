@@ -1661,7 +1661,7 @@ function setHelp(open) {
   } else {
     help.hidden = true;
     if (helpReturnFocus?.isConnected) helpReturnFocus.focus({ preventScroll: true });
-    else $('#help-btn').focus({ preventScroll: true });
+    else $('.tabs a.on')?.focus({ preventScroll: true });
     helpReturnFocus = null;
   }
 }
@@ -1754,7 +1754,6 @@ document.addEventListener('keydown', (e) => {
     if (S.open !== r.id) openDetail(r.id).then(focusTag); else focusTag();
   }
 });
-$('#help-btn').onclick = () => setHelp(true);
 $('#help').onclick = () => setHelp(false);
 
 // ---------- tags manager ----------
@@ -2261,7 +2260,7 @@ function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
   const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
-  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No workspace list cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No workspace bio cap'}`;
+  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div><button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
@@ -2270,8 +2269,7 @@ function accountRow(a) {
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-overview">
       <div class="acc-fact"><span class="acc-key">Instagram access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b><small>${esc(access.detail)}</small></div>
-      <div class="acc-fact"><span class="acc-key">Assigned work</span><b>${esc(role)}</b><small title="${esc(jobText(a))}">${esc(jobText(a))}</small></div>
-      <div class="acc-fact acc-usage"><span class="acc-key">Today</span><b class="num">${int(t.list)} list pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+      <div class="acc-fact acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(role)}${a.job ? ` · ${esc(jobText(a))}` : ''} · ${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
     </div>
     <div class="acc-bottom"><span class="muted">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</span><details class="adv acc-more"><summary>Advanced settings</summary>
     <div class="acc-ctl">
@@ -2295,16 +2293,16 @@ function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all · lists, bios & AI';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all';
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
   const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
   const kpi = (label, val, sub) => `<div class="tile"><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   $('#acc-kpis').innerHTML = [
-    kpi('Accounts online', `${online} of ${accs.length}`, accs.length < 3 ? 'More accounts = faster scraping' : ''),
-    kpi('People per hour', int(r.people_last_hour), 'All accounts together'),
-    kpi('Today', int(pages) + ' pages', plural(bios, 'bio') + ' read'),
+    kpi('Online', `${online}/${accs.length}`, ''),
+    kpi('People this hour', int(r.people_last_hour), ''),
+    kpi('Read today', `${int(pages)} pages · ${int(bios)} bios`, ''),
   ].join('');
   $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
