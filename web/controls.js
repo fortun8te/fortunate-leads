@@ -37,7 +37,11 @@
     const collectionPaused = collection.length === 2 && collection.every((s) => s.paused);
     const collectionAction = collectionPaused ? 'resume' : 'pause';
     const collectionLabel = collectionPaused ? 'Start collection' : 'Pause collection';
+    const sharedWait = collection.find(s => s.state === 'waiting' && s.wait?.scope === 'workspace')?.wait;
+    const resumeAt = sharedWait?.until && Number.isFinite(Date.parse(sharedWait.until))
+      ? new Date(sharedWait.until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
     const collectionState = offline ? 'Unknown' : attention ? 'Needs attention' : collection.every((s) => s.paused) ? 'Off'
+      : sharedWait ? `Instagram wait${resumeAt ? ' · until ' + resumeAt : ''}`
       : collection.some((s) => ['error', 'failed'].includes(s.state)) ? 'Needs attention'
       : collection.some((s) => s.state === 'running') ? 'On'
       : collection.some((s) => s.state === 'waiting') ? 'Waiting' : 'Idle';

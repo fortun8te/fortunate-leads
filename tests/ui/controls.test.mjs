@@ -219,3 +219,13 @@ test('persisted Instagram attention stays visible while collection is paused', a
   assert.match(h.el.innerHTML, /role="alert"[^>]*>An Instagram request is unconfirmed/);
   assert.match(h.el.innerHTML, /href="#\/accounts">Check accounts/);
 });
+
+
+test('shared Instagram wait exposes its return time directly in the top bar', async () => {
+  const h = harness();
+  h.respond(0, state(false, { id: 'lists', now: 'Instagram collection is waiting',
+    wait: {scope:'workspace', why:'Instagram wait', seconds:1800, until:'2026-09-27T16:57:58Z'} }));
+  await settle();
+  assert.match(h.el.innerHTML, /Instagram wait · until/);
+  assert.match(h.el.innerHTML, /Pause collection/);
+});
