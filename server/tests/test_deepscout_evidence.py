@@ -139,6 +139,9 @@ class EvidenceTest(unittest.TestCase):
                 response.begin()
 
     def test_every_worker_reply_is_recorded_and_unverified_keeps_bulk(self):
+        db.set_setting(self.conn, 'qualify', True)
+        db.set_setting(self.conn, 'scout', True)
+        self.conn.commit()
         pool = scout.ScoutPool(self.path)
         with patch.object(scout, 'run', return_value=self.answer(quote='Invented quote')):
             pool._work(self.p)

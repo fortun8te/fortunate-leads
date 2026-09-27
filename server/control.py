@@ -3,7 +3,8 @@
 Stages and the settings they sit on:
   lists  "Collect lists"  settings `paused` (workspace pause, legacy) or `paused_lists`  -> /api/ext/next hands out no list jobs
   bios   "Read bios"      settings `paused` or `paused_bios`                              -> /api/ext/next hands out no profile jobs
-  ai     "AI scoring"     setting `qualify` (off also switches `qualify_auto` off, so it does not switch itself back on)
+  ai     "External AI scoring" setting `qualify` (off also switches `qualify_auto` off)
+Local Laya can keep running with external AI off when `local_laya` is enabled.
 Resuming lists or bios clears the legacy `paused` and keeps the other stage where it was, so the three stay independent.
 """
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,9 @@ def set_stage(conn, stage, pause):
         db.set_setting(conn, 'qualify', not pause)
         if pause:
             db.set_setting(conn, 'qualify_auto', False)
+        else:
+            # Explicitly resuming external AI leaves local-only mode.
+            db.set_setting(conn, 'local_laya', False)
         return
     if not pause and db.get_setting(conn, 'paused'):
         # the legacy pause covered both Instagram stages: keep the other one paused so only this one resumes
@@ -72,10 +76,11 @@ def resume_all(conn):
 
 
 def start_all(conn):
-    """Explicit one-click opt-in to collection and AI, including paused accounts."""
+    """Start collection; preserve a user's local-only qualification mode."""
     db.set_setting(conn, 'paused', False)
-    for stage in STAGES:
+    for stage in ('lists', 'bios'):
         set_stage(conn, stage, False)
+    set_stage(conn, 'ai', bool(db.get_setting(conn, 'local_laya')))
     conn.execute('UPDATE accounts SET paused=0 WHERE paused=1')
 
 
@@ -137,6 +142,9 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         out['minute'] = c['minute']
     if paused:
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
+        if stage == 'ai' and db.get_setting(conn, 'local_laya') and not (
+                stage_paused(conn, 'lists') and stage_paused(conn, 'bios')):
+            return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
         return dict(out, state='paused', now=why)
     if stage == 'ai':
         if not queue:
@@ -213,7 +221,8 @@ def snapshot(conn, ai_left=None):
               stage_out(conn, 'ai', accts, rows, c['ai'], now, ai_left or 0)]
     both = all(s['paused'] for s in stages[:2])
     return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
-            'all_paused': all(s['paused'] for s in stages), 'at': iso(now)}
+            'all_paused': all(s['paused'] for s in stages), 'local_laya': bool(db.get_setting(conn, 'local_laya')),
+            'at': iso(now)}
 
 
 def apply(conn, b):

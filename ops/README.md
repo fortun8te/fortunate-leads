@@ -1,8 +1,8 @@
 # ops quickstart (macOS)
 
 After the one-time service install below, double-click `ops/start-all.command` to
-start the server, Laya, the Michael/BOT/BOT2 Chrome profiles, and all three work
-stages. This also resumes AI scoring, which may use paid provider calls. Instagram
+start the server, Laya, the Michael/BOT/BOT2 Chrome profiles, and the saved work
+stages. External AI scoring resumes only when local-only mode is off; it may use paid provider calls. Instagram
 login holds and cooldowns still apply; the Accounts page shows them.
 
 ```sh

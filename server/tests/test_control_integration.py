@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import control
 import db
+import laya
 import qual_api
 import server
 
@@ -33,6 +34,71 @@ class PublicControlIntegration(unittest.TestCase):
         self.assertFalse(server.auto_qualify(self.conn))
         self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))
         self.assertTrue(control.stage_paused(self.conn, 'ai'))
+
+    def test_local_laya_runs_with_external_qualification_off(self):
+        pid = db.upsert_person(self.conn, {'handle': 'localonly', 'bio': 'Founder of a clothing brand'})
+        self.conn.commit()
+        db.set_setting(self.conn, 'qualify_auto', True)
+        self.assertEqual(server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True}),
+                         {'qualify': False, 'local_laya': True})
+        self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))
+        with self.assertRaises(server.Bad):
+            server.api_qualify(self.conn, {}, {'on': False, 'auto': True, 'local_laya': True})
+        with self.assertRaises(server.Bad):
+            server.api_qualify(self.conn, {}, {'auto': True})
+        server.api_scout_set(self.conn, {}, {'on': False})
+        answers = {pid: {question['key']: 0.5 for question in laya.QUESTIONS}}
+        with patch.object(laya, 'available', return_value=True), \
+                patch.object(laya, 'decide', return_value=answers) as decide:
+            for _ in range(3):
+                server.laya_step(self.conn)
+                if self.conn.execute('SELECT 1 FROM laya WHERE person_id=?', (pid,)).fetchone():
+                    break
+            self.assertTrue(self.conn.execute('SELECT 1 FROM laya WHERE person_id=?', (pid,)).fetchone())
+            decide.assert_called()
+            self.assertFalse(server.LLMPool().step(self.conn))
+            self.assertFalse(db.get_setting(self.conn, 'scout'))
+            self.assertTrue(server.api_scraper_status(self.conn, {}, {})['local_laya'])
+            self.assertIn('Laya', control.snapshot(self.conn)['stages'][2]['now'])
+            control.start_all(self.conn)
+            self.assertFalse(db.get_setting(self.conn, 'qualify'))
+            self.assertTrue(db.get_setting(self.conn, 'local_laya'))
+            control.stop_all(self.conn)
+            self.assertFalse(server.laya_step(self.conn))
+
+    def test_external_model_work_stops_after_switch_off(self):
+        pid = db.upsert_person(self.conn, {'handle': 'modelcandidate', 'bio': 'Founder of a clothing brand'})
+        self.conn.commit()
+        server.qualify_batch(self.conn)
+        rows = self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchall()
+        control.set_stage(self.conn, 'ai', False)
+        self.conn.commit()
+
+        def pause_during_research(conn, _items):
+            control.set_stage(conn, 'ai', True)
+            conn.commit()
+
+        with patch.object(server, 'research', side_effect=pause_during_research), \
+                patch.object(server.qualify, 'llm_verdicts', create=True) as model:
+            self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
+            model.assert_not_called()
+        with patch.object(server.llm, 'refresh_models') as refresh:
+            self.assertFalse(server.models_step(self.conn))
+            refresh.assert_not_called()
+
+        control.set_stage(self.conn, 'ai', False)
+        self.conn.commit()
+
+        def pause_during_model(_items, _examples):
+            control.set_stage(self.conn, 'ai', True)
+            self.conn.commit()
+            return [{'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'old reply', 'model': 'llm'}]
+
+        with patch.object(server, 'research'), patch.object(server.qualify, 'llm_verdicts',
+                                                          side_effect=pause_during_model, create=True):
+            self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
+        self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0],
+                         'rules')
 
     def test_deeper_keeps_page_facts_without_model_when_ai_off(self):
         control.stop_all(self.conn)

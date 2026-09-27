@@ -1,6 +1,6 @@
 #!/bin/bash
 # Double-click to start the installed local services, the three Chrome profiles,
-# and all three pipeline stages (including AI provider calls).
+# and collection stages. External AI follows the saved qualification mode.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -16,7 +16,7 @@ agent_checkout_owned "$FL_LABEL" server/server.py || {
   echo 'The installed server belongs to another checkout; no service was started.' >&2; exit 1;
 }
 
-echo 'Starting Fortunate Leads (lists, bios, and AI)...'
+echo 'Starting Fortunate Leads...'
 if wait_http /api/counts 3; then
   agent_owns_port || {
     echo 'Another server is answering on the Fortunate Leads port; no stages were started.' >&2; exit 1;
