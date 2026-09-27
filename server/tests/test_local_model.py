@@ -44,6 +44,21 @@ class LocalModelTest(unittest.TestCase):
         self.assertEqual(body['reasoning_budget_tokens'], 200)
         self.assertEqual(body['max_tokens'], 700)
 
+    def test_metrics_have_only_bounded_usage_and_duration(self):
+        replies = self.replies()
+        replies[-1]['usage'] = {'prompt_tokens': 88, 'completion_tokens': 34,
+                                'total_tokens': 122, 'prompt_tokens_details': {'cached_tokens': 42},
+                                'private_prompt': 'must not persist'}
+        with patch.object(model, '_request', side_effect=replies):
+            model.complete_json('private system', 'private user', {'type': 'object'})
+        metrics = model.last_call_metrics()
+        self.assertEqual({k: metrics[k] for k in ('prompt_tokens', 'completion_tokens',
+                                                  'total_tokens', 'cached_tokens', 'finish_reason')},
+                         {'prompt_tokens': 88, 'completion_tokens': 34, 'total_tokens': 122,
+                          'cached_tokens': 42, 'finish_reason': 'stop'})
+        self.assertGreaterEqual(metrics['duration_ms'], 0)
+        self.assertNotIn('private_prompt', str(metrics))
+
     def test_invalid_reasoning_budget_never_calls_model(self):
         for budget in (-1, 700, True, 1.5):
             with self.subTest(budget=budget), patch.object(model, '_request') as call:

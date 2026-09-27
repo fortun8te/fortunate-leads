@@ -188,10 +188,10 @@ function setMode(t, mode) {
   S.f.tags = S.f.tags.filter((x) => x !== t); S.f.any = S.f.any.filter((x) => x !== t); S.f.not = S.f.not.filter((x) => x !== t);
   if (mode === 'inc') S.f.tags.push(t); else if (mode === 'any') S.f.any.push(t); else if (mode === 'exc') S.f.not.push(t);
 }
-// click: all -> any -> none -> off; shift: any; alt: none.
+// A plain click toggles a required tag. Modifiers choose the other match modes.
 function clickTag(t, e) {
   const m = modeOf(t);
-  const next = e && e.altKey ? (m === 'exc' ? null : 'exc') : e && e.shiftKey ? (m === 'any' ? null : 'any') : m === null ? 'inc' : m === 'inc' ? 'any' : m === 'any' ? 'exc' : null;
+  const next = e && e.altKey ? (m === 'exc' ? null : 'exc') : e && e.shiftKey ? (m === 'any' ? null : 'any') : m === 'inc' ? null : 'inc';
   setMode(t, next);
   filtersChanged();
 }
@@ -468,7 +468,7 @@ function renderFilters() {
       <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     </div>
-    <div class="fsec f-x"><input class="input ffind" id="f-find" type="search" placeholder="Find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"></div>`;
+    <div class="fsec f-x"><input class="input ffind" id="f-find" type="search" placeholder="Find tag" value="${esc(S.tagFind)}" autocomplete="off" spellcheck="false"><p class="filter-mode-hint">Click: require · Shift: any · Alt: exclude</p></div>`;
   const tags = S.tagList;
   const own = tags.filter((t) => t.kind === 'manual');
   const rule = tags.filter((t) => t.kind === 'rule');
@@ -936,6 +936,8 @@ function renderRows() {
   const focusKey = active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
   const box = $('#rows'), sc = $('#scroll'), h = rowH();
   if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
+  $('#work-loaded').textContent = S.total != null && !S.done && S.total > 0
+    ? `${int(S.rows.length)} of ${int(S.total)} loaded${S.loading ? ' · Loading…' : ''}` : '';
   if (!S.rows.length) {
     box.style.height = '100%';
     if (S.loading || (S.total == null && !S.error)) {
@@ -1157,6 +1159,7 @@ function renderDetail() {
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const panel = $('#detail');
   const detailFocus = detailAccess.capture();
+  const mentionFocus = LeadNoteMentions.capture($('#note'));
   const view = detailView(p.id);
   const tagVal = view.tag;
   const noteVal = noteQueue.peek(p.id)?.draft ?? p.note ?? '';
@@ -1179,7 +1182,7 @@ function renderDetail() {
       ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
     </div>
     ${overviewTags.length || p.bio ? `<section class="d-sec d-overview">${overviewTags.length ? `<div class="d-tags d-overview-tags">${overviewTags.map(t => tagChip(t)).join('')}</div>` : ''}${p.bio ? `<p class="d-overview-bio">${esc(p.bio)}</p>` : ''}</section>` : ''}
-    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what you discussed, what matters…">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
+    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what matters… Type @ to link a profile.">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
@@ -1206,20 +1209,30 @@ function renderDetail() {
       <h4 class="d-more-heading">Observed connections${n ? ` · ${plural(n, 'list')}` : ''}</h4>
       ${connectionEvidenceHTML(edges, oldEdges)}
       <h4 class="d-more-heading">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
+      ${p.review_history?.length ? `<h4 class="d-more-heading">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? ` · ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
     </details>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   wireWorkflow(p);
+  const mentionDrafts = store.get('note-mention-drafts', {});
+  LeadNoteMentions.attach($('#note'), {
+    selected: mentionDrafts[p.id] || p.note_mentions || [],
+    search: query => api.get('/api/note-mentions?q=' + encodeURIComponent(query)),
+    change: refs => { const drafts = store.get('note-mention-drafts', {}); drafts[p.id] = refs; store.set('note-mention-drafts', drafts); },
+  });
   detailAccess.restore(detailFocus);
+  LeadNoteMentions.restore($('#note'), mentionFocus);
 }
 $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-close')) return closeDetail();
   if (S.seedCard || e.target.closest('[data-sf],[data-only],[data-focus]')) return seedCardClick(e);
   const p = S.person;
   if (!p) return;
+  const mentionedProfile = e.target.closest('[data-note-profile]');
+  if (mentionedProfile) return openDetail(Number(mentionedProfile.dataset.noteProfile));
   const resolution = e.target.closest('[data-note-resolution]');
   if (resolution) {
-    try { await noteQueue.resolve(p.id, resolution.dataset.noteResolution === 'draft'); if (S.person?.id === p.id) { if (resolution.dataset.noteResolution === 'saved') { S.person.note = noteQueue.peek(p.id)?.draft || ''; S.person.mark_rev = noteQueue.peek(p.id)?.revision; } renderDetail(); } }
+    try { await noteQueue.resolve(p.id, resolution.dataset.noteResolution === 'draft'); if (S.person?.id === p.id) { if (resolution.dataset.noteResolution === 'saved') { const refs = store.get('note-mention-drafts', {}); delete refs[p.id]; store.set('note-mention-drafts', refs); S.person.note = noteQueue.peek(p.id)?.draft || ''; S.person.mark_rev = noteQueue.peek(p.id)?.revision; } renderDetail(); } }
     catch { /* The queue keeps the draft and displays the latest conflict. */ }
     return;
   }
@@ -1267,20 +1280,23 @@ const noteQueue = LeadWorkflow.createNoteQueue({
   save: async (id, note, revision) => {
     invalidatePersonRead(id);
     let result;
-    try { result = await api.post(`/api/person/${id}/mark`, { note, if_match: revision }); }
+    const mentionDraft = store.get('note-mention-drafts', {})[id];
+    const noteMentions = mentionDraft === undefined ? undefined : LeadNoteMentions.surviving(note, mentionDraft);
+    try { result = await api.post(`/api/person/${id}/mark`, { note, if_match: revision, ...(noteMentions === undefined ? {} : { note_mentions: noteMentions }) }); }
     catch (error) {
       if (error.status === 409) {
-        try { const latest = await api.get(`/api/person/${id}`); noteQueue.conflict(id, latest.note || '', latest.mark_rev ?? ''); }
+        try { const latest = await api.get(`/api/person/${id}`); if (S.person?.id === id) S.person.note_mentions = latest.note_mentions || []; noteQueue.conflict(id, latest.note || '', latest.mark_rev ?? ''); }
         catch { /* Keep the draft blocked until a successful detail refresh. */ }
       }
       throw error;
     }
+    if (noteQueue.peek(id)?.draft === note) { const drafts = store.get('note-mention-drafts', {}); delete drafts[id]; store.set('note-mention-drafts', drafts); }
     invalidatePersonRead(id);
     const r = S.rows.find((x) => x.id === id), n = M.byId.get('p:' + id);
     if (r) { r.note = note || null; r.mark_rev = result.mark_rev; }
     if (n) n.note = note || null;
     if (S.person?.id === id) {
-      S.person.note = note; S.person.mark_rev = result.mark_rev;
+      S.person.note = note; S.person.mark_rev = result.mark_rev; S.person.note_mentions = result.note_mentions || [];
       S.person.note_interpretation = result.note_interpretation || null;
       refreshActivity(id);
       setTimeout(() => { if (S.person?.id === id) refreshPerson(id); }, 0);
@@ -1383,7 +1399,10 @@ function noteInsightsHTML(p) {
     if (known && !patch) return '';
     const label = patch?.relationships ? HUMAN_RELATIONSHIPS[fact.kind === 'current_client' || fact.kind === 'past_client' ? 'client' : fact.kind] : patch?.familiarity ? FAMILIARITY_LABELS[patch.familiarity] : patch?.status ? slabel(patch.status) : '';
     const action = patch ? ` <button class="btn ghost" type="button" data-note-fact="${index}">Set ${esc(label)}</button>` : '';
-    return `<p><span class="muted">${esc(fact.label)}:</span> “${esc(fact.quote)}”${action}</p>`;
+    const profiles = fact.kind === 'mentioned_connection' ? (p.note_mentions || [])
+      .filter(ref => Number.isSafeInteger(ref.person_id) && LeadNoteMentions.contains(fact.quote, ref.token))
+      .map(ref => `<button class="btn ghost" type="button" data-note-profile="${ref.person_id}" aria-label="Open @${esc(ref.handle)}">@${esc(ref.handle)}${ref.name ? ' · ' + esc(ref.name) : ''}</button>`).join(' ') : '';
+    return `<p><span class="muted">${esc(fact.label)}:</span> “${esc(fact.quote)}”${action}</p>${profiles ? `<p class="note-mentioned-profiles">${profiles}</p>` : ''}`;
   }).join('');
   return facts + (facts && state.ranking_effect ? `<p class="muted note-ranking-effect">${esc(state.ranking_effect)}</p>` : '');
 }
@@ -1439,12 +1458,12 @@ function localDateTime() { const d = new Date(); return LeadWorkflow.localToday(
 const followUpBusy = new Set(), activityBusy = new Set(), activityMoreBusy = new Set();
 const workflowMessages = new Map(), activityFetchVersions = new Map();
 const activityFields = ['kind', 'body', 'when', 'status', 'followChoice', 'nextDue', 'nextAction'];
-const activityLabels = { dm: 'DM sent', reply: 'Reply received', call: 'Call', meeting: 'Meeting', note: 'Note', status: 'Status changed', follow_up_scheduled: 'Follow-up scheduled', follow_up_completed: 'Follow-up completed', follow_up_cleared: 'Follow-up cleared', identity_merged: 'Profiles merged', follow_up_merged: 'Follow-ups merged' };
+const activityLabels = { dm_import: 'Instagram message history', dm: 'DM sent', reply: 'Reply received', call: 'Call', meeting: 'Meeting', note: 'Note', status: 'Status changed', follow_up_scheduled: 'Follow-up scheduled', follow_up_completed: 'Follow-up completed', follow_up_cleared: 'Follow-up cleared', identity_merged: 'Profiles merged', follow_up_merged: 'Follow-ups merged' };
 function activityHTML(activity, id = S.person?.id) {
   if (!activity) return '<p class="muted">Activity is unavailable.</p><button class="btn" id="activity-retry" type="button">Retry activity</button>';
   const rows = activity.rows || [], all = !!workflowDrafts.get(id)?.historyOpen;
   const visible = all ? rows : rows.slice(0, 3);
-  return `<ol class="activity-list">${visible.map((a) => `<li><div><strong>${esc(activityLabels[a.kind] || a.kind)}</strong><time datetime="${esc(a.happened_at)}">${esc(new Date(a.happened_at).toLocaleString())}</time></div>${a.body ? `<p>${esc(a.body)}</p>` : ''}${a.before_value != null || a.after_value != null ? `<p class="muted">${esc(activityValue(a.before_value))} → ${esc(activityValue(a.after_value))}</p>` : ''}</li>`).join('')}</ol>${!rows.length ? '<p class="muted">No activity recorded yet.</p>' : ''}<div class="workflow-actions">${rows.length > 3 || activity.next_cursor ? `<button class="btn" type="button" id="activity-show-all" aria-expanded="${all}">${all ? 'Show less activity' : 'Show all activity'}</button>` : ''}${all && activity.next_cursor ? `<button class="btn" type="button" id="activity-more" ${activityMoreBusy.has(id) ? 'disabled' : ''}>Load older activity</button>` : ''}</div>`;
+  return `<ol class="activity-list">${visible.map((a) => `<li><div><strong>${esc(activityLabels[a.kind] || a.kind)}</strong><time datetime="${esc(a.happened_at)}">${esc(new Date(a.happened_at).toLocaleString())}</time></div>${a.body ? `<p>${esc(a.body)}</p>` : ''}${a.kind === 'dm_import' ? `<p class="muted">${esc(a.after_value?.outbound ?? 0)} sent · ${esc(a.after_value?.inbound ?? 0)} received · From Instagram download</p>` : a.before_value != null || a.after_value != null ? `<p class="muted">${esc(activityValue(a.before_value))} → ${esc(activityValue(a.after_value))}</p>` : ''}</li>`).join('')}</ol>${!rows.length ? '<p class="muted">No activity recorded yet.</p>' : ''}<div class="workflow-actions">${rows.length > 3 || activity.next_cursor ? `<button class="btn" type="button" id="activity-show-all" aria-expanded="${all}">${all ? 'Show less activity' : 'Show all activity'}</button>` : ''}${all && activity.next_cursor ? `<button class="btn" type="button" id="activity-more" ${activityMoreBusy.has(id) ? 'disabled' : ''}>Load older activity</button>` : ''}</div>`;
 }
 function activityValue(value) {
   if (value == null || value === '') return 'None';
@@ -2260,21 +2279,21 @@ function accountRow(a) {
   </section>`;
 }
 
-// Suggestions only use saved data. A person enters the queue after an explicit Add.
-const collectionSuggestions = {items:[], loadedAt:0, loading:false, busy:new Set(), added:new Set(), error:''};
+// Suggestions use saved evidence; discovery adds one target only when the queue is empty.
+const collectionSuggestions = {items:[], loadedAt:0, loading:false, busy:new Set(), added:new Set(), error:'', enabled:null, history:[]};
 function collectionSuggestionsHTML(items, busy = new Set()) {
   return items.map(item => {
     const directions = (item.directions || []).filter(d => ['followers','following'].includes(d));
     if (!/^[a-z0-9._]{1,30}$/i.test(item.handle || '') || !directions.length) return '';
     const what = directions.length === 2 ? 'Followers + following' : directions[0] === 'followers' ? 'Followers' : 'Following';
-    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><small>${esc(what)} · ${esc(item.reason || 'Matches your saved leads')}</small></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to collection"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button></div>`;
+    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><small>${esc(what)} · ${esc(item.reason || 'Matches your saved leads')}</small></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to scraping"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button><button class="btn ghost" data-discovery-hide="${esc(item.handle)}" aria-label="Skip @${esc(item.handle)}">Skip</button></div>`;
   }).join('');
 }
 function renderCollectionSuggestions() {
   const box = $('#collection-suggestions');
   if (!box) return;
   const state = collectionSuggestions;
-  box.innerHTML = `<div class="collection-suggestion-heading"><h3>Suggested next</h3><span class="muted">From your saved leads</span></div>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Looking through saved profiles…' : 'New suggestions appear as profiles are checked.'}</p>`}`;
+  box.innerHTML = `<div class="collection-suggestion-heading"><div><h3>Suggested next</h3><p class="muted">${state.enabled ? 'Continues here when your queue is empty. Your added profiles go first.' : 'Based on your labels, business fit and saved connections.'}</p></div><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}</button></div>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Looking through saved profiles…' : 'New suggestions appear as profiles are checked.'}</p>`}${state.history.filter(row => row.state === 'queued').slice(0,2).map(row => `<p class="muted discovery-recent">Added automatically · @${esc(row.handle)} · ${esc(row.reason)}</p>`).join('')}`;
 }
 async function loadCollectionSuggestions(force = false) {
   const state = collectionSuggestions;
@@ -2282,10 +2301,20 @@ async function loadCollectionSuggestions(force = false) {
   state.loading = true;
   try {
     const result = await api.get('/api/scraper/suggestions?limit=3');
+    state.enabled = !!result.auto_discover;
+    state.history = result.history || [];
     state.items = Array.isArray(result.suggestions) ? result.suggestions.filter(item => !state.added.has(item.handle)).slice(0,3) : [];
     state.error = '';
   } catch { state.error = 'Suggestions are unavailable. You can still add a profile above.'; }
   finally { state.loading = false; state.loadedAt = Date.now(); renderCollectionSuggestions(); }
+}
+async function updateDiscovery(change) {
+  const state = collectionSuggestions;
+  if (state.saving) return;
+  state.saving = true; renderCollectionSuggestions();
+  try { await api.post('/api/scraper/suggestions', change); await loadCollectionSuggestions(true); }
+  catch { state.error = 'Could not save discovery settings. Try again.'; }
+  finally { state.saving = false; renderCollectionSuggestions(); }
 }
 async function addSuggestedTarget(handle) {
   const state = collectionSuggestions, item = state.items.find(row => row.handle === handle);
@@ -2333,6 +2362,9 @@ function mountCollectionTargets() {
     suggestions.setAttribute('aria-label', 'Suggested target profiles');
     workspace.append(suggestions);
     suggestions.addEventListener('click', e => {
+      const toggle = e.target.closest('[data-discovery-toggle]'), hide = e.target.closest('[data-discovery-hide]');
+      if (toggle && !toggle.disabled) { updateDiscovery({enabled: !collectionSuggestions.enabled}); return; }
+      if (hide) { updateDiscovery({hide: hide.dataset.discoveryHide}); return; }
       const button = e.target.closest('button[data-suggested-handle]');
       if (button && !button.disabled) addSuggestedTarget(button.dataset.suggestedHandle);
     });
@@ -2367,7 +2399,7 @@ function collectionCoverageHTML(sc) {
   const progress = sc.progress?.lists;
   const estimate = state === 'Scraping' && active.length && active.every(list => Number.isFinite(list.expected ?? list.total)) && progress?.per_minute > 0 && progress?.left > 0 && Number.isFinite(progress?.eta_h) && progress.eta_h > 0 ? ` · Active queue: ${eta(progress.eta_h)} left` : '';
   const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
-  const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting`;
+  const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting${bios.failed ? ` · ${int(bios.failed)} need retry` : ''}`;
   const speed = bios?.per_minute == null ? '' : ` · ${int(bios.per_minute)} bios read this minute`;
   return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(resumes)}${esc(estimate)}</span><span>${esc(localProcessingSummary())}</span>${backgroundAIControlsHTML()}</div>`;
 }
@@ -2625,6 +2657,15 @@ function renderCheckingMode() {
   }
   const progress = $('#set-local-progress');
   if (progress) { progress.textContent = localProcessingSummary(); progress.hidden = mode === 'rules'; }
+  const activity = $('#set-local-activity'), metrics = SET.localProcessing?.progress;
+  if (activity) {
+    activity.hidden = mode === 'rules';
+    const eta = metrics?.eta_seconds, minutes = eta ? Math.ceil(eta / 60) : 0;
+    const time = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+    const active = metrics?.active?.handle;
+    const history = SET.localProcessing?.history || [];
+    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">K2 checks saved bios and your notes for business fit. Laya adds ranking hints. Your relationship labels stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
+  }
   const background = $('#background-ai'), local = SET.localProcessing;
   if (background) background.hidden = mode === 'rules';
   const state = $('#local-ai-state'), toggle = $('#local-ai-toggle'), help = $('#local-ai-help');
@@ -2649,6 +2690,10 @@ async function toggleBackgroundAI() {
   }
 }
 $('#local-ai-toggle')?.addEventListener('click', toggleBackgroundAI);
+$('#set-local-activity')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-reviewed-person]');
+  if (button) openDetail(+button.dataset.reviewedPerson);
+});
 for (const selector of ['#view-accounts', '#ql-prog']) $(selector)?.addEventListener('click', event => {
   if (event.target.closest('[data-local-ai-toggle]')) toggleBackgroundAI();
 });
@@ -3040,7 +3085,7 @@ const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'all',
   k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: true,
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
-  limit: 400, query: '', rawData: null, audienceKey: null, dataRev: null,
+  limit: 400, sizeBy: 'lists', distanceBy: 'sources', query: '', rawData: null, audienceKey: null, dataRev: null,
   show() {
     if ($('#connections-panel')?.hidden === false) { this.hide(); return; }
     this.shown = true;
@@ -3090,13 +3135,14 @@ const M = {
       const handle = String(n.handle || n.label).toLowerCase(), name = String(n.name || '').toLowerCase();
       return handle === query ? 0 : name === query ? 1 : handle.startsWith(query) ? 2 : name.startsWith(query) ? 3 : 4;
     };
-    const people = [...seeds, ...this.leads.filter(n => !seeds.some(s => s.pid && s.pid === +(n.id.slice(2))))].sort((a, b) => rank(a) - rank(b)).slice(0, 12);
+    const seedPeople = new Set(seeds.filter(s => s.pid).map(s => s.pid));
+    const people = [...seeds, ...this.leads.filter(n => !seedPeople.has(+(n.id.slice(2))))].sort((a, b) => rank(a) - rank(b)).slice(0, 12);
     results.innerHTML = people.length ? people.map(n => `<button class="map-search-hit" data-map-person="${esc(n.id)}"><b>@${esc(n.handle || n.label)}</b>${n.name ? `<span>${esc(n.name)}</span>` : ''}</button>`).join('') : '<span class="muted">No saved profiles match. Try a name or Instagram handle.</span>';
   },
   url() {
-    const p = LeadWorkflow.runtimeQuery(toQuery({ ...emptyFilter(), q: this.query }, 'score', false));
+    const p = LeadWorkflow.runtimeQuery(toQuery(this.query ? { ...emptyFilter(), q: this.query } : S.f, 'score', false));
     p.set('scope', this.scope); p.set('limit', this.limit);
-    return '/api/map?' + p;
+    return (this.limit === 0 ? '/api/map-overview?' : '/api/map?') + p;
   },
   async load(poll) {
     if ($('#connections-panel')?.hidden === false) return;
@@ -3105,7 +3151,9 @@ const M = {
     this.loading = true;
     const url = this.url();
     let d;
-    try { d = await api.get(url); } catch (e) {
+    const knownRev = poll && this.limit > 10000 && this.dataUrl === url && this.dataRev != null ? this.dataRev : null;
+    const requestUrl = knownRev == null ? url : url + '&rev=' + encodeURIComponent(knownRev);
+    try { d = await api.get(requestUrl); } catch (e) {
       if (seq !== this.loadSeq) return;
       this.loading = false;
       if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map');
@@ -3116,6 +3164,16 @@ const M = {
     this.loading = false;
     if (url !== this.url()) return;
     this.loaded = true; this.stale = false;
+    if (d.unchanged && knownRev != null && String(d.rev) === String(knownRev)) return;
+    const aggregate = $('#map-overview');
+    if (aggregate) aggregate.hidden = this.limit !== 0;
+    $('#canvas').hidden = this.limit === 0;
+    if (this.limit === 0) {
+      this.sim?.stop(); $('#map-points').hidden = true; $('#hover').hidden = true; if ($('#map-render-status')) $('#map-render-status').hidden = true;
+      $('#map-count').textContent = `${int(d.total || 0)} saved people · grouped overview`;
+      aggregate.innerHTML = `<p>${int(d.total || 0)} matching people across saved source lists. Lists can overlap. Open a list to explore individual people.</p><div class="map-overview-buckets">${(d.buckets || []).map(b => `<button class="btn" data-map-bucket="${esc(b.seed || b.label)}"><b>@${esc(b.label)}</b><span>${int(b.count)} people</span></button>`).join('')}</div>`;
+      return;
+    }
     const key = d.rev + '|' + url;
     if (key === this.rev && this.nodes.length) return;
     const audience = url.replace(/&limit=\d+$/, '');
@@ -3130,13 +3188,14 @@ const M = {
         links: [...d.links, ...this.rawData.links.filter((l) => l.source === selectedId || l.target === selectedId)],
         keptSelected: true };
     }
-    this.rawData = d; this.audienceKey = audience; this.dataRev = d.rev;
+    this.rawData = d; this.audienceKey = audience; this.dataRev = d.rev; this.dataUrl = url;
     this.rev = key;
     this.build(shown);
   },
   build(d) {
     // A new filter gets a fresh, fitted layout; a refresh of the same view keeps positions and pins.
-    const old = this.relayout ? new Map() : this.byId;
+    const reset = this.relayout;
+    const old = reset ? new Map() : this.byId;
     this.relayout = false;
     if (!old.size) this.autoFit = true;
     // When filtered, seeds with nobody in the result only add noise: leave them out.
@@ -3146,11 +3205,13 @@ const M = {
       d = Object.assign({}, d, { nodes: d.nodes.filter((n) => n.kind !== 'seed' || used.has(n.id) || [n.label, n.name].some(value => String(value || '').toLowerCase().includes(query))) });
     }
     const sid = (s) => String(s).startsWith('s:') || String(s).startsWith('p:') ? String(s) : 's:' + s;
-    this.nodes = d.nodes.map((n) => {
+    this.nodes = d.nodes.map((row) => {
+      const n = { ...row };
+      if (reset) for (const field of ['x', 'y', 'vx', 'vy', 'fx', 'fy', 'homeX', 'homeY']) delete n[field];
       const o = old.get(n.id);
       const seed = n.kind === 'seed';
       const L = seed ? 0 : Math.max(1, Math.round(+(n.lists ?? n.degree ?? 1)) || 1);
-      const r = seed ? 17 : d.nodes.length > 1500 ? 4 + Math.min(5, L) : LEAD_R[Math.min(5, L)];
+      const r = seed ? 17 : this.sizeBy === 'followers' ? 4 + Math.min(16, Math.log10(Math.max(1, n.followers || 1)) * 2.5) : d.nodes.length > 1500 ? 4 + Math.min(5, L) : LEAD_R[Math.min(5, L)];
       return Object.assign(n, { L, r, vis: 0, fit: seed ? null : fitOf(n) }, o ? { x: o.x, y: o.y, vx: 0, vy: 0, fx: o.fx, fy: o.fy, homeX: o.homeX, homeY: o.homeY } : {});
     });
     this.byId = new Map(this.nodes.map((n) => [n.id, n]));
@@ -3169,6 +3230,10 @@ const M = {
     this.links = [...pair.values()].filter((l) => l.state === 'observed');
     const selfId = this.seeds.find((n) => n.is_me)?.id;
     this.selfRelation = new Map(this.links.filter((l) => l.source === selfId).map((l) => [l.target, l.dir]));
+    for (const n of this.leads) if (Object.hasOwn(n, 'owner_relationship')) {
+      const direction = { follows: 'followers', followed: 'following', mutual: 'both' }[n.owner_relationship];
+      if (direction) this.selfRelation.set(n.id, direction); else this.selfRelation.delete(n.id);
+    }
     this.historyLinks = [...pair.values()].filter((l) => l.state !== 'observed')
       .map((l) => ({ ...l, source: this.byId.get(l.source), target: this.byId.get(l.target) }));
     this.seedLinks = (d.seed_links || []).map((l) => ({ source: sid(l.source), target: sid(l.target), shared: +l.shared || 0 }))
@@ -3183,6 +3248,10 @@ const M = {
     }
     this.nbr = new Map([...neighbours].map(([id, ids]) => [id, [...ids]]));
     for (const n of this.seeds) n.vis = outgoing.get(n.id).size;
+    if (this.nodes.length > 6000 && !this.links.length) {
+      const byLabel = new Map(this.seeds.map(n => [n.label, n]));
+      for (const n of this.leads) for (const label of n.seeds || []) { const seed = byLabel.get(label); if (seed) seed.vis++; }
+    }
     this.overlap = new Map(this.seeds.map((s) => [s.id, []]));
     for (const l of this.seedLinks) { this.overlap.get(l.source).push([l.target, l.shared]); this.overlap.get(l.target).push([l.source, l.shared]); }
     this.overlap.forEach((a) => a.sort((x, y) => y[1] - x[1]));
@@ -3265,15 +3334,24 @@ const M = {
     // A golden-angle spiral spreads dense groups without an all-pairs force.
     // The 10k view keeps this linear-time placement and a bounded click adjustment.
     const placedByGroup = new Map();
+    const seedsByLabel = new Map(this.seeds.map(n => [n.label, n]));
     for (const n of this.leads) {
       if (n.x != null) continue;
       const ss = this.nbr.get(n.id).map((id) => this.byId.get(id)).filter(Boolean);
+      if (!ss.length) for (const label of n.seeds || []) { const seed = seedsByLabel.get(label); if (seed) ss.push(seed); }
       const cx = ss.reduce((a, s) => a + s.x, 0) / (ss.length || 1), cy = ss.reduce((a, s) => a + s.y, 0) / (ss.length || 1);
       const group = ss.map((s) => s.id).sort().join('|') || 'unlinked';
       const i = placedByGroup.get(group) || 0;
       placedByGroup.set(group, i + 1);
       const a = i * 2.399963229728653, rr = 28 + Math.sqrt(i) * (this.nodes.length > 1500 ? 14 : 25);
       n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr;
+      if (this.distanceBy === 'familiarity') {
+        const me = this.seeds.find(s => s.is_me), rank = { close: 0, know_them: 1, briefly: 2 }[n.familiarity] ?? 3;
+        let hash = 2166136261; for (const ch of n.id) hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619) >>> 0;
+        const angle = hash / 4294967296 * Math.PI * 2, spread = Math.max(100, Math.sqrt(this.leads.length) * 9);
+        const radius = spread * (0.3 + rank * 0.65 + (hash % 997) / 997 * 0.45);
+        n.x = (me?.x || 0) + Math.cos(angle) * radius; n.y = (me?.y || 0) + Math.sin(angle) * radius;
+      }
     }
     // Find nearby free positions around the true source centroid. The spatial
     // hash only checks nearby avatars; positions stay organic and refreshes preserve their location.
@@ -3329,11 +3407,18 @@ const M = {
     const unchanged = old.size && topology === this.topology;
     this.topology = topology;
     this.simulate(unchanged ? 0 : old.size ? 0.12 : 1);
+    this.reindex();
     this.renderSearch();
     this.draw();
   },
   simulate(alpha) {
     if (this.sim) this.sim.stop();
+    if (this.nodes.length > 6000) {
+      this.sim = null;
+      for (const l of [...this.links, ...this.seedLinks]) { l.source = typeof l.source === 'object' ? l.source : this.byId.get(l.source); l.target = typeof l.target === 'object' ? l.target : this.byId.get(l.target); }
+      if (alpha >= 1 || this.autoFit) this.fit();
+      return;
+    }
     const F = window.d3;
     if (!F?.forceSimulation) { this.status('Map library missing'); return; }
     const big = this.nodes.length > 2500, huge = this.nodes.length > 6000;   // 10k people: shorter reach, faster settle
@@ -3368,6 +3453,14 @@ const M = {
     if (alpha >= 1) this.fit();
     if (this.nodes.length <= 6000 || !this.shown || !alpha || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.stop();
   },
+  reindex() {
+    if (!window.DenseMap) return;
+    this.spatial = new DenseMap.Index(this.leads);
+    if (this.nodes.length > 6000) {
+      if (!this.gpu) { try { this.gpu = new DenseMap.Points($('#map-points')); } catch (_) { this.gpu = null; } }
+      this.gpu?.set(this.leads);
+    }
+  },
   schedule() {
     if (this.raf) return;
     this.raf = requestAnimationFrame(() => { this.raf = 0; this.draw(); });
@@ -3399,7 +3492,7 @@ const M = {
     this.autoFit = false;
     const k = Math.min(10, Math.max(0.04, this.k * f));
     this.x = px - ((px - this.x) * k) / this.k; this.y = py - ((py - this.y) * k) / this.k; this.k = k;
-    this.draw();
+    this.schedule();
   },
   centerOn(n, k) {
     this.autoFit = false;
@@ -3416,6 +3509,7 @@ const M = {
     this.draw();
   },
   relax(n, frames = 14, limit = 80, clearance = 0) {
+    if (this.nodes.length > 6000) return;
     const near = () => { const R = n.r + 90; return this.nodes.filter((m) => m !== n && Math.abs(m.x - n.x) < R && Math.abs(m.y - n.y) < R); };
     // Drag release only adjusts the closest neighbours. The old all-pairs
     // loop could lock the tab when thousands of dots shared a small region.
@@ -3460,11 +3554,11 @@ const M = {
   },
   draw() {
     const c = this.ctx;
-    if (!c || S.view !== 'map' || !this.w) return;
+    if (!c || S.view !== 'map' || !this.w || this.limit === 0) return;
     const fg = css('--fg'), fg2 = css('--fg2'), fg3 = css('--fg3'), fg4 = css('--fg4'), bg = css('--bg'), line = css('--line2'), sans = css('--sans');
     const k = this.k;
     c.clearRect(0, 0, this.w, this.h);
-    if (!this.nodes.length) { this.status(this.loaded ? 'No people match these filters' : 'Loading'); return; }
+    if (!this.nodes.length) { $('#map-points').hidden = true; if ($('#map-render-status')) $('#map-render-status').hidden = true; this.status(this.loaded ? 'No people match these filters' : 'Loading'); return; }
     c.save(); c.translate(this.x, this.y); c.scale(k, k);
     const hd = this.hood();
     const match = this.matchSet;
@@ -3477,7 +3571,15 @@ const M = {
     const important = new Set(match || []);
     if (selected) important.add(selected.id);
     if (this.hover) important.add(this.hover.id);
-    const dots = mapDots(this.leads, k, this.x, this.y, this.w, this.h, important);
+    const large = this.nodes.length > 6000;
+    const layer = $('#map-points');
+    const rgb = document.documentElement.dataset.theme === 'light' ? [0.40, 0.40, 0.38, 1] : [0.58, 0.58, 0.56, 1];
+    const accelerated = large && this.gpu?.draw(this.w, this.h, this.x, this.y, k, rgb);
+    if (layer) layer.hidden = !accelerated;
+    if ($('#map-render-status')) $('#map-render-status').hidden = !(large && !accelerated);
+    const visible = large && this.spatial ? this.spatial.query(vx0, vy0, vx1, vy1, accelerated ? 600 : Infinity) : this.leads;
+    const dots = large ? visible : mapDots(visible, k, this.x, this.y, this.w, this.h, important);
+    if (large) for (const id of important) { const n = this.byId.get(id); if (n && n.kind !== 'seed' && !dots.includes(n)) dots.push(n); }
     this.drawnLeads = dots;
     const visibleEdge = (l) => Math.max(l.source.x, l.target.x) >= vx0 && Math.min(l.source.x, l.target.x) <= vx1 &&
       Math.max(l.source.y, l.target.y) >= vy0 && Math.min(l.source.y, l.target.y) <= vy1;
@@ -3554,7 +3656,7 @@ const M = {
       pass((n) => on(n) && n.judge === j, color, 1);
     }
     // Photos on top of the dots once they are big enough to read.
-    for (const n of dots) {
+    for (const n of large ? dots.slice(0, 600) : dots) {
       const r = Math.max(n.r, minPx);
       if (r * k < 6) continue;
       const img = n.pic && mapPic(n.pic);
@@ -3644,9 +3746,10 @@ const M = {
     if (hd && hd.n.kind !== 'seed') cand = [hd.n];
     else if (hd) cand = (this.nbr.get(hd.n.id) || []).map((id) => this.byId.get(id));
     else if (match && match.size) cand = this.matches;
-    else cand = this.leads;
+    else cand = this.drawnLeads || this.leads;
     const view = (n) => { const x = sx(n), y = sy(n); return x > -50 && x < this.w + 50 && y > -20 && y < this.h + 20; };
     const imp = (n) => n.L * 10 + (MARKED.has(n.status) ? 25 : 0) + (n.judge === 'good' ? 20 : n.judge === 'bad' ? -10 : 0) + ({ strong: 12, good: 6 }[n.fit] || 0) + Math.log10((n.followers || 1) + 1);
+    if (this.nodes.length > 6000) cand = cand.slice(0, 600);
     cand = cand.filter((n) => n && n.kind !== 'seed' && view(n));
     const few = this.leads.length <= 120;
     if (!hd && !(match && match.size) && !few) cand = cand.filter((n) => n.L >= 2 || k > 1.4 || MARKED.has(n.status) || n.fit === 'strong' || n.judge === 'good');
@@ -3678,6 +3781,7 @@ const M = {
       const n = this.seeds[i];
       if (Math.hypot(n.x - x, n.y - y) <= n.r + 3 / k) return n;
     }
+    if (this.nodes.length > 6000 && this.spatial) return this.spatial.pick(x, y, k);
     let best = null, bestScore = Infinity;
     for (const n of this.drawnLeads || this.leads) {
       if (n.x == null) continue;
@@ -3802,12 +3906,12 @@ function seedCardClick(e) {
       }
       if (!moved) return;
       if (drag.n) M.dragTo(drag.n, (e.offsetX - M.x) / M.k - drag.gx, (e.offsetY - M.y) / M.k - drag.gy);
-      else { M.x = drag.ox + dx; M.y = drag.oy + dy; M.draw(); }
+      else { M.x = drag.ox + dx; M.y = drag.oy + dy; M.schedule(); }
       return;
     }
     if (e.pointerType === 'touch') return;
     const n = M.at(e.offsetX, e.offsetY);
-    if (n !== M.hover) { M.hover = n; M.draw(); }
+    if (n !== M.hover) { M.hover = n; M.schedule(); }
     const h = $('#hover');
     if (!n) { h.hidden = true; c.style.cursor = ''; return; }
     c.style.cursor = 'pointer';
@@ -3822,7 +3926,7 @@ function seedCardClick(e) {
     if (drag && !moved) {
       if (drag.n) M.select(drag.n);
       else if (M.focus) { M.focus = null; M.draw(); }
-    } else if (drag?.n) M.relax(drag.n);
+    } else if (drag?.n) { M.relax(drag.n); if (M.nodes.length > 6000) { M.reindex(); M.schedule(); } }
     drag = null; c.classList.remove('drag');
   };
   c.addEventListener('pointerup', end);
@@ -3858,9 +3962,23 @@ $('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) 
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
 $('#map-density').onchange = (e) => {
   const limit = Number(e.target.value);
-  if (![400, 1000, 3000].includes(limit) || limit === M.limit) return;
+  if (![0, 400, 1000, 3000, 10000, 30000, 100000].includes(limit) || limit === M.limit) return;
   M.limit = limit; M.load();
 };
+$('#map-overview')?.addEventListener('click', e => {
+  const bucket = e.target.closest('[data-map-bucket]'); if (!bucket) return;
+  S.f.seed = bucket.dataset.mapBucket; M.limit = 100000; $('#map-density').value = '100000'; M.relayout = true; filtersChanged();
+});
+$('#map-size')?.addEventListener('change', e => { M.sizeBy = e.target.value; if (M.rawData) { M.relayout = true; M.build(M.rawData); } });
+$('#map-distance')?.addEventListener('change', e => {
+  M.distanceBy = e.target.value;
+  $('#map-distance-note').hidden = M.distanceBy !== 'familiarity';
+  if (M.rawData) { M.relayout = true; M.build(M.rawData); }
+});
+for (const [id, field] of [['map-followers-min', 'fmin'], ['map-followers-max', 'fmax']]) {
+  $('#' + id)?.addEventListener('change', e => { S.f[field] = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0); filtersChanged(); });
+}
+$('#map-tag')?.addEventListener('change', e => { if (e.target.value.trim()) { setMode(e.target.value.trim(), 'inc'); e.target.value = ''; filtersChanged(); } });
 $('#zoom-in').onclick = () => M.zoomBy(1.4);
 $('#zoom-out').onclick = () => M.zoomBy(1 / 1.4);
 $('#map-scope')?.addEventListener('click', (e) => {

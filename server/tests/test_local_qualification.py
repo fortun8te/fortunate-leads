@@ -75,8 +75,32 @@ class LocalQualification(unittest.TestCase):
 
     def test_invented_evidence_is_rejected(self):
         result = self.evaluate(dict(self.output, evidence=['Makes ten million per year']))
-        self.assertEqual(result['error'], 'unsupported_output')
+        self.assertEqual(result['error'], 'unsupported_evidence')
         self.assertIsNone(result['verdict'])
+        self.assertTrue(local.is_repairable(result))
+
+    def test_repair_prompt_is_shorter_and_keeps_private_hint_unconfirmed(self):
+        context = {'source': 'private_note_suggestion', 'confirmed': False, 'snapshot': 'v1',
+                   'model': 'local', 'evidence': ['Possible store owner']}
+        first = local.messages(self.person, [], [], note_context=context)
+        second = local.messages(self.person, [], [], note_context=context, repair=True)
+        self.assertLess(len(second[0]), len(first[0]))
+        self.assertEqual(second[1], first[1])
+        self.assertIn('unconfirmed', second[0])
+        self.assertIn('exact substring', second[0])
+
+    def test_repair_evaluation_keeps_evidence_validation_and_token_budget(self):
+        self.runtime.complete_json.return_value = dict(self.output, evidence=['Invented claim'])
+        result = local.evaluate(self.person, [], [], repair=True)
+        self.assertEqual(result['error'], 'unsupported_evidence')
+        self.assertTrue(local.is_repairable(result))
+        self.assertEqual(self.runtime.complete_json.call_args.kwargs,
+                         {'max_tokens': 700, 'timeout': 45, 'reasoning_budget_tokens': 200})
+
+    def test_failure_categories_avoid_private_error_text(self):
+        self.assertEqual(local.failure_category('Local completion was truncated'), 'truncated_output')
+        self.assertEqual(local.failure_category('private-note-content'), 'local_error')
+        self.assertFalse(local.is_repairable(local.failure_result(self.person, None, 'local_error')))
 
     def test_optional_at_prefix_and_handle_case_are_same_instagram_identity(self):
         self.assertEqual(self.evaluate(dict(self.output, handle='@REAL_BRAND'))['status'], 'complete')

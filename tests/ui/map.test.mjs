@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
+const rendererSource = readFileSync(new URL('../../web/map-renderer.js', import.meta.url), 'utf8');
 const workflowSource = readFileSync(new URL('../../web/workflow.js', import.meta.url), 'utf8');
 const code = source.slice(source.indexOf('const LEAD_R ='), source.indexOf('function hoverCard('));
 function harness() {
@@ -19,6 +20,8 @@ function harness() {
     emptyFilter:()=>({}), toQuery:()=>new URLSearchParams(), URLSearchParams,
     Image:class {constructor(){images.push(this);}}, document:{createElement:()=>({getContext:()=>null})},
     openDetail(){}, openSeed(){}});
+  c.window = c;
+  vm.runInContext(rendererSource, c);
   vm.runInContext(workflowSource, c);
   vm.runInContext(code + '\nthis.map = M; this.cache = PICS; this.queue = picQueue; this.mapDots = mapDots;', c);
   const simulate = c.map.simulate;
@@ -61,7 +64,7 @@ test('overview keeps one useful dot per crowded screen cell and preserves chosen
   assert.equal(c.mapDots(dots, 1, 0, 0, 800, 600, new Set()).length, 10000);
   assert.equal(c.mapDots(dots, 1, -1000, 0, 800, 600, new Set()).length, 0);
 });
-test('initial layout fits immediately without synchronous force ticks', () => {
+test('large layout fits immediately without constructing a force simulation', () => {
   const {c,m,simulate} = harness();
   let ticks = 0, fits = 0, linkStrength; const forces = new Map();
   const fluent = () => ({id(){return this;},distance(){return this;},strength(){return this;},distanceMax(){return this;},theta(){return this;},radius(){return this;},iterations(){return this;}});
@@ -74,9 +77,9 @@ test('initial layout fits immediately without synchronous force ticks', () => {
   simulate.call(m, 1);
   assert.equal(ticks, 0);
   assert.equal(fits, 1);
-  assert.equal(forces.get('charge'), null);
-  assert.equal(forces.get('collide'), null);
-  assert.equal(linkStrength({ss:false,target:{L:1}}),0.008,'10k layout keeps spiral spacing during simulation');
+  assert.equal(forces.size, 0, 'dense source placement does not construct any forces');
+  assert.equal(m.sim, null);
+  assert.equal(linkStrength, undefined);
 });
 test('map resolves history endpoints but excludes history from neighbours and distinct counts', () => {
   const {m,$} = harness();

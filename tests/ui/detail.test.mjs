@@ -89,3 +89,14 @@ test('edited ranking refresh polls briefly, stops on completion and restarts for
   assert.equal(timers.length,21,'completed ranking stops polling');
   assert.equal(ctx.S.rows[0].score,88,'updated rank reaches the visible row');
 });
+test('third-party note story links only selected profiles and offers no relationship action', () => {
+  const ctx = vm.createContext({ noteQueue:{peek:()=>null}, esc:String });
+  vm.runInContext(readFileSync(new URL('../../web/note-mentions.js', import.meta.url), 'utf8'), ctx);
+  vm.runInContext(source.slice(source.indexOf('const HUMAN_RELATIONSHIPS ='),source.indexOf('function renderNoteState(')),ctx);
+  const person = {id:1, note:'He is friends with @alex.', note_mentions:[{person_id:2,token:'@alex',handle:'alex_new',name:'Alex'}, {person_id:3,token:'@ali',handle:'ali'}],
+    note_interpretation:{state:'ready', facts:[{kind:'mentioned_connection', label:'Connection described in your note', quote:'He is friends with @alex.'}]}};
+  const html = ctx.noteInsightsHTML(person);
+  assert.match(html, /data-note-profile="2"/);
+  assert.match(html, /@alex_new · Alex/);
+  assert.doesNotMatch(html, /data-note-profile="3"|data-note-fact|Set Friend/);
+});

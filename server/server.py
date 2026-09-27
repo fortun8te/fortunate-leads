@@ -29,6 +29,10 @@ import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
+import map_scale  # noqa: E402
+import note_mentions  # noqa: E402
+import dm_import  # noqa: E402
+import processing_progress  # noqa: E402
 import db  # noqa: E402
 import owner  # noqa: E402
 import owner_relationships  # noqa: E402
@@ -222,6 +226,8 @@ def ext_next(conn, q, b):
         conn.commit()
         return dict(st, job=None)
     job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
+    if not job and 'list' in kinds and collection_suggestions.queue_when_idle(conn, row, now):
+        job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
     if not job:
         conn.commit()
         return dict(st, job=None)
@@ -1010,7 +1016,8 @@ def api_person(conn, q, b, pid):
     return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), edge_history=edge_history_of(conn, pid),
                 verdict=verdict, note=row['note'], site=qual_api.site_row(conn, pid),
                 activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read,
-                ranking_pending=ranking_pending,
+                ranking_pending=ranking_pending, note_mentions=note_mentions.get(conn, pid),
+                review_history=processing_state.recent_history(conn, 6, pid),
                 scout=deepscout.result(conn, pid), note_interpretation=owner_notes.result(conn, pid))
 
 
@@ -1117,9 +1124,17 @@ def api_mark(conn, q, b, pid):
         if expected is not KEEP and expected != current['mark_rev']:
             raise Conflict(current)
         set_status(conn, [pid], status, note, relationships, familiarity)
+        if note is not KEEP or 'note_mentions' in b:
+            previous_mentions = note_mentions.get(conn, pid)
+            note_mentions.save(conn, pid, (note if note is not KEEP else current['note']) or '', b.get('note_mentions'))
+            if note_mentions.get(conn, pid) != previous_mentions:
+                conn.execute('UPDATE marks SET updated_at=? WHERE person_id=?', (db.now(), pid))
+                owner_notes.invalidate(conn, pid)
+                touch(conn, [pid])
         row = person_row(conn, pid)
         result = {key: row[key] for key in ('status', 'note', 'mark_rev')}
         result['id'] = pid
+        result['note_mentions'] = note_mentions.get(conn, pid)
         owner.hydrate(conn, [result])
         conn.commit()
         return result
@@ -1393,7 +1408,20 @@ def api_map(conn, q, b):
     # snapshot. Capturing the caller's state first keeps rollback-only reads
     # out of both caches while allowing committed UI polls to reuse the result.
     committed = not conn.in_transaction
+    if (qint(q, 'limit') or 400) > 10000:
+        with read_snapshot(conn):
+            if q.get('rev', [''])[0] == str(data_rev(conn)):
+                return {'unchanged': True, 'rev': data_rev(conn)}
+            return map_graph(conn, q)
     return cached(conn, 'map', q, lambda: dict(map_graph(conn, q), seed_links=seed_links(conn, cacheable=committed)))
+
+
+def api_map_overview(conn, q, b):
+    where, args = lead_filter({k: v for k, v in q.items() if k != 'seed'})
+    for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
+        where.append('p.id IN (SELECT person_id FROM current_edges WHERE seed=?)')
+        args.append(seed)
+    return cached(conn, 'map-overview', q, lambda: map_scale.overview(conn, data_rev(conn), q, where, args))
 
 
 def api_connections(conn, q, b):
@@ -1408,6 +1436,13 @@ def api_connections(conn, q, b):
 
 
 def map_graph(conn, q):
+    requested_limit = qint(q, 'limit') or 400
+    if requested_limit > 10000 and not q.get('q', [''])[0].strip():
+        where, args = lead_filter({k: v for k, v in q.items() if k not in ('seed', 'q')})
+        for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
+            where.append('p.id IN (SELECT person_id FROM current_edges WHERE seed=?)')
+            args.append(seed)
+        return map_scale.graph(conn, q, where, args, data_rev(conn), min(100000, requested_limit))
     limit = min(10000, max(10, qint(q, 'limit') or 400))
     try:
         search = connection_graph.map_search(q.get('q', [''])[0])
@@ -1705,6 +1740,9 @@ def progress(conn, accts):
         "AND p.handle NOT IN (SELECT handle FROM seeds) "
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
+    bios_failed = conn.execute("SELECT count(*) FROM people p WHERE p.bio_at IS NULL "
+        "AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state='error') "
+        "AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state IN ('queued','leased'))").fetchone()[0]
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at), max(bio_at) FROM people WHERE bio_at>=?', now)
     lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
@@ -1719,7 +1757,8 @@ def progress(conn, accts):
                   'capped_lists': capped_lists, 'per_hour': round(people_h) if people_h else None,
                   'per_minute': lists_min,
                   'eta_h': eta_with_budget(lists_left, people_h, per_page, list_lanes, 'list', now)},
-        'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
+        'bios': {'left': bios_left, 'queued': queued, 'failed': bios_failed, 'unresolved': bios_left + bios_failed,
+                 'per_hour': round(bios_h) if bios_h else None,
                  'per_minute': bios_min,
                  'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
                  'eta_h': eta_with_budget(bios_left, bios_h, 1, bio_lanes, 'profile', now),
@@ -2034,6 +2073,12 @@ SNOWBALL_MAX = 50
 
 
 def api_collection_suggestions(conn, q, b):
+    if 'enabled' in b:
+        collection_suggestions.set_enabled(conn, b['enabled'])
+    if 'hide' in b:
+        collection_suggestions.hide(conn, b['hide'])
+    if b:
+        conn.commit()
     return collection_suggestions.suggest(conn, qint(q, 'limit') or 6)
 
 
@@ -2213,7 +2258,10 @@ def api_local_processing(conn, q, b):
                 needs_research=counts.get('needs_research', 0), enabled=enabled,
                 model=local_model.MODEL, ready=bool(runtime.get('ready')),
                 notes_pending=pending, notes_failed=failed, state=state, runtime=runtime, paused=paused,
-                processing=processing_modes.snapshot(conn))
+                processing=processing_modes.snapshot(conn),
+                progress=processing_progress.snapshot(conn, summary['pending'], paused=paused or not enabled,
+                                                       seeding=summary.get('seeding'), waiting=bool(waiting)),
+                history=processing_state.recent_history(conn, 6))
 
 
 def require_collection_resume(conn):
@@ -2343,8 +2391,11 @@ ROUTES = [
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
+    ('GET', r'/api/map-overview', api_map_overview),
+    ('GET', r'/api/note-mentions', lambda conn, q, b: note_mentions.search(conn, q.get('q', [''])[0])),
     ('GET', r'/api/scraper/status', api_scraper_status), ('GET', r'/api/scraper', api_scraper),
     ('GET', r'/api/scraper/suggestions', api_collection_suggestions),
+    ('POST', r'/api/scraper/suggestions', api_collection_suggestions),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
@@ -2358,6 +2409,7 @@ ROUTES = [
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
 ROUTES += qual_api.routes(sys.modules[__name__])
 ROUTES += workflows.routes(sys.modules[__name__])
+ROUTES += dm_import.routes(sys.modules[__name__])
 
 
 class Server(ThreadingHTTPServer):
@@ -2889,18 +2941,25 @@ def local_processing_step(conn):
     result = dict(cached) if cached else None
     if result:
         result['verdict'] = json.loads(result['verdict'] or 'null')
+    needs_inference = bool(job['repair_attempt']) or not result or not local_qualification.current_result(result, person, context)
+    if needs_inference:
+        processing_progress.active(conn, person['id'])
     conn.commit()
+    started = time.monotonic()
     try:
-        if not result or not local_qualification.current_result(result, person, context):
-            result = local_qualification.evaluate(person, tags, edges, net, note_context=context)
+        if needs_inference:
+            result = local_qualification.evaluate(person, tags, edges, net, note_context=context, repair=bool(job['repair_attempt']))
     except (local_model.Busy, local_model.Unavailable) as exc:
         delay = exc.retry_after if isinstance(exc, local_model.Busy) else 60
         processing_state.retry(conn, person['id'], job['revision'], str(exc), delay)
+        processing_progress.active(conn)
         conn.commit()
         return WorkerDelay(delay)
     except ValueError as exc:
         result = local_qualification.failure_result(person, context, exc)
     conn.execute('BEGIN IMMEDIATE')
+    if needs_inference:
+        processing_progress.record(conn, person['id'], result, time.monotonic()-started, bool(job['repair_attempt']))
     latest = conn.execute('SELECT * FROM people WHERE id=?', (person['id'],)).fetchone()
     if not latest or not processing_modes.result_current(conn, ticket):
         conn.rollback()
@@ -2910,11 +2969,18 @@ def local_processing_step(conn):
     if not local_qualification.current_result(result, current, context):
         conn.rollback()
         return False
+    if needs_inference and not job['repair_attempt'] and local_qualification.is_repairable(result):
+        if processing_state.request_repair(conn, person['id'], job['revision'], result.get('error', 'unverified')):
+            conn.commit()
+            return True
     if processing_state.put_review(conn, person['id'], result, revision=job['revision'],
                                     private_context_hash=(context or {}).get('snapshot')):
         edges = edges_of(conn, person['id'])
         net = network_context(conn, [person['id']]).get(person['id'], {})
         apply_local_review(conn, current, result, net, edges, context)
+        verdict = conn.execute('SELECT score FROM verdicts WHERE person_id=?', (person['id'],)).fetchone()
+        processing_state.record_review_event(conn, person['id'], local_model.MODEL, result['status'],
+                                            score=verdict[0] if verdict else None, reason=result.get('error') or result.get('escalation_reason') or '')
     conn.commit()
     return True
 
@@ -2924,6 +2990,7 @@ def processing_maintenance(conn):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     seeded = processing_state.seed_step(conn, policy=local_qualification.PROMPT_VERSION + ':' + local_model.MODEL_DIGEST)
+    seeded += processing_state.refresh_rank_step(conn)
     queued = [r[0] for r in conn.execute('SELECT person_id FROM processing_rule_queue ORDER BY person_id LIMIT 32')]
     if not queued and not db.get_setting(conn, 'processing_refresh_complete', True):
         cursor = db.get_setting(conn, 'processing_refresh_cursor', 0)

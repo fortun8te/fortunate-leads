@@ -354,6 +354,10 @@ def init(path):
     processing_state.ensure(conn)
     import external_queue
     external_queue.ensure(conn)
+    import collection_suggestions
+    collection_suggestions.ensure(conn)
+    import processing_progress
+    processing_progress.ensure(conn)
     conn.commit()
     return conn
 
@@ -980,6 +984,8 @@ def merge_people(conn, keep, drop):
             workflows.event(conn, keep, 'identity_merged', before=before, after=after)
         conn.execute('DELETE FROM network_dirty WHERE person_id=?', (drop,))
         mark_network_dirty(conn, [keep])
+        import note_mentions
+        note_mentions.merge(conn, keep, drop)
         conn.execute('DELETE FROM people WHERE id=?', (drop,))
     except Exception:
         conn.execute('ROLLBACK TO merge_people')
@@ -1203,7 +1209,8 @@ def repair_lists(conn, dry=False):
             conn.execute('INSERT INTO jobs(kind, handle, priority, created_at) VALUES(?,?,?,?)', ('profile', s, 10000, ts))
     todo = []
     partial_candidates = []
-    for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0"):
+    for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0 AND NOT EXISTS "
+                             "(SELECT 1 FROM collection_discovery d WHERE d.handle=seeds.handle AND d.state='queued')"):
         for d in ('followers', 'following'):
             r = rows.get((s.lower(), d))
             if r is None:

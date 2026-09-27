@@ -80,6 +80,35 @@ class ProcessingStateTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT model FROM verdicts').fetchone()[0],'rules')
         self.assertEqual(self.conn.execute('SELECT count(*) FROM processing_ai_history').fetchone()[0],1)
 
+    def test_normal_archives_keep_two_per_model_without_raw_prompt(self):
+        p = self.person()
+        self.verdict(p)
+        for i in range(4):
+            self.conn.execute('''UPDATE verdicts SET input_hash=?,updated_at=?,prompt=?,evidence=?
+                WHERE person_id=?''', (f'hash-{i}', f'time-{i}', 'private owner note',
+                                        'private evidence', p['id']))
+            self.assertTrue(state.archive_verdict(self.conn, p['id']))
+        rows = self.conn.execute('''SELECT input_hash,verdict FROM processing_ai_history
+            WHERE person_id=? ORDER BY id''', (p['id'],)).fetchall()
+        self.assertEqual([r['input_hash'] for r in rows], ['hash-2', 'hash-3'])
+        self.assertTrue(all('private owner note' not in r['verdict'] and
+                            'private evidence' not in r['verdict'] for r in rows))
+        events = state.recent_history(self.conn, person_id=p['id'])
+        self.assertEqual(len(events), 4)
+        self.assertEqual(events[0]['model'], 'local:k2')
+        self.assertEqual(events[0]['score'], 90)
+
+    def test_compact_review_events_are_bounded(self):
+        p = self.person()
+        for i in range(10_005):
+            state.record_review_event(self.conn, p['id'], 'local:k2', 'hot', 90,
+                                      'private reason ' + 'x' * 300)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM processing_review_events').fetchone()[0],
+                         10_000)
+        newest = state.recent_history(self.conn, limit=1)[0]
+        self.assertEqual(newest['id'], 10_005)
+        self.assertEqual(len(newest['reason']), 200)
+
     def test_rlai_removes_external_but_keeps_local_and_never_resurrects_external(self):
         self.mode('RLEAI')
         local, external = self.person('local'), self.person('external')

@@ -16,6 +16,12 @@ URL = 'http://127.0.0.1:11436'
 SERVICE_ROOT = Path.home() / 'Library/Application Support/Fortunate Leads/k2'
 _lock = threading.Lock()
 _retry_at = 0.0
+_call_state = threading.local()
+
+
+def last_call_metrics():
+    """Numbers only, for diagnostics; never return prompts or model content."""
+    return dict(getattr(_call_state, 'metrics', {}))
 
 
 class Unavailable(RuntimeError):
@@ -114,6 +120,8 @@ def maintain_service(paused=False):
 
 
 def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
+    started = time.monotonic()
+    _call_state.metrics = {}
     try:
         with resource_budget.lease('k2'):
             _record_activity()
@@ -123,6 +131,8 @@ def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_bu
                 _record_activity()
     except resource_budget.Deferred as exc:
         raise Busy(str(exc), exc.retry_after) from exc
+    finally:
+        _call_state.metrics['duration_ms'] = max(0, round((time.monotonic() - started) * 1000))
 
 
 def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
@@ -161,10 +171,23 @@ def _complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_b
             # thinking style; this separate cap reserves room for its JSON answer.
             payload['reasoning_budget_tokens'] = reasoning_budget_tokens
         response = _request('/v1/chat/completions', payload, timeout=timeout)
+        usage = response.get('usage') if isinstance(response, dict) else None
+        if isinstance(usage, dict):
+            for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+                number = usage.get(key)
+                if type(number) is int and 0 <= number <= 100000:
+                    _call_state.metrics[key] = number
+            details = usage.get('prompt_tokens_details')
+            if isinstance(details, dict):
+                cached = details.get('cached_tokens')
+                if type(cached) is int and 0 <= cached <= 100000:
+                    _call_state.metrics['cached_tokens'] = cached
         choices = response.get('choices') if isinstance(response, dict) else None
         if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
             raise ValueError('Invalid local completion')
         choice = choices[0]
+        if choice.get('finish_reason') in ('stop', 'length'):
+            _call_state.metrics['finish_reason'] = choice['finish_reason']
         if choice.get('finish_reason') != 'stop':
             raise ValueError('Local completion was truncated')
         message = choice.get('message')

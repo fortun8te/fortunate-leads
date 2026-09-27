@@ -4,7 +4,7 @@
 #
 #   ops/backup.sh [--db PATH] [--dest DIR] [--keep N] [--no-rotate]
 #
-# Defaults: --db <repo>/data/leads.sqlite  --dest <repo>/data/backups  --keep 14
+# Defaults: --db <repo>/data/leads.sqlite  --dest <repo>/data/backups  --keep 14 dates
 # Output:   DEST/leads-YYYYmmdd-HHMMSS-PID-RANDOM.sqlite (single verified file)
 # Restore:  stop both LaunchAgents and every other process using the DB; check with
 #           lsof data/leads.sqlite{,-wal,-shm}. Move the original DB and any WAL/SHM
@@ -81,15 +81,27 @@ rm -f "$part"
 trap - EXIT
 echo "$(date '+%F %T') backup ok: $out ($(human_bytes "$(file_size "$out")"), $summary)"
 
-# Retain only recognized, complete backup files. Never remove staging files,
-# symlinks, or arbitrary leads-*.sqlite files placed in this directory.
+# Keep the newest three snapshots and one snapshot on each of the newest N
+# dates. Same-day manual backups cannot displace older daily recovery points.
+# Never remove staging files, symlinks, or arbitrary leads-*.sqlite files.
 "$FL_PYTHON" - "$dest" "$keep" "$out" <<'PYKEEP'
 import pathlib, re, sys
 root, keep, current = pathlib.Path(sys.argv[1]), int(sys.argv[2]), pathlib.Path(sys.argv[3])
 pattern = re.compile(r'leads-\d{8}-\d{6}-\d+-\d+\.sqlite')
-backups = sorted(p for p in root.iterdir() if pattern.fullmatch(p.name) and p.is_file() and not p.is_symlink())
-for old in backups[:max(0, len(backups) - keep)]:
-    if old != current:
+backups = sorted((p for p in root.iterdir() if pattern.fullmatch(p.name) and p.is_file()
+                  and not p.is_symlink()), reverse=True)
+retained = set(backups[:min(3, keep)])
+dates = set()
+for backup in backups:
+    day = backup.name[6:14]
+    if day not in dates and len(dates) < keep:
+        dates.add(day)
+        retained.add(backup)
+for old in backups:
+    if old not in retained and old != current:
+        # An opened copy can become a database with its own journal sidecars.
+        if any(pathlib.Path(str(old) + suffix).exists() for suffix in ('-wal', '-shm', '-journal')):
+            continue
         try:
             old.unlink()
         except FileNotFoundError:  # Another successful backup already pruned it.
