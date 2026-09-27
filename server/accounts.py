@@ -282,7 +282,7 @@ def kinds_for(conn, row, kinds, now):
             and not later(row['list_cool_until'] if k == 'list' else row['profile_cool_until'], now)]
 
 
-def pick_job(conn, lane, kinds, now):
+def pick_job(conn, lane, kinds, now, allow_page_size=True):
     """The next job for this lane (inside the caller's write transaction), or None. Lists first: its own list,
     then lists another lane left mid-way (they have a cursor), then by priority."""
     ts = iso(now)
@@ -297,6 +297,7 @@ def pick_job(conn, lane, kinds, now):
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
     follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if later(row['list_endpoint_until'], now) else ''
+    page_size_filter = '' if allow_page_size else ' AND j.page_size IS NULL'
     owner_filter = (" OR (j.direction='followers' AND EXISTS(SELECT 1 FROM accounts owner "
                     "WHERE owner.lane_id=l.lane AND owner.list_endpoint_until>?))")
     regular_main = True
@@ -346,7 +347,7 @@ def pick_job(conn, lane, kinds, now):
             WHERE (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
               AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
               AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
-              AND {viewer_filter}{denied_alts}{follower_filter}
+              AND {viewer_filter}{denied_alts}{follower_filter}{page_size_filter}
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
               l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
               coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
@@ -368,7 +369,7 @@ def pick_job(conn, lane, kinds, now):
                   AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
                   AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
                   AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
-                  AND {viewer_filter}
+                  AND {viewer_filter}{page_size_filter}
                 ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
                   l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC, j.id LIMIT 1""",
                 (ts, ts, lane, *ok, ts, *viewer_args, lane)).fetchone()
@@ -384,7 +385,7 @@ def pick_job(conn, lane, kinds, now):
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
-          AND (j.kind='profile' OR {viewer_filter}){follower_filter}
+          AND (j.kind='profile' OR {viewer_filter}){follower_filter}{page_size_filter}
         ORDER BY j.kind='list' DESC,
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,

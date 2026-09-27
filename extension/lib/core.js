@@ -84,16 +84,16 @@
       return out('other', 'invalid_total');
     const more = moreOf(json) === true || (moreOf(json) !== false && cursorOf(json) != null);
     if (more) {
-      if (ctx.cursor && total && Number(ctx.received) >= total * 0.98) return null; // empty tail of a list we already have
       return again ? out('other', 'empty_page_again') : out('soft_block', 'empty_page_with_more');
     }
+    if (!ctx.cursor && total > 0) return again ? out('other', 'empty_first_page_again') : out('soft_block', 'empty_first_page');
+    if (moreOf(json) !== false) return out('other', 'empty_page_without_end');
     // Only a count verified in this run (or carried by this response) can contradict
     // a terminal page. The first contradiction is retried locally after normal pacing;
     // the second reaches the server, which records the incomplete run as partial.
     const verifiedTotal = count(edge && edge.count) ?? (ctx.totalSource === 'current_run' ? count(ctx.total) : null);
     if (ctx.cursor && verifiedTotal && Number(ctx.received) < verifiedTotal * 0.98 && !again)
       return out('other', 'empty_page_before_total');
-    if (!ctx.cursor && total > 0) return again ? out('other', 'empty_first_page_again') : out('soft_block', 'empty_first_page');
     return null; // genuine end: empty tail, or a list that really is empty
   }
 
@@ -174,7 +174,8 @@
     const cur = cursorOf(json);
     const next = moreOf(json) !== false && cur != null && users.length ? cur : null;
     const limited = limitedOf(json);
-    return { users, next_cursor: limited ? null : next, done: limited || !next, limited };
+    return { users, next_cursor: limited ? null : next, done: limited || !next, limited,
+      has_more: typeof moreOf(json) === 'boolean' ? moreOf(json) : null };
   }
   function listProgress(job, prog) {
     if (prog && prog.jobId != null && prog.jobId !== job.id) return {};

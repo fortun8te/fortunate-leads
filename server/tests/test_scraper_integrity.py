@@ -41,6 +41,73 @@ class CollectionIntegrityTest(unittest.TestCase):
         self.assertEqual((row['state'], row['received']), ('partial', 2))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM edges').fetchone()[0], 2)
 
+    def test_benchmark_counts_new_links_once_per_saved_page(self):
+        job = self.job()
+        self.page(job, ['alice', 'bob'], done=False, next_cursor='next', total=3,
+                  requested_count=25, http_status=200)
+        job = server.ext_next(self.conn, {'lane': ['lane-a']}, {})['job']
+        self.page(job, ['alice', 'carol'], total=3, requested_count=25, http_status=200)
+        rows = self.conn.execute('SELECT returned_count,new_links,requested_count,http_status '
+                                 'FROM collector_events ORDER BY id').fetchall()
+        self.assertEqual([tuple(row) for row in rows], [(2, 2, 25, 200), (2, 1, 25, 200)])
+
+    def test_error_event_is_durable_and_replayed_outbox_is_idempotent(self):
+        job = self.job()
+        body = {'job_id': job['id'], 'lease_token': job['lease_token'], 'kind': 'list',
+                'direction': 'following', 'event_id': 'one-response', 'code': 'rate_limit',
+                'reason': 'http_429', 'http_status': 429}
+        server.ext_error(self.conn, {'lane': ['lane-a']}, body)
+        self.assertTrue(server.ext_error(self.conn, {'lane': ['lane-a']}, body)['duplicate'])
+        row = self.conn.execute('SELECT kind,direction,outcome,reason,http_status FROM collector_events').fetchone()
+        self.assertEqual(tuple(row), ('list', 'following', 'rate_limit', 'http_429', 429))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM collector_events').fetchone()[0], 1)
+
+    def test_experiment_page_size_survives_cursor_and_account_handoff(self):
+        db.queue_list(self.conn, 'experiment', 'followers', page_size=50)
+        job_id = self.conn.execute("SELECT id FROM jobs WHERE seed='experiment'").fetchone()[0]
+        with self.assertRaisesRegex(ValueError, 'new seed'):
+            db.queue_list(self.conn, 'experiment', 'followers', page_size=25)
+        self.conn.commit()
+        old = server.ext_next(self.conn, {'lane': ['lane-old'], 'version': ['3.9.11']}, {})
+        self.assertIsNone(old['job'])
+        db.queue_list(self.conn, 'ordinary', 'followers')
+        self.conn.commit()
+        old = server.ext_next(self.conn, {'lane': ['lane-old'], 'version': ['3.9.11']}, {})
+        self.assertEqual(old['job']['seed'], 'ordinary')
+        job = server.ext_next(self.conn, {'lane': ['lane-a'], 'version': ['3.9.12']}, {})['job']
+        self.assertEqual((job['id'], job['page_size']), (job_id, 50))
+        body = dict(job_id=job_id, seed='experiment', direction='followers', lease_token=job['lease_token'],
+                    requested_cursor=None, next_cursor='second', done=False, total=2, total_source='current_run',
+                    users=[{'handle': 'alice'}], requested_count=25)
+        with self.assertRaisesRegex(server.Bad, 'page size changed'):
+            server.ext_list_page(self.conn, {'lane': ['lane-a']}, body)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+        body['requested_count'] = 50
+        server.ext_list_page(self.conn, {'lane': ['lane-a']}, body)
+        self.conn.execute("UPDATE lists SET lane=NULL WHERE seed='experiment'")
+        self.conn.commit()
+        handed = server.ext_next(self.conn, {'lane': ['lane-b'], 'version': ['3.9.12']}, {})['job']
+        self.assertEqual((handed['id'], handed['page_size'], handed['cursor']), (job_id, 50, 'second'))
+
+    def test_page_promising_more_cannot_remove_existing_follower(self):
+        db.queue_list(self.conn, 'seed', 'followers')
+        self.conn.commit()
+        first = server.ext_next(self.conn, {'lane': ['lane-a']}, {})['job']
+        server.ext_list_page(self.conn, {'lane': ['lane-a']}, dict(
+            job_id=first['id'], seed='seed', direction='followers', lease_token=first['lease_token'],
+            requested_cursor=None, users=[{'handle': 'alice'}], done=True, has_more=False,
+            total=1, total_source='current_run'))
+        self.assertTrue(db.queue_list(self.conn, 'seed', 'followers', refresh=True))
+        self.conn.commit()
+        second = server.ext_next(self.conn, {'lane': ['lane-a']}, {})['job']
+        with self.assertRaisesRegex(server.Bad, 'promises more'):
+            server.ext_list_page(self.conn, {'lane': ['lane-a']}, dict(
+                job_id=second['id'], seed='seed', direction='followers', lease_token=second['lease_token'],
+                requested_cursor=None, users=[], done=True, has_more=True,
+                total=0, total_source='current_run'))
+        self.assertEqual(self.conn.execute("SELECT active FROM edge_evidence WHERE seed='seed'").fetchone()[0], 1)
+        self.assertNotEqual(self.conn.execute("SELECT state FROM lists WHERE seed='seed'").fetchone()[0], 'done')
+
     def test_new_run_counts_observed_members_not_historical_edges(self):
         first = self.job()
         self.page(first, ['alice', 'bob'], total=3)

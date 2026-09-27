@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person
 CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT,
-  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0);
+  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0, page_size INT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS list_page_requests(job_id INT, requested_cursor TEXT 
   PRIMARY KEY(job_id,requested_cursor));
 CREATE TABLE IF NOT EXISTS list_members(job_id INT, person_id INT, observed_at TEXT, PRIMARY KEY(job_id,person_id));
 CREATE TABLE IF NOT EXISTS pages(job_id INT, cursor TEXT, at TEXT, PRIMARY KEY(job_id, cursor));  -- list pages already ingested
+CREATE TABLE IF NOT EXISTS collector_events(id INTEGER PRIMARY KEY, event_id TEXT UNIQUE, at TEXT NOT NULL,
+  lane TEXT, job_id INT, kind TEXT, direction TEXT, outcome TEXT NOT NULL, reason TEXT,
+  http_status INT, requested_count INT, returned_count INT, new_links INT);
+CREATE INDEX IF NOT EXISTS collector_events_at ON collector_events(at);
+CREATE INDEX IF NOT EXISTS collector_events_lane_at ON collector_events(lane,at);
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
@@ -253,6 +258,7 @@ def init(path):
                              ('verdicts', 'prompt', 'TEXT'), ('verdicts', 'evidence', 'TEXT'), ('verdicts', 'content_fit', 'REAL'),
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
                              ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
+                             ('jobs', 'page_size', 'INT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
@@ -286,6 +292,8 @@ def init(path):
     conn.execute("CREATE INDEX IF NOT EXISTS lists_waiting_prev ON lists(prev_lane) "
                  "WHERE lane IS NULL AND prev_lane IS NOT NULL AND state IN ('queued','running')")
     conn.execute('CREATE INDEX IF NOT EXISTS edges_first_seen ON edges(first_seen)')
+    conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('collector_events_started_at',?)",
+                 (json.dumps(now()),))
     migrate_statuses(conn)
     # Before per-run evidence, every edge was treated as a current follow. Clear
     # derived claims once; keep the original edges and all human-entered data.
@@ -1044,12 +1052,20 @@ def start_list_run(conn, job_id, seed, direction):
         conn.execute('UPDATE lists SET run_job_id=? WHERE seed=? AND direction=?', (job_id, seed, direction))
 
 
-def queue_list(conn, seed, direction, priority=0, refresh=False):
+def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None):
     seed = norm_handle(seed)
     if not seed or '~' in seed:
         raise ValueError('invalid Instagram seed handle')
     if direction not in ('followers', 'following'):
         raise ValueError('invalid list direction')
+    if page_size is not None:
+        if type(page_size) is not int or page_size not in (25, 50) or direction != 'followers' or refresh:
+            raise ValueError('experimental page size requires a fresh follower list')
+        if (conn.execute('SELECT 1 FROM seeds WHERE handle=?', (seed,)).fetchone()
+                or conn.execute('SELECT 1 FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+                or conn.execute('SELECT 1 FROM jobs WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+                or conn.execute('SELECT 1 FROM edges WHERE seed=? LIMIT 1', (seed,)).fetchone()):
+            raise ValueError('experimental page size requires a new seed')
     ts = now()
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     row = conn.execute('SELECT state FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
@@ -1067,8 +1083,8 @@ def queue_list(conn, seed, direction, priority=0, refresh=False):
                  (seed, direction, 'queued', ts))
     if not conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                         (seed, direction)).fetchone():
-        job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at) VALUES(?,?,?,?,?)',
-                              ('list', seed, direction, priority, ts)).lastrowid
+        job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at, page_size) VALUES(?,?,?,?,?,?)',
+                              ('list', seed, direction, priority, ts, page_size)).lastrowid
         start_list_run(conn, job_id, seed, direction)
     return True
 

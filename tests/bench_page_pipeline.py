@@ -55,7 +55,7 @@ def main():
         source.backup(dest)
         source.close()
         dest.close()
-        conn = db.connect(str(Path(tmp) / 'copy.sqlite'))
+        conn = db.init(Path(tmp) / 'copy.sqlite')
         lane = conn.execute('SELECT lane_id FROM accounts LIMIT 1').fetchone()
         if lane:
             now = datetime.now(timezone.utc)
