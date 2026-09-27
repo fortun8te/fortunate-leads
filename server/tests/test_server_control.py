@@ -154,6 +154,37 @@ class ControlTest(LaneTest):
         self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertTrue(self.conn.execute('SELECT 1 FROM jobs WHERE id=? AND state IN (\'queued\',\'leased\')', (first['id'],)).fetchone())
 
+    def test_old_list_lease_does_not_mask_endpoint_wait(self):
+        self.seeds('s1')
+        job = self.nxt('a')['job']
+        until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'running',
+                  'list_endpoint_until': until})
+        # An old lease can remain visible briefly while the extension reports its circuit wait.
+        self.conn.execute("UPDATE jobs SET state='leased', lane='lane-a', leased_until=? WHERE id=?",
+                          (until, job['id']))
+        self.conn.commit()
+        out = self.ctl()
+        for item in (self.stage(out, 'lists'), out['accounts'][0]):
+            self.assertEqual(item['state'], 'waiting')
+            self.assertIn('home page', item['now'])
+            self.assertGreater(item['wait']['seconds'], 25 * 60)
+
+    def test_old_profile_lease_does_not_mask_rate_limit_wait(self):
+        self.bio_job()
+        job = self.nxt('a', 'profile')['job']
+        until = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'cooldown',
+                  'cool': {'list': None, 'profile': until}})
+        self.conn.execute("UPDATE jobs SET state='leased', lane='lane-a', leased_until=? WHERE id=?",
+                          (until, job['id']))
+        self.conn.commit()
+        out = self.ctl()
+        for item in (self.stage(out, 'bios'), out['accounts'][0]):
+            self.assertEqual(item['state'], 'waiting')
+            self.assertIn('slow down', item['now'])
+            self.assertGreater(item['wait']['seconds'], 110 * 60)
+
 
 def load_tests(loader, tests, pattern):
     # only this file's tests; the lane helpers come from LaneTest, its tests run in their own module
