@@ -142,6 +142,24 @@ class RecoveryPathsTest(unittest.TestCase):
         server.plan_profiles(self.conn)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs WHERE handle='legacy'").fetchone()[0], 1)
 
+    def test_planner_commits_legacy_requeue_when_queue_is_full(self):
+        db.set_setting(self.conn, 'budget', {'list': 0, 'profile': 1})
+        self.conn.execute("INSERT INTO jobs(kind,handle,state,created_at) "
+                          "VALUES('profile','waiting','queued',?)", (db.now(),))
+        self.conn.execute("INSERT INTO jobs(kind,handle,state,attempts,created_at) "
+                          "VALUES('profile','legacy','error',5,?)", (db.now(),))
+        self.conn.commit()
+
+        self.assertEqual(server.plan_profiles(self.conn), 0)
+        self.assertFalse(self.conn.in_transaction)
+        other = db.connect(str(Path(self.tmp.name) / 'leads.sqlite'))
+        try:
+            self.assertEqual(other.execute("SELECT state FROM jobs WHERE handle='legacy'").fetchone()[0], 'queued')
+            other.execute('BEGIN IMMEDIATE')
+            other.rollback()
+        finally:
+            other.close()
+
 
 if __name__ == '__main__':
     unittest.main()
