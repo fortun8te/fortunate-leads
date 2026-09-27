@@ -2532,8 +2532,20 @@ def plan_profiles(conn):
     need = room - active
     if need <= 0:
         return 0
-    rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {LISTS} AS n
-        FROM people p JOIN verdicts v ON v.person_id=p.id
+    # The map's transactionally maintained degree has the same distinct-current-seed
+    # meaning as LISTS. Keep the exact read-through query if its backfill was interrupted.
+    degree_ready = db.get_setting(conn, 'map_person_degree_v1', False) and db.get_setting(
+        conn, 'map_people_present_v1', False) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6
+    degree_ready = degree_ready and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3
+    if degree_ready:
+        degree_join = ('JOIN' if early else 'LEFT JOIN') + ' map_person_degree d ON d.person_id=p.id'
+        degree = 'd.degree' if early else 'coalesce(d.degree,0)'
+    else:
+        degree_join, degree = '', LISTS
+    rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {degree} AS n
+        FROM people p JOIN verdicts v ON v.person_id=p.id {degree_join}
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
           AND p.handle NOT IN (SELECT handle FROM seeds) AND instr(p.handle, '~')=0

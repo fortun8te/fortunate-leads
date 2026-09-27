@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS tags_tag_src ON tags(tag, source, person_id, grp);   
 CREATE INDEX IF NOT EXISTS tags_person_src ON tags(person_id, source, tag);
 CREATE INDEX IF NOT EXISTS verdicts_tier ON verdicts(tier, score);
 CREATE INDEX IF NOT EXISTS verdicts_score ON verdicts(score);
+CREATE INDEX IF NOT EXISTS verdicts_prefilter ON verdicts(prefilter DESC,person_id);
 CREATE INDEX IF NOT EXISTS people_updated ON people(updated_at);
 CREATE INDEX IF NOT EXISTS people_followers ON people(followers);
 CREATE INDEX IF NOT EXISTS people_first_seen ON people(first_seen);
