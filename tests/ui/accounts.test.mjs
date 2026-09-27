@@ -130,3 +130,9 @@ test('account collection mode stays visible and a shared wait replaces ready tex
   assert.doesNotMatch(html, /Ready for collection/);
   assert.ok(html.indexOf('data-role="lists"') < html.indexOf('Account settings'));
 });
+
+ test('a shared Instagram rest is shown as a wait, not a manual pause', () => {
+ const row = view.accountRow(account({collection_wait:'Instagram collection is resting'}));
+ assert.match(row, /Waiting for Instagram to allow requests/);
+ assert.doesNotMatch(row, /Scraping paused/);
+ });

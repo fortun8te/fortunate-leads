@@ -2117,7 +2117,7 @@ function collectionReason(value, fallback = 'Scraping paused') {
   if (/login|logged.out|authentication|session.expired/.test(reason)) return 'Sign in to Instagram again';
   if (/challenge|checkpoint|security/.test(reason)) return 'Complete the Instagram security check';
   if (/private|access.denied|forbidden/.test(reason)) return 'This account cannot access the list';
-  if (/429|rate.limit|slow.down|feedback|required.wait|cooldown|instagram.wait/.test(reason)) return 'Waiting for Instagram to allow requests';
+  if (/429|rate.limit|slow.down|feedback|required.wait|cooldown|instagram.wait|instagram.collection.is.resting/.test(reason)) return 'Waiting for Instagram to allow requests';
   if (/html|redirect|unexpected.response|home.page|502|503|504/.test(reason)) return 'Instagram did not return the list. Progress is saved.';
   if (/unconfirmed|permit|in.flight|shared|workspace/.test(reason)) return 'Waiting for the current request to finish';
   if (/budget|daily|cap.reached/.test(reason)) return 'Daily allowance reached';
@@ -2293,7 +2293,7 @@ function renderAccounts() {
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
   $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local models';
   $('#acc-alerts').innerHTML = ''; // Account rows show short, actionable status without raw error payloads.
-  const connected = accs.filter((a) => accountAccess(a).kind === 'ok').length;
+  const connected = accs.filter((a) => a.online).length;
   const attention = accs.filter((a) => accountAccess(a).kind === 'bad').length;
   $('#acc-summary').textContent = accs.length
     ? `${connected} connected${attention ? ` · ${attention} need attention` : ` · ${accs.length} accounts`}`
