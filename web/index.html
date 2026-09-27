@@ -195,7 +195,7 @@
       <div class="scr">
         <header class="ph">
           <div class="ph-t"><h1>Collection</h1><p>Add target profiles. Your connected Instagram accounts collect their lists.</p></div>
-          <div class="ph-a"><button class="btn" id="acc-start">Start local models</button><button class="btn" id="acc-add">Connect collector</button></div>
+          <div class="ph-a"><button class="btn" id="acc-start">Start local models</button><button class="btn" id="acc-manage">Your accounts</button><button class="btn" id="acc-add">Connect collector</button></div>
         </header>
         <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Starts Laya and checks the local notes model. Keep your connected Chrome profiles open to collect.</p>
         <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
@@ -218,20 +218,20 @@
             <div class="checking-options" id="set-mode" aria-label="Checking mode">
               <button class="checking-option" data-mode="rules" aria-pressed="false" disabled>
                 <span class="checking-heading"><b>Rules only</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Sort while collecting</span>
+                <span class="checking-purpose">Basic profile checks</span>
                 <span class="checking-description">Checks saved bios, links and tags against your lead criteria.</span>
                 <span class="checking-scope">No AI models. Automatic web research stays off.</span>
               </button>
               <button class="checking-option" data-mode="local" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Local models + rules</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Private checks on this Mac</span>
-                <span class="checking-description"><strong>Laya</strong> helps rank profiles. <strong>Llama 3.2 · 3B</strong> reads your notes and suggests context.</span>
-                <span class="checking-scope">Includes rules. External AI and automatic web research stay off.</span>
+                <span class="checking-heading"><b>Rules + local models</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">Everything in Rules, plus</span>
+                <span class="checking-description"><strong>Laya</strong> for profile ranking and <strong>Llama 3.2 · 3B</strong> for private note suggestions.</span>
+                <span class="checking-scope">Runs on this Mac. External AI stays off.</span>
               </button>
               <button class="checking-option" data-mode="external" aria-pressed="false" disabled>
                 <span class="checking-heading"><b>External AI</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">More detailed profile review</span>
-                <span class="checking-description">Keeps all local checks, then sends eligible profiles to your selected OpenRouter models.</span>
+                <span class="checking-purpose">Everything in Local, plus</span>
+                <span class="checking-description">More detailed review of eligible profiles using your selected <strong>OpenRouter models</strong>.</span>
                 <span class="checking-scope">May use credits. Web research is a separate option.</span>
               </button>
             </div>

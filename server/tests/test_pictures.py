@@ -35,16 +35,91 @@ class PictureTest(Base):
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_called_once()
 
-    def test_changed_url_invalidates_success_and_failure_but_same_url_does_not(self):
+    def test_changed_url_keeps_photo_and_requests_refresh_but_same_url_does_not(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
         self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
         db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
         self.assertEqual(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0], f'{pid}.jpg')
         db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
-        self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
+        self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 1))
         self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', ('', pid))
         db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/latest.jpg'})
         self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
+
+    def test_hold_repairs_orphaned_files_without_requests(self):
+        server.pfp_dir().mkdir()
+        ids = []
+        for index, prior in enumerate((None, '', None, 'missing.jpg')):
+            pid = db.upsert_person(self.conn, {'handle': f'person{index}', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
+            self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (prior, pid))
+            ids.append(pid)
+        for pid in ids[:2]:
+            (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+        (server.pfp_dir() / f'{ids[2]}.jpg').write_bytes(b'corrupt')
+        db.set_setting(self.conn, 'cooldown', '2099-01-01T00:00:00Z')
+        self.conn.commit()
+        with mock.patch.object(server, 'fetch_pic') as fetch:
+            self.assertTrue(server.pfp_step(self.conn))
+            fetch.assert_not_called()
+        self.assertEqual([r[0] for r in self.conn.execute('SELECT pic_file FROM people ORDER BY id')],
+                         [f'{ids[0]}.jpg', f'{ids[1]}.jpg', None, None])
+
+    def test_rotating_url_keeps_valid_photo_during_hold_and_failed_refresh(self):
+        pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
+        server.pfp_dir().mkdir()
+        (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+        self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
+        db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
+        self.conn.commit()
+        with mock.patch.object(server.meta_network, 'blocked', return_value=True), mock.patch.object(server, 'fetch_pic') as fetch:
+            server.pfp_step(self.conn)
+            fetch.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0], f'{pid}.jpg')
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', return_value=None) as fetch:
+            self.assertTrue(server.pfp_step(self.conn))
+            fetch.assert_called_once_with('https://a.cdninstagram.com/new.jpg')
+            self.assertFalse(server.pfp_step(self.conn))
+        self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 0))
+        self.assertEqual((server.pfp_dir() / f'{pid}.jpg').read_bytes(), JPEG)
+
+    def test_refresh_does_not_clear_a_newer_url_update(self):
+        pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
+        self.conn.commit()
+        def fetch(_):
+            db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
+            return JPEG
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', side_effect=fetch):
+            server.pfp_step(self.conn)
+        self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
+        self.assertEqual(self.conn.execute('SELECT pic_url FROM people WHERE id=?', (pid,)).fetchone()[0], 'https://a.cdninstagram.com/new.jpg')
+        self.assertEqual(self.conn.execute('SELECT pic_refresh FROM people WHERE id=?', (pid,)).fetchone()[0], 1)
+
+    def test_local_recovery_is_bounded_and_resumable(self):
+        server.pfp_dir().mkdir()
+        for index in range(3):
+            pid = db.upsert_person(self.conn, {'handle': f'person{index}'})
+            (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+        self.conn.commit()
+        with mock.patch.object(server, 'fetch_pic') as fetch:
+            self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 2)
+            self.assertEqual(server._pfp_check_id, 2)
+            self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 1)
+            self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 0)
+            self.assertEqual(server._pfp_check_id, 0)
+            fetch.assert_not_called()
+
+    def test_rotating_url_refreshes_cached_photo_when_network_is_available(self):
+        pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/old.jpg'})
+        server.pfp_dir().mkdir()
+        (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
+        self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
+        db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
+        replacement = JPEG[:-2] + b'new photo' + JPEG[-2:]
+        self.conn.commit()
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', return_value=replacement):
+            self.assertTrue(server.pfp_step(self.conn))
+        self.assertEqual((server.pfp_dir() / f'{pid}.jpg').read_bytes(), replacement)
+        self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 0))
 
     def test_missing_file_is_repaired_and_replaced_atomically(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})

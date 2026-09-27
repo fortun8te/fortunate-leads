@@ -2132,7 +2132,7 @@ function accountRow(a) {
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
   const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
   const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
-  const work = a.paused ? 'Work paused' : a.status === 'running'
+  const work = a.paused ? 'Work paused' : a.collection_wait ? a.collection_wait : a.status === 'running'
     ? a.job ? jobText(a) : ucf(a.activity || a.text || 'Waiting for work')
     : 'Ready for collection';
   const name = A.renaming === a.lane_id
@@ -2145,11 +2145,12 @@ function accountRow(a) {
       <div class="acc-fact"><span class="acc-key">Access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b>${access.kind !== 'ok' ? `<small>${esc(access.detail)}</small>` : ''}</div>
       <div class="acc-fact"><span class="acc-key">Collection</span><b>${esc(work)}</b></div>
     </div>
+    <div class="acc-mode"><span class="acc-key">Collects</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <details class="adv acc-more"><summary>Account settings</summary>
     <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
     <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
-      <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+
       <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Alternates collect lists. Main is reserved for lists they cannot access, within its daily allowance."><i></i><span>Main account</span></button>
       <span class="grow"></span>
       <form class="acc-bud" data-bud>
@@ -2316,7 +2317,10 @@ function renderAccounts() {
   const focusIndex = focused?.matches('button, summary') && focusRow
     ? [...focusRow.querySelectorAll('button, summary')].indexOf(focused) : -1;
   const focusLane = focusIndex >= 0 ? focusRow.dataset.lane : null;
-  list.innerHTML = accs.length ? accs.map(accountRow).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
+  const collectionStages = (sc?.stages || sc?.control?.stages || []).filter(s => s.id === 'lists' || s.id === 'bios');
+  const collectionWait = collectionStages.find(s => s.wait?.scope === 'workspace')?.now
+    || (collectionStages.length === 2 && collectionStages.every(s => s.paused) ? 'Collection paused' : null);
+  list.innerHTML = accs.length ? accs.map(a => accountRow({...a, collection_wait: collectionWait})).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
   for (const row of list.querySelectorAll('[data-lane]')) {
     if (openLanes.has(row.dataset.lane)) row.querySelector('.acc-more').open = true;
     if (row.dataset.lane === focusLane) row.querySelectorAll('button, summary')[focusIndex]?.focus({ preventScroll: true });
@@ -2454,6 +2458,11 @@ function renderWizard() {
       ${step(2, 'Log in to Instagram', `<p>Log in with the account this profile should use and keep one Instagram tab open.</p>${copyRow('https://www.instagram.com/')}`)}
     </ol>`;
 }
+$('#acc-manage').onclick = () => {
+  const accounts = $('#acc-list').closest('.panel');
+  accounts.scrollIntoView({block:'start', behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+  accounts.querySelector('button')?.focus({preventScroll:true});
+};
 $('#acc-add').onclick = () => openWizard();
 $('#wiz').addEventListener('click', (e) => {
   const c = e.target.closest('[data-copy]');
