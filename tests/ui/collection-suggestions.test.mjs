@@ -19,7 +19,7 @@ test('read-only suggestions never queue; explicit Add preserves supplied directi
  await c.addSuggestedTarget('brand');assert.equal(posts,1,'stale read must not resurface the target just added');
 });
 test('coverage only gives ETA for a progressing complete-known active queue',()=>{
- const ctx=vm.createContext({int:String,esc:String,eta:h=>`${h} h`});
+ const ctx=vm.createContext({int:String,esc:String,backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> 'K2 status',eta:h=>`${h} h`});
  vm.runInContext(source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()')),ctx);
  const snapshot={lists:[{state:'running',expected:100,saved_entries:50}],coverage:{lists:{saved_entries:50,known_targets:1,expected_entries:100,unknown_targets:0,partial_lists:0}},stages:[{id:'lists',state:'running',paused:false}],progress:{lists:{left:50,eta_h:2,per_minute:3}}};
  assert.match(ctx.collectionCoverageHTML(snapshot),/Active queue: 2 h left/);

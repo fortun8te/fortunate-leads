@@ -1,6 +1,7 @@
 """Owner feedback affects future examples without treating machine tags as Michael's judgement."""
 
 import sys
+from contextlib import nullcontext
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,12 +15,15 @@ import deepscout  # noqa: E402
 import laya  # noqa: E402
 import qualify  # noqa: E402
 import server  # noqa: E402
+import processing_modes
 
 
 class FeedbackLearningTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.init(str(Path(self.tmp.name) / 'leads.sqlite'))
+        processing_modes.set_mode(self.conn, 'RLEAI')
+        self.conn.commit()
 
     def legacy_client_tag(self, pid):
         # Compatibility fixture: new edits use the relationship field.
@@ -159,8 +163,9 @@ class FeedbackLearningTest(unittest.TestCase):
         other = self.person('goodbrand')
         for pid in (own, other):
             ts = self.conn.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0]
-            self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) VALUES(?,90,90,'rules',?)",
+            self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) VALUES(?,90,90,'local:k2',?)",
                               (pid, ts))
+            self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear',?)", (pid,ts))
         self.conn.commit()
         self.assertEqual([r['id'] for r in server.llm_candidates(self.conn, 10, set())], [other])
         self.assertEqual([r['id'] for r in server.api_leads(self.conn, {}, {})['rows']], [other])
@@ -168,7 +173,7 @@ class FeedbackLearningTest(unittest.TestCase):
     def test_laya_skips_self_when_the_seed_row_is_missing(self):
         own = self.person('fortun8te')
         other = self.person('goodbrand')
-        db.set_setting(self.conn, 'qualify', True)
+        processing_modes.set_mode(self.conn, 'RLAI')
         self.conn.commit()
         answer = {q['key']: 0.8 for q in laya.QUESTIONS}
         seen = []
@@ -179,7 +184,8 @@ class FeedbackLearningTest(unittest.TestCase):
 
         with patch.object(laya, 'available', return_value=True), \
              patch.object(laya, 'cache_signature', return_value='laya:feedback-test'), \
-             patch.object(laya, 'decide', side_effect=score):
+             patch.object(laya, 'decide', side_effect=score), \
+             patch.object(server.resource_budget, 'lease', side_effect=lambda *_a, **_k: nullcontext()):
             self.assertTrue(server.laya_step(self.conn))
         self.assertEqual(seen, [other])
         self.assertNotIn(own, seen)
@@ -208,7 +214,8 @@ class FeedbackLearningTest(unittest.TestCase):
         for pid in (own, other):
             ts = self.conn.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0]
             self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) "
-                              "VALUES(?,90,90,'rules',?)", (pid, ts))
+                              "VALUES(?,90,90,'local:k2',?)", (pid, ts))
+            self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear',?)", (pid,ts))
         self.conn.commit()
         snapshot = server.progress(self.conn, [])
         self.assertEqual(snapshot['bios']['left'], 1)

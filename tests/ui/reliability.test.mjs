@@ -8,7 +8,7 @@ const tick = () => new Promise(r => setImmediate(r));
 function base(extra={}) {
   const elements = new Map();
   const $ = key => {if (!elements.has(key)) elements.set(key, {innerHTML:'', textContent:'',className:'',style:{},classList:{toggle(){}},contains:()=>false}); return elements.get(key);};
-  return vm.createContext({$, elements, S:{views:[],rows:[],pick:new Set(),tagBy:new Map()}, M:{byId:new Map(),patch(){}},
+  return vm.createContext({SET:{localProcessing:null},backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> 'Local AI status unavailable',$, elements, S:{views:[],rows:[],pick:new Set(),tagBy:new Map()}, M:{byId:new Map(),patch(){}},
     collectionReason:()=>"Waiting",mountCollectionTargets(){}, toast(){}, renderRows(){},renderFilters(){},loadFacetsSoon(){},loadCounts(){}, refreshPerson(){},
     store:{get:()=>[],set(){}},toQuery:()=>new URLSearchParams(), api:{}, URLSearchParams,
     int:v=>v==null?'–':String(v),esc:String,ucf:String,plural:(n,s)=>`${n} ${s}`,slabel:String,

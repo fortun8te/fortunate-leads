@@ -1,0 +1,16 @@
+{
+  "fallback_providers": [],
+  "fallback_model": [],
+  "toolsets": ["web"],
+  "mcp_servers": {},
+  "plugins": {"enabled": []},
+  "memory": {"memory_enabled": false, "user_profile_enabled": false},
+  "agent": {"max_turns": 6, "api_max_retries": 1, "environment_probe": false},
+  "web": {"backend": "searxng", "search_backend": "searxng"},
+  "security": {"allow_private_urls": false},
+  "providers": {
+    "orslot": {"base_url": "http://127.0.0.1:18741/api/v1", "api_mode": "chat_completions"},
+    "xai-oauth": {"request_timeout_seconds": 90, "stale_timeout_seconds": 60}
+  },
+  "display": {"interface": "cli", "tool_progress": "off", "show_reasoning": false}
+}

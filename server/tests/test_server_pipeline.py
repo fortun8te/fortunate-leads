@@ -11,7 +11,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from test_server import Base, db, server
+from test_server import Base, db, server, external_ready
 
 laya = server.laya
 
@@ -118,13 +118,13 @@ class PipelineTest(Base):
         server.qualify_batch(self.conn)
         db.set_setting(self.conn, 'qualify', True)
         self.conn.commit()
-        server.qualify.llm_verdicts = lambda items, examples: [
-            {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'model', 'model': 'm'} for _ in items]
+        external_ready(self.conn, list(ids.values()))
+        server.external_harness.broad = lambda *args, **kwargs: {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'model', 'model': 'm'}
         try:
             rows = self.conn.execute('SELECT * FROM people WHERE id=?', (ids['scored'],)).fetchall()
             self.assertEqual(server.run_llm(self.conn, rows, {}), 1)
         finally:
-            del server.qualify.llm_verdicts
+            server.external_harness.broad = lambda *args, **kwargs: None
         event = self.conn.execute('SELECT person_id,scored_at FROM ai_scoring_events').fetchone()
         self.assertEqual(event['person_id'], ids['scored'])
         self.assertLess((datetime.now(timezone.utc) - datetime.fromisoformat(event['scored_at'])).total_seconds(), 10)
@@ -215,25 +215,26 @@ class PipelineTest(Base):
         self.assertNotIn('requests', body['llm']['usage'])
 
     def test_pool_is_bounded_parallel_and_never_blocks_ingest(self):
-        self.people({f'p{i}': ('founder', [('s1', 'followers')]) for i in range(12)})
+        ids = self.people({f'p{i}': ('founder', [('s1', 'followers')]) for i in range(12)})
         server.qualify_batch(self.conn)
         db.set_setting(self.conn, 'qualify', True)
         db.set_setting(self.conn, 'llm_workers', 3)
         self.conn.commit()
+        external_ready(self.conn, list(ids.values()))
         state = {'now': 0, 'max': 0}
         lock, release = threading.Lock(), threading.Event()
 
-        def slow(items, examples):
+        def slow(*args, **kwargs):
             with lock:
                 state['now'] += 1
                 state['max'] = max(state['max'], state['now'])
             release.wait(5)
             with lock:
                 state['now'] -= 1
-            return [{'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm', 'tags': [('Fit: strong', 'signal')],
-                     'prompt': 'q2:0', 'evidence': ['founder']} for _ in items]
-        server.qualify.llm_verdicts = slow
-        pool = server.LLMPool(batch=2)
+            return {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm', 'tags': [('Fit: strong', 'signal')],
+                     'prompt': 'q2:0', 'evidence': ['founder']}
+        server.external_harness.broad = slow
+        pool = server.LLMPool()
         try:
             self.assertTrue(pool.step(self.conn))
             self.assertFalse(pool.step(self.conn))      # all 3 workers busy: nothing more is dispatched
@@ -250,10 +251,10 @@ class PipelineTest(Base):
                     break
                 time.sleep(0.05)
             self.assertTrue(pool.idle())
-            self.assertEqual(self.conn.execute("SELECT count(*) FROM verdicts WHERE model='m' AND prompt='q2:0'").fetchone()[0], 6)
-            self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='Fit: strong'").fetchone()[0], 6)
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM verdicts WHERE model='m' AND prompt='q2:0'").fetchone()[0], 3)
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='Fit: strong'").fetchone()[0], 3)
         finally:
-            del server.qualify.llm_verdicts
+            server.external_harness.broad = lambda *args, **kwargs: None
             release.set()
 
     def test_fewshot_rerun_when_marks_change_a_lot(self):
@@ -272,7 +273,7 @@ class PipelineTest(Base):
             ex = server.fewshot(self.conn)
             self.assertEqual(len(ex), 8)
             self.assertEqual({e['label'] for e in ex}, {'good'})
-            self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (ids['g0'],)).fetchone()[0], 'rules')
+            self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (ids['g0'],)).fetchone()[0], 'm')
             self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (ids['g11'],)).fetchone()[0], 'm')
         finally:
             del server.qualify.prompt_version
@@ -373,13 +374,13 @@ class PerfTest(Base):
         first = self.call('/api/map')[1]
         self.assertIs(server.api_tags(self.conn, {}, {}), server.api_tags(self.conn, {}, {}))
         # an LLM verdict keeps verdicts.updated_at, yet the map must show it
-        server.qualify.llm_verdicts = lambda items, ex: [{'score': 99, 'tier': 'hot', 'role': 'buyer', 'reason': 'r', 'model': 'm'}
-                                                         for _ in items]
+        external_ready(self.conn, [pid])
+        server.external_harness.broad = lambda *args, **kwargs: {'score': 99, 'tier': 'hot', 'role': 'buyer', 'reason': 'r', 'model': 'm'}
         try:
             rows = self.conn.execute('SELECT * FROM people').fetchall()
             self.assertEqual(server.run_llm(self.conn, rows, {}), 1)
         finally:
-            del server.qualify.llm_verdicts
+            server.external_harness.broad = lambda *args, **kwargs: None
         second = self.call('/api/map')[1]
         self.assertNotEqual(first['rev'], second['rev'])
         self.assertEqual([n['score'] for n in second['nodes'] if n['kind'] == 'lead'], [99])
@@ -443,5 +444,5 @@ class LLMSettingsTest(Base):
                 os.environ['OPENROUTER_API_KEYS'] = old
 
     def test_settings_without_on_leave_qualify_alone(self):
-        self.assertEqual(self.call('/api/settings/qualify', {'workers': 3, 'llm_min': 30})[1], {'ok': True, 'qualify': False})
+        self.assertFalse(self.call('/api/settings/qualify', {'workers': 3, 'llm_min': 30})[1]['qualify'])
         self.assertEqual((self.call('/api/llm')[1]['workers'], self.call('/api/llm')[1]['llm_min']), (3, 30))

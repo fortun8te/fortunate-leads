@@ -1,6 +1,5 @@
 """Offline Leadscout regressions. Hermes and OpenRouter are never called."""
 import json
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,19 +134,21 @@ class LeadscoutPipelineTest(unittest.TestCase):
         pid = self.lead()
         rows = self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchall()
 
-        def answer(items, examples):
-            self.scout_lead(pid)
-            return [{'score': 55, 'tier': 'warm', 'role': 'buyer', 'reason': 'older model read',
-                     'model': 'offline-llm', 'fit': 55, 'content_fit': 55, 'tags': []}]
+        self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'fixture','needs_research','unclear ownership',?)", (pid, db.now()))
+        self.conn.commit()
 
-        with patch.object(server.qualify, 'llm_verdicts', side_effect=answer, create=True):
+        def answer(*args, **kwargs):
+            self.scout_lead(pid)
+            return {'score': 55, 'tier': 'warm', 'role': 'buyer', 'reason': 'older model read',
+                    'model': 'hermes-broad:grok', 'fit': 55, 'content_fit': 55, 'tags': []}
+
+        with patch.object(server.external_harness, 'broad', side_effect=answer):
             server.run_llm(self.conn, rows, {})
         row = self.conn.execute('SELECT model, content_fit FROM verdicts WHERE person_id=?', (pid,)).fetchone()
         self.assertEqual((row['model'], row['content_fit']), ('leadscout', 85))
 
     def test_failed_hermes_process_cannot_be_accepted_as_a_verdict(self):
-        payload = json.dumps({'verdict': 'strong', 'reachable': True})
-        with patch.object(scout.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, payload, 'error')):
+        with patch.object(scout.external_harness, 'invoke', return_value=None):
             self.assertIsNone(scout.run({'handle': 'glow'}))
 
     def test_fewshot_refresh_does_not_queue_scout_for_bulk_llm_again(self):

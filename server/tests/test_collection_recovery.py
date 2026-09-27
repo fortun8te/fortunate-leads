@@ -72,3 +72,17 @@ class RecoveryTest(lanes.Base):
         self.assertFalse(out['granted'])
         self.assertTrue(out['stale'])
         self.assertEqual(self.nxt('b','profile')['job']['handle'],'someone')
+
+    def test_historical_route_wait_hands_saved_cursor_to_healthy_viewer(self):
+        self.seeds('historical', direction='followers')
+        job = self.nxt('a', 'list')['job']
+        lanes.LaneTest.page(self, 'a', job, 5, 'next')
+        self.post('b', '/api/ext/heartbeat', {'version':'3.9.16','state':'idle'})
+        now = datetime.now(timezone.utc)
+        self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason) VALUES(?,?,?,'list','followers','other','list_html_home_redirect')",
+                          ((now-timedelta(minutes=40)).isoformat(), 'lane-a', job['id']))
+        self.conn.commit()
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        handed = self.nxt('b', 'list')['job']
+        self.assertIsNotNone(handed, 'Saved historical route waits must release ownership to an eligible viewer')
+        self.assertEqual((handed['id'], handed['cursor'], handed['received']), (job['id'], 'next', 5))

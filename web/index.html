@@ -213,31 +213,33 @@
       <div class="scr settings-page">
         <header class="ph"><div class="ph-t"><h1>Settings</h1></div></header>
         <section class="sg settings-mode">
-          <div class="sg-h"><h2>Checking mode</h2><p>Collection runs separately. Choose how to check the profiles already saved.</p></div>
+          <div class="sg-h"><h2>Checking mode</h2><p>Scraping runs separately. Each mode adds to the previous one.</p></div>
           <div class="checking-content">
             <div class="checking-options" id="set-mode" aria-label="Checking mode">
-              <button class="checking-option" data-mode="rules" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Rules only</b><i aria-hidden="true"></i></span>
+              <button class="checking-option" data-mode="R" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>R · Rules</b><i aria-hidden="true"></i></span>
                 <span class="checking-purpose">Basic profile checks</span>
                 <span class="checking-description">Checks saved bios, links and tags against your lead criteria.</span>
                 <span class="checking-scope">No AI models. Automatic web research stays off.</span>
               </button>
-              <button class="checking-option" data-mode="local" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Rules + local models</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Everything in Rules, plus</span>
-                <span class="checking-description"><strong>Laya</strong> for profile ranking and <strong>Llama 3.2 · 3B</strong> for private note suggestions.</span>
+              <button class="checking-option" data-mode="RLAI" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>RLAI · Rules + local AI</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">Everything in R, plus</span>
+                <span class="checking-description"><strong>Laya</strong> adds ranking hints. <strong>K2 3.7B</strong> reads your notes and checks saved bios for business fit.</span>
                 <span class="checking-scope">Runs on this Mac. External AI stays off.</span>
               </button>
-              <button class="checking-option" data-mode="external" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>External AI</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Everything in Local, plus</span>
-                <span class="checking-description">More detailed review of eligible profiles using your selected <strong>OpenRouter models</strong>.</span>
+              <button class="checking-option" data-mode="RLEAI" aria-pressed="false" disabled>
+                <span class="checking-heading"><b>RLEAI · Rules + local + external AI</b><i aria-hidden="true"></i></span>
+                <span class="checking-purpose">Everything in RLAI, plus</span>
+                <span class="checking-description">External review for profiles that need more research, using your selected model.</span>
                 <span class="checking-scope">May use credits. Web research is a separate option.</span>
               </button>
             </div>
             <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
-            <p class="checking-note">Laya helps with ranking; it does not confirm facts. Llama's note suggestions do not change your tags or relationship labels.</p>
+            <p class="checking-note">Relationship suggestions need your confirmation. Notes can inform local business-fit checks; they stay on this Mac.</p>
             <p class="checking-models" id="set-mode-models"></p>
+            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Pauses automatically when your Mac needs the memory.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
+            <p class="checking-models" id="set-local-progress" role="status"></p>
           </div>
         </section>
         <section class="sg">
@@ -250,15 +252,15 @@
         <details class="settings-setup" id="external-setup">
           <summary><span><b>External AI setup</b><small>Profile review, model choice and optional web research</small></span></summary>
           <div class="settings-setup-body">
-            <section class="sg">
+            <section class="sg legacy-processing-settings" hidden>
               <div class="sg-h"><h2>Automatic start</h2></div>
               <div class="card"><div class="set-row"><div><b>After collection finishes</b><span class="muted">Applies only when External AI is selected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div></div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>Deeper web research</h2><p>Hermes researches promising leads with the model below. Separate from the Find more button, which refreshes a profile or reads its linked website. Off until enabled.</p></div>
+              <div class="sg-h"><h2>External research</h2><p>In RLEAI, Hermes reviews cases the local model flags for more research. Choose its model below. Deeper web research is optional.</p></div>
               <div class="card" id="set-scout"><div class="set-row muted" role="status">Loading research settings…</div></div>
             </section>
-            <section class="sg">
+            <section class="sg legacy-processing-settings" hidden>
               <div class="sg-h"><h2>OpenRouter access</h2><p>Used for external profile review. Saving a key does not start checks.</p><span class="num muted" id="set-keys-n" hidden></span></div>
               <div class="card flush">
                 <div class="tbl-wrap"><table class="tbl tg-tbl"><thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead><tbody id="set-keys"></tbody></table></div>
@@ -269,7 +271,7 @@
                 </div>
               </div>
             </section>
-            <section class="sg">
+            <section class="sg legacy-processing-settings" hidden>
               <div class="sg-h"><h2>Profile review models</h2><p>Uses the first available model, trying the next if needed. This does not change the web research model.</p></div>
               <div class="card">
                 <div class="sub-h"><b>Selected models</b><div class="grow"></div><button class="btn" id="set-models-save" disabled>Save order</button></div>

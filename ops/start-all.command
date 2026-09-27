@@ -38,23 +38,36 @@ else
   }
 fi
 
-"$FL_PYTHON" "$FL_REPO/sidecar/laya_service.py" start --timeout 180 || {
-  echo 'Laya did not become ready; collection and AI were left as they were.' >&2; exit 1;
-}
-
-# Optional local note reader: use an installed Ollama only; never install or pull models here.
-ollama_ready() { curl -fsS -m 2 -o /dev/null http://127.0.0.1:11434/api/tags 2>/dev/null; }
-if ! ollama_ready; then
-  if [ -d /Applications/Ollama.app ]; then
-    open -g -a /Applications/Ollama.app || true
-    for attempt in 1 2 3 4 5; do
-      ollama_ready && break
-      sleep 1
-    done
-  fi
-  if ! ollama_ready; then
-    echo 'The local note reader is unavailable. Fortunate Leads can still run; saved notes remain available.' >&2
-  fi
+# Read the persisted mode; Rules must not load any model or launch Ollama.
+MODE="$("$FL_PYTHON" - "$FL_REPO" "$FL_DB" <<'PYMODE'
+import sqlite3, sys
+sys.path.insert(0, sys.argv[1] + '/server')
+import processing_modes, db
+with sqlite3.connect('file:' + sys.argv[2] + '?mode=ro', uri=True) as conn:
+    print('R' if db.get_setting(conn, 'processing_paused', False) else processing_modes.current_mode(conn))
+PYMODE
+)"
+if [ "$MODE" = R ]; then
+  "$FL_PYTHON" "$FL_REPO/ops/k2-service.py" stop
+  "$FL_PYTHON" "$FL_REPO/sidecar/laya_service.py" stop
+else
+  # Check headroom before either model is loaded. No inference is performed.
+  "$FL_PYTHON" - "$FL_REPO" <<'PYBUDGET'
+import subprocess, sys
+sys.path.insert(0, sys.argv[1] + '/server')
+import resource_budget
+try:
+    with resource_budget.lease('laya_start', startup=True):
+        result = subprocess.run([sys.executable, sys.argv[1] + '/sidecar/laya_service.py',
+                                 'start', '--timeout', '120'], timeout=130)
+        if result.returncode:
+            raise SystemExit('Laya did not become ready; check its status before retrying.')
+except resource_budget.Deferred as exc:
+    raise SystemExit(str(exc))
+PYBUDGET
+  "$FL_PYTHON" "$FL_REPO/ops/k2-service.py" start || {
+    echo 'K2 did not become ready; the local checks remain queued.' >&2; exit 1;
+  }
 fi
 
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then

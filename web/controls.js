@@ -45,9 +45,7 @@
       : collection.some((s) => ['error', 'failed'].includes(s.state)) ? 'Needs attention'
       : collection.some((s) => s.state === 'running') ? 'On'
       : collection.some((s) => s.state === 'waiting') ? 'Waiting' : 'Idle';
-    const external = data.stages.find((s) => s.id === 'ai');
-    const mode = offline || !external || typeof data.local_laya !== 'boolean' ? 'Unknown'
-      : !external.paused ? 'External AI' : data.local_laya ? 'Local' : 'Rules';
+    const mode = offline ? 'Unknown' : ({R:'R · Rules',RLAI:'RLAI · Local AI',RLEAI:'RLEAI · External AI'})[data.processing?.mode] || 'Unknown';
     el.innerHTML = `<div class="fl-ctl-top">
       <a class="fl-ctl-summary-item fl-ctl-status-link" href="#/accounts" aria-label="Scraping ${collectionState}. View accounts and progress."><span>Scraping</span><b>${collectionState}</b></a>
       <a class="fl-ctl-summary-item fl-ctl-status-link" href="#/settings" title="Change how saved profiles and notes are checked"><span>Mode</span><b>${mode}</b></a>
@@ -64,7 +62,7 @@
       if (!r.ok) throw new Error(r.status);
       const j = await r.json();
       if (!Array.isArray(j.stages)) throw new Error('Invalid status');
-      const key = JSON.stringify(j.stages) + j.all_paused + j.local_laya + JSON.stringify(j.instagram_request_attention);
+      const key = JSON.stringify(j.stages) + j.all_paused + j.local_laya + JSON.stringify(j.instagram_request_attention) + JSON.stringify(j.processing);
       if (version !== requestVersion) return;
       const same = data && !offline && key === data.key;   // unchanged: preserve buttons and focus
       data = Object.assign(j, { got: Date.now(), key });

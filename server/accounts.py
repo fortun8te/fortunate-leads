@@ -501,10 +501,13 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     marks = ','.join('?' * len(kinds))
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
-    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if follower_route_wait(conn, row, now) else ''
+    route_waiting = [r['lane_id'] for r in accts if follower_route_wait(conn, r, now)]
+    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if lane in route_waiting else ''
     page_size_filter = '' if allow_page_size else ' AND j.page_size IS NULL'
-    owner_filter = (" OR (j.direction='followers' AND EXISTS(SELECT 1 FROM accounts owner "
-                    "WHERE owner.lane_id=l.lane AND owner.list_endpoint_until>?))")
+    # The same recovered route wait must govern eligibility and sticky ownership.
+    # Heartbeats can omit list_endpoint_until while recorded redirects still block it.
+    owner_filter = (" OR (j.direction='followers' AND l.lane IN ("
+                    + ','.join('?' for _ in route_waiting) + '))') if route_waiting else ''
     regular_main = True
     if row['is_main'] and 'list' in kinds and share < 1:
         since = iso(now - timedelta(hours=1))
@@ -559,7 +562,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
               l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
               coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-            (ts, ts, lane, *ok, ts, *viewer_args, *alt_ids, lane)).fetchone()
+            (ts, ts, lane, *ok, *route_waiting, *viewer_args, *alt_ids, lane)).fetchone()
         if fallback:
             return fallback
         if 'profile' not in kinds:
@@ -577,7 +580,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, ts, lane, *ok, ts, *viewer_args, prefer_following, lane)).fetchone()
+        (*kinds, ts, ts, lane, *ok, *route_waiting, *viewer_args, prefer_following, lane)).fetchone()
 
 
 def took(conn, lane, job):

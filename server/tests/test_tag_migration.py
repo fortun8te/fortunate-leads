@@ -12,6 +12,7 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SERVER_DIR))
 import db
 import server
+import processing_modes
 
 # test_server installs a qualify stub globally. Load the real rules separately so
 # this regression has the same behavior alone and in the complete test suite.
@@ -26,6 +27,8 @@ class TagMigrationTest(unittest.TestCase):
             path = str(Path(directory) / 'leads.sqlite')
             conn = db.init(path)
             self.addCleanup(conn.close)
+            processing_modes.set_mode(conn, 'RLEAI')
+            conn.commit()
             db.set_setting(conn, 'tags_version', real_qualify.TAGS_VERSION)
             for pid, source in [(1, 'auto'), (2, 'manual')]:
                 conn.execute('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
@@ -54,6 +57,8 @@ class TagMigrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(server, 'qualify', real_qualify):
             conn = db.init(str(Path(directory) / 'leads.sqlite'))
             self.addCleanup(conn.close)
+            processing_modes.set_mode(conn, 'RLEAI')
+            conn.commit()
             conn.execute("INSERT INTO seeds(handle,is_me) VALUES('owner',1)")
             rows = {}
             for handle, bio, cached in [('follow', 'Hello', True), ('mention', 'Hello @owner', True),

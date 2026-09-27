@@ -1362,7 +1362,7 @@ function noteInsightsHTML(p) {
   if (state.state === 'pending') return '<span class="muted">Reading your note locally…</span>';
   if (state.state === 'unavailable' || state.state === 'failed') return '<span class="muted">Note saved. Local understanding is unavailable.</span>';
   if (state.state !== 'ready') return '';
-  return (state.facts || []).map((fact, index) => {
+  const facts = (state.facts || []).map((fact, index) => {
     if (!fact.label || typeof fact.quote !== 'string' || !p.note.includes(fact.quote)) return '';
     const patch = noteFactPatch(p, fact);
     const known = ['current_client','past_client','worked_with','colleague','friend','acquaintance'].includes(fact.kind);
@@ -1371,6 +1371,7 @@ function noteInsightsHTML(p) {
     const action = patch ? ` <button class="btn ghost" type="button" data-note-fact="${index}">Set ${esc(label)}</button>` : '';
     return `<p><span class="muted">${esc(fact.label)}:</span> “${esc(fact.quote)}”${action}</p>`;
   }).join('');
+  return facts + (facts && state.ranking_effect ? `<p class="muted note-ranking-effect">${esc(state.ranking_effect)}</p>` : '');
 }
 function renderNoteState(id) {
   if ($('#note-st')) $('#note-st').textContent = noteStatus(id);
@@ -1955,6 +1956,7 @@ async function loadScraper() {
   try { S.sc = await api.get('/api/scraper'); S.scError = false; S.scStale = false; }
   catch (e) { S.scError = true; S.scStale = true; }
   finally { S.scLoading = false; }
+  if (SCRAPER_FULL_VIEWS.has(S.view)) await loadProcessingStatus();
   renderStatus();
   if (S.view === 'scraper') renderScraper();
   if (S.view === 'accounts') renderAccounts();
@@ -1971,7 +1973,9 @@ async function loadScraperStatus() {
   } catch (e) { S.scStale = true; }
   finally { S.scStatusLoading = false; }
   renderStatus();
+  if (SCRAPER_FULL_VIEWS.has(S.view)) await loadProcessingStatus();
   if (S.view === 'accounts') renderAccounts();
+  if (S.view === 'settings') renderCheckingMode();
   if (S.view === 'qual') Q.renderProg();
 }
 let listFilter = 'all';
@@ -2058,7 +2062,7 @@ function renderScraper() {
     stage('1. Collect lists', listLine,
       listsDone ? 100 : incompleteLists ? null : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen),
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
-    stage('Local profile review', sc.local_laya ? 'Checks saved profile data on this computer.' : 'Local model checks are off.', null, sc.local_laya ? 'On' : 'Off'),
+    stage('Local AI', esc(localProcessingSummary()), null, backgroundAIState()),
     stage('External AI', sc.qualify ? `${int(Q.left || 0)} people waiting · ${minuteRate(Q.per_minute, 'reviews')}` : 'No profiles are being sent to external AI.',
       null, sc.qualify ? Q.left ? 'On' : 'Up to date' : 'Off'),
   ].join('');
@@ -2347,7 +2351,7 @@ function collectionCoverageHTML(sc) {
   const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
   const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting`;
   const speed = bios?.per_minute == null ? '' : ` · ${int(bios.per_minute)} bios read this minute`;
-  return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(estimate)} · Local checks ${sc.local_laya ? 'on' : 'off'}</span></div>`;
+  return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(estimate)}</span><span>${esc(localProcessingSummary())}</span>${backgroundAIControlsHTML()}</div>`;
 }
 
 function renderAccounts() {
@@ -2530,9 +2534,10 @@ $('#wiz').addEventListener('click', (e) => {
 });
 
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
-const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, dirty: false, modeBusy: false };
+const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, dirty: false, modeBusy: false, processing: null, localProcessing: null, processingStale: true };
 async function loadSettings() {
   loadBiofetch();
+  await loadProcessingStatus();
   const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
   if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
   if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;
@@ -2540,43 +2545,110 @@ async function loadSettings() {
   if (!SET.health) checkHealth();
   loadScout();
 }
+const PROCESSING_LABELS = { R: 'Rules', RLAI: 'Rules + local AI', RLEAI: 'Rules + local + external AI' };
+async function loadProcessingStatus() {
+  if (SET.processingLoading || SET.modeBusy || SET.localBusy) return;
+  SET.processingLoading = true;
+  const localVersion = SET.localStatusVersion || 0;
+  try {
+    const [mode, local] = await Promise.allSettled([api.get('/api/processing-mode'), api.get('/api/local-processing')]);
+    if (mode.status === 'fulfilled' && Object.hasOwn(PROCESSING_LABELS, mode.value.mode)) { if (!SET.processing || (mode.value.generation ?? 0) >= (SET.processing.generation ?? 0)) SET.processing = mode.value; SET.processingStale = false; }
+    else SET.processingStale = true;
+    if (localVersion === (SET.localStatusVersion || 0)) SET.localProcessing = local.status === 'fulfilled' ? local.value : null;
+  } finally { SET.processingLoading = false; }
+}
 function settingsMode(sc) {
-  if (!sc || typeof sc.qualify !== 'boolean' || typeof sc.local_laya !== 'boolean') return null;
-  return sc.qualify ? 'external' : sc.local_laya ? 'local' : 'rules';
+  if (S.scStale || S.scError || SET.processingStale) return null;
+  const processing = SET.processing && (SET.processing.generation ?? 0) >= (sc?.processing?.generation ?? 0) ? SET.processing : sc?.processing;
+  return ({R:'rules',RLAI:'local',RLEAI:'external'})[processing?.mode] || null;
+}
+function backgroundAIState(local = SET.localProcessing) {
+  if (!local) return 'Status unavailable';
+  if (!local.enabled) return 'Off';
+  if (local.paused) return 'Paused';
+  const resources = local.runtime?.resources;
+  if (resources?.busy) return 'Running';
+  if (local.state === 'waiting_for_mac' || resources?.allowed === false && (resources.recovering || resources.thermal_limited || resources.error)) return 'Waiting for Mac';
+  if (!local.ready) return local.state === 'starting' ? 'Starting' : 'Unavailable';
+  return local.state === 'working' || resources?.retry_in > 0 ? 'Running' : 'Ready';
+}
+function backgroundAIControlsHTML() {
+  const local = SET.localProcessing;
+  if (!local?.enabled) return '';
+  return `<span class="background-ai-inline"><span>Background AI · ${esc(SET.localBusy ? 'Saving…' : backgroundAIState(local))}</span><button class="btn" type="button" data-local-ai-toggle ${SET.localBusy || SET.modeBusy ? 'disabled' : ''}>${local.paused ? 'Resume' : 'Pause'}</button></span>`;
+}
+function localProcessingSummary() {
+  const local = SET.localProcessing;
+  if (!local) return 'Local AI status unavailable';
+  if (!local.enabled) return 'Local AI off';
+  const counts = `${int(local.reviewed || 0)} bios reviewed · ${int(local.queue || 0)} waiting${local.seeding ? ' · finding more saved bios' : ''}`;
+  const notes = local.notes_pending ? ` · ${int(local.notes_pending)} notes waiting` : '';
+  const research = local.needs_research ? ` · ${int(local.needs_research)} need more research` : '';
+  const state = backgroundAIState(local);
+  if (!['Ready','Running'].includes(state)) return `Background AI ${state.toLowerCase()} · ${counts}${notes}`;
+  return `K2 · ${counts}${notes}${research}`;
 }
 function renderCheckingMode() {
-  const mode = S.scStale || S.scError ? null : settingsMode(S.sc);
+  const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : mode === 'local' ? 'Selected: rules, Laya and the local note reader. External AI is off.' : mode === 'external' ? 'Selected: rules, Laya and external profile review. Local note reading stays on; private notes stay on this Mac.' : mode === 'rules' ? 'Selected: rules only. Both local and external AI checks are off.' : 'Current mode could not be confirmed. Refresh to try again.';
+  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${code} selected · ${PROCESSING_LABELS[code]}` : 'Current mode unavailable. Refresh to try again.';
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
-    button.classList.toggle('on', button.dataset.mode === mode);
-    button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-    button.disabled = SET.modeBusy || !mode;
+    button.classList.toggle('on', button.dataset.mode === code);
+    button.setAttribute('aria-pressed', String(button.dataset.mode === code));
+    button.disabled = SET.modeBusy || !code;
   });
   $('#set-q-auto').disabled = SET.modeBusy || mode !== 'external';
-  const modelSummary = $('#set-mode-models');
-  if (modelSummary) {
-    const models = SET.llm?.models || [];
-    modelSummary.textContent = mode === 'external'
-      ? models.length ? `Profile review models: ${models.join(' → ')}. Configure these below.` : 'Choose a profile review model in External AI setup below.'
-      : mode === 'local' ? 'Local models: Laya multilingual · Llama 3.2 (3B). Checks need their local services to be running.' : '';
-    modelSummary.hidden = !mode || mode === 'rules';
+  const summary = $('#set-mode-models');
+  if (summary) {
+    const model = SET.localProcessing?.model || 'K2 3.7B';
+    summary.textContent = mode === 'external' ? `${model} + Laya are included. External research: ${SET.scout?.model || 'choose a model below'}. Deep dive is optional.` : mode === 'local' ? `${model} · Laya ranking hints · private on this Mac` : '';
+    summary.hidden = !mode || mode === 'rules';
+  }
+  const progress = $('#set-local-progress');
+  if (progress) { progress.textContent = localProcessingSummary(); progress.hidden = mode === 'rules'; }
+  const background = $('#background-ai'), local = SET.localProcessing;
+  if (background) background.hidden = mode === 'rules';
+  const state = $('#local-ai-state'), toggle = $('#local-ai-toggle'), help = $('#local-ai-help');
+  if (state) state.textContent = SET.localBusy ? 'Saving…' : backgroundAIState(local);
+  if (toggle) { toggle.textContent = local?.paused ? 'Resume' : 'Pause'; toggle.disabled = SET.localBusy || SET.modeBusy || !local || !local.enabled; }
+  if (help) help.textContent = local?.paused ? 'Your queue is saved. Rules and scraping continue.' : 'Pauses automatically when your Mac needs the memory.';
+}
+async function toggleBackgroundAI() {
+  const current = SET.localProcessing;
+  if (!current || !current.enabled || SET.localBusy || SET.modeBusy) return;
+  SET.localBusy = true; SET.localStatusVersion = (SET.localStatusVersion || 0) + 1; renderCheckingMode();
+  try {
+    const result = await api.post('/api/local-processing', {paused: !current.paused});
+    if (typeof result.paused !== 'boolean' || result.paused === !!current.paused) throw new Error('Pause state not confirmed');
+    SET.localProcessing = result;
+    toast(result.paused ? 'Background AI paused. Your queue is saved.' : 'Background AI resumed when your Mac is ready.');
+  } catch { SET.localProcessing = null; toast('Could not confirm background AI. Refresh to check.'); }
+  finally {
+    SET.localBusy = false; renderCheckingMode();
+    if (S.view === 'accounts') renderAccounts();
+    if (S.view === 'qual') Q.renderProg();
   }
 }
+$('#local-ai-toggle')?.addEventListener('click', toggleBackgroundAI);
+for (const selector of ['#view-accounts', '#ql-prog']) $(selector)?.addEventListener('click', event => {
+  if (event.target.closest('[data-local-ai-toggle]')) toggleBackgroundAI();
+});
 $('#set-mode')?.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-mode]');
-  const mode = button?.dataset.mode;
-  if (!mode || button.disabled || SET.modeBusy || mode === settingsMode(S.sc)) return;
-  if (mode === 'external' && !confirm('Enable external profile review? Profiles and manual tags can be sent to OpenRouter. Rules, Laya and local note reading stay active. Private notes stay on this Mac. Deeper web research stays off until enabled separately.')) return;
+  const button = event.target.closest('[data-mode]'), mode = button?.dataset.mode;
+  if (!Object.hasOwn(PROCESSING_LABELS, mode || '') || button.disabled || SET.modeBusy || mode === SET.processing?.mode) return;
   SET.modeBusy = true; renderCheckingMode();
   try {
-    SET.scout = await api.post('/api/settings/scout', { on: false });
-    await api.post('/api/settings/qualify', { on: mode === 'external', auto: false, local_laya: mode === 'local' });
-    S.sc = { ...(S.sc || {}), ...await api.get('/api/scraper/status') }; S.scError = false; S.scStale = false;
-    if (settingsMode(S.sc) !== mode) throw new Error('Mode could not be confirmed');
+    const result = await api.post('/api/processing-mode', {mode});
+    if (result.mode !== mode) throw new Error('Mode could not be confirmed');
+    SET.processing = result; SET.processingStale = false;
+    if (S.sc) S.sc.processing = result;
+    window.dispatchEvent(new Event('fl:control-changed'));
     toast('Checking mode saved');
-  } catch (error) { S.scStale = true; toast('Could not confirm the change. Refresh to check the current mode.'); }
-  finally { SET.modeBusy = false; renderSettings(); renderScout(); }
+  } catch (error) { SET.processingStale = true; if (S.sc) delete S.sc.processing; toast('Could not confirm the change. Refresh to check the current mode.'); }
+  finally {
+    SET.modeBusy = false; await loadProcessingStatus();
+    await loadScout(); renderSettings();
+  }
 });
 // Leadscout: which model the Hermes agent runs on, how many at once, and what it used this week.
 async function loadScout() {
@@ -2594,7 +2666,7 @@ function renderScout() {
   el.innerHTML = `
     <div class="set-row"><div><b>Enable deeper research</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Web research is unavailable on this Mac'}</span></div>
       <button class="toggle${external && sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${external && sc.on}" aria-label="Extra web checks"${external ? '' : ' disabled'}><i></i></button></div>
-    <div class="set-row"><div><b>Research model</b><span class="muted">Used by Hermes for web research only.</span></div>
+    <div class="set-row"><div><b>Research model</b><span class="muted">Used for external review and optional deep dives.</span></div>
       <div class="seg" id="scout-model">${sc.models.map((m) => `<button data-m="${esc(m.id)}" class="${sc.model === m.id ? 'on' : ''}" aria-pressed="${sc.model === m.id}" title="${esc(m.label)}">${esc(m.label.split(' (')[0])}</button>`).join('')}</div></div>
     <div class="set-row"><div><b>Research at once</b><span class="muted">Maximum leads being researched together.</span></div>
       <div class="seg" id="scout-workers">${[2, 3, 4, 6, 8].map((n) => `<button data-w="${n}" class="${sc.workers === n ? 'on' : ''}" aria-pressed="${sc.workers === n}">${n}</button>`).join('')}</div></div>
@@ -2606,7 +2678,7 @@ $('#set-scout')?.addEventListener('click', async (e) => {
     : e.target.closest('[data-m]') ? { model: e.target.closest('[data-m]').dataset.m }
     : e.target.closest('[data-w]') ? { workers: +e.target.closest('[data-w]').dataset.w } : null;
   if (!body || (body.on && settingsMode(S.sc) !== 'external')) return;
-  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); toast('Saved'); } catch (err) { toast('Could not save'); }
+  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); renderCheckingMode(); toast('Saved'); } catch (err) { toast('Could not save'); }
 });
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
@@ -2802,11 +2874,11 @@ const Q = {
   syncSeg() { $$('#ql-view button').forEach((b) => b.classList.toggle('on', b.dataset.v === this.view)); },
   renderProg() {
     const s = this.sum || {}, Qp = S.sc?.progress?.qualify || {};
-    const known = !S.scStale && !S.scError && typeof S.sc?.qualify === 'boolean';
-    const on = known && S.sc.qualify;
     const mode = settingsMode(S.sc);
-    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for review` : 'Review is up to date') : mode === 'local' ? 'Local checks selected' : 'Rules only';
-    $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${int(s.verdicts ?? this.total ?? 0)} people checked</span><span class="muted">${esc(status)}</span></p>`;
+    const known = !!mode;
+    const on = mode === 'external';
+    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for review` : 'Review is up to date') : mode === 'local' ? localProcessingSummary() : 'Rules only';
+    $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${int(s.verdicts ?? this.total ?? 0)} people checked</span><span class="muted">${esc(status)}</span>${mode === 'external' ? `<span class="muted">${esc(localProcessingSummary())}</span>` : ''}${backgroundAIControlsHTML()}</p>`;
     $('#ql-toggle').textContent = 'Checking mode';
     $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
   },

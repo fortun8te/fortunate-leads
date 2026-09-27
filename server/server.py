@@ -35,6 +35,12 @@ import owner_relationships  # noqa: E402
 import tag_projection  # noqa: E402
 import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
+import processing_modes  # noqa: E402
+import processing_state  # noqa: E402
+import local_model  # noqa: E402
+import resource_budget  # noqa: E402
+import local_qualification  # noqa: E402
+import external_harness  # noqa: E402
 import meta_network  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
@@ -1570,7 +1576,8 @@ def api_scraper(conn, q, b):
     accts = accounts.listing(conn, now)
     lists, coverage = list_coverage(conn)
     stages = control.snapshot(conn, ai_left(conn))['stages']
-    return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts, 'rate': accounts.aggregate_rate(accts),
+    return {'processing': processing_modes.snapshot(conn), 'local_processing': api_local_processing(conn, {}, {}),
+            'ext': ext_aggregate(conn, accts, now), 'accounts': accts, 'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
@@ -1590,7 +1597,7 @@ def api_scraper_status(conn, q, b):
     now = datetime.now(timezone.utc)
     accts = accounts.listing(conn, now, include_lists=False)
     stages = control.snapshot(conn, ai_left(conn))['stages']
-    return {'ext': ext_aggregate(conn, accts, now), 'accounts': accts,
+    return {'processing': processing_modes.snapshot(conn), 'ext': ext_aggregate(conn, accts, now), 'accounts': accts,
             'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
             'paused': bool(db.get_setting(conn, 'paused')),
@@ -1677,9 +1684,7 @@ def progress(conn, accts):
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at), max(bio_at) FROM people WHERE bio_at>=?', now)
     lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
-    q_left = conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
-                          "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
-                          (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
+    q_left = ai_left(conn)
     q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at), max(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
     q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
                           (iso(now - timedelta(hours=1)),)).fetchone()[0]
@@ -1859,30 +1864,27 @@ def api_qualify(conn, q, b):
         raise Bad('auto must be true or false')
     if 'local_laya' in b and not isinstance(b['local_laya'], bool):
         raise Bad('local_laya must be true or false')
-    if b.get('local_laya', db.get_setting(conn, 'local_laya')) and b.get('on', db.get_setting(conn, 'qualify')):
-        raise Bad('turn external AI off to use local-only Laya')
-    if b.get('auto') and b.get('local_laya', db.get_setting(conn, 'local_laya')):
-        raise Bad('automatic external AI cannot run in local-only mode')
+    if b.get('auto'):
+        raise Bad('Choose RLEAI to enable external AI. It never starts automatically.')
     for key, lo, hi in (('workers', 1, 32), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
-    if 'on' in b:
-        # All AI switches share the control strip's durable off behavior.
-        control.set_stage(conn, 'ai', pause=not b['on'])
+    if 'on' in b or 'local_laya' in b:
+        external = b.get('on', processing_modes.allows(conn, 'external'))
+        local = b.get('local_laya', processing_modes.allows(conn, 'laya'))
+        processing_modes.set_mode(conn, 'RLEAI' if external else 'RLAI' if local else 'R')
     if 'auto' in b:
         # An explicit request to schedule later activation is separate from switching off now.
         db.set_setting(conn, 'qualify_auto', b['auto'])
-    if 'local_laya' in b:
-        db.set_setting(conn, 'local_laya', b['local_laya'])
-        if b['local_laya']:
-            db.set_setting(conn, 'qualify_auto', False)
     if 'workers' in b:
         db.set_setting(conn, 'llm_workers', b['workers'])
     for key in ('llm_min', 'bio_min'):
         if key in b:
             db.set_setting(conn, key, b[key])
     conn.commit()
-    result = {'qualify': bool(db.get_setting(conn, 'qualify'))}
+    result = {'qualify': bool(db.get_setting(conn, 'qualify')), 'processing': processing_modes.snapshot(conn)}
+    if 'on' in b or 'local_laya' in b:
+        schedule_local_services(conn)
     if 'local_laya' in b:
         result['local_laya'] = bool(db.get_setting(conn, 'local_laya'))
     return result
@@ -1906,7 +1908,7 @@ def api_llm(conn, q, b):
     return out
 
 
-def llm_usage_report(days=30, purpose='qualification'):
+def llm_usage_report(days=30, purpose='all'):
     pool = llm.get()
     path = pool.usage_path or usage_ledger.PATH
     gap = pool.usage_gap or usage_ledger.read_gap(path)
@@ -1924,8 +1926,8 @@ def api_llm_usage(conn, q, b):
     raw = (q.get('days') or ['30'])[0]
     if not raw.isdigit() or not 1 <= int(raw) <= 365:
         raise Bad('days must be 1-365')
-    purpose = (q.get('purpose') or ['qualification'])[0]
-    if purpose not in ('qualification', 'website_summary', 'provider_test', 'all'):
+    purpose = (q.get('purpose') or ['all'])[0]
+    if purpose not in ('qualification', 'website_summary', 'provider_test', 'external_broad', 'external_deep', 'all'):
         raise Bad('unknown usage purpose')
     return llm_usage_report(int(raw), purpose)
 
@@ -1974,6 +1976,8 @@ def api_scout_set(conn, q, b):
     if 'on' in b:
         if not isinstance(b['on'], bool):
             raise Bad('on must be true or false')
+        if b['on'] and not processing_modes.allows(conn, 'external'):
+            raise Bad('Deep research requires RLEAI mode.')
         db.set_setting(conn, 'scout', b['on'])
     if 'model' in b:
         if b['model'] not in deepscout.MODELS:
@@ -2055,14 +2059,113 @@ def api_pause(conn, q, b):
 
 
 def ai_left(conn):
-    return conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
-                        "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+    return conn.execute(f"SELECT count(*) FROM local_reviews l JOIN people p ON p.id=l.person_id JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                        "AND l.status='needs_research' AND v.model LIKE 'local:%' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                         (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
 
 
 def api_control(conn, q, b):
     """What each stage (lists, bios, AI) and each account is doing right now, in plain sentences."""
     return control.snapshot(conn, ai_left(conn))
+
+
+_service_start_lock = threading.Lock()
+_service_start_requested = threading.Event()
+_service_start_state = {'state': 'idle', 'error': None}
+
+
+def schedule_local_services(conn):
+    """Mode switches never hold an HTTP request or SQLite lock behind model loading."""
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    if not path or Path(path).resolve() != (ROOT / 'data/leads.sqlite').resolve():
+        return  # Isolated test databases must not start machine services.
+    _service_start_requested.set()
+    if not _service_start_lock.acquire(blocking=False):
+        return
+    def run():
+        try:
+            while _service_start_requested.is_set():
+                _service_start_requested.clear()
+                _service_start_state.update(state='starting', error=None)
+                try:
+                    engine_start.start(ROOT, 0)
+                    _service_start_state.update(state='ready', error=None)
+                except engine_start.EngineStartError as exc:
+                    _service_start_state.update(state='failed', error=str(exc))
+        finally:
+            _service_start_lock.release()
+            # A switch arriving during the final loop check must also be reconciled.
+            if _service_start_requested.is_set():
+                check = db.connect(path)
+                try:
+                    schedule_local_services(check)
+                finally:
+                    check.close()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def api_processing_mode(conn, q, b):
+    if 'mode' in b:
+        try:
+            processing_modes.set_mode(conn, b['mode'])
+        except ValueError as exc:
+            raise Bad(str(exc)) from None
+        conn.commit()
+        schedule_local_services(conn)
+    return dict(processing_modes.snapshot(conn), services=dict(_service_start_state))
+
+
+def notes_pending(conn):
+    return sum(owner_notes.result(conn, r[0])['state'] in ('pending', 'unavailable', 'failed')
+               for r in conn.execute("SELECT person_id FROM marks WHERE trim(coalesce(note,''))<>''"))
+
+
+_processing_summary_cache = {}
+_processing_summary_lock = threading.Lock()
+
+
+def local_processing_counts(conn):
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    key = path or ('memory', id(conn))
+    now = time.monotonic()
+    with _processing_summary_lock:
+        hit = _processing_summary_cache.get(key)
+        if hit and now - hit[0] < 15 and not conn.in_transaction:
+            return hit[1]
+    out = dict(processing_state.queue_status(conn), counts=dict(conn.execute(
+        'SELECT status,count(*) FROM local_reviews GROUP BY status')))
+    if not conn.in_transaction:
+        with _processing_summary_lock:
+            if len(_processing_summary_cache) > 32:
+                _processing_summary_cache.clear()
+            _processing_summary_cache[key] = (now, out)
+    return out
+
+
+def api_local_processing(conn, q, b):
+    if 'paused' in b:
+        try:
+            processing_modes.set_paused(conn, b['paused'])
+        except ValueError as exc:
+            raise Bad(str(exc)) from None
+        conn.commit()
+        schedule_local_services(conn)
+    enabled = processing_modes.allows(conn, 'local_qualification')
+    paused = processing_modes.snapshot(conn).get('paused', False)
+    summary = dict(local_processing_counts(conn))
+    counts = summary.pop('counts')
+    runtime = local_model.status() if enabled else {'ready': False, 'resources': resource_budget.state()}
+    pending = notes_pending(conn) if enabled else 0
+    budget = runtime.get('resources', {})
+    waiting = budget.get('recovering') or budget.get('thermal_limited') or budget.get('error')
+    state = ('off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
+             'starting' if _service_start_state['state'] == 'starting' else 'unavailable' if not runtime.get('ready') else
+             'working' if summary.get('pending') or pending or summary.get('seeding') else 'ready')
+    return dict(summary, queue=summary['pending'], reviewed=sum(counts.values()),
+                needs_research=counts.get('needs_research', 0), enabled=enabled,
+                model=local_model.MODEL, ready=bool(runtime.get('ready')),
+                notes_pending=pending, state=state, runtime=runtime, paused=paused,
+                processing=processing_modes.snapshot(conn))
 
 
 def require_collection_resume(conn):
@@ -2091,6 +2194,8 @@ def api_control_set(conn, q, b):
     except Exception:
         conn.rollback()
         raise
+    if b.get('stage') in ('ai', 'all'):
+        schedule_local_services(conn)
     return api_control(conn, q, b)
 
 
@@ -2170,6 +2275,9 @@ def api_setup(conn, q, b):
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
 KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
+    ('GET', r'/api/processing-mode', api_processing_mode), ('POST', r'/api/processing-mode', api_processing_mode),
+    ('GET', r'/api/local-processing', api_local_processing),
+    ('POST', r'/api/local-processing', api_local_processing),
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
     ('POST', r'/api/settings/accounts', api_account_settings),
@@ -2490,6 +2598,8 @@ def drain_network_dirty(conn, limit=200):
 
 
 def laya_row(conn, pid):
+    if not processing_modes.allows(conn, 'laya'):
+        return None, None
     r = conn.execute('''SELECT l.answers, l.fit, l.input_hash, p.handle, p.name, p.bio,
                        p.category, p.website, p.followers
                        FROM laya l JOIN people p ON p.id=l.person_id WHERE l.person_id=?''', (pid,)).fetchone()
@@ -2525,11 +2635,20 @@ def requalify(conn, p, me, net=None):
     # Older auto tags treated any follow or @mention as a personal acquaintance.
     conn.execute("DELETE FROM tags WHERE person_id=? AND tag='knows you' AND source='auto'", (p['id'],))
     edges = edges_of(conn, p['id'])
+    auto = qualify.rule_tags(p, edges, me)
+    retained = [tuple(r) for r in conn.execute("SELECT tag,grp FROM tags WHERE person_id=? AND source!='auto'", (p['id'],))]
+    rule_result = qualify.rule_verdict(p, retained + auto, net)
+    rule_result['input_hash'] = qualify.input_hash(p, edges, net)
+    rule_pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net)
+    processing_state.save_rules(conn, p, rule_pre, rule_result, auto)
     _, lfit = laya_row(conn, p['id'])
     pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), net, lfit)
     old = conn.execute('SELECT model, input_hash FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     scout_current = bool(old and old['model'] == 'leadscout' and deepscout.fresh(conn, p))
-    keep_llm = old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net) and (
+    allowed_old = old and (old['model'] == 'rules' or
+            (old['model'] or '').startswith('local:') and processing_modes.allows(conn, 'local_qualification') or
+                          processing_modes.allows(conn, 'external'))
+    keep_llm = allowed_old and old['input_hash'] and old['input_hash'] == qualify.input_hash(p, edges, net) and (
         old['model'] != 'leadscout' or scout_current)
     if not keep_llm:  # the LLM's extra auto tags stay as long as its verdict does
         conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
@@ -2537,7 +2656,8 @@ def requalify(conn, p, me, net=None):
     # Laya probabilities are uncalibrated and have no separate tag provenance.
     # Use the fit as a ranking hint only; rule and LLM tags keep their own evidence.
     conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(p['id'], t, g) for t, g in auto])
-    deepscout.retag(conn, p['id'])   # the agent's findings outlive rule passes
+    if processing_modes.allows(conn, 'external'):
+        deepscout.retag(conn, p['id'])
     if keep_llm:
         refresh_network(conn, [p['id']], me=me, nets={p['id']: net} if net is not None else None)
         # The verdict is current for this profile revision even when the reblend changed nothing;
@@ -2545,11 +2665,10 @@ def requalify(conn, p, me, net=None):
         conn.execute('UPDATE verdicts SET updated_at=? WHERE person_id=? AND updated_at<?',
                      (p['updated_at'], p['id'], p['updated_at']))
         return
-    tags = [tuple(r) for r in conn.execute('SELECT tag, grp FROM tags WHERE person_id=?', (p['id'],))]
-    v = qualify.rule_verdict(p, tags, net)
+    v = rule_result
     conn.execute("INSERT OR REPLACE INTO verdicts(person_id, prefilter, score, tier, role, reason, model, input_hash, updated_at, content_fit) "
                  "VALUES(?,?,?,?,?,?,'rules',?,?,?)", (p['id'], pre, v['score'], v['tier'], v['role'], v['reason'], qualify.input_hash(p, edges, net), p['updated_at'], v['content_fit']))
-    if scout_current:
+    if scout_current and processing_modes.allows(conn, 'external'):
         deepscout.reapply(conn, p, net)
 
 
@@ -2668,7 +2787,115 @@ def rebuild_laya_queue(conn, signature):
 
 
 def laya_allowed(conn):
-    return bool(db.get_setting(conn, 'local_laya')) or not control.stage_paused(conn, 'ai')
+    return processing_modes.begin_work(conn, 'laya') is not None
+
+
+def apply_local_review(conn, person, result, net, edges, note_context):
+    verdict = local_qualification.reblend(result, person, net, note_context)
+    if not verdict:
+        return False
+    old = conn.execute('SELECT model,input_hash,updated_at FROM verdicts WHERE person_id=?', (person['id'],)).fetchone()
+    if (old and old['model'] not in ('rules', 'error') and not old['model'].startswith('local:')
+            and processing_modes.allows(conn, 'external') and old['updated_at'] == person['updated_at']
+            and old['input_hash'] == qualify.input_hash(person, edges, net)):
+        return False  # A current external review remains authoritative in RLEAI.
+    processing_state.archive_verdict(conn, person['id'])
+    _, lfit = laya_row(conn, person['id'])
+    pre = qualify.prefilter(person, sorted({e['seed'] for e in edges}), net, lfit)
+    conn.execute('''INSERT OR REPLACE INTO verdicts
+        (person_id,prefilter,score,tier,role,reason,model,input_hash,updated_at,prompt,evidence,content_fit)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (person['id'],pre,verdict['score'],verdict['tier'],
+        verdict['role'],verdict['reason'],'local:'+local_model.MODEL,
+        qualify.input_hash(person,edges,net),person['updated_at'],result['prompt'],
+        json.dumps(verdict.get('evidence') or []),verdict['content_fit']))
+    conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (person['id'],))
+    tags = qualify.rule_tags(person,edges,me_handle(conn)) + (verdict.get('tags') or [])
+    conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')", [(person['id'],t,g) for t,g in tags])
+    return True
+
+
+def local_processing_step(conn):
+    """One local call at a time; edits coalesce and notes get the first slot."""
+    if processing_modes.begin_work(conn, 'local_qualification') is None:
+        return False
+    if owner_notes.step(conn):
+        return True
+    ticket = processing_modes.begin_work(conn, 'local_qualification')
+    jobs = processing_state.next_pending(conn)
+    if not jobs or ticket is None:
+        return False
+    job = jobs[0]
+    row = conn.execute(f'SELECT * FROM people p WHERE id=? AND {NOT_ME}', (job['person_id'],)).fetchone()
+    if not row:
+        conn.execute('DELETE FROM local_queue WHERE person_id=? AND revision=?', (job['person_id'], job['revision']))
+        conn.commit()
+        return True
+    person = with_owner(conn, dict(row))
+    edges = edges_of(conn, person['id'])
+    net = network_context(conn, [person['id']]).get(person['id'], {})
+    context = owner_notes.local_context(conn, person['id'])
+    tags = qualify.rule_tags(person, edges, me_handle(conn)) + [tuple(r) for r in conn.execute(
+        "SELECT tag,grp FROM tags WHERE person_id=? AND source!='auto'", (person['id'],))]
+    cached = conn.execute('SELECT * FROM local_reviews WHERE person_id=?', (person['id'],)).fetchone()
+    result = dict(cached) if cached else None
+    if result:
+        result['verdict'] = json.loads(result['verdict'] or 'null')
+    conn.commit()
+    try:
+        if not result or not local_qualification.current_result(result, person, context):
+            result = local_qualification.evaluate(person, tags, edges, net, note_context=context)
+    except (local_model.Busy, local_model.Unavailable, ValueError) as exc:
+        delay = 2 if isinstance(exc, local_model.Busy) else 60
+        processing_state.retry(conn, person['id'], job['revision'], str(exc), delay)
+        conn.commit()
+        return False
+    conn.execute('BEGIN IMMEDIATE')
+    latest = conn.execute('SELECT * FROM people WHERE id=?', (person['id'],)).fetchone()
+    if not latest or not processing_modes.result_current(conn, ticket):
+        conn.rollback()
+        return False
+    current = with_owner(conn, dict(latest))
+    context = owner_notes.local_context(conn, person['id'])
+    if not local_qualification.current_result(result, current, context):
+        conn.rollback()
+        return False
+    if result['status'] == 'retry':
+        processing_state.retry(conn, person['id'], job['revision'], result.get('error', 'Local review could not be verified'), 300)
+    elif processing_state.put_review(conn, person['id'], result, revision=job['revision'],
+                                    private_context_hash=(context or {}).get('snapshot')):
+        edges = edges_of(conn, person['id'])
+        net = network_context(conn, [person['id']]).get(person['id'], {})
+        apply_local_review(conn, current, result, net, edges, context)
+    conn.commit()
+    return True
+
+
+def processing_maintenance(conn):
+    """Bounded startup and mode-change work, independent of model availability."""
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    seeded = processing_state.seed_step(conn, policy=local_qualification.PROMPT_VERSION + ':' + local_model.MODEL_DIGEST)
+    queued = [r[0] for r in conn.execute('SELECT person_id FROM processing_rule_queue ORDER BY person_id LIMIT 32')]
+    if not queued and not db.get_setting(conn, 'processing_refresh_complete', True):
+        cursor = db.get_setting(conn, 'processing_refresh_cursor', 0)
+        queued = [r[0] for r in conn.execute('SELECT id FROM people WHERE id>? ORDER BY id LIMIT 64', (cursor,))]
+        if queued:
+            db.set_setting(conn, 'processing_refresh_cursor', queued[-1])
+        else:
+            db.set_setting(conn, 'processing_refresh_complete', True)
+    if queued:
+        me = me_handle(conn)
+        nets = network_context(conn, queued, me)
+        for pid in queued:
+            row = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
+            if row:
+                requalify(conn, dict(row), me, nets.get(pid))
+                if processing_modes.allows(conn, 'local_qualification'):
+                    processing_state.enqueue(conn, pid)
+            else:
+                conn.execute('DELETE FROM processing_rule_queue WHERE person_id=?', (pid,))
+    conn.commit()
+    return bool(seeded or queued)
 
 
 def laya_step(conn):
@@ -2676,6 +2903,7 @@ def laya_step(conn):
     if not laya_allowed(conn) or not laya.available():
         return False
     caller_transaction = conn.in_transaction
+    ticket = processing_modes.begin_work(conn, 'laya')
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
     signature = laya.cache_signature()
     if not caller_transaction and db.get_setting(conn, 'laya_queue_signature') != signature:
@@ -2709,12 +2937,22 @@ def laya_step(conn):
         return False
     if not laya_allowed(conn):
         return False
-    answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
+    try:
+        with resource_budget.lease('laya'):
+            answers = laya.decide([dict(r) for r in rows])
+    except resource_budget.Deferred:
+        return False
     if not answers:
         return False
-    if not laya_allowed(conn):
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    if not processing_modes.result_current(conn, ticket):
+        if not caller_transaction:
+            conn.rollback()
         return False
     if set(answers) != {r['id'] for r in rows} or not all(laya.valid_answers(a) for a in answers.values()):
+        if not caller_transaction:
+            conn.rollback()
         return False
     ts = db.now()
     done = []
@@ -2723,6 +2961,8 @@ def laya_step(conn):
         if current and laya_hash(*current) == laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))):
             done.append(r)
     if not done:
+        if not caller_transaction:
+            conn.rollback()
         return False
     conn.executemany('INSERT OR REPLACE INTO laya VALUES(?,?,?,?,?)',
                      [(r['id'], laya_hash(*(r[k] for k in ('handle','name','bio','category','website','followers'))), json.dumps(answers[r['id']]),
@@ -2823,21 +3063,18 @@ def fewshot(conn):
         return ex
     # A rubric/schema revision still invalidates warm verdicts. Owner note/tag
     # edits update future prompts without turning every old verdict into a job.
-    base_prompt_changed = bool(version and cur.get('version') and
-                               version.rsplit(':', 1)[0] != cur['version'].rsplit(':', 1)[0])
-    if cur and (count_due or base_prompt_changed) and version and version != cur.get('version'):
-        conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error','leadscout') AND prompt IS NOT ? AND coalesce(score,0)>=?",
-                     (version, FEWSHOT_RERUN))
+    # New examples apply to future reviews. Existing AI results retain their
+    # provenance; relabeling an AI score as rules would defeat mode isolation.
     db.set_setting(conn, 'fewshot', {'n': n if rebuild else selected_n, 'examples': ex, 'version': version})
     conn.commit()
     return ex
 
 
 def llm_candidates(conn, limit, exclude):
-    """Top candidates by combined signal (prefilter = list data + network + Laya; score = rules on the bio)."""
+    """External work is an escalation from a current local review."""
     held = list(exclude)[:900]
-    return conn.execute(f"SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
-                        "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? "
+    return conn.execute(f"SELECT p.* FROM local_reviews l JOIN people p ON p.id=l.person_id JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                        "AND l.status='needs_research' AND v.model LIKE 'local:%' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? "
                         f"AND p.id NOT IN ({','.join('?' * len(held))}) "
                         "ORDER BY coalesce(v.prefilter,0)+coalesce(v.score,0) DESC, p.id LIMIT ?",
                         (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
@@ -2885,32 +3122,42 @@ def research(conn, items):
 
 def run_llm(conn, rows, skip):
     """One model round for these people (no DB transaction is open during the call). -> number of verdicts written."""
-    if control.stage_paused(conn, 'ai'):
+    ticket = processing_modes.begin_work(conn, 'external')
+    if ticket is None:
         return 0
     rows = [with_owner(conn, dict(r)) for r in rows]
     me = me_handle(conn)
     nets = network_context(conn, [p['id'] for p in rows], me)
     items = []
+    websearch.ensure(conn)
     for p in rows:
         edges = edges_of(conn, p['id'])
         fresh_auto = qualify.rule_tags(p, edges, me)
         retained = [tuple(r) for r in conn.execute("SELECT tag, grp FROM tags WHERE person_id=? AND source!='auto'", (p['id'],))]
         items.append({'person': p, 'edges': edges, 'net': nets.get(p['id']),
                       'tags': retained + fresh_auto, 'fresh_auto': fresh_auto})
+        hit = websearch.cached(conn, p)
+        if hit is not None:
+            items[-1]['person'] = dict(p, web_lines=websearch.lines(hit),
+                web_text=websearch.text(hit), web_site=hit.get('site') or '')
     examples = fewshot(conn)
     conn.commit()
     if control.stage_paused(conn, 'ai'):
         return 0
-    research(conn, items)
-    if control.stage_paused(conn, 'ai'):
-        return 0
     try:
-        many = getattr(qualify, 'llm_verdicts', None)
-        vs = many(items, examples) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
+        vs = []
+        for item in items:
+            local = conn.execute('SELECT status,escalation_reason FROM local_reviews WHERE person_id=?', (item['person']['id'],)).fetchone()
+            reason = local['escalation_reason'] if local and local['status'] == 'needs_research' else None
+            vs.append(external_harness.broad(item['person'], item['tags'], item['edges'], item['net'], examples,
+                escalation_reason=reason, model=db.get_setting(conn, 'scout_model') or 'grok',
+                allowed=lambda: processing_modes.result_current(conn, ticket)) if reason else None)
     except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
         traceback.print_exc()
         vs = [None] * len(items)
-    if control.stage_paused(conn, 'ai'):
+    conn.execute('BEGIN IMMEDIATE')
+    if not processing_modes.result_current(conn, ticket):
+        conn.rollback()
         return 0
     wrote = 0
     for it, v in zip(items, vs):
@@ -2925,6 +3172,10 @@ def run_llm(conn, rows, skip):
         latest_net = network_context(conn, [p['id']], me).get(p['id'])
         if qualify.input_hash(latest_p, edges_of(conn, p['id']), latest_net) != qualify.input_hash(p, it['edges'], it['net']):
             continue
+        if v.get('content_fit') is not None:
+            v['score'] = owner.owner_recommendation(latest_p, {'score': qualify.blend(v['content_fit'], latest_net)})['score']
+            v['tier'] = qualify._tier(v['score'], bool((latest_p.get('bio') or '').strip()))
+        processing_state.archive_verdict(conn, p['id'])
         if conn.execute('UPDATE verdicts SET score=?, tier=?, role=?, reason=?, model=?, input_hash=?, prompt=?, evidence=?, content_fit=? '
                         "WHERE person_id=? AND updated_at=? AND model!='leadscout'",
                         (v['score'], v['tier'], v['role'], v['reason'], v.get('model') or 'llm', qualify.input_hash(p, it['edges'], it['net']),
@@ -2952,7 +3203,7 @@ def _expire(skip):
 
 def llm_step(conn, skip):
     """Synchronous single step (tests, tools): one person. The server itself runs LLMPool."""
-    if not db.get_setting(conn, 'qualify'):
+    if processing_modes.begin_work(conn, 'external') is None:
         return None
     _expire(skip)
     rows = llm_candidates(conn, 1, skip)
@@ -2973,10 +3224,10 @@ class LLMPool:
         self.batch = batch
 
     def step(self, conn):
-        if not db.get_setting(conn, 'qualify'):
+        if processing_modes.begin_work(conn, 'external') is None:
             return False
-        workers = max(1, min(32, int(db.get_setting(conn, 'llm_workers') or 4)))
-        batch = self.batch or getattr(qualify, 'LLM_BATCH', 1)
+        workers = max(1, min(3, int(db.get_setting(conn, 'llm_workers') or 1)))
+        batch = self.batch or 1
         with self.lock:
             _expire(self.skip)
             free = workers - self.running
@@ -3014,6 +3265,8 @@ class LLMPool:
 
 def auto_qualify(conn):
     """Switch AI on only after collection is complete or cannot be continued automatically."""
+    if db.get_setting(conn, 'processing_mode') in processing_modes.MODES:
+        return False  # Explicit modes never schedule paid/external activation.
     if db.get_setting(conn, 'qualify') or not db.get_setting(conn, 'qualify_auto'):
         return False
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state IN ('queued','leased') LIMIT 1").fetchone():
@@ -3310,17 +3563,18 @@ def repair_step(conn):
     return False
 
 
-def models_step(conn):
-    """Once a day: pick up OpenRouter's free and stealth models (llm.refresh_models; stealth ones go first)."""
-    if not db.get_setting(conn, 'qualify'):
+def local_services_step(conn):
+    """Unload our model when it is not needed; recover only with enough headroom."""
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    if not path or Path(path).resolve() != (ROOT / 'data/leads.sqlite').resolve():
         return False
-    if not os.environ.get('FL_NO_ORSLOT'):   # tests stay offline
-        llm.refresh_models()
-        # hourly: probe providers that are not known-good, so Settings shows ok / spent / broken instead of 'untested'
-        pool = llm.get()
-        for p in pool.status()['providers']:
-            if p['state'] not in ('ok', 'spent', 'broken'):
-                pool.test(p['id'])
+    mode = processing_modes.snapshot(conn)
+    paused = mode.get('paused', False) or not mode['capabilities']['local_qualification']
+    local_model.maintain_service(paused=paused)
+    if not paused and resource_budget.state(startup=True)['allowed']:
+        has_work = bool(processing_state.next_pending(conn)) or notes_pending(conn)
+        if has_work and not local_model.ready() and not _service_start_lock.locked():
+            schedule_local_services(conn)
     return False
 
 
@@ -3335,7 +3589,10 @@ def background_qualify(conn):
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
     scouts = deepscout.ScoutPool(CFG['db'])
-    loops = [(repair_step, 900, 900), (models_step, 3600, 3600), (background_qualify, 0, 5), (pool.step, 1, 5), (laya_step, 0.2, 30), (owner_notes.step, 1, 30), (plan_profiles, 15, 15), (pfp_step, 0.4, 10), (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
+    loops = [(repair_step, 900, 900), (local_services_step, 30, 30), (background_qualify, 0.2, 5),
+             (processing_maintenance, 0.1, 5), (pool.step, 1, 5), (laya_step, 0.2, 30),
+             (local_processing_step, 0.1, 5), (plan_profiles, 15, 15), (pfp_step, 0.4, 10),
+             (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 
@@ -3350,6 +3607,8 @@ def main():
     conn = db.init(CFG['db'])
     deepscout.ensure(conn)
     owner_notes.ensure(conn)
+    processing_state.ensure(conn)
+    processing_modes.set_mode(conn, processing_modes.current_mode(conn))
     conn.commit()
     retag_if_changed(conn)
     refresh_laya_prefilter_if_changed(conn)

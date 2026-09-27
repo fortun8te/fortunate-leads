@@ -9,7 +9,7 @@ function harness(sc) {
     if (!nodes.has(selector)) nodes.set(selector, { textContent: '', innerHTML: '', scrollIntoView() {}, querySelector() { return null; } });
     return nodes.get(selector);
   };
-  const context = vm.createContext({ $, S: { sc }, location: {}, setView(view) { context.view = view; }, int: String, fmt: String, plural: (n, word) => n + ' ' + word, esc: String, eta: () => '1 h' });
+  const context = vm.createContext({ $, S: { sc }, SET:{processing:{mode:"R",generation:1},processingStale:false}, location: {}, setView(view) { context.view = view; }, int: String, fmt: String, plural: (n, word) => n + ' ' + word, esc: String, eta: () => '1 h' });
   vm.runInContext(source.slice(source.indexOf('function settingsMode('), source.indexOf('function renderCheckingMode(')), context);
   const start = source.indexOf('  renderProg() {');
   const end = source.indexOf('\n  card(r)', start);
