@@ -25,8 +25,8 @@ class FakeConn:
 
 class EngineStartTest(unittest.TestCase):
     def test_ui_endpoint_uses_the_local_engine_launcher(self):
-        with patch.object(engine_start, 'start', return_value={'ok': True, 'profiles_opened': 3}) as start:
-            self.assertEqual(server.api_engine_start(FakeConn(), {}, {}), {'ok': True, 'profiles_opened': 3})
+        with patch.object(engine_start, 'start', return_value={'ok': True, 'local_services_started': True, 'profiles_opened': 0}) as start:
+            self.assertEqual(server.api_engine_start(FakeConn(), {}, {}), {'ok': True, 'local_services_started': True, 'profiles_opened': 0})
             start.assert_called_once_with(server.ROOT, 3)
 
     def test_ui_endpoint_returns_a_clear_startup_error(self):
@@ -48,9 +48,9 @@ class EngineStartTest(unittest.TestCase):
 
             def run(command, **kwargs):
                 calls.append((command, kwargs))
-                return SimpleNamespace(returncode=0, stdout='ENGINE_STARTED:3\n', stderr='')
+                return SimpleNamespace(returncode=0, stdout='ENGINE_STARTED:0\n', stderr='')
 
-            self.assertEqual(engine_start.start(repo, 3, run), {'ok': True, 'profiles_opened': 3})
+            self.assertEqual(engine_start.start(repo, 3, run), {'ok': True, 'local_services_started': True, 'profiles_opened': 0})
             self.assertEqual(calls[0][0], [str(launcher.resolve()), '--from-app'])
             self.assertEqual(calls[0][1]['cwd'], str(repo.resolve()))
             self.assertEqual(calls[0][1]['timeout'], 210)
@@ -72,36 +72,23 @@ class EngineStartTest(unittest.TestCase):
             with self.assertRaisesRegex(engine_start.EngineStartError, 'Laya is unavailable'):
                 engine_start.start(repo, 3, run)
 
-    def test_direct_launcher_hold_check_fails_closed_without_opening_chrome(self):
+    def test_local_startup_never_opens_instagram_or_resumes_stages(self):
         script = (Path(__file__).resolve().parents[2] / 'ops/start-all.command').read_text()
-        function = script[script.index('check_collection_hold() {'):script.index('check_collection_hold allow-missing || exit 1')]
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / 'state.sqlite'
-            with sqlite3.connect(database) as conn:
-                conn.execute('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)')
-                conn.execute('INSERT INTO settings VALUES(?,?)', ('cooldown', json.dumps('2099-01-01T00:00:00Z')))
-            command = function + '\ncheck_collection_hold'
-            env = dict(__import__('os').environ, FL_DB=str(database), FL_PYTHON=sys.executable)
-            blocked = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
-            self.assertNotEqual(blocked.returncode, 0)
-            self.assertIn('shared safety hold', blocked.stderr)
-            with sqlite3.connect(database) as conn:
-                conn.execute("UPDATE settings SET value=?", (json.dumps('2000-01-01T00:00:00Z'),))
-            self.assertEqual(subprocess.run(['bash', '-c', command], env=env, capture_output=True).returncode, 0)
-            env['FL_DB'] = str(Path(directory) / 'missing.sqlite')
-            self.assertNotEqual(subprocess.run(['bash', '-c', command], env=env, capture_output=True).returncode, 0)
-            self.assertEqual(subprocess.run(['bash', '-c', function + '\ncheck_collection_hold allow-missing'], env=env, capture_output=True).returncode, 0)
-        self.assertIn('check_collection_hold || exit 1\n  open', script)
+        self.assertNotIn('instagram.com', script)
+        self.assertNotIn('Google Chrome', script)
+        self.assertNotIn('/api/control', script)
+        self.assertNotIn('start_all', script)
+        self.assertIn('ENGINE_STARTED:0', script)
 
-    def test_app_account_count_must_match_configured_profile_count(self):
+    def test_local_startup_does_not_require_matching_account_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
-            ops = repo / 'ops'
-            ops.mkdir()
-            (ops / 'startup_profiles.json').write_text(
-                '{"chrome_profiles":["Michael","BOT","BOT2"]}', encoding='utf-8')
-            with self.assertRaisesRegex(engine_start.EngineStartError, 'app has 22 accounts'):
-                engine_start.start(repo, 22, run=lambda *args, **kwargs: self.fail('must fail before launch'))
+            (repo / 'ops').mkdir()
+            launcher = repo / 'ops/start-all.command'
+            launcher.write_text('#!/bin/bash\n')
+            launcher.chmod(0o700)
+            run = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='ENGINE_STARTED:0\n', stderr='')
+            self.assertTrue(engine_start.start(repo, 22, run)['local_services_started'])
 
 
 if __name__ == '__main__':

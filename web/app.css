@@ -1348,4 +1348,68 @@ button:disabled { cursor:default; opacity:.5; }
 #pane-leads .row .c-sel .av { opacity: 1; }
 #pane-leads .row .c-st { font-size: var(--fs-sm); }
 
-.shell:not(:has(#pane-leads.on)) #density-btn { display: none; }
+
+/* Everyday navigation and setup. Tag colors are defined separately above. */
+.tabs a[data-view="accounts"] { margin-top: 18px; }
+.view-count { border: 0; padding: 0; color: var(--fg3); font-weight: 400; }
+.account-collection-link { margin-left: auto; font-size: var(--fs-sm); color: var(--fg2); text-decoration: underline; text-underline-offset: 3px; }
+#view-accounts .scr { max-width: 1040px; }
+#view-accounts .acc-start-note { margin: -12px 0 0; max-width: 65ch; line-height: 1.5; }
+#view-accounts .acc-summary { margin: 0; }
+#view-accounts .acc-key { text-transform: none; letter-spacing: 0; }
+#view-accounts .acc-overview { border: 0; border-radius: 0; background: none; }
+#view-accounts .acc-fact { padding: 4px 0; }
+#view-accounts .acc-fact + .acc-fact { padding-left: 20px; }
+#view-accounts .acc-empty { display: grid; gap: 10px; padding: 28px; line-height: 1.5; }
+.settings-page { gap: 28px; }
+.settings-page > .ph { margin-bottom: 0; }
+.settings-page .sg { grid-template-columns: 180px minmax(0, 1fr); gap: 24px; padding-top: 0; }
+.settings-page .sg-h p { line-height: 1.5; }
+.settings-page .card { padding: 12px 18px; }
+.settings-page .card.flush { padding: 0; }
+.settings-mode #set-mode { display: flex; width: 100%; gap: 4px; }
+.settings-mode #set-mode button { flex: 1; height: auto; min-height: 40px; white-space: normal; padding: 7px 10px; }
+.mode-status { margin: 12px 2px 2px; line-height: 1.5; font-size: var(--fs-sm); }
+.settings-setup { border-top: 1px solid var(--line); }
+.settings-setup > summary { display: flex; align-items: center; gap: 14px; min-height: 76px; padding: 16px 0; list-style: none; cursor: pointer; }
+.settings-setup > summary::-webkit-details-marker { display: none; }
+.settings-setup > summary > span { display: grid; gap: 5px; }
+.settings-setup > summary b { font-weight: 600; font-size: var(--fs-md); }
+.settings-setup > summary small { color: var(--fg3); font-size: var(--fs-sm); line-height: 1.4; }
+.settings-setup > summary::after { content: ""; flex: none; width: 7px; height: 7px; margin-left: auto; margin-right: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); }
+.settings-setup[open] > summary::after { transform: rotate(225deg); }
+.settings-setup > summary:hover { color: var(--fg2); }
+.settings-setup-body { display: grid; gap: 28px; padding: 8px 0 24px; }
+.settings-setup .budget { flex-wrap: wrap; }
+.settings-setup .budget + .budget { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 18px; }
+.settings-setup .sub-h:first-child { margin-top: 0; }
+.settings-setup #set-file { overflow-wrap: anywhere; }
+.ql-progress-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 20px; padding: 10px 0; color: var(--fg2); line-height: 1.5; }
+.d-more-heading { margin: 22px 0 10px; font-size: var(--fs-sm); font-weight: 600; }
+@media (max-width: 900px) {
+  .settings-page .sg { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+@media (max-width: 760px) {
+  .side { gap: 2px; padding: 5px 4px; }
+  .brand { display: none; }
+  .tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow: visible; gap: 2px; }
+  .tabs a { min-width: 0; height: 50px; min-height: 44px; padding: 4px 1px; gap: 5px; flex-direction: column; }
+  .tabs a > span:not(.num) { display: block; font-size: 9px; line-height: 1; letter-spacing: -.02em; }
+  .tabs a[data-view="accounts"] { margin-top: 0; }
+}
+@media (max-width: 640px) {
+  .settings-page { gap: 22px; }
+  .settings-mode #set-mode { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .settings-mode #set-mode button { min-height: 44px; }
+  .settings-page .card { padding: 10px 14px; }
+  .settings-page .card.flush { padding: 0; }
+  .settings-setup .models li { flex-wrap: wrap; gap: 8px; }
+  .settings-setup .models code { flex: 1 1 160px; }
+  .settings-setup .set-inline > label { flex-basis: 100%; }
+  .settings-page #set-theme, .settings-page #set-density { max-width: 100%; }
+  .settings-page #set-density button { padding-inline: 8px; }
+  #view-accounts .p-head { flex-wrap: wrap; gap: 8px; }
+  #view-accounts .account-collection-link { margin-left: 0; flex-basis: 100%; }
+  #view-accounts .acc-fact + .acc-fact { padding-left: 12px; }
+  .fl-ctl-summary { gap: 10px; }
+}

@@ -24,12 +24,6 @@ def configured_profile_count(repo):
 
 def start(repo, account_count, run=subprocess.run):
     repo = Path(repo).resolve()
-    profile_count = configured_profile_count(repo)
-    if account_count != profile_count:
-        raise EngineStartError(
-            f'Start engine is configured for {profile_count} Chrome profiles, but the app has {account_count} accounts. '
-            'Update ops/startup_profiles.json to match.'
-        )
     launcher = repo / 'ops' / 'start-all.command'
     if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
         raise EngineStartError('The configured Start engine launcher is missing or not executable.')
@@ -48,6 +42,6 @@ def start(repo, account_count, run=subprocess.run):
     if not match:
         raise EngineStartError('The launcher finished without confirming engine startup.')
     opened = int(match.group(1))
-    if opened != profile_count:
-        raise EngineStartError('The launcher did not confirm every configured Chrome profile opened.')
-    return {'ok': True, 'profiles_opened': opened}
+    if opened != 0:
+        raise EngineStartError('Local startup unexpectedly opened Instagram profiles.')
+    return {'ok': True, 'local_services_started': True, 'profiles_opened': 0}

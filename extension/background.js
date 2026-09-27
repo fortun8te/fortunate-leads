@@ -196,6 +196,7 @@ async function queueDone(path, body, success = true, gen = mem.gen) {
 async function applyServer(j) {
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
   if (j && j.stages) mem.stages = j.stages;
+  if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.15') + ' before collecting.'; });
   if (!j || typeof j.paused !== 'boolean') return;
   mem.serverPaused = j.paused;
   const st = await loadSt();
@@ -251,7 +252,7 @@ async function status(st) {
 // ---- Instagram tab ---------------------------------------------------------
 // Picks a usable, awake instagram.com tab; wakes a discarded/frozen one or opens a pinned background tab if none is left
 // (both rate-limited). Returns {tab} or {wait}. Never touches the tab Michael is looking at.
-async function pickTab() {
+async function pickTab(kind = 'list') {
   const now = Date.now(), wt = (await get('workTab')) || {};
   let tabs = [];
   try { tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter((t) => !mem.lookups.has(t.id)); } catch {}
@@ -268,7 +269,7 @@ async function pickTab() {
     await set({ workTab: { ...wt, id: c.reload, reloadAt: now } });
     mem.noTab = 'tab_waking'; mem.badTab = null;
     await trail('reload tab', { id: c.reload });
-    try { await chrome.tabs.reload(c.reload); } catch (e) { await trail('reload failed', { err: String(e.message || e) }); }
+    try { await navigateWithPermit(kind, async () => { await chrome.tabs.reload(c.reload); return { id: c.reload }; }); } catch (e) { if (e instanceof ControlPaused) throw e; await trail('reload failed', { err: String(e.message || e) }); }
     return { wait: 10e3 };
   }
   if (c.open) {
@@ -276,8 +277,10 @@ async function pickTab() {
     if (now - (wt.openAt || 0) < 10 * FL.MIN) return { wait: 30e3 };
     await set({ workTab: { ...wt, openAt: now } });
     let tab = null;
-    try { tab = await chrome.tabs.create({ url: IG + '/', active: false, pinned: true }); } catch {
-      try { const w = await chrome.windows.create({ url: IG + '/', focused: false, state: 'minimized' }); tab = w.tabs && w.tabs[0]; } catch (e) {
+    try { tab = await navigateWithPermit(kind, () => chrome.tabs.create({ url: IG + '/', active: false, pinned: true })); } catch (e) {
+      if (e instanceof ControlPaused) throw e;
+      try { tab = await navigateWithPermit(kind, async () => { const w = await chrome.windows.create({ url: IG + '/', focused: false, state: 'minimized' }); return w.tabs && w.tabs[0]; }); } catch (e) {
+        if (e instanceof ControlPaused) throw e;
         await trail('open tab failed', { err: String(e.message || e) });
       }
     }
@@ -329,10 +332,51 @@ async function assertControl(kind) {
   await heartbeat(true);
   if (!FL.controlAllows(mem, kind) || await get('localPaused')) throw new ControlPaused();
 }
+async function acquireSharedRequest(kind) {
+  await assertControl(kind);
+  let response;
+  try { response = await api('/api/ext/request', { action: 'acquire', kind, job_id: mem.job?.id, lease_token: mem.job?.lease_token }); }
+  catch { mem.offline = true; throw new ControlPaused(); }
+  if (response.status !== 200 || response.json?.ok === false) { mem.offline = true; throw new ControlPaused(); }
+  const grant = response.json;
+  if (grant?.stale) { await set({ cur: null }); throw new ControlPaused(); }
+  if (grant?.lease_renewed) {
+    const cur = await get('cur');
+    if (cur?.job?.id === mem.job?.id) await set({ cur: { ...cur, at: Date.now() } });
+  }
+  if (!grant?.granted || !grant.token || !Number.isFinite(Date.parse(grant.expires_at)) || Date.parse(grant.expires_at) <= Date.now()) {
+    mem.sharedWaitUntil = Date.now() + Math.max(1000, Math.min(15000, Number(grant?.wait_ms) || 15000));
+    throw new ControlPaused();
+  }
+  return grant.token;
+}
+async function releaseSharedRequest(token) {
+  try { await api('/api/ext/request', { action: 'release', token }); }
+  catch { mem.offline = true; } // the server lease expires; never assume an uncertain release succeeded
+}
+async function navigateWithPermit(kind, action) {
+  const token = await acquireSharedRequest(kind);
+  let completed = false;
+  try {
+    let tab;
+    try { tab = await action(); } catch (error) { completed = true; throw error; }
+    const until = Date.now() + 45000;
+    while (Date.now() < until) {
+      const current = await chrome.tabs.get(tab.id);
+      if (current.status === 'complete') { completed = true; return tab; }
+      await sleep(500);
+    }
+    return tab;
+  } finally {
+    // A navigation still loading keeps its lease until expiry.
+    if (completed) await releaseSharedRequest(token);
+  }
+}
 async function igRequest(gen, tab, url, kind, ctx) {
   await assertControl(kind);
   if (gen !== mem.gen) throw new Superseded();
   if (FL.laneBusy(await get('lane'), Date.now())) return { res: { status: 0, text: 'lane busy' }, bad: { code: 'busy' } };
+  const permit = await acquireSharedRequest(kind);
   await set({ lane: { until: Date.now() + 90e3, url } });
   let res, keepLane = false;
   try {
@@ -341,6 +385,7 @@ async function igRequest(gen, tab, url, kind, ctx) {
     keepLane = !!res.timedOut;
   } finally {
     await set({ lane: keepLane ? { until: Date.now() + 60e3, url, after: 'timeout' } : null });
+    if (!keepLane) await releaseSharedRequest(permit);
   }
   if (gen !== mem.gen) throw new Superseded();
   const now = Date.now();
@@ -556,7 +601,7 @@ async function step(gen) {
   const { job, wait } = await nextJob(pl.kinds);
   mem.job = job || null;
   if (!job) { mem.noTab = null; return wait; }
-  const t = await pickTab(); // after leasing: never opens or wakes a tab while the queue is empty
+  const t = await pickTab(job.kind); // after leasing: never opens or wakes a tab while the queue is empty
   if (!t.tab) { mem.job = null; return t.wait; }
   if (st.lastError && /^Open instagram/i.test(st.lastError)) await editSt((s) => { s.lastError = null; });
   await status();
@@ -576,7 +621,7 @@ async function loop() {
       let wait = 30e3;
       try { wait = await step(gen); } catch (e) {
         if (e instanceof Superseded) break;
-        if (e instanceof ControlPaused) { await sleep(15e3); continue; }
+        if (e instanceof ControlPaused) { await sleep(Math.max(1000, Math.min(15000, (mem.sharedWaitUntil || 0) - Date.now()) || 15000)); continue; }
         const m = String((e && e.message) || e).slice(0, 200);
         await editSt((s) => { s.lastError = 'extension error: ' + m; });
         await trail('step threw', { err: m });
@@ -624,6 +669,7 @@ async function lookupViaPage(gen, handle, kind, near) {
   if (FL.laneBusy(await get('lane'), Date.now())) return { p: null, bad: { code: 'busy' } };
   const key = handle.toLowerCase(), url = IG + '/' + encodeURIComponent(handle) + '/', t0 = Date.now();
   let tab;
+  const permit = await acquireSharedRequest(kind);
   await set({ lane: { until: Date.now() + 60e3, url } });
   try {
     const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
@@ -651,6 +697,7 @@ async function lookupViaPage(gen, handle, kind, near) {
     delete waiters[key];
     if (tab) { mem.lookups.delete(tab.id); chrome.tabs.remove(tab.id).catch(() => {}); await set({ lookupTab: null }); }
     await set({ lane: null });
+    await releaseSharedRequest(permit);
   }
 }
 

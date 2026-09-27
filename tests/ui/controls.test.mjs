@@ -81,7 +81,7 @@ test('failed stage has a visible status and a link to details', async () => {
   const failed = state(); failed.stages[1].state = 'error';
   h.respond(0, failed); await settle();
   assert.match(h.el.innerHTML, /Read bios: needs attention/);
-  assert.match(h.el.innerHTML, /role="alert" aria-atomic="true">A stage needs attention\. <a href="#\/scraper">Open Scraper for details\.<\/a>/);
+  assert.match(h.el.innerHTML, /role="alert" aria-atomic="true">A stage needs attention\. <a href="#\/scraper">View collection details\.<\/a>/);
 });
 
 for (const outcome of ['success', 'failure']) {
@@ -185,8 +185,8 @@ test('local Laya and external AI have separate states and external-only actions'
   local.stages[2].paused = true;
   local.stages[2].state = 'paused';
   h.respond(0, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Enabled<\/b>/);
-  assert.match(h.el.innerHTML, /<span>External AI<\/span><b>Off<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
+  assert.equal((h.el.innerHTML.match(/class="fl-ctl-summary-item"/g) || []).length, 2);
   assert.match(h.el.innerHTML, /aria-label="Turn external AI on"/);
   assert.match(h.el.innerHTML, /<details class="fl-ctl-details">/);
   assert.equal(h.button('ai').dataset.action, 'resume');
@@ -196,11 +196,22 @@ test('local Laya and external AI have separate states and external-only actions'
 
 test('local setting-only changes refresh the summary, and offline states become unknown', async () => {
   const h = await ready();
-  h.poll(); const local = state(); local.local_laya = true;
+  h.poll(); const local = state(); local.local_laya = true; local.stages[2].paused = true; local.stages[2].state = 'paused';
   h.respond(1, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Enabled<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
   h.poll(); h.fail(2); await settle();
   assert.match(h.el.innerHTML, /<span>Collection<\/span><b>Unknown<\/b>/);
-  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Unknown<\/b>/);
-  assert.match(h.el.innerHTML, /<span>External AI<\/span><b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Unknown<\/b>/);
+});
+
+
+test('processing mode remains a configuration label when collection is paused', async () => {
+  const h = harness();
+  const local = state(); local.local_laya = true;
+  local.stages.forEach(s => { s.paused = true; s.state = 'paused'; });
+  h.respond(0, local); await settle();
+  assert.match(h.el.innerHTML, /<span>Collection<\/span><b>Off<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
+  h.poll(); local.local_laya = false; h.respond(1, local); await settle();
+  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Rules<\/b>/);
 });

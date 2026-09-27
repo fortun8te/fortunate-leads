@@ -95,3 +95,31 @@ test('activity edits are retained independently while the follow-up form is abse
   vm.runInNewContext(fn+'\nrememberWorkflowForm();',{workflowDrafts:drafts,$:(s)=>fields[s]||null});
   assert.equal(drafts.get(7).body,'New draft during refresh');assert.equal(drafts.get(7).kind,'call');assert.equal('due' in drafts.get(7),false);
 });
+
+test('revision-aware drafts preserve their saved baseline through reload', async () => {
+  const q=createNoteQueue({requireRevision:true,delay:100000,save:async()=>({mark_rev:'r2'})});
+  q.reconcile(1,'original','r1');q.edit(1,'mine','original','r1');
+  assert.deepEqual(q.snapshot(),{1:{draft:'mine',saved:'original',revision:'r1'}});
+  const restored=createNoteQueue({requireRevision:true,initial:q.snapshot(),save:async()=>{throw Error('must not save')}});
+  restored.reconcile(1,'other tab','r2');
+  assert.equal(restored.peek(1).draft,'mine');assert.equal(restored.peek(1).remoteNote,'other tab');
+  await assert.rejects(restored.flush(1));
+  await q.flushAll();
+});
+test('legacy restored drafts require review before replacing a saved note', async () => {
+  const calls=[];const q=createNoteQueue({requireRevision:true,initial:{1:'old draft'},save:async(...args)=>{calls.push(args);return {mark_rev:'r3'}}});
+  await assert.rejects(q.flush(1));q.reconcile(1,'server note','r2');
+  assert.equal(q.peek(1).conflict,true);assert.equal(calls.length,0);
+  await q.resolve(1,true);assert.deepEqual(calls,[[1,'old draft','r2']]);assert.equal(q.peek(1).revision,'r3');
+});
+test('editing during a conflict response never silently retries over the other tab', async () => {
+  const gate=deferred();const calls=[];
+  const q=createNoteQueue({requireRevision:true,delay:100000,save:async(id,note,revision)=>{calls.push([id,note,revision]);await gate.promise;q.conflict(id,'other tab','r2');throw Object.assign(Error('conflict'),{status:409})}});
+  q.reconcile(1,'original','r1');q.edit(1,'mine');const saving=q.flush(1);await tick();q.edit(1,'newer draft');
+  gate.resolve();await assert.rejects(saving);assert.equal(calls.length,1);assert.equal(q.peek(1).draft,'newer draft');
+  await q.resolve(1,false);assert.equal(q.peek(1).draft,'other tab');assert.equal(q.dirty(),false);
+});
+test('a new relationship revision with the same note can safely rebase an unsaved draft', async () => {
+  let sent;const q=createNoteQueue({requireRevision:true,delay:100000,save:async(_id,_note,rev)=>{sent=rev;return {mark_rev:'r3'}}});
+  q.reconcile(1,'original','r1');q.edit(1,'mine');q.reconcile(1,'original','r2');await q.flush(1);assert.equal(sent,'r2');
+});

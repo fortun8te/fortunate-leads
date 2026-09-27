@@ -47,6 +47,9 @@ class PublicControlIntegration(unittest.TestCase):
         with self.assertRaises(server.Bad):
             server.api_qualify(self.conn, {}, {'auto': True})
         server.api_scout_set(self.conn, {}, {'on': False})
+        control.set_stage(self.conn, 'lists', True)
+        control.set_stage(self.conn, 'bios', True)
+        self.conn.commit()
         answers = {pid: {question['key']: 0.5 for question in laya.QUESTIONS}}
         with patch.object(laya, 'available', return_value=True), \
                 patch.object(laya, 'decide', return_value=answers) as decide:
@@ -64,7 +67,19 @@ class PublicControlIntegration(unittest.TestCase):
             self.assertFalse(db.get_setting(self.conn, 'qualify'))
             self.assertTrue(db.get_setting(self.conn, 'local_laya'))
             control.stop_all(self.conn)
+            self.assertFalse(db.get_setting(self.conn, 'local_laya'))
             self.assertFalse(server.laya_step(self.conn))
+
+    def test_local_rules_continue_while_collection_is_paused(self):
+        control.stop_all(self.conn)
+        server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True})
+        with patch.object(server, 'drain_network_dirty', return_value=0), \
+                patch.object(server, 'qualify_batch', return_value=True) as score:
+            self.assertTrue(server.background_qualify(self.conn))
+            score.assert_called_once_with(self.conn)
+            control.stop_all(self.conn)
+            self.assertFalse(server.background_qualify(self.conn))
+            self.assertEqual(score.call_count, 1)
 
     def test_external_model_work_stops_after_switch_off(self):
         pid = db.upsert_person(self.conn, {'handle': 'modelcandidate', 'bio': 'Founder of a clothing brand'})

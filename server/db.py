@@ -305,6 +305,15 @@ def init(path):
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('collector_events_started_at',?)",
                  (json.dumps(now()),))
     migrate_statuses(conn)
+    if not get_setting(conn, 'owner_client_relationship_v1'):
+        # Older builds stored Client only as a label. Promote it once while
+        # keeping the label and every explicit relationship decision intact.
+        conn.execute("INSERT INTO marks(person_id,status,note,updated_at) "
+                     "SELECT DISTINCT t.person_id,'client',NULL,? FROM tags t "
+                     "JOIN people p ON p.id=t.person_id WHERE t.source='manual' AND lower(trim(t.tag))='client' "
+                     "ON CONFLICT(person_id) DO UPDATE SET status='client',updated_at=excluded.updated_at "
+                     "WHERE coalesce(marks.status,'')=''", (now(),))
+        set_setting(conn, 'owner_client_relationship_v1', True)
     # Before per-run evidence, every edge was treated as a current follow. Clear
     # derived claims once; keep the original edges and all human-entered data.
     if not conn.execute("SELECT 1 FROM settings WHERE key='edge_evidence_v1'").fetchone():

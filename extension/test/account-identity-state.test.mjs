@@ -14,7 +14,7 @@ function harness(account, st, clock = { now: Date.now() }) {
   const ctx = vm.createContext({ FL, Date: TestDate, Set, URLSearchParams, AbortController, setTimeout, clearTimeout,
     importScripts() {},
     chrome: {
-      runtime: { getManifest: () => ({ version: '3.9.0' }), onMessage: { addListener() {} } },
+      runtime: { getManifest: () => ({ version: '3.9.15' }), onMessage: { addListener() {} } },
       tabs: { query: async () => [{ id: 1, status: 'complete', discarded: false, url: 'https://www.instagram.com/' }] },
       scripting: { executeScript: async () => [{ result: { host: 'www.instagram.com', ready: 'complete',
         cookie: observed ? `ds_user_id=${observed}` : '',
@@ -28,6 +28,7 @@ function harness(account, st, clock = { now: Date.now() }) {
   });
   vm.runInContext(source, ctx);
   ctx.apiStub = async (path, body) => { if (path === '/api/ext/heartbeat') beats.push(structuredClone(body));
+    if (path === '/api/ext/request') return { status: 200, json: body.action === 'release' ? { released: true } : { granted: true, token: 'simulated-request-token', expires_at: new Date(clock.now + 90000).toISOString() } };
     return { status: 200, json: { paused: false } }; };
   vm.runInContext('selfUpdate = async () => false; api = async (path, body) => apiStub(path, await tagged(body)); globalThis.beat = () => heartbeat(true)', ctx);
   return { data, beats, ctx, observe: id => { observed = id; } };

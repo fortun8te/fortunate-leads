@@ -859,8 +859,18 @@ async function lanesMain(N) {
     const resolved = lanes.flatMap(L => L.holds).filter(h => h.acted && h.end != null && !h.workspace);
     if (resolved.length && !resumeBusy && lanes.every(L => !L.store.st?.hold)) {
       resumeBusy = true;
-      resumeCollection().then(ok => { if (ok) resolved.forEach(h => { h.workspace = V.now; }); })
-        .finally(() => { resumeBusy = false; });
+      (async () => {
+        // The operator keeps the recovered account resting and resumes the others.
+        // This deliberately exercises cursor handoff after a workspace-wide pause.
+        if (N > 1) for (const L of lanes) {
+          if (L.holds.some(h => resolved.includes(h) && h.code === 'login')) {
+            const result = await opsHttp('/api/accounts/' + encodeURIComponent(L.store.laneId), { paused: true });
+            if (result.ok === false) return;
+          }
+        }
+        const ok = await resumeCollection();
+        if (ok) resolved.forEach(h => { h.workspace = V.now; });
+      })().finally(() => { resumeBusy = false; });
     }
   };
   timer(OPS, MIN, opsLoop);

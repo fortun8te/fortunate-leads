@@ -51,11 +51,15 @@ It stops any other server on :8777 (and the old :8766 one) first. Log: `~/Librar
 After a `git pull` that changes `extension/`, click the reload icon on the extension card in each profile.
 The popup shows the version, the state and the next request; Resume there clears a login or security-check hold.
 
-For this Mac, after the server and Laya LaunchAgents and the three Chrome profiles are set up once,
-double-click `ops/start-all.command` to bring them up and explicitly start lists, bios, and AI together.
-AI may use provider quota. The launcher leaves existing Instagram cooldowns and access holds intact;
-the Accounts page shows what is actually ready. The in-app **Start all** button resumes stages and
-accounts when the services and Chrome profiles are already open.
+For this Mac, double-click `ops/start-all.command` to start the installed local services.
+It does not open Chrome profiles or resume collection. Accounts shows connected profiles; Collection
+controls resume lists and bios explicitly when there is no Instagram hold. External AI remains opt-in.
+Local processing can work with collection paused. Stop all also turns local processing off.
+
+Local note interpretation uses the installed Ollama `llama3.2:3b` model through loopback only.
+Install it once with `ollama pull llama3.2:3b` if absent. The download is about 2 GB.
+The reader shows suggestions with exact quotes and never changes a relationship automatically.
+Original notes remain saved if the model is unavailable. Notes are excluded from external model prompts.
 
 ## 5. Add accounts
 

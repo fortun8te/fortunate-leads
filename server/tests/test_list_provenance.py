@@ -14,7 +14,7 @@ class ListProvenanceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.init(Path(self.tmp.name) / 'lists.sqlite')
-        self.q = {'lane': ['test-lane'], 'kinds': ['list'], 'version': ['3.8.0']}
+        self.q = {'lane': ['test-lane'], 'kinds': ['list'], 'version': ['3.9.15']}
 
     def tearDown(self):
         self.conn.close()

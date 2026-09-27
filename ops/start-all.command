@@ -1,6 +1,5 @@
 #!/bin/bash
-# Double-click to start the installed local services, the configured Chrome profiles,
-# and collection stages. External AI keeps its saved setting.
+# Start local services only. Connecting an Instagram account and resuming collection are separate actions.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -15,32 +14,6 @@ is_macos || { echo 'This one-click launcher is for macOS.' >&2; exit 1; }
 agent_checkout_owned "$FL_LABEL" server/server.py || {
   echo 'The installed server belongs to another checkout; no service was started.' >&2; exit 1;
 }
-
-# Fail closed before opening Instagram, including direct launcher use.
-check_collection_hold() {
-  "$FL_PYTHON" - "$FL_DB" "${1:-}" <<'PYHOLD'
-import json, sqlite3, sys
-from datetime import datetime, timezone
-from pathlib import Path
-try:
-    path = Path(sys.argv[1]).resolve()
-    if sys.argv[2] == 'allow-missing' and not path.exists():
-        sys.exit(0)
-    with sqlite3.connect('file:' + path.as_posix() + '?mode=ro', uri=True) as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key='cooldown'").fetchone()
-    value = json.loads(row[0]) if row else None
-    if value is not None and value != '':
-        if not isinstance(value, str):
-            raise ValueError('Stored safety hold is invalid')
-        until = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        if until > datetime.now(timezone.utc):
-            raise ValueError('Instagram is on a shared safety hold until ' + value)
-except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
-    print('Start engine stopped: ' + str(exc), file=sys.stderr)
-    sys.exit(1)
-PYHOLD
-}
-check_collection_hold allow-missing || exit 1
 
 echo 'Starting Fortunate Leads...'
 if wait_http /api/counts 3; then
@@ -65,49 +38,27 @@ else
   }
 fi
 
-profiles="$("$FL_PYTHON" "$FL_REPO/ops/chrome_profiles.py" --configured)" || exit 1
-profile_count="$(printf '%s\n' "$profiles" | awk 'NF { n++ } END { print n+0 }')"
-account_count="$("$FL_PYTHON" - "$FL_DB" <<'PY'
-import sqlite3, sys
-from pathlib import Path
-try:
-    path = Path(sys.argv[1]).resolve()
-    with sqlite3.connect('file:' + path.as_posix() + '?mode=ro', uri=True) as conn:
-        print(conn.execute('SELECT count(*) FROM accounts').fetchone()[0])
-except (OSError, sqlite3.Error) as exc:
-    print('App accounts could not be checked: ' + str(exc), file=sys.stderr)
-    sys.exit(1)
-PY
-)" || exit 1
-[ "$profile_count" -eq "$account_count" ] || {
-  echo "Start engine is configured for $profile_count Chrome profiles, but the app has $account_count accounts. Update ops/startup_profiles.json to match; no profiles or stages were started." >&2
-  exit 1
-}
-
 "$FL_PYTHON" "$FL_REPO/sidecar/laya_service.py" start --timeout 180 || {
   echo 'Laya did not become ready; collection and AI were left as they were.' >&2; exit 1;
 }
 
-profile_count=0
+# Optional local note reader: use an installed Ollama only; never install or pull models here.
+ollama_ready() { curl -fsS -m 2 -o /dev/null http://127.0.0.1:11434/api/tags 2>/dev/null; }
+if ! ollama_ready; then
+  if [ -d /Applications/Ollama.app ]; then
+    open -g -a /Applications/Ollama.app || true
+    for attempt in 1 2 3 4 5; do
+      ollama_ready && break
+      sleep 1
+    done
+  fi
+  if ! ollama_ready; then
+    echo 'The local note reader is unavailable. Fortunate Leads can still run; saved notes remain available.' >&2
+  fi
+fi
 
-while IFS= read -r profile_dir; do
-  [ -n "$profile_dir" ] || continue
-  check_collection_hold || exit 1
-  open -a 'Google Chrome' --args "--profile-directory=$profile_dir" 'https://www.instagram.com/'
-  profile_count=$((profile_count + 1))
-done <<< "$profiles"
-
-agent_owns_port || {
-  echo 'The server changed before startup; no stages were started.' >&2; exit 1;
-}
-check_collection_hold || exit 1
-curl -fsS -m 15 -o /dev/null -H "Origin: http://127.0.0.1:$FL_PORT" \
-  -H 'Content-Type: application/json' -d '{"action":"start_all"}' \
-  "http://127.0.0.1:$FL_PORT/api/control" || {
-    echo 'Services and Chrome opened, but the app could not resume collection.' >&2; exit 1;
-  }
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then
   open "http://127.0.0.1:$FL_PORT/#/accounts"
-  echo 'Started. The Accounts page shows any Instagram cooldown or access restriction.'
+  echo 'Local services ready. Open Accounts to connect an account when needed; collection settings were not changed.'
 fi
-printf 'ENGINE_STARTED:%s\n' "$profile_count"
+printf 'ENGINE_STARTED:0\n'

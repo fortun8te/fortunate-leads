@@ -10,15 +10,16 @@ function harness(sc) {
     return nodes.get(selector);
   };
   const context = vm.createContext({ $, S: { sc }, location: {}, setView(view) { context.view = view; }, int: String, fmt: String, plural: (n, word) => n + ' ' + word, esc: String, eta: () => '1 h' });
+  vm.runInContext(source.slice(source.indexOf('function settingsMode('), source.indexOf('function renderCheckingMode(')), context);
   const start = source.indexOf('  renderProg() {');
   const end = source.indexOf('\n  card(r)', start);
   vm.runInContext('const Q = {' + source.slice(start, end) + '};', context);
   return { $, context, render() { vm.runInContext('Q.renderProg()', context); } };
 }
 test('qualification uses latest external setting over stale full progress', () => {
-  const h = harness({ qualify: false, progress: { qualify: { on: true, left: 10 } } });
+  const h = harness({ qualify: false, local_laya: false, progress: { qualify: { on: true, left: 10 } } });
   h.render();
-  assert.match(h.$('#ql-prog').innerHTML, /External AI is off/);
+  assert.match(h.$('#ql-prog').innerHTML, /Rules only/);
   assert.equal(h.$('#n-qual').textContent, '');
   h.context.S.scStale = true; h.render();
   assert.match(h.$('#ql-prog').innerHTML, /Checking status unavailable/);
