@@ -2226,7 +2226,8 @@ def requalify(conn, p, me, net=None):
         deepscout.reapply(conn, p, net)
 
 
-def qualify_batch(conn, limit=1000):
+def qualify_batch(conn, limit=32):
+    """Keep each rule write transaction short enough for concurrent extension and Laya writers."""
     rows = conn.execute('SELECT p.* FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                         "WHERE v.person_id IS NULL OR (coalesce(v.model,'')!='error' AND v.updated_at < p.updated_at) "
                         "OR (v.model='error' AND (coalesce(v.input_hash,'')!=p.updated_at "

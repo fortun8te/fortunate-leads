@@ -28,8 +28,8 @@
   --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05);
   --scrim: rgba(0, 0, 0, 0.65);
 
-  /* Fit scale: greys only, strong brightest. */
-  --fit-strong: #ffffff; --fit-good: #b5b5b5; --fit-weak: #5e5e5e; --fit-unread: #303030;
+  /* The strong-fit dot shares the restrained yellow decision color. */
+  --fit-strong: #e9bd56; --fit-good: #b5b5b5; --fit-weak: #5e5e5e; --fit-unread: #303030;
 
   /* Tag groups: monochrome. */
   --role-fg: #e6e6e6;   --role-bg: rgba(255, 255, 255, 0.10);
@@ -53,7 +53,7 @@
   --shadow-1: 0 1px 2px rgba(20, 22, 30, 0.06);
   --shadow-2: 0 12px 32px rgba(20, 22, 30, 0.12), 0 0 0 1px rgba(20, 22, 30, 0.05);
   --scrim: rgba(20, 22, 30, 0.3);
-  --fit-strong: #111111; --fit-good: #6e6e6e; --fit-weak: #b0b0b0; --fit-unread: #dedede;
+  --fit-strong: #ae711c; --fit-good: #6e6e6e; --fit-weak: #b0b0b0; --fit-unread: #dedede;
   --role-fg: #1f1f1f;   --role-bg: #ececec;
   --niche-fg: #2e2e2e;  --niche-bg: #f0f0f0;
   --signal-fg: #3d3d3d; --signal-bg: #f2f2f2;
@@ -1131,60 +1131,45 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-more, .tg-manage { margin-top: var(--s4); }
 .tg-manage > .panel { margin-top: var(--s3); }
 
-/* Tag hierarchy: two solid decisions; quieter semantic tints for everything else. */
+/* Tag hierarchy: solid fit and caution; quiet outlined tints for supporting evidence. */
 :root {
-  --t-strong: #f3c75d; --t-strong-ink: #302308; --t-possible: #382c1a; --t-possible-ink: #f4d28d;
-  --t-map-strong: #f3c75d;
-  --t-strong-line: #b9934e; --t-strong-surface: #211b11; --t-strong-border: #4a3b22;
-  --t-decision: #372431; --t-decision-ink: #efb7d1; --t-decision-line: #80536a;
-  --t-role: #39271d; --t-role-ink: #f0b690; --t-role-line: #8d6045;
-  --t-partner: #30273f; --t-partner-ink: #d0bdec; --t-partner-line: #776392;
-  --t-plus: #21362c; --t-evidence: #629876; --t-evidence-ink: #b0dbc0;
-  --t-client: #203b38; --t-client-ink: #c2e6dd; --t-client-line: #6aa89b;
-  --t-market: #223348; --t-market-ink: #b0cdee; --t-market-line: #688fb7;
-  --t-niche-beauty: #32262d; --t-niche-beauty-ink: #e0b9ca;
-  --t-niche-food: #33291f; --t-niche-food-ink: #e8c4a3;
-  --t-niche-style: #2e2838; --t-niche-style-ink: #d0bee9;
-  --t-niche-wellness: #233128; --t-niche-wellness-ink: #b8d7c0;
-  --t-niche-lifestyle: #26323c; --t-niche-lifestyle-ink: #b5cde0;
-  --t-caution: #d191a6; --t-review: #34252b; --t-review-line: #936477; --t-review-ink: #e4b2c3;
-  --t-flag: #96384e; --t-flag-ink: #fff4f6; --t-flag-surface: #291a20; --t-flag-border: #704252;
+  --t-strong: #e9bd56; --t-strong-ink: #302308; --t-possible: #332b1c; --t-possible-ink: #f1d28f;
+  --t-map-strong: #e9bd56;
+  --t-strong-line: #a98543; --t-strong-surface: #211b11; --t-strong-border: #4a3b22;
+  --t-decision: #3c2736; --t-decision-ink: #f2c0dc; --t-decision-line: #79516d;
+  --t-role: #3b2a20; --t-role-ink: #f1bd99; --t-role-line: #815b44;
+  --t-partner: #30283e; --t-partner-ink: #d8c5ef; --t-partner-line: #705e8a;
+  --t-plus: #203328; --t-evidence: #5f9370; --t-evidence-ink: #bce2c7;
+  --t-client: #20352a; --t-client-ink: #c2e8cf; --t-client-line: #639b75;
+  --t-market: #213247; --t-market-ink: #c1d9f1; --t-market-line: #6285aa;
+  --t-caution: #da7683; --t-review: #351f26; --t-review-line: #8e4a56; --t-review-ink: #f0b5be;
+  --t-flag: #822c39; --t-flag-ink: #fff5f5; --t-flag-surface: #321d23; --t-flag-border: #79404b;
 }
 :root[data-theme="light"] {
-  --t-strong: #f2bf4b; --t-strong-ink: #332407; --t-possible: #fff2d6; --t-possible-ink: #76501c;
+  --t-strong: #edbd56; --t-strong-ink: #332407; --t-possible: #fff4dc; --t-possible-ink: #75501d;
   --t-map-strong: #a8661c;
-  --t-strong-line: #d2a34f; --t-strong-surface: #fff9eb; --t-strong-border: #ead9b5;
-  --t-decision: #fae8f1; --t-decision-ink: #853c60; --t-decision-line: #d799b7;
-  --t-role: #fff0e5; --t-role-ink: #965027; --t-role-line: #e5b38d;
-  --t-partner: #f1ecf9; --t-partner-ink: #674a8a; --t-partner-line: #baa9d3;
-  --t-plus: #e8f3e9; --t-evidence: #8cbb9b; --t-evidence-ink: #2b6844;
-  --t-client: #e5f3ef; --t-client-ink: #276452; --t-client-line: #9bcbbd;
-  --t-market: #eaf2fb; --t-market-ink: #345d89; --t-market-line: #a6c1de;
-  --t-niche-beauty: #f9eef3; --t-niche-beauty-ink: #8b4965;
-  --t-niche-food: #faf0e5; --t-niche-food-ink: #90542e;
-  --t-niche-style: #f1edf8; --t-niche-style-ink: #6e4e8a;
-  --t-niche-wellness: #ecf4ee; --t-niche-wellness-ink: #386c4b;
-  --t-niche-lifestyle: #eaf2f8; --t-niche-lifestyle-ink: #3d6687;
-  --t-caution: #a95170; --t-review: #f9edf1; --t-review-line: #d5a6b7; --t-review-ink: #86465e;
-  --t-flag: #8e354b; --t-flag-ink: #fff6f7; --t-flag-surface: #fbedf0; --t-flag-border: #dfb8c3;
+  --t-strong-line: #cfaa65; --t-strong-surface: #fff9eb; --t-strong-border: #ead9b5;
+  --t-decision: #faedf4; --t-decision-ink: #813d63; --t-decision-line: #dab0c7;
+  --t-role: #fff1e8; --t-role-ink: #89502e; --t-role-line: #e2b99d;
+  --t-partner: #f2eef9; --t-partner-ink: #654c83; --t-partner-line: #c1b2d5;
+  --t-plus: #ecf5ed; --t-evidence: #a1c9a9; --t-evidence-ink: #2d6740;
+  --t-client: #eaf5ec; --t-client-ink: #2d6842; --t-client-line: #a4cbb0;
+  --t-market: #edf4fb; --t-market-ink: #345d84; --t-market-line: #afc8df;
+  --t-caution: #a34a58; --t-review: #faedef; --t-review-line: #d7a6ae; --t-review-ink: #8c3d4c;
+  --t-flag: #862f3d; --t-flag-ink: #fff7f7; --t-flag-surface: #f9ecef; --t-flag-border: #dab1b8;
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
-  --t-strong: #f2bf4b; --t-strong-ink: #332407; --t-possible: #fff2d6; --t-possible-ink: #76501c;
+  --t-strong: #edbd56; --t-strong-ink: #332407; --t-possible: #fff4dc; --t-possible-ink: #75501d;
   --t-map-strong: #a8661c;
-  --t-strong-line: #d2a34f; --t-strong-surface: #fff9eb; --t-strong-border: #ead9b5;
-  --t-decision: #fae8f1; --t-decision-ink: #853c60; --t-decision-line: #d799b7;
-  --t-role: #fff0e5; --t-role-ink: #965027; --t-role-line: #e5b38d;
-  --t-partner: #f1ecf9; --t-partner-ink: #674a8a; --t-partner-line: #baa9d3;
-  --t-plus: #e8f3e9; --t-evidence: #8cbb9b; --t-evidence-ink: #2b6844;
-  --t-client: #e5f3ef; --t-client-ink: #276452; --t-client-line: #9bcbbd;
-  --t-market: #eaf2fb; --t-market-ink: #345d89; --t-market-line: #a6c1de;
-  --t-niche-beauty: #f9eef3; --t-niche-beauty-ink: #8b4965;
-  --t-niche-food: #faf0e5; --t-niche-food-ink: #90542e;
-  --t-niche-style: #f1edf8; --t-niche-style-ink: #6e4e8a;
-  --t-niche-wellness: #ecf4ee; --t-niche-wellness-ink: #386c4b;
-  --t-niche-lifestyle: #eaf2f8; --t-niche-lifestyle-ink: #3d6687;
-  --t-caution: #a95170; --t-review: #f9edf1; --t-review-line: #d5a6b7; --t-review-ink: #86465e;
-  --t-flag: #8e354b; --t-flag-ink: #fff6f7; --t-flag-surface: #fbedf0; --t-flag-border: #dfb8c3;
+  --t-strong-line: #cfaa65; --t-strong-surface: #fff9eb; --t-strong-border: #ead9b5;
+  --t-decision: #faedf4; --t-decision-ink: #813d63; --t-decision-line: #dab0c7;
+  --t-role: #fff1e8; --t-role-ink: #89502e; --t-role-line: #e2b99d;
+  --t-partner: #f2eef9; --t-partner-ink: #654c83; --t-partner-line: #c1b2d5;
+  --t-plus: #ecf5ed; --t-evidence: #a1c9a9; --t-evidence-ink: #2d6740;
+  --t-client: #eaf5ec; --t-client-ink: #2d6842; --t-client-line: #a4cbb0;
+  --t-market: #edf4fb; --t-market-ink: #345d84; --t-market-line: #afc8df;
+  --t-caution: #a34a58; --t-review: #faedef; --t-review-line: #d7a6ae; --t-review-ink: #8c3d4c;
+  --t-flag: #862f3d; --t-flag-ink: #fff7f7; --t-flag-surface: #f9ecef; --t-flag-border: #dab1b8;
 } }
 .tag, .tchip { border-radius: 999px; }
 .tag { height: 25px; padding-inline: 9px; font-size: 12px; letter-spacing: 0; }
@@ -1200,11 +1185,6 @@ button:disabled { cursor:default; opacity:.5; }
 .tag.t-market, .tchip.t-market { background: var(--t-market); color: var(--t-market-ink); box-shadow: inset 0 0 0 1px var(--t-market-line); font-weight: 500; }
 .tag.t-own, .tchip.t-own { background: var(--bg2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line3); font-weight: 500; }
 .tag.t-niche, .tchip.t-niche { background: var(--bg2); color: var(--fg2); font-weight: 500; box-shadow: none; }
-.tag.t-niche.h-beauty, .tchip.t-niche.h-beauty { background: var(--t-niche-beauty); color: var(--t-niche-beauty-ink); }
-.tag.t-niche.h-food, .tchip.t-niche.h-food { background: var(--t-niche-food); color: var(--t-niche-food-ink); }
-.tag.t-niche.h-style, .tchip.t-niche.h-style { background: var(--t-niche-style); color: var(--t-niche-style-ink); }
-.tag.t-niche.h-wellness, .tchip.t-niche.h-wellness { background: var(--t-niche-wellness); color: var(--t-niche-wellness-ink); }
-.tag.t-niche.h-lifestyle, .tchip.t-niche.h-lifestyle { background: var(--t-niche-lifestyle); color: var(--t-niche-lifestyle-ink); }
 .tag.t-ctx, .tchip.t-ctx { background: transparent; color: var(--fg3); font-weight: 400; box-shadow: inset 0 0 0 1px var(--line2); }
 .tag.t-review, .tchip.t-review { background: var(--t-review); color: var(--t-review-ink); box-shadow: inset 0 0 0 1px var(--t-review-line); font-weight: 500; }
 .tag.t-review::before, .tchip.t-review::before { content: ""; width: 4px; height: 4px; margin-right: 5px; flex: none; border-radius: 50%; background: var(--t-caution); }
@@ -1220,11 +1200,6 @@ button:disabled { cursor:default; opacity:.5; }
 .fi.t-plus .sw { --fg-c: var(--t-evidence); opacity: 1; }
 .fi.t-client .sw { --fg-c: var(--t-client-ink); opacity: 1; }
 .fi.t-market .sw { --fg-c: var(--t-market-ink); opacity: 1; }
-.fi.h-beauty .sw { --fg-c: var(--t-niche-beauty-ink); opacity: 1; }
-.fi.h-food .sw { --fg-c: var(--t-niche-food-ink); opacity: 1; }
-.fi.h-style .sw { --fg-c: var(--t-niche-style-ink); opacity: 1; }
-.fi.h-wellness .sw { --fg-c: var(--t-niche-wellness-ink); opacity: 1; }
-.fi.h-lifestyle .sw { --fg-c: var(--t-niche-lifestyle-ink); opacity: 1; }
 .fi.t-review .sw { --fg-c: var(--t-caution); opacity: 1; }
 .fi.t-flag .sw { --fg-c: var(--t-flag); opacity: 1; }
 .fi[data-tag].inc { background: var(--bg3); border-color: var(--fg3); }
