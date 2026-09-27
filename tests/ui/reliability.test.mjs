@@ -45,4 +45,5 @@ test('demo implements controls and qualification',async()=>{
   const control=await (await w.fetch('/api/control')).json();assert.equal(control.stages.length,3);
   const paused=await (await w.fetch('/api/control',{method:'POST',body:JSON.stringify({stage:'all',action:'pause'})})).json();assert.equal(paused.all_paused,true);
   const qual=await (await w.fetch('/api/qual?view=all&limit=3')).json();assert.equal(qual.rows.length,3);assert.ok(qual.summary.verdicts>0);
+  assert.ok(qual.rows.every(row => Array.isArray(row.connection_edges)));
 });

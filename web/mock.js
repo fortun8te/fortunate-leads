@@ -611,7 +611,8 @@
       let list = filtered(q).filter((p) => view === 'all' || (view === 'ai' ? ai(p) : !ai(p)));
       list = q.get('sort') === 'recent' ? list.slice().sort((a, b) => b.id - a.id) : sorted(list, 'score');
       const off = Math.max(0, +q.get('offset') || 0), lim = Math.min(100, Math.max(1, +q.get('limit') || 30));
-      return { total: list.length, rows: list.slice(off, off + lim).map((p) => ({ ...row(p), verdict: { ...verdicts.get(p.id), at: ago_(2 * H) }, bio_at: p.bio ? ago_(3 * H) : null, site: sites.get(p.id) || null })),
+      return { total: list.length, rows: list.slice(off, off + lim).map((p) => ({ ...row(p), verdict: { ...verdicts.get(p.id), at: ago_(2 * H) }, bio_at: p.bio ? ago_(3 * H) : null, site: sites.get(p.id) || null,
+        connection_edges: currentEdges(p.id).map((e) => ({ handle: e.seed, direction: e.direction, is_me: e.seed === ME })) })),
         summary: { verdicts: people.filter((p) => p.bio).length, ai: people.filter(ai).length, rules: people.filter((p) => p.bio && !ai(p)).length, with_bio: people.filter((p) => p.bio).length, sites: sites.size } };
     }
     if ((m = path.match(/^\/api\/qual\/(\d+)\/deeper$/)) && method === 'POST') {

@@ -2628,6 +2628,30 @@ $('#view-settings').addEventListener('click', async (e) => {
 
 // ---------- qualification ----------
 const ROLE_LABEL = { buyer: 'Brand owner', connector: 'Agency or freelancer', collaborator: 'Creative', peer: 'Similar service', supplier: 'Supplier', unrelated: 'Not a business', unclear: 'Unclear' };
+function qualificationConnections(r) {
+  const byHandle = new Map();
+  for (const edge of r.connection_edges || []) {
+    if (!edge?.handle || !['followers', 'following'].includes(edge.direction)) continue;
+    const key = String(edge.handle).toLowerCase();
+    if (!byHandle.has(key)) byHandle.set(key, { handle: edge.handle, dirs: new Set(), isMe: false });
+    const item = byHandle.get(key);
+    item.dirs.add(edge.direction);
+    item.isMe ||= !!edge.is_me;
+  }
+  const observed = [...byHandle.values()].sort((a, b) => Number(b.isMe) - Number(a.isMe) || a.handle.localeCompare(b.handle));
+  const lines = observed.map(({ handle, dirs, isMe }) => {
+    const both = dirs.has('followers') && dirs.has('following');
+    if (isMe) return both ? 'You (@' + handle + ') follow each other' : dirs.has('followers') ? 'They follow you (@' + handle + ')' : 'You (@' + handle + ') follow them';
+    return both ? 'They and @' + handle + ' follow each other' : dirs.has('followers') ? 'They follow @' + handle : '@' + handle + ' follows them';
+  });
+  if (!lines.length && !Array.isArray(r.connection_edges)) {
+    // Older sample payloads have list names but not direction.
+    lines.push(...[...new Set(r.via || [])].map((handle) => 'Seen in @' + handle + "'s list"));
+  }
+  if (!lines.length) return '<p class="muted">No observed follows yet</p>';
+  const row = (line) => `<li>${esc(line)}</li>`;
+  return `<ul class="ql-connections">${lines.slice(0, 3).map(row).join('')}</ul>${lines.length > 3 ? `<details class="ql-extra"><summary>Show ${lines.length - 3} more</summary><ul class="ql-connections">${lines.slice(3).map(row).join('')}</ul></details>` : ''}`;
+}
 const Q = {
   view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0,
   async show() { await this.load(); },
@@ -2661,33 +2685,25 @@ const Q = {
     const v = r.verdict || {}, ai = v.model && v.model !== 'rules';
     const ev = evidenceOf(v);
     const aiTags = (r.tags || []).filter((t) => t.grp === 'ai');
-    const seeds = [...new Set(r.via || [])];
     const bio = (r.bio || '').trim();
-    const based = [
-      bio ? `<li><b>Bio</b><span>${esc(bio.length > 160 ? bio.slice(0, 160) + '…' : bio)}</span>${r.bio_at ? `<em>read ${ago(r.bio_at)} ago</em>` : ''}</li>` : `<li><b>Bio</b><span class="muted">${r.is_private ? 'Private account, cannot be read' : 'Not read yet'}</span></li>`,
-      r.website ? `<li><b>Link in bio</b><span><a href="${esc(safeUrl(r.website) || '#')}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a></span></li>` : '',
-      r.category ? `<li><b>Instagram category</b><span>${esc(r.category)}</span></li>` : '',
-      `<li><b>Network</b><span>${seeds.length ? `In ${plural(seeds.length, 'list')}: ${seedList(seeds, 4)}` : 'Not in any list'}${youLink(r) ? ' · ' + esc(youLink(r)) : ''}</span></li>`,
-      r.followers != null ? `<li><b>Audience</b><span>${fmt(r.followers)} followers${r.posts != null ? ' · ' + fmt(r.posts) + ' posts' : ''}</span></li>` : '',
-    ].join('');
+    const facts = [r.category ? esc(r.category) : '', r.followers != null ? `${fmt(r.followers)} followers` : ''].filter(Boolean).join(' · ');
     const siteHTML = websiteEvidence(r.site);
     const busy = this.busy.has(r.id);
     return `<article class="ql-card" data-id="${r.id}">
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
         <div class="ql-score"><b class="num" title="Blended priority">Priority ${r.score ?? '–'}</b>${fitBadge(r)}</div></div>
-      <div class="ql-body">
-        <div class="ql-why"><h4>Verdict</h4><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
-          ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul>` : ''}
-          ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
-          <p class="ql-by">${ai ? `Checked by AI (${esc(modelLabel(v.model))})` : 'Keyword check only, no AI yet'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
-        <div class="ql-based"><h4>Based on</h4><ul>${based}</ul></div>
-      </div>
+      <div class="ql-why"><p><b>${esc(ROLE_LABEL[r.role] || ucf(r.role || 'Unknown'))}.</b> ${esc(r.reason || 'No reason given.')}</p>
+        ${aiTags.length ? `<div class="ql-tags">${aiTags.map((t) => tagChip(t)).join('')}</div>` : ''}
+        ${ev.length ? `<details class="ql-extra"><summary>Why this verdict</summary><ul class="evidence">${ev.map((q) => `<li>"${esc(q)}"</li>`).join('')}</ul></details>` : ''}
+        <p class="ql-by">${ai ? 'AI checked' : 'Keyword check'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
+      <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
+        ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
+      <div class="ql-network"><h4>Observed follows</h4>${qualificationConnections(r)}</div>
       ${siteHTML}
       <div class="ql-acts"><button class="btn${busy ? '' : ' solid'}" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reading…' : 'Dig deeper'}</button>
-        <span class="muted ql-hint">${r.website ? 'Reads the bio again and their website' : 'Reads the bio again (no website in bio)'}</span><span class="grow"></span>
-        <button class="btn ghost" data-open="${r.id}">Open</button>
-        <a class="btn ghost" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram</a></div>
+        <span class="grow"></span><button class="btn ghost" data-open="${r.id}">Open lead</button>
+        <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a></div>
     </article>`;
   },
   render() {

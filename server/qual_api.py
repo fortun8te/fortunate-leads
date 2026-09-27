@@ -378,8 +378,17 @@ def routes(srv):
         out = srv.lead_rows(conn, rows)
         ids = [r['id'] for r in rows]
         vs = {}
+        connections = {}
         if ids:
             marks = ','.join('?' * len(ids))
+            me = srv.me_handle(conn)
+            # Keep the direction with each observed link. A source-list name alone
+            # cannot tell the reader who follows whom.
+            for edge in conn.execute(f'SELECT person_id, seed, direction FROM current_edges '
+                                     f'WHERE person_id IN ({marks}) ORDER BY seed, direction', ids):
+                connections.setdefault(edge['person_id'], []).append({'handle': edge['seed'],
+                                                                      'direction': edge['direction'],
+                                                                      'is_me': bool(me and edge['seed'].casefold() == me.casefold())})
             for v in conn.execute(f'SELECT person_id, prefilter, model, updated_at, prompt, evidence FROM verdicts WHERE person_id IN ({marks})', ids):
                 try:
                     ev = json.loads(v['evidence'] or '[]')
@@ -390,7 +399,7 @@ def routes(srv):
         for r in out:
             p = base[r['id']]
             r.update(verdict=vs.get(r['id']), category=p['category'], bio_at=p['bio_at'], is_private=p['is_private'],
-                     site=site_row(conn, r['id']))
+                     site=site_row(conn, r['id']), connection_edges=connections.get(r['id'], []))
         s = conn.execute("SELECT count(*), sum(coalesce(model,'rules')!='rules'), sum(model='rules') FROM verdicts").fetchone()
         return {'total': total, 'rows': out,
                 'summary': {'verdicts': s[0] or 0, 'ai': s[1] or 0, 'rules': s[2] or 0,
