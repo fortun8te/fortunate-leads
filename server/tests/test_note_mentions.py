@@ -92,6 +92,16 @@ class NoteMentions(unittest.TestCase):
         self.assertEqual(mentions.search(self.conn, '%')['people'], [])
         self.assertLessEqual(len(mentions.search(self.conn, '')['people']), 8)
 
+    def test_suggestion_only_shows_saved_relationships_and_profile_photo(self):
+        self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', ('alex.jpg', self.friend))
+        self.conn.execute('INSERT INTO owner_context VALUES(?,?,?,?)',
+                          (self.friend, '["friend", "colleague", "acquaintance"]', None, 'now'))
+        person = mentions.search(self.conn, 'alex')['people'][0]
+        self.assertEqual(person['pic'], f'/img/{self.friend}')
+        self.assertEqual(person['badges'], ['Colleague', 'Friend'])
+        self.conn.execute('DELETE FROM owner_context WHERE person_id=?', (self.friend,))
+        self.assertEqual(mentions.search(self.conn, 'alex')['people'][0]['badges'], [])
+
     def test_verified_identity_merge_preserves_references(self):
         mentions.save(self.conn, self.pid, self.note, self.refs)
         survivor = db.upsert_person(self.conn, {'handle': 'alex_survivor'})

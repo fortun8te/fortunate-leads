@@ -165,8 +165,13 @@
   // ---- Mapping to contract fields ---------------------------------------
   function mapUser(u) {
     if (!u || typeof u !== 'object' || !u.username) return null;
-    return { ig_id: String(u.pk || u.pk_id || u.id || '') || null, handle: String(u.username), name: u.full_name || '',
-      pic_url: u.profile_pic_url || '', is_private: !!u.is_private, is_verified: !!u.is_verified };
+    const mapped = { ig_id: String(u.pk || u.pk_id || u.id || '') || null, handle: String(u.username) };
+    if (typeof u.full_name === 'string') mapped.name = u.full_name;
+    if (typeof u.profile_pic_url === 'string') mapped.pic_url = u.profile_pic_url;
+    if (typeof u.is_private === 'boolean') mapped.is_private = u.is_private;
+    if (typeof u.is_verified === 'boolean') mapped.is_verified = u.is_verified;
+    else if (u.is_verified === 0 || u.is_verified === 1) mapped.is_verified = !!u.is_verified;
+    return mapped;
   }
 
   function parsePage(json) {
@@ -499,7 +504,11 @@
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!', key: 'off' };
     if (ctx.noTab) return { state: 'idle', text: TAB_TEXT[ctx.noTab] || TAB_TEXT.no_tab, badge: '!', key: 'off' };
     if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '', key: 'stop' };
-    const pre = [issue ? listIssueText : null,
+    const stages = ctx.stages || {};
+    const pausedStages = [stages.list === false ? 'Followers paused' : null,
+      stages.profile === false ? 'Bios paused' : null].filter(Boolean);
+    if (pausedStages.length === 2) return { state: 'paused', text: 'Followers and bios paused in workspace', badge: '‖', key: 'stop' };
+    const pre = [pausedStages.join(' · ') || null, issue ? listIssueText : null,
       lc ? 'Instagram list limit until ' + t(st.cool.list.until) : null,
       pc ? 'Bios cooling until ' + t(st.cool.profile.until) : null].filter(Boolean).join(' · ');
     const prefix = pre ? pre + ' · ' : '';
@@ -510,7 +519,7 @@
     if (next > now && next < Infinity) return { state: 'running', text: prefix + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
     if (lc) return { state: 'cooldown', text: pre, badge, key: 'cool' };
     if (issue) return { state: 'idle', text: prefix + 'No other work ready', badge: '', key: 'wait' };
-    return { state: 'idle', text: prefix + 'Idle, queue empty', badge: '', key: 'stop' };
+    return { state: 'idle', text: prefix + (pausedStages.length ? 'No other work ready' : 'Idle, queue empty'), badge: '', key: pausedStages.length ? 'wait' : 'stop' };
   }
 
   // ---- Lanes: one install = one Chrome profile = one Instagram account ----

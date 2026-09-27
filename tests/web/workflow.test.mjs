@@ -41,7 +41,7 @@ test('actual saved-view query roundtrip preserves follow-up but never freezes to
   const vm = await import('node:vm');
   const source = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
   const functions = source.slice(source.indexOf('function toQuery('), source.indexOf('const modeOf ='));
-  const context = vm.createContext({ URLSearchParams, FIT_TIER: { strong: 'hot' }, TIER_FIT: { hot: 'strong' } });
+  const context = vm.createContext({ URLSearchParams, FITS: ['strong', 'good', 'weak', 'unread'], FIT_TIER: { strong: 'hot' }, TIER_FIT: { hot: 'strong' } });
   const result = vm.runInContext(functions + `\nconst parsed = fromQuery('follow_up=overdue&today=2020-01-01&sort=follow_up'); ({query:toQuery(parsed.f,parsed.sort).toString(), count:filterCount(parsed.f), filter:parsed.f.follow_up});`, context);
   assert.equal(result.query, 'follow_up=overdue&sort=follow_up');
   assert.equal(result.count, 1); assert.equal(result.filter, 'overdue');

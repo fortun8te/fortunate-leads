@@ -42,14 +42,15 @@ class IntegrityAuditTests(unittest.TestCase):
         return (200, {'business_discovery': dict(username='acme', biography='Older Graph bio',
                                                 name='Acme', **fields)}, {})
 
-    def test_merge_moves_review_events_before_deleted_id_is_reused(self):
+    def test_merge_moves_review_events_and_retires_deleted_id(self):
         keep, drop = self.person('survivor'), self.person('duplicate')
         processing_state.record_review_event(self.conn, drop, 'local:test', 'good', 80, 'Duplicate review')
         self.conn.execute('INSERT INTO ai_scoring_events(person_id,scored_at) VALUES(?,?)', (drop, db.now()))
         db.merge_people(self.conn, keep, drop)
         newcomer = self.person('unrelated')
-        self.assertEqual(newcomer, drop, 'Fixture must exercise SQLite rowid reuse')
+        self.assertGreater(newcomer, drop)
         self.assertEqual(processing_state.recent_history(self.conn, person_id=newcomer), [])
+        self.assertEqual(processing_state.recent_history(self.conn, person_id=drop), [])
         history = processing_state.recent_history(self.conn, person_id=keep)
         self.assertEqual([(row['handle'], row['reason']) for row in history], [('survivor', 'Duplicate review')])
         self.assertEqual(self.conn.execute('SELECT person_id FROM ai_scoring_events').fetchone()[0], keep)
@@ -77,10 +78,10 @@ class IntegrityAuditTests(unittest.TestCase):
         self.conn.execute("INSERT INTO owner_note_reads VALUES(?,'old-snapshot','ready','[]','2026-09-27',0)", (drop,))
         db.merge_people(self.conn, keep, drop)
         newcomer = self.person('unrelated')
-        self.assertEqual(newcomer, drop)
+        self.assertGreater(newcomer, drop)
         for table in ('external_attempts', 'web_research', 'owner_note_reads'):
             with self.subTest(table=table):
-                self.assertIsNone(self.conn.execute(f'SELECT 1 FROM {table} WHERE person_id=?', (newcomer,)).fetchone())
+                self.assertIsNone(self.conn.execute(f'SELECT 1 FROM {table} WHERE person_id IN (?,?)', (drop, newcomer)).fetchone())
         self.assertFalse(external_queue.complete(self.conn, drop, 'old-input', {}, claim_token=token, now=110))
 
     def test_merge_keeps_content_hash_with_selected_website_evidence(self):

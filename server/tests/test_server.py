@@ -87,7 +87,7 @@ class Base(unittest.TestCase):
     def call(self, path, body=None, origin=None, host=None):
         port = server.CFG['port']
         if path.split('?')[0] == '/api/ext/next' and 'version=' not in path:
-            path += ('&' if '?' in path else '?') + 'version=3.9.16'
+            path += ('&' if '?' in path else '?') + 'version=3.9.17'
         if isinstance(body, dict) and body.get('job_id') and 'lease_token' not in body:
             body = dict(body, lease_token=self.tokens.get(body['job_id']))
         req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', method='POST' if body is not None else 'GET',
@@ -201,7 +201,7 @@ class ServerTest(Base):
         self.call('/api/scraper/pause', {'paused': False})
         self.assertEqual(self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})[0], 400)  # out of range: nothing changes
         self.call('/api/scraper/budget', {'list': 3000, 'profile': 200})
-        hb = self.call('/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle', 'today': {'list': 1, 'profile': 2}})[1]
+        hb = self.call('/api/ext/heartbeat', {'version': '3.9.17', 'state': 'idle', 'today': {'list': 1, 'profile': 2}})[1]
         self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}, 'stages': {'list': True, 'profile': True}})
         self.assertTrue(self.call('/api/scraper')[1]['ext']['online'])
         self.call('/api/ext/error', {'job_id': None, 'code': 'challenge', 'retry_at': None, 'message': 'checkpoint'})
@@ -287,11 +287,11 @@ class ServerTest(Base):
         self.assertIn({'tag': 'via @s1', 'grp': 'source', 'count': 1, 'total': 1, 'source': 'manual'}, tags)
 
     def test_heartbeat_rate_and_soak(self):
-        self.call('/api/ext/heartbeat', {'version': '3.9.16', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
+        self.call('/api/ext/heartbeat', {'version': '3.9.17', 'state': 'running', 'rate': {'pages_hour': 300, 'people_hour': 7400.55,
                                                                                     'last_hit_at': '2026-09-24T10:00:00Z', 'x': 1}})
         s = self.call('/api/scraper')[1]
         self.assertEqual(s['ext']['rate'], {'pages_hour': 300.0, 'people_hour': 7400.6, 'last_hit_at': '2026-09-24T10:00:00.000000+00:00'})
-        self.call('/api/ext/heartbeat', {'version': '3.9.16', 'rate': {'pages_hour': 'fast', 'last_hit_at': 'nope'}})
+        self.call('/api/ext/heartbeat', {'version': '3.9.17', 'rate': {'pages_hour': 'fast', 'last_hit_at': 'nope'}})
         self.assertEqual(self.call('/api/scraper')[1]['ext']['rate'], {'pages_hour': None, 'people_hour': None, 'last_hit_at': None})
         self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
         job = self.call('/api/ext/next')[1]['job']

@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
@@ -273,13 +274,38 @@ def init(path):
                              ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                              ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT'),
-                             ('people', 'pic_refresh', 'INT NOT NULL DEFAULT 0')):
+                             ('people', 'pic_refresh', 'INT NOT NULL DEFAULT 0'),
+                             ('people', 'pic_attempts', 'INT NOT NULL DEFAULT 0'),
+                             ('people', 'pic_retry_at', 'TEXT')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
             if table == 'list_runs' and col == 'member_count':
                 # Existing tracked prefixes already have members. Backfill once
                 # before triggers start maintaining the exact count.
                 conn.execute('UPDATE list_runs SET member_count=(SELECT count(*) FROM list_members WHERE job_id=list_runs.job_id)')
+    # Preserve identity allocation across merges/deletes. Include old cache names:
+    # a deleted pre-upgrade row can otherwise donate its photo to the next insert.
+    conn.execute('CREATE TABLE IF NOT EXISTS person_id_sequence(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value INTEGER NOT NULL)')
+    if not conn.execute('SELECT 1 FROM person_id_sequence').fetchone():
+        highest = conn.execute('SELECT coalesce(max(id),0) FROM people').fetchone()[0]
+        # Legacy deletions can leave references after the people row is gone.
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            table = '"' + row[0].replace('"', '""') + '"'
+            if any(column[1] == 'person_id' for column in conn.execute(f'PRAGMA table_info({table})')):
+                value = conn.execute(f'SELECT max(person_id) FROM {table}').fetchone()[0]
+                if isinstance(value, int):
+                    highest = max(highest, value)
+        directory = Path(path).resolve().parent / 'pfp'
+        if directory.is_dir():
+            highest = max([highest] + [int(f.stem) for f in directory.glob('*.jpg')
+                                      if f.stem.isdigit() and len(f.stem) < 19])
+        conn.execute('INSERT INTO person_id_sequence VALUES(1,?)', (highest,))
+    conn.execute("CREATE TRIGGER IF NOT EXISTS people_identity_immutable BEFORE UPDATE OF id ON people "
+                 "WHEN NEW.id != OLD.id BEGIN SELECT RAISE(ABORT,'person id is immutable'); END")
+    conn.execute("CREATE TRIGGER IF NOT EXISTS people_identity_allocation AFTER INSERT ON people BEGIN "
+                 "SELECT CASE WHEN NEW.id <= (SELECT value FROM person_id_sequence WHERE singleton=1) "
+                 "THEN RAISE(ABORT,'person id cannot be reused') END; "
+                 "UPDATE person_id_sequence SET value=NEW.id WHERE singleton=1; END")
     conn.execute('INSERT OR IGNORE INTO account_identity_state '
                  '(lane_id,ig_id,day,today,cooldown_until,list_cool_until,profile_cool_until,list_endpoint_until) '
                  "SELECT lane_id,ig_id,date(last_seen,'localtime'),today,cooldown_until,list_cool_until,profile_cool_until,list_endpoint_until "
@@ -579,7 +605,7 @@ def norm_handle(h):
 
 
 # Background bookkeeping that the lead list, facets and map never show; writing it must not invalidate their cache.
-REV_QUIET = {'people': {'pic_file', 'pic_refresh', 'updated_at'}, 'verdicts': {'updated_at', 'input_hash', 'prompt'}}
+REV_QUIET = {'people': {'pic_file', 'pic_refresh', 'pic_attempts', 'pic_retry_at', 'updated_at'}, 'verdicts': {'updated_at', 'input_hash', 'prompt'}}
 
 
 def add_rev_triggers(conn, tables):
@@ -611,11 +637,23 @@ def mark_network_dirty(conn, person_ids):
 
 
 def dirty_seed_members(conn, *handles):
-    ids = set()
-    for handle in handles:
-        ids.update(r[0] for r in conn.execute('SELECT person_id FROM edges WHERE seed=?', (handle,)))
-        ids.update(r[0] for r in conn.execute('SELECT id FROM people WHERE handle=?', (handle,)))
-    mark_network_dirty(conn, ids)
+    handles = tuple(dict.fromkeys(h for h in handles if h))
+    if not handles:
+        return
+    slots = ','.join('?' * len(handles))
+    # One revision and one indexed, set-based write per page. In particular,
+    # avoid copying the entire growing list into Python and executemany on
+    # every cursor. A later page must refresh revisions even for queued peers.
+    conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('network_change_id','0')")
+    conn.execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='network_change_id'")
+    revision = int(conn.execute("SELECT value FROM settings WHERE key='network_change_id'").fetchone()[0])
+    conn.execute(f'''INSERT INTO network_dirty(person_id,change_id)
+        SELECT person_id,? FROM (
+          SELECT person_id FROM edges WHERE seed IN ({slots})
+          UNION SELECT id FROM people WHERE handle IN ({slots})
+        ) WHERE true
+        ON CONFLICT(person_id) DO UPDATE SET change_id=excluded.change_id''',
+        (revision, *handles, *handles))
 
 
 def move_seed(conn, old, new):
@@ -726,7 +764,18 @@ def _preserve_seed_identity(conn, person):
                          (ig_id, person['handle'], seed['ig_id']))
 
 
+def _profile_time(value):
+    """Compare capture instants, including legacy dates and offset timestamps."""
+    try:
+        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    except (AttributeError, ValueError, OverflowError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def upsert_person(conn, u, ts=None):
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
     ts = ts or now()
     vals = {k: u[k] for k in PERSON_FIELDS if u.get(k) is not None}
     for k in ('is_private', 'is_verified', 'is_business'):
@@ -743,7 +792,7 @@ def upsert_person(conn, u, ts=None):
         if not vals['handle']:
             raise ValueError('invalid Instagram handle')
     by_id = vals.get('ig_id') and conn.execute('SELECT id, handle, updated_at FROM people WHERE ig_id=?', (vals['ig_id'],)).fetchone()
-    if by_id and ts <= by_id['updated_at']:
+    if by_id and _profile_time(ts) <= _profile_time(by_id['updated_at']):
         vals.pop('handle', None)  # an older observation cannot undo a known rename
     by_handle = vals.get('handle') and conn.execute('SELECT id, ig_id, handle, updated_at FROM people WHERE handle=?', (vals['handle'],)).fetchone()
     if by_handle and normalize_ig_id(by_handle['ig_id']) is None and vals.get('ig_id'):
@@ -752,7 +801,7 @@ def upsert_person(conn, u, ts=None):
         if seed_id and seed_id != vals['ig_id']:
             raise ValueError('seed account identity conflicts with incoming profile')
     if (by_handle and by_handle['ig_id'] and vals.get('ig_id')
-            and by_handle['ig_id'] != vals['ig_id'] and ts <= by_handle['updated_at']):
+            and by_handle['ig_id'] != vals['ig_id'] and _profile_time(ts) <= _profile_time(by_handle['updated_at'])):
         # A historical or tied claim cannot displace a newer proven owner.
         # Keep an existing identity at its known handle, or retain a newly
         # discovered historical identity under a separate parked handle.
@@ -776,9 +825,9 @@ def upsert_person(conn, u, ts=None):
         current = conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()
         if by_id and vals.get('handle') and current['handle'] != vals['handle']:
             rename_seed(conn, current['handle'], vals['handle'], vals['ig_id'])
-        if current['bio_at'] and (vals.get('bio_at') or ts) < current['bio_at']:
+        if current['bio_at'] and _profile_time(vals.get('bio_at') or ts) < _profile_time(current['bio_at']):
             vals = {k: v for k, v in vals.items() if k not in BIO_FIELDS}
-        if ts < current['updated_at']:
+        if _profile_time(ts) < _profile_time(current['updated_at']):
             vals = {k: v for k, v in vals.items() if k in BIO_FIELDS or k == 'ig_id' or current[k] is None}
         changes = {k: v for k, v in vals.items() if current[k] != v}
         if changes:
@@ -790,13 +839,16 @@ def upsert_person(conn, u, ts=None):
                 # CDN URLs rotate independently of the photo. Keep the last
                 # downloaded image visible while a refresh waits for network access.
                 changes['pic_refresh'] = int(bool(current['pic_file']))
+                changes['pic_attempts'] = 0
+                changes['pic_retry_at'] = None
                 if not current['pic_file']:
                     changes['pic_file'] = None
             if content_changed:
-                changes['updated_at'] = max(ts, current['updated_at'])
+                changes['updated_at'] = max((ts, current['updated_at']), key=_profile_time)
             conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
                          (*changes.values(), pid))
         return pid
+    vals['id'] = conn.execute('SELECT value+1 FROM person_id_sequence WHERE singleton=1').fetchone()[0]
     cols = list(vals) + ['first_seen', 'updated_at']
     return conn.execute(f"INSERT INTO people({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
                         (*vals.values(), ts, ts)).lastrowid
@@ -845,7 +897,7 @@ def merge_people(conn, keep, drop):
         fields = {}
         newer_bio = pb['bio_at'] and (not pa['bio_at'] or pb['bio_at'] > pa['bio_at'])
         for key in pa.keys():
-            if key in ('id', 'ig_id', 'handle', 'first_seen', 'updated_at'):
+            if key in ('id', 'ig_id', 'handle', 'first_seen', 'updated_at', 'pic_file', 'pic_refresh', 'pic_attempts', 'pic_retry_at'):
                 continue
             take = (newer_bio or not pa['bio_at']) if key in BIO_FIELDS else (pa[key] is None or pa[key] == '')
             if pb[key] is not None and take:

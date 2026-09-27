@@ -73,7 +73,8 @@ class ProcessingPipeline(unittest.TestCase):
         with patch.object(server, 'schedule_local_services'), patch.object(server.local_model, 'status',
                 return_value={'ready': True, 'resources': {'allowed': True}}):
             response = server.api_local_processing(self.conn, {}, {'paused': True})
-        self.assertEqual(response['state'], 'paused')
+        self.assertEqual(response['state'], 'stopping')
+        self.assertFalse(response['stop_acknowledged'])
         self.assertEqual(response['processing']['mode'], 'RLAI')
         self.assertTrue(response['paused'])
         self.assertFalse(server.local_processing_step(self.conn))

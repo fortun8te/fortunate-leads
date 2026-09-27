@@ -46,6 +46,12 @@ test('parsePage maps users to contract fields', () => {
   const capped = FL.parsePage({ users: [{ pk: 1, username: 'a' }], next_max_id: 'c', should_limit_list_of_followers: true });
   assert.deepEqual([capped.done, capped.limited, capped.next_cursor], [true, true, null]);
 });
+test('list user mapping keeps omitted fields unknown and explicit clears authoritative', () => {
+  assert.deepEqual(FL.mapUser({ pk: 5, username: 'x' }), { ig_id: '5', handle: 'x' });
+  assert.deepEqual(FL.mapUser({ pk: 5, username: 'x', full_name: '', profile_pic_url: '',
+    is_private: false, is_verified: false }),
+  { ig_id: '5', handle: 'x', name: '', pic_url: '', is_private: false, is_verified: false });
+});
 test('mapProfile: /info/ shape', () => {
   const p = FL.mapProfile({ pk: 9, username: 'brand', full_name: 'Brand', biography: 'We sell', external_url: '',
     bio_links: [{ url: 'https://b.co' }], category: 'Shopping', follower_count: 1200, following_count: 80, media_count: 40,
@@ -237,6 +243,12 @@ test('statusOf: badge and state', () => {
   assert.equal(FL.statusOf(cool(T0 + 5 * HOUR, T0 + 5 * HOUR), {}, T0).state, 'cooldown');
   assert.equal(FL.statusOf({ ...st, hold: { message: 'x' } }, {}, T0).badge, '!');
 });
+test('paused stages never present an empty queue as idle', () => {
+  const st = FL.fresh();
+  assert.match(FL.statusOf(st, { stages: { list: false, profile: true } }, T0).text, /Followers paused/);
+  assert.doesNotMatch(FL.statusOf(st, { stages: { list: false, profile: true } }, T0).text, /queue empty/);
+  assert.equal(FL.statusOf(st, { stages: { list: false, profile: false } }, T0).state, 'paused');
+});
 
 test('parseBody: prefixes, non-json content, garbage', () => {
   assert.deepEqual(FL.parseBody('for (;;);{"users":[],"status":"ok"}'), { users: [], status: 'ok' });
@@ -252,7 +264,7 @@ test('classify/parsePage: alternate list shapes', () => {
   const gql = { data: { user: { edge_followed_by: { count: 9, page_info: { has_next_page: true, end_cursor: 'C1' },
     edges: [{ node: { id: '5', username: 'b' } }] } } }, status: 'ok' };
   assert.equal(FL.classify(res(gql), 'list'), null);
-  assert.deepEqual(FL.parsePage(gql), { users: [{ ig_id: '5', handle: 'b', name: '', pic_url: '', is_private: false, is_verified: false }],
+  assert.deepEqual(FL.parsePage(gql), { users: [{ ig_id: '5', handle: 'b' }],
     next_cursor: 'C1', done: false, limited: false, has_more: true });
   assert.equal(FL.parsePage({ users: [{ pk: 1, username: 'a' }], next_max_id: 25 }).next_cursor, '25'); // numeric cursor
 });

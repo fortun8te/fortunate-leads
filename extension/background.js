@@ -150,7 +150,7 @@ function flushBox() {
       for (;;) {
         const box = (await get('box')) || [];
         if (!box.length) { mem.offline = false; return true; }
-        const sending = box[0], r = await sendItem(sending);
+        const sending = box[0], sendingGen = mem.gen, r = await sendItem(sending);
         if (r === 'retry') { mem.offline = true; return false; }
         mem.offline = false;
         const path = box[0].path;
@@ -163,7 +163,16 @@ function flushBox() {
         });
         if (!removed) continue; // another enqueue shed a passive head while it was in flight
         if (r === 'ok' && path === '/api/ext/list-page' && sending.body?.direction === 'followers')
-          await editSt((st) => FL.listPageSucceeded(st, 'followers'));
+          await editSt((st) => {
+            // A delayed ACK belongs to the account and worker generation that sent it.
+            // It cannot clear a later login/challenge hold or another account's redirect hold.
+            const captured = Date.parse(sending.body?.captured_at || '');
+            const newerRedirect = (st.listRedirects || []).some((entry) =>
+              !Number.isFinite(captured) || entry.at > captured);
+            if (sendingGen === mem.gen && !st.hold && sending.body?.account?.ig_id &&
+                st.accountIgId === sending.body.account.ig_id && !newerRedirect)
+              FL.listPageSucceeded(st, 'followers');
+          });
         if (r !== 'ok') {
           await editSt((s) => { s.lastError = 'Server rejected a saved result; see debug log'; });
           await trail('outbox parked', { path, reason: r });
@@ -196,7 +205,7 @@ async function queueDone(path, body, success = true, gen = mem.gen) {
 async function applyServer(j) {
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
   if (j && j.stages) mem.stages = j.stages;
-  if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.16') + ' before collecting.'; });
+  if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.17') + ' before collecting.'; });
   if (!j || typeof j.paused !== 'boolean') return;
   mem.serverPaused = j.paused;
   const st = await loadSt();
@@ -520,8 +529,7 @@ async function runList(gen, job, tab) {
       await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }), gen);
       return;
     }
-    if (bad.code === 'private' || (bad.code === 'soft_block' && /^empty_/.test(bad.reason || '')) ||
-        (bad.code === 'other' && /^empty_/.test(bad.reason || ''))) {
+    if (bad.code === 'private') {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
       if (FL.privateWall(proof.info, job.seed, proof.p))
@@ -547,7 +555,7 @@ async function runList(gen, job, tab) {
   if (stalled) await trail('list cursor repeated', { seed: job.seed, direction: job.direction, cursor });
   await queueDone('/api/ext/list-page', { job_id: job.id, lease_token: job.lease_token, requested_cursor: job.cursor || null, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
     next_cursor: page.next_cursor, done: page.done, total, total_source: totalSource, limited: page.limited || undefined,
-    has_more: page.has_more, requested_count: requestedCount, http_status: res.status }, true, gen);
+    has_more: page.has_more, requested_count: requestedCount, http_status: res.status, captured_at: iso(now) }, true, gen);
 }
 
 // ---- profile reads (bios) ----------------------------------------------------
@@ -557,20 +565,22 @@ async function runProfile(gen, job, tab) {
   mem.label = '@' + job.handle + ' profile';
   const st = await loadSt(), cached = await knownId(job.handle);
   const pk = job.ig_id || (cached && cached.ig_id);
-  let p;
+  let p, capturedAt;
   if (pk && !(st.infoOffUntil > Date.now())) {
     const { res, bad } = await igRequest(gen, tab, IG + '/api/v1/users/' + encodeURIComponent(pk) + '/info/', 'profile');
     if (bad) return fail(job, bad, mem.label, res, 'profile', false, gen);
     p = FL.mapProfile(FL.userOf(res.json));
+    capturedAt = iso(Date.now());
   } else {
     const r = await lookupViaPage(gen, job.handle, 'profile', tab);
     if (!r.p) return fail(job, r.bad, mem.label + ' (page)', r.res, 'profile', false, gen);
     p = r.p;
+    capturedAt = iso(Date.now());
   }
   await remember(p);
   await markSeen(p.handle);
   await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.tally(st, Date.now(), 0, 1); });
-  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p }, true, gen);
+  await queueDone('/api/ext/profile', { job_id: job.id, lease_token: job.lease_token, profile: p, captured_at: capturedAt }, true, gen);
 }
 
 // ---- the loop ----------------------------------------------------------------
@@ -724,6 +734,7 @@ async function lookupViaPage(gen, handle, kind, near) {
 async function passive(user) {
   const p = FL.mapProfile(user);
   if (!p || !p.ig_id) return;
+  const capturedAt = iso(Date.now());
   const beforeAccount = (await get('account'))?.ig_id || null;
   await remember(p);
   const me = await get('account'); // our own profile went by: now we know this account's handle
@@ -738,7 +749,7 @@ async function passive(user) {
   if (!FL.controlAllows(mem, 'profile') || await get('localPaused') || (await loadSt()).hold) return;
   if (!(await markSeen(p.handle))) return;
   await editSt((st) => FL.tally(st, Date.now(), 0, 1));
-  await queue('/api/ext/profile', { job_id: null, profile: p });
+  await queue('/api/ext/profile', { job_id: null, profile: p, captured_at: capturedAt });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

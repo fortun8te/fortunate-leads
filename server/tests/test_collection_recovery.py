@@ -12,7 +12,7 @@ class RecoveryTest(lanes.Base):
     age = lanes.LaneTest.age
 
     def test_redirect_defers_followers_but_following_can_run_after_shared_hold(self):
-        self.post('a', '/api/ext/heartbeat', {'version':'3.9.16', 'state':'idle'})
+        self.post('a', '/api/ext/heartbeat', {'version':'3.9.17', 'state':'idle'})
         self.seeds('failed', direction='followers')
         job = self.nxt('a', 'list')['job']
         self.post('a', '/api/ext/error', {'job_id':job['id'], 'code':'other',
@@ -34,7 +34,7 @@ class RecoveryTest(lanes.Base):
         self.assertEqual(db.get_setting(self.conn, 'cooldown'), '2000-01-01T00:00:00Z')
 
     def test_historical_repeated_redirects_recover_wait_without_mutating_shared_hold(self):
-        self.post('a', '/api/ext/heartbeat', {'version':'3.9.16','state':'idle'})
+        self.post('a', '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         self.seeds('failed')
         job = self.nxt('a', 'list')['job']
         now = datetime.now(timezone.utc)
@@ -54,7 +54,7 @@ class RecoveryTest(lanes.Base):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
         for who in ('a','b'):
-            self.post(who, '/api/ext/heartbeat', {'version':'3.9.16','state':'idle'})
+            self.post(who, '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
         self.conn.commit()
         self.age('lane-b',20)
@@ -66,7 +66,7 @@ class RecoveryTest(lanes.Base):
         self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
         self.conn.commit()
         job = self.nxt('a','profile')['job']  # Main-only setup remains usable.
-        self.post('b', '/api/ext/heartbeat', {'version':'3.9.16','state':'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         out = self.post('a','/api/ext/request',{'action':'acquire','kind':'profile',
                         'job_id':job['id'],'lease_token':job['lease_token']})[1]
         self.assertFalse(out['granted'])
@@ -77,7 +77,7 @@ class RecoveryTest(lanes.Base):
         self.seeds('historical', direction='followers')
         job = self.nxt('a', 'list')['job']
         lanes.LaneTest.page(self, 'a', job, 5, 'next')
-        self.post('b', '/api/ext/heartbeat', {'version':'3.9.16','state':'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         now = datetime.now(timezone.utc)
         self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason) VALUES(?,?,?,'list','followers','other','list_html_home_redirect')",
                           ((now-timedelta(minutes=40)).isoformat(), 'lane-a', job['id']))

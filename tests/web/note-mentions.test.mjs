@@ -13,7 +13,7 @@ function fixture() {
     dispatchEvent(e) { for (const fn of this.events[e.type] || []) fn(e); }
     insertAdjacentElement(_, el) { this.picker = el; }
     replaceChildren() { this.children = []; }
-    append(el) { this.children.push(el); }
+    append(...els) { this.children.push(...els); }
     focus() { document.activeElement = this; }
     setSelectionRange(a,b) { this.selectionStart = a; this.selectionEnd = b; }
   }
@@ -73,7 +73,7 @@ test('typing only @ opens the initial profile menu', async () => {
   type('Knows @'); await wait();
   assert.equal(query, '');
   assert.equal(input.attrs['aria-expanded'], 'true');
-  assert.equal(input.picker.children[0].textContent, '@alex');
+  assert.equal(input.picker.children[0].attrs['aria-label'], 'alex, @alex');
 });
 function rerender(f, options) {
   const saved = f.api.capture(f.input), input = f.createInput();
@@ -103,7 +103,17 @@ test('autosave rerender restarts an active query whose results have not arrived'
   f.api.attach(f.input, options); f.type('@');
   const fresh = rerender(f, options); await wait();
   assert.equal(fresh.attrs['aria-expanded'], 'true');
-  assert.equal(fresh.picker.children[0].textContent, '@alex');
+  assert.equal(fresh.picker.children[0].attrs['aria-label'], 'alex, @alex');
+});
+test('suggestions display an avatar, readable identity and at most two saved badges', async () => {
+  const { api, input, type } = fixture();
+  api.attach(input, { search:async () => ({people:[{id:2,handle:'alex',name:'Alex Lee',pic:'/img/2',badges:['Friend','Colleague','Client']}]}), change:()=>{} });
+  type('@al'); await wait();
+  const option = input.picker.children[0];
+  assert.equal(option.attrs['aria-label'], 'Alex Lee, @alex, saved: Friend, Colleague');
+  assert.equal(option.children[0].children[0].src, '/img/2');
+  assert.equal(option.children[1].children[0].children[0].textContent, 'Alex Lee');
+  assert.equal(option.children[1].children[1].children.length, 2);
 });
 test('autosave rerender does not reopen a picker dismissed with Escape', async () => {
   const f = fixture();

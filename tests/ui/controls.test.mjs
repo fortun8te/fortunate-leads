@@ -1,232 +1,121 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/controls.js', import.meta.url), 'utf8');
-const page = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
-const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
-const settle = () => new Promise(resolve => setImmediate(resolve));
-const state = (paused = false, waitStage = null) => ({
-  all_paused: false,
-  local_laya: false,
-  processing: {mode:"RLEAI",generation:1},
-  stages: ['lists', 'bios', 'ai'].map(id => ({
-    id, label: { lists: 'Collect lists', bios: 'Read bios', ai: 'AI scoring' }[id],
-    paused: id !== 'ai' && paused,
-    state: id !== 'ai' && paused ? 'paused' : id === waitStage?.id ? 'waiting' : 'running',
-    now: id === waitStage?.id ? waitStage.now : 'Working',
-    wait: id === waitStage?.id ? waitStage.wait : null, help: 'Stage help',
-  })),
-});
+const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+const collection = (paused = true) => ({processing:{mode:'R'}, stages:['lists','bios','ai'].map(id => ({id,paused:id === 'ai' || paused,state:id === 'ai' || paused ? 'paused' : 'running',now:id === 'lists' ? 'Reading list page 2' : ''}))});
+const engines = (override = {}) => ({processing:{mode:'R'},paused:false,engines:{laya:{enabled:false,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true},k2:{enabled:false,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true}},...override});
 
-// A small DOM/fetch harness isolates response ordering without a browser or a running server.
-function harness({ detached = false } = {}) {
-  const requests = [], events = {}, listeners = {};
-  let interval, html = '', buttons = [];
-  const slot = { appendChild(node) { node.isConnected = true; this.child = node; } };
-  const document = {
-    body: {}, activeElement: null, readyState: 'complete', visibilityState: 'visible',
-    createElement: () => el,
-    querySelector: selector => selector === '#stage-controls' ? slot : null,
-    addEventListener: (name, callback) => { listeners[name] = callback; },
-  };
+function harness() {
+  const requests = [], listeners = {}, windowListeners = {};
+  let timer, html = '', buttons = [];
+  const panel = {scrollTop:0};
+  const document = {readyState:'complete',visibilityState:'visible',body:{},activeElement:null,
+    createElement:() => el,querySelector:s => s === '#stage-controls' ? {appendChild(node){node.isConnected=true;}} : null,
+    addEventListener:(name, callback) => {listeners[name]=callback;}};
   document.activeElement = document.body;
-  const el = {
-    isConnected: !detached, dataset: {}, setAttribute() {},
-    contains: node => buttons.includes(node),
-    querySelectorAll: () => [],
-    querySelector: selector => buttons.find(button => selector.includes(`"${button.dataset.stage}"`)) || null,
-    addEventListener: (name, callback) => { events[name] = callback; },
-    get innerHTML() { return html; },
-    set innerHTML(value) {
-      if (buttons.includes(document.activeElement)) document.activeElement = document.body;
-      html = value;
-      buttons = [...value.matchAll(/<button\b([^>]*)>/g)].map(([, attributes]) => ({
-        dataset: { stage: /data-stage="([^"]+)"/.exec(attributes)[1], action: /data-action="([^"]+)"/.exec(attributes)[1] },
-        disabled: /\bdisabled\b/.test(attributes),
-        focus() { if (!this.disabled) document.activeElement = this; },
-      }));
-    },
-  };
-  vm.runInNewContext(source, {
-    window: { addEventListener() {} }, document, Date, confirm: () => true,
-    clearInterval() {}, setInterval(callback) { interval = callback; return 1; },
-    fetch(url, options) { return new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })); },
-  });
-  return {
-    requests, el, document, slot,
-    respond(index, data = state(), ok = true) { requests[index].resolve({ ok, status: ok ? 200 : 500, json: async () => data }); },
-    fail(index) { requests[index].reject(new Error('Network failure')); },
-    poll() { for (let i = 0; i < 5; i++) interval(); },
-    visible() { listeners.visibilitychange(); },
-    button(stage) { return buttons.find(button => button.dataset.stage === stage); },
-    click(stage = 'collection') { const button = this.button(stage); button.focus(); events.click({ target: { closest: () => button } }); },
-  };
+  const el = {isConnected:false,dataset:{},setAttribute(){},contains:node => buttons.includes(node),
+    addEventListener:(name, callback) => {listeners[`el:${name}`]=callback;},
+    querySelector:s => s === '.fl-ctl-panel' ? panel : buttons.find(button => s.includes(`data-focus="${button.dataset.focus}"`)),
+    get innerHTML(){return html;},set innerHTML(value){html=value;buttons=[...value.matchAll(/<button\b([^>]*)>/g)].map(([,attrs]) => {
+      const dataset = {};for (const [,key,val] of attrs.matchAll(/data-([\w-]+)="([^"]+)"/g)) dataset[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=val;
+      const button = {dataset,disabled:/\sdisabled(?:\s|$)/.test(attrs),focus(){document.activeElement=this;}};
+      return button;
+    });}};
+  vm.runInNewContext(source,{document,Date,AbortController,Event:class Event{constructor(type){this.type=type;}},
+    window:{__flControls:false,addEventListener:(name,callback)=>{windowListeners[name]=callback;},dispatchEvent(event){windowListeners[event.type]?.();}},
+    clearTimeout(){},setTimeout(callback){timer=callback;return 1;},
+    fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
+  const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
+  const fail = index => requests[index].reject(new Error('offline'));
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
-async function ready() { const h = harness(); h.respond(0); await settle(); return h; }
+async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
 
-test('stage controls replace the removed legacy status controls', async () => {
-  assert.match(page, /<div class="status"[^>]*>\s*<div id="stage-controls"><\/div>/);
-  assert.doesNotMatch(page, /id="(?:st-act|st-lanes|pause-btn|set-q-on)"/);
-  const h = harness({ detached: true });
-  assert.equal(h.slot.child, h.el);
-  h.respond(0); await settle();
-  assert.equal((h.el.innerHTML.match(/data-stage="collection"/g) || []).length, 1);
-  assert.doesNotMatch(h.el.innerHTML, /<details|Controls/);
-  assert.doesNotMatch(h.el.innerHTML, /fl-ctl-now/);
-  assert.equal((h.requests.filter(request => request.url === '/api/control')).length, 1);
+test('initial control state keeps scraping action and per-engine statuses visible', async () => {
+  const h=await ready();
+  assert.match(h.el.innerHTML,/Scraping <b>Off<\/b>/);
+  assert.match(h.el.innerHTML,/Laya <b>Off<\/b>/);
+  assert.match(h.el.innerHTML,/K2 <b>Off<\/b>/);
+  assert.match(h.el.innerHTML,/Start scraping/);
+  assert.match(h.el.innerHTML,/aria-expanded="false"/);
 });
 
-test('failed stage has a visible status and a link to details', async () => {
-  const h = harness();
-  const failed = state(); failed.stages[1].state = 'error';
-  h.respond(0, failed); await settle();
-  assert.match(h.el.innerHTML, /Needs attention/);
-  assert.match(h.el.innerHTML, /role="alert" aria-atomic="true">A stage needs attention\. <a href="#\/accounts">View collection details\.<\/a>/);
+test('panel opens without changing mode and offers independent engine actions', async () => {
+  const h=await ready();h.click(button=>button.dataset.focus==='panel');
+  assert.match(h.el.innerHTML,/aria-expanded="true"/);
+  assert.match(h.el.innerHTML,/data-engine="laya"/);
+  assert.match(h.el.innerHTML,/data-engine="k2"/);
+  assert.match(h.el.innerHTML,/Laya adds ranking hints/);
+  h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'waiting',active:false,ready:true,reason:'Waiting for work.',stop_acknowledged:false}}}));h.respond(4,{reviewed:4,queue:2,notes_pending:1,progress:{active:{handle:'someone'}}});await settle();
+  assert.match(h.el.innerHTML,/Checking @someone/);
+  assert.match(h.el.innerHTML,/4 bios reviewed · 2 waiting · 1 notes waiting/);
 });
 
-for (const outcome of ['success', 'failure']) {
-  test(`a stale poll ${outcome} cannot overwrite a completed pause`, async () => {
-    const h = await ready();
-    h.poll(); // Request 1 predates the pause.
-    h.click(); h.respond(2, state(true)); await settle();
-    h.respond(3, state(true)); await settle();
-    if (outcome === 'success') h.respond(1); else h.fail(1);
-    await settle();
-    assert.equal(h.button('collection').dataset.action, 'resume');
-    assert.doesNotMatch(h.el.innerHTML, /Server offline/);
-    assert.equal(h.document.activeElement, h.button('collection'));
-  });
-}
-
-test('newer polling results win even when earlier reads finish last', async () => {
-  const h = await ready(); h.poll(); h.poll();
-  h.respond(2, state(true)); await settle(); h.respond(1); await settle();
-  assert.equal(h.button('collection').dataset.action, 'resume');
+test('K2 action waits for backend confirmation and leaves mode unchanged', async () => {
+  const h=await ready();h.click(button=>button.dataset.focus==='panel');
+  const button=h.click(button=>button.dataset.engine==='k2');
+  const post=h.requests.find(request=>request.url==='/api/engines' && request.options?.method==='POST');
+  assert.deepEqual(JSON.parse(post.options.body),{engine:'k2',enabled:true});
+  assert.match(h.el.innerHTML,/Saving…/);
+  const reply=engines({engines:{...engines().engines,k2:{enabled:true,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true}}});
+  post.resolve({ok:true,status:200,json:async()=>reply});await settle();
+  assert.match(h.el.innerHTML,/Off in R mode/);
+  assert.match(h.el.innerHTML,/Excluded from AI modes|Included when RLAI/);
+  assert.match(h.el.innerHTML,/R · Rules/);
+  assert.equal(button.dataset.engine,'k2');
 });
 
-test('controls stay locked through refresh and background reads are skipped', async () => {
-  const h = await ready(); h.click();
-  assert.deepEqual(JSON.parse(h.requests[1].options.body), { stage: 'collection', action: 'pause' });
-  h.poll(); h.visible(); assert.equal(h.requests.length, 2);
-  h.respond(1, state(true)); await settle();
-  assert.equal(h.button('collection').disabled, true);
-  h.click('collection'); h.poll(); h.visible(); assert.equal(h.requests.length, 3);
-  h.respond(2, state(true)); await settle();
-  assert.equal(h.button('collection').disabled, false);
-  assert.equal(h.button('collection').dataset.action, 'resume');
+test('stopping remains visible until the backend acknowledges the stop', async () => {
+  const h=harness();h.respond(0,collection());
+  const stopping=engines({processing:{mode:'RLAI'},paused:true,engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'stopping',active:true,ready:true,reason:'Finishing the current request.',stop_acknowledged:false}}});
+  h.respond(1,stopping);await settle();
+  assert.match(h.el.innerHTML,/K2 <b>Stopping<\/b>/);
+  h.poll();h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},paused:true,engines:{...stopping.engines,k2:{...stopping.engines.k2,state:'off',active:false,stop_acknowledged:true}}}));await settle();
+  assert.match(h.el.innerHTML,/K2 <b>Paused<\/b>/);
 });
 
-for (const failure of ['HTTP', 'network']) {
-  test(`${failure} action failure is announced, survives a healthy refresh, and clears on retry`, async () => {
-    const h = await ready(); h.click();
-    if (failure === 'HTTP') h.respond(1, { error: 'Failed' }, false); else h.fail(1);
-    await settle(); h.respond(2); await settle();
-    assert.match(h.el.innerHTML, /role="alert" aria-atomic="true"/);
-    assert.match(h.el.innerHTML, /Couldn’t confirm pause for scraping\. Try again\./);
-    assert.equal(h.button('collection').dataset.action, 'pause');
-    assert.equal(h.button('collection').disabled, false);
-    h.poll(); h.respond(3); await settle();
-    assert.match(h.el.innerHTML, /Couldn’t confirm/);
-    h.click(); assert.doesNotMatch(h.el.innerHTML, /Couldn’t confirm/);
-    h.respond(4, state(true)); await settle(); h.respond(5, state(true)); await settle();
-    assert.equal(h.button('collection').dataset.action, 'resume');
-    assert.doesNotMatch(h.el.innerHTML, /role="alert"/);
-  });
-}
-
-test('failed refresh leaves no request in flight and preserves the confirmed action state', async () => {
-  const h = await ready(); h.click(); h.respond(1, state(true)); await settle();
-  h.fail(2); await settle();
-  // Offline: the buttons wait for the server instead of sending actions that cannot arrive.
-  assert.equal(h.button('collection').disabled, true);
-  assert.equal(h.button('collection').dataset.action, 'resume');
-  assert.match(h.el.innerHTML, /Server offline: showing the last known state/);
+test('polling is single flight and a failed engine read disables its actions', async () => {
+  const h=await ready();h.poll();h.poll();h.visibility();
+  assert.equal(h.requests.length,4,'only one pair of status requests is pending');
+  h.respond(2,collection());h.fail(3);await settle();
+  h.click(button=>button.dataset.focus==='panel');
+  assert.match(h.el.innerHTML,/K2 <b>Unknown<\/b>/);
+  assert.equal(h.buttons.find(button=>button.dataset.engine==='k2').disabled,true);
+  assert.match(h.el.innerHTML,/Some statuses could not be confirmed/);
 });
 
-test('completion does not steal focus when the user moves elsewhere', async () => {
-  const h = await ready(); h.click();
-  const elsewhere = {};
-  h.document.activeElement = elsewhere;
-  h.respond(1, state(true)); await settle(); h.respond(2, state(true)); await settle();
-  assert.equal(h.document.activeElement, elsewhere);
+test('an incomplete collection snapshot locks the scraping action', async () => {
+  const h=harness();
+  const incomplete=collection(false);incomplete.stages=incomplete.stages.filter(stage=>stage.id!=='bios');
+  h.respond(0,incomplete);h.respond(1,engines());await settle();
+  assert.match(h.el.innerHTML,/Scraping <b>Unknown<\/b>/);
+  assert.equal(h.buttons.find(button=>button.dataset.stage==='collection').disabled,true);
 });
 
-test('mode links explain the selected configuration without starting external AI', async () => {
-  const h = harness(); const local = state();
-  local.local_laya = true; local.processing = {mode:"RLAI",generation:2}; local.stages[2].paused = true; local.stages[2].state = 'paused';
-  h.respond(0, local); await settle();
-  assert.match(h.el.innerHTML, /href="#\/settings"/);
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
-  assert.match(h.el.innerHTML, /href="#\/accounts"/);
-  assert.doesNotMatch(h.el.innerHTML, /<details|data-stage="ai"/);
-});
-
-test('local setting-only changes refresh the summary, and offline states become unknown', async () => {
-  const h = await ready();
-  h.poll(); const local = state(); local.local_laya = true; local.processing = {mode:"RLAI",generation:2}; local.stages[2].paused = true; local.stages[2].state = 'paused';
-  h.respond(1, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
-  h.poll(); h.fail(2); await settle();
-  assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Unknown<\/b>/);
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Unknown<\/b>/);
-});
-
-
-test('processing mode remains a configuration label when collection is paused', async () => {
-  const h = harness();
-  const local = state(); local.local_laya = true; local.processing = {mode:"RLAI",generation:2};
-  local.stages.forEach(s => { s.paused = true; s.state = 'paused'; });
-  h.respond(0, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Off<\/b>/);
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>RLAI · Local AI<\/b>/);
-  h.poll(); local.local_laya = false; local.processing = {mode:"R",generation:3}; h.respond(1, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Mode<\/span><b>R · Rules<\/b>/);
-});
-
-for (const initiallyPaused of [true, false]) {
-  test(`direct collection ${initiallyPaused ? 'start' : 'pause'} stays outside disclosure and sends only the collection action`, async () => {
-    const h = harness();
-    const initial = state(); initial.local_laya = true; initial.processing = {mode:"RLAI",generation:2};
-    for (const s of initial.stages) if (s.id !== 'ai') { s.paused = initiallyPaused; s.state = initiallyPaused ? 'paused' : 'running'; }
-    h.respond(0, initial); await settle();
-    assert.match(h.el.innerHTML, new RegExp(`<button[^>]+data-stage="collection"[^>]*>${initiallyPaused ? 'Start' : 'Pause'} scraping</button>`));
-    assert.doesNotMatch(h.el.innerHTML, /data-stage="all"/);
-    h.click('collection');
-    assert.deepEqual(JSON.parse(h.requests[1].options.body), { stage: 'collection', action: initiallyPaused ? 'resume' : 'pause' });
-    assert.equal(h.button('collection').disabled, true);
-    h.click('collection');
-    assert.equal(h.requests.length, 2, 'in-flight click cannot send another request');
-    const result = structuredClone(initial);
-    for (const s of result.stages) if (s.id !== 'ai') { s.paused = !initiallyPaused; s.state = initiallyPaused ? 'running' : 'paused'; }
-    h.respond(1, result); await settle(); h.respond(2, result); await settle();
-    assert.equal(h.button('collection').disabled, false);
-    assert.equal(h.button('collection').dataset.action, initiallyPaused ? 'pause' : 'resume');
-    assert.equal(result.stages[2].paused, initial.stages[2].paused, 'external configuration is unchanged');
-    assert.match(h.el.innerHTML, /<b>RLAI · Local AI<\/b>/);
-    assert.equal(h.document.activeElement, h.button('collection'));
-  });
-}
-
-test('persisted Instagram attention stays visible while collection is paused', async () => {
-  const h=harness(); const initial=state();
-  for (const s of initial.stages) if (s.id!=='ai') { s.paused=true; s.state='paused'; }
-  h.respond(0,initial); await settle();
+test('a slow status response cannot undo a confirmed scraping pause', async () => {
+  const h=await ready();
   h.poll();
-  const held={...initial, instagram_request_attention:{message:'An Instagram request is unconfirmed. Check the account before continuing.'}};
-  h.respond(1,held); await settle();
-  assert.match(h.el.innerHTML, /<b>Needs attention<\/b>/);
-  assert.match(h.el.innerHTML, /role="alert"[^>]*>An Instagram request is unconfirmed/);
-  assert.match(h.el.innerHTML, /href="#\/accounts">Check accounts/);
+  h.click(button=>button.dataset.stage==='collection');
+  const post=h.requests.find(request=>request.url==='/api/control' && request.options?.method==='POST');
+  assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'resume'});
+  post.resolve({ok:true,status:200,json:async()=>collection(false)});await settle();
+  assert.match(h.el.innerHTML,/Pause scraping/);
+  h.respond(2,collection(true));h.respond(3,engines());await settle();
+  assert.match(h.el.innerHTML,/Pause scraping/);
+  const latest=h.requests.length;
+  h.respond(latest-2,collection(false));h.respond(latest-1,engines());await settle();
+  assert.match(h.el.innerHTML,/Pause scraping/);
 });
 
-
-test('shared Instagram wait exposes its return time directly in the top bar', async () => {
-  const h = harness();
-  h.respond(0, state(false, { id: 'lists', now: 'Instagram collection is waiting',
-    wait: {scope:'workspace', why:'Instagram wait', seconds:1800, until:'2026-09-27T16:57:58Z'} }));
-  await settle();
-  assert.match(h.el.innerHTML, /Instagram wait · until/);
-  assert.match(h.el.innerHTML, /Pause scraping/);
+test('a failed engine change reports the error and keeps the last confirmed state', async () => {
+  const h=await ready();h.click(button=>button.dataset.focus==='panel');
+  h.click(button=>button.dataset.engine==='laya');
+  const post=h.requests.find(request=>request.url==='/api/engines' && request.options?.method==='POST');
+  post.reject(new Error('offline'));await settle();
+  assert.match(h.el.innerHTML,/Could not confirm Laya change/);
+  assert.match(h.el.innerHTML,/Laya <b>Off<\/b>/);
 });

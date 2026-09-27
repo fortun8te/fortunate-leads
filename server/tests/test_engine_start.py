@@ -93,3 +93,55 @@ class EngineStartTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class EngineReconcileTest(unittest.TestCase):
+    def setUp(self):
+        import processing_modes
+        self.modes = processing_modes
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.execute('CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)')
+        self.modes.set_mode(self.conn, 'RLAI')
+        self.conn.commit()
+        self.addCleanup(self.conn.close)
+        import local_model
+        remote = patch.object(local_model, 'is_remote', return_value=False)
+        self.remote = remote.start()
+        self.addCleanup(remote.stop)
+        import resource_budget
+        from contextlib import nullcontext
+        budget = patch.object(resource_budget, 'lease', side_effect=lambda *a, **kw: nullcontext())
+        budget.start()
+        self.addCleanup(budget.stop)
+
+    def test_independent_start_stop_and_remote_k2_never_starts_local(self):
+        self.modes.set_engine(self.conn, 'k2', False)
+        run = unittest.mock.Mock(return_value=SimpleNamespace(returncode=0, stderr=''))
+        engine_start.reconcile_models('/test/repo', self.conn, run)
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ['start', 'stop'])
+        run.reset_mock()
+        self.modes.set_engine(self.conn, 'k2', True)
+        self.modes.set_engine(self.conn, 'laya', False)
+        engine_start.reconcile_models('/test/repo', self.conn, run)
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ['stop', 'start'])
+        run.reset_mock()
+        self.remote.return_value = True
+        engine_start.reconcile_models('/test/repo', self.conn, run)
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ['stop', 'stop'])
+
+    def test_pause_during_slow_start_reconciles_back_to_stopped(self):
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            if command[2] == 'start':
+                self.modes.set_paused(self.conn, True)
+            return SimpleNamespace(returncode=0, stderr='')
+        engine_start.reconcile_models('/test/repo', self.conn, run)
+        self.assertEqual([c[2] for c in commands], ['start', 'stop', 'stop'])
+
+    def test_one_failed_engine_does_not_prevent_other_engine_stop(self):
+        self.modes.set_engine(self.conn, 'k2', False)
+        run = unittest.mock.Mock(side_effect=[SimpleNamespace(returncode=1, stderr='cannot start'),
+                                             SimpleNamespace(returncode=0, stderr='')])
+        with self.assertRaisesRegex(engine_start.EngineStartError, 'LAYA: cannot start'):
+            engine_start.reconcile_models('/test/repo', self.conn, run)
+        self.assertEqual(run.call_args_list[-1].args[0][2], 'stop')

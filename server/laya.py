@@ -11,6 +11,9 @@ from http.client import HTTPException
 import math
 import os
 import threading
+import errno
+import resource_budget
+import urllib.error
 import time
 import urllib.request
 
@@ -40,6 +43,8 @@ FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -
 _health = {'at': None, 'ok': False, 'model': None, 'deployment_version': None}
 _lock = threading.Lock()
 _probe_lock = threading.Lock()
+_activity = {'unknown': False, 'checked_at': float('-inf')}
+_activity_probe_lock = threading.Lock()
 
 
 def _open(req, timeout):
@@ -72,6 +77,10 @@ def available(now=None):
             _health.update(at=time.monotonic() if not explicit_now else now, ok=ok,
                            model=data.get('model') if ok else None,
                            deployment_version=data.get('deployment_version') if ok else None)
+            if ok and data.get('busy') is True:
+                # A prior app process may have left a request running in the sidecar.
+                _activity.update(unknown=True, checked_at=float('-inf'))
+                resource_budget.set_uncertain('laya', True)
         return ok
 
 
@@ -145,7 +154,13 @@ def decide(people):
         try:
             with _open(req, DECIDE_TIMEOUT) as r:
                 data = json.loads(r.read(5_000_000))
-        except (OSError, ValueError, HTTPException):
+        except (OSError, HTTPException):
+            with _lock:
+                _activity.update(unknown=True, checked_at=float('-inf'))
+            resource_budget.set_uncertain('laya', True)
+            _failed()
+            return {}
+        except ValueError:
             _failed()
             return {}
         if (not isinstance(data, dict) or data.get('model') != MODEL
@@ -182,3 +197,33 @@ def fit(ans):
 def tags(ans, have):
     """Uncalibrated model scores are not independent evidence for factual tags."""
     return []
+
+
+def runtime_status():
+    """After a transport failure, require sidecar idle proof before acknowledging stop."""
+    with _lock:
+        unknown = _activity['unknown']
+        due = time.monotonic() - _activity['checked_at'] >= 2
+    if unknown and due and _activity_probe_lock.acquire(blocking=False):
+        try:
+            idle = False
+            try:
+                with _open(urllib.request.Request(URL + '/health'), 0.5) as response:
+                    data = json.loads(response.read(100_000))
+                idle = (isinstance(data, dict) and data.get('ok') is True
+                        and data.get('model') == MODEL
+                        and data.get('deployment_version') == DEPLOYMENT_VERSION
+                        and data.get('busy') is False)
+            except (OSError, HTTPException) as exc:
+                cause = getattr(exc, 'reason', exc)
+                idle = isinstance(cause, ConnectionRefusedError) or getattr(cause, 'errno', None) == errno.ECONNREFUSED
+            except (ValueError, TypeError):
+                pass
+            with _lock:
+                _activity.update(unknown=not idle, checked_at=time.monotonic())
+                unknown = _activity['unknown']
+            resource_budget.set_uncertain('laya', unknown)
+        finally:
+            _activity_probe_lock.release()
+    return {'ready': last_known(), 'busy': unknown, 'activity_unknown': unknown,
+            'error': 'Waiting for Laya to confirm the request has stopped.' if unknown else ''}

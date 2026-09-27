@@ -45,3 +45,50 @@ def start(repo, account_count, run=subprocess.run):
     if opened != 0:
         raise EngineStartError('Local startup unexpectedly opened Instagram profiles.')
     return {'ok': True, 'local_services_started': True, 'profiles_opened': 0}
+
+
+def reconcile_models(repo, conn, run=subprocess.run):
+    """Apply independent engine intent, rechecking after slow startup.
+
+    Only owned local services are managed. A configured LAN K2 is never launched
+    or stopped remotely. Collection settings are never modified.
+    """
+    import sys
+    import processing_modes
+    import resource_budget
+    import local_model
+    repo = Path(repo)
+    failures = []
+    for engine, stage, script in (
+        ('laya', 'laya', repo / 'sidecar/laya_service.py'),
+        ('k2', 'local_qualification', repo / 'ops/k2-service.py'),
+    ):
+        def wanted():
+            return (processing_modes.begin_work(conn, stage) is not None
+                    and not (engine == 'k2' and local_model.is_remote()))
+        should_start = wanted()
+        command = [sys.executable, str(script), 'start' if should_start else 'stop']
+        if should_start and engine == 'laya':
+            command += ['--timeout', '120']
+        error = None
+        try:
+            if should_start and engine == 'laya':
+                with resource_budget.lease('laya_start', startup=True):
+                    result = run(command, capture_output=True, text=True, timeout=130)
+            else:
+                result = run(command, capture_output=True, text=True, timeout=130 if should_start else 15)
+            if result.returncode:
+                error = (result.stderr or 'Engine service did not confirm the change.').strip()[:200]
+        except (OSError, subprocess.SubprocessError, resource_budget.Deferred) as exc:
+            error = str(exc)[:200]
+        if should_start and not wanted():
+            # The user may disable/pause while model loading is in progress.
+            try:
+                stopped = run([sys.executable, str(script), 'stop'], capture_output=True, text=True, timeout=15)
+                error = None if not stopped.returncode else 'Engine could not confirm its stop.'
+            except (OSError, subprocess.SubprocessError) as exc:
+                error = str(exc)[:200]
+        if error:
+            failures.append(engine.upper() + ': ' + error)
+    if failures:
+        raise EngineStartError('; '.join(failures))

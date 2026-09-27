@@ -75,6 +75,30 @@ class LeadApiReview(unittest.TestCase):
             facet = next(r for r in server.api_tags(self.conn, q, {}) if r['tag'] == 'Founder')
             self.assertEqual(facet['count'], 1)
 
+    def test_active_list_counts_keep_zero_degree_and_fit_is_independent(self):
+        strong = self.person('strong')
+        good = self.person('good')
+        weak = self.person('weak')
+        unread = self.person('unread')
+        self.conn.executemany('INSERT INTO verdicts(person_id,tier,content_fit) VALUES(?,?,?)',
+                              [(strong, 'cold', 70), (good, 'hot', 45), (weak, 'hot', 44)])
+        db.add_edge(self.conn, 'source_a', strong, 'followers')
+        db.add_edge(self.conn, 'source_b', strong, 'following')
+        db.add_edge(self.conn, 'old_history', good, 'followers', observed=False)
+        self.conn.commit()
+        self.assertEqual(server.api_leads(self.conn, {'min_lists': ['2']}, {})['total'], 1)
+        self.assertEqual(server.api_leads(self.conn, {'sort': ['connected']}, {})['rows'][0]['id'], strong)
+        self.assertEqual({r['id']: r['lists'] for r in server.api_leads(self.conn, {}, {})['rows']},
+                         {strong: 2, good: 0, weak: 0, unread: 0})
+        for fit, expected in [('strong', strong), ('good', good), ('weak', weak), ('unread', unread)]:
+            self.assertEqual([r['id'] for r in server.api_leads(self.conn, {'fit': [fit]}, {})['rows']], [expected])
+        self.assertEqual(server.api_leads(self.conn, {'fit': ['good'], 'tier': ['cold']}, {})['total'], 0)
+        with self.assertRaises(server.Bad):
+            server.api_leads(self.conn, {'fit': ['excellent']}, {})
+        self.conn.execute("UPDATE settings SET value='false' WHERE key='map_person_degree_v1'")
+        self.assertEqual({r['id']: r['lists'] for r in server.api_leads(self.conn, {}, {})['rows']},
+                         {strong: 2, good: 0, weak: 0, unread: 0})
+
     def test_same_count_tag_replacement_invalidates_cached_facets(self):
         pid = self.person('one')
         self.conn.execute("INSERT INTO tags VALUES(?,'Old','role','manual')", (pid,))
@@ -113,6 +137,20 @@ class LeadApiReview(unittest.TestCase):
         for key in ('offset', 'limit', 'followers_min', 'min_lists'):
             with self.subTest(key=key), self.assertRaises(server.Bad):
                 server.api_leads(self.conn, {key: ['9' * 100]}, {})
+
+    def test_seed_peer_invalidation_refreshes_revision_without_duplicates(self):
+        first = self.person('first')
+        second = self.person('second')
+        db.add_edge(self.conn, 'source_a', first, 'followers', flipped=set())
+        db.add_edge(self.conn, 'source_a', second, 'following', flipped=set())
+        self.conn.execute('DELETE FROM network_dirty')
+        db.dirty_seed_members(self.conn, 'source_a', 'source_a')
+        initial = dict(self.conn.execute('SELECT person_id,change_id FROM network_dirty'))
+        self.assertEqual(set(initial), {first, second})
+        db.dirty_seed_members(self.conn, 'source_a')
+        updated = dict(self.conn.execute('SELECT person_id,change_id FROM network_dirty'))
+        self.assertEqual(set(updated), {first, second})
+        self.assertTrue(all(updated[pid] > initial[pid] for pid in updated))
 
 if __name__ == '__main__':
     unittest.main()

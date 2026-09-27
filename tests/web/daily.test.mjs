@@ -30,7 +30,7 @@ function queryApp() {
     filtersChanged: () => changes.push({ query: select('#q').value, sort: select('#sort').value }),
   });
   vm.runInContext([
-    appPart('const TIER_FIT =', 'const isFitTag ='),
+    appPart('const FITS =', 'const isFitTag ='),
     appPart('function toQuery(', 'const modeOf ='),
     appPart('function applyQuery(', 'function setDrawer('),
   ].join('\n'), context);
@@ -40,7 +40,7 @@ function queryApp() {
 
 test('opening Due follow-ups replaces every stale criterion through the real query/apply path', () => {
   const app = queryApp();
-  const staleQuery = 'tags=Founder&any=Brand,Store&not=Agency&status=contacted&tier=hot&q=stale&min_lists=4&has_bio=0&seed=old_seed&followers_min=0&followers_max=999&follow_up=completed&sort=followers';
+  const staleQuery = 'tags=Founder&any=Brand,Store&not=Agency&status=contacted&relationship=mutual&tier=hot&fit=strong&q=stale&min_lists=4&has_bio=0&seed=old_seed&followers_min=0&followers_max=999&follow_up=completed&sort=followers';
   Object.assign(app.state, app.fromQuery(staleQuery));
   const previousFilter = app.state.f;
   app.select('#q').value = 'stale';
@@ -49,7 +49,7 @@ test('opening Due follow-ups replaces every stale criterion through the real que
   app.applyQuery(daily.dueQuery());
 
   assert.deepEqual(plain(app.state.f), {
-    tags: [], any: [], not: [], status: 'all', relationship: '', tier: '', q: '', min: 0,
+    tags: [], any: [], not: [], status: 'all', relationship: '', tier: '', fit: '', q: '', min: 0,
     follow_up: 'due', bio: '', seed: '', fmin: null, fmax: null,
   });
   assert.equal(app.state.sort, 'follow_up');
@@ -74,7 +74,7 @@ test('custom filters and other orderings never claim to be the complete daily vi
     ['tags', ['Founder']], ['any', ['Brand']], ['not', ['Agency']],
     ['status', ''], ['status', 'no'], ['status', 'contacted'],
     ['follow_up', 'overdue'], ['follow_up', 'scheduled'], ['follow_up', 'completed'],
-    ['tier', 'hot'], ['q', 'maya'], ['min', 2], ['bio', '0'], ['bio', '1'],
+    ['relationship', 'mutual'], ['tier', 'hot'], ['fit', 'strong'], ['q', 'maya'], ['min', 2], ['bio', '0'], ['bio', '1'],
     ['seed', 'founders'], ['fmin', 0], ['fmax', 0],
   ]) {
     const narrowed = { ...due.f, [field]: value };

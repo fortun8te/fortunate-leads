@@ -200,6 +200,9 @@ def make_handler(backend, default_questions: List[Dict[str, Any]]):
     default_questions = validate_questions(default_questions) if default_questions else []
     lock = threading.Lock()  # one forward pass at a time; the model is not re-entrant on MPS
 
+    activity_lock = threading.Lock()
+    activity = {'requests': 0}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "LayaSidecar/1"
 
@@ -224,9 +227,11 @@ def make_handler(backend, default_questions: List[Dict[str, Any]]):
             if not self._local():
                 return
             if self.path.split("?")[0] == "/health":
+                with activity_lock:
+                    busy = activity['requests'] > 0
                 self._send(200, {"ok": True, "model": backend.model, "device": backend.device,
                                  "deployment_version": DEPLOYMENT_VERSION,
-                                 "questions_signature": question_signature(default_questions)})
+                                 "questions_signature": question_signature(default_questions), "busy": busy})
             else:
                 self._send(404, {"error": "not found"})
 
@@ -271,8 +276,14 @@ def make_handler(backend, default_questions: List[Dict[str, Any]]):
                 return self._send(400, {"error": str(e)})
             try:
                 t0 = time.perf_counter()
-                with lock:
-                    raw = backend.predict_batch(texts, lq)
+                with activity_lock:
+                    activity['requests'] += 1
+                try:
+                    with lock:
+                        raw = backend.predict_batch(texts, lq)
+                finally:
+                    with activity_lock:
+                        activity['requests'] -= 1
                 ms = round((time.perf_counter() - t0) * 1000, 1)
                 if not isinstance(raw, list) or len(raw) != len(items):
                     raise ValueError("model returned a different number of results")

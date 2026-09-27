@@ -96,7 +96,7 @@ class CollectionSuggestions(unittest.TestCase):
     def account(self, **fields):
         now = datetime.now(timezone.utc)
         self.conn.execute("INSERT OR REPLACE INTO accounts(lane_id,handle,ig_id,last_seen,role,version) "
-                          "VALUES('test','collector','900',?,'both','3.9.16')", (now.isoformat(),))
+                          "VALUES('test','collector','900',?,'both','3.9.17')", (now.isoformat(),))
         for field, value in fields.items():
             self.conn.execute(f'UPDATE accounts SET {field}=? WHERE lane_id=?', (value, 'test'))
         return self.conn.execute("SELECT * FROM accounts WHERE lane_id='test'").fetchone()
@@ -137,6 +137,7 @@ class CollectionSuggestions(unittest.TestCase):
     def test_auto_default_one_target_normal_queue_and_durable_attempt(self):
         self.person('best',90)
         self.person('second',80)
+        self.person('third',70)
         row = self.account()
         self.assertTrue(suggestions.enabled(self.conn))
         picked = suggestions.queue_when_idle(self.conn,row)
@@ -149,16 +150,23 @@ class CollectionSuggestions(unittest.TestCase):
         self.conn.execute("DELETE FROM jobs")
         picked = suggestions.queue_when_idle(self.conn,row)
         self.assertEqual(picked['handle'],'second')
+        self.conn.execute("DELETE FROM lists")
+        self.conn.execute("DELETE FROM jobs")
+        self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
         self.conn.commit()
         self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],2)
         self.assertEqual(suggestions.suggest(self.conn)['added_today'],2)
 
-    def test_manual_work_even_delayed_or_on_other_lane_wins(self):
+    def test_manual_lists_win_but_profile_backlog_does_not_block_discovery(self):
         self.person('best')
         row=self.account()
         self.conn.execute("INSERT INTO jobs(kind,handle,state,retry_not_before) VALUES('profile','manual','queued','2099-01-01')")
+        self.assertEqual(suggestions.queue_when_idle(self.conn,row)['handle'],'best')
+        self.conn.execute("DELETE FROM jobs WHERE kind='list'")
+        self.conn.execute("INSERT INTO jobs(kind,seed,direction,state,retry_not_before) "
+                          "VALUES('list','manual_seed','followers','queued','2099-01-01')")
         self.assertIsNone(suggestions.queue_when_idle(self.conn,row))
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM collection_discovery').fetchone()[0],1)
 
     def test_pauses_off_shared_hold_and_account_guards_do_not_populate(self):
         self.person('best')

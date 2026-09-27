@@ -76,6 +76,40 @@ function harness() {
     release();
     await draining;
     return {posted, box: await get('box')};
+  };
+  globalThis.emptyWarning = async () => {
+    let lookups = 0;
+    lookupViaPage = async () => { lookups++; throw new Error('unexpected Instagram lookup'); };
+    igRequest = async () => ({res: {status: 200, json: {users: [], has_more: true}},
+      bad: {code: 'soft_block', reason: 'empty_page_with_more'}});
+    api = async () => ({status: 503, json: {}});
+    await set({ids: {seed: {ig_id: '12'}}, prog: {'seed/followers': {jobId: 9, countAttempted: true}}});
+    await runList(mem.gen, {id: 9, kind: 'list', seed: 'seed', direction: 'followers', cursor: 'c1',
+      lease_token: 'lease-a', received: 25}, {id: 1});
+    return {lookups, st: await loadSt(), prog: (await get('prog'))['seed/followers'], box: await get('box')};
+  };
+  globalThis.ackWrongAccount = async () => {
+    let release, started;
+    const began = new Promise((r) => { started = r; });
+    const first = new Promise((r) => { release = r; });
+    api = async () => { started(); await first; return {status: 200, json: {received: 1}}; };
+    const st = FL.fresh(); st.accountIgId = 'new'; st.listEndpointUntil = Date.now() + FL.HOUR;
+    await set({st, box: [{qid: 'old', path: '/api/ext/list-page',
+      body: {job_id: 1, direction: 'followers', account: {ig_id: 'old'}}}]});
+    const draining = flushBox();
+    await began;
+    release(); await draining;
+    return {st: await loadSt(), box: await get('box')};
+  };
+  globalThis.ackNewerRedirect = async () => {
+    api = async () => ({status: 200, json: {received: 1}});
+    const st = FL.fresh(); st.accountIgId = 'same'; st.listEndpointUntil = Date.now() + FL.HOUR;
+    st.listRedirects = [{handle: 'seed', direction: 'followers', at: Date.now()}];
+    await set({st, box: [{qid: 'old', path: '/api/ext/list-page',
+      body: {job_id: 1, direction: 'followers', account: {ig_id: 'same'},
+        captured_at: new Date(Date.now() - 1000).toISOString()}}]});
+    await flushBox();
+    return await loadSt();
   };`, context);
   return {context, data};
 }
@@ -130,6 +164,7 @@ test('passive bio observes the bio stage pause without marking it as delivered',
   assert.equal(paused.seen, undefined);
   assert.equal(posted.length, 1);
   assert.equal(posted[0].path, '/api/ext/profile');
+  assert.ok(Number.isFinite(Date.parse(posted[0].body.captured_at)));
   assert.equal(count, 1);
   assert.ok(seen.target);
 });
@@ -151,4 +186,27 @@ test('outbox does not remove a replacement head after an in-flight send', async 
   const {posted, box} = await context.outboxRace();
   assert.deepEqual(Array.from(posted), [1, 2]);
   assert.equal(box.length, 0);
+});
+
+test('empty-page warning persists cooldown before any Instagram lookup', async () => {
+  const {context} = harness();
+  const {lookups, st, prog, box} = await context.emptyWarning();
+  assert.equal(lookups, 0);
+  assert.ok(st.cool.list.until > Date.now());
+  assert.equal(prog.emptyAt, 'c1');
+  assert.equal(box[0].path, '/api/ext/error');
+});
+
+test('old account outbox ACK cannot clear another account redirect hold', async () => {
+  const {context} = harness();
+  const {st, box} = await context.ackWrongAccount();
+  assert.ok(st.listEndpointUntil > Date.now());
+  assert.equal(box.length, 0);
+});
+
+test('delayed outbox ACK cannot clear a newer redirect hold on the same account', async () => {
+  const {context} = harness();
+  const st = await context.ackNewerRedirect();
+  assert.ok(st.listEndpointUntil > Date.now());
+  assert.equal(st.listRedirects.length, 1);
 });

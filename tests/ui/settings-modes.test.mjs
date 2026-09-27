@@ -10,7 +10,7 @@ function harness({failPost=false, failRead=false,reorder=false}={}) {
  const SET={processing:{mode:'RLAI',generation:1},processingStale:false,models:['vendor/first','vendor/second'],dirty:true,scout:{model:'grok'}};
  let saved=SET.processing;
  const ctx=vm.createContext({$,S,SET,window:{dispatchEvent(){}},Event,int:String,toast:s=>messages.push(s),renderSettings(){},renderScout(){},loadScout:async()=>{},renderModels(){},ucf:s=>s,api:{
-  post:async(url,body)=>{calls.push({url,body});if(failPost)throw Error('offline');if(url==='/api/local-processing')return {enabled:true,paused:body.paused,ready:true,queue:42,reviewed:318,runtime:{resources:{allowed:true}}};if(url==='/api/llm/models')return {models:reorder?[...body.models].reverse():body.models};return saved={mode:body.mode,generation:2,capabilities:{rules:true,laya:body.mode!=='R',local_qualification:body.mode!=='R',external:body.mode==='RLEAI'}}},
+  post:async(url,body)=>{calls.push({url,body});if(failPost)throw Error('offline');if(url==='/api/local-processing')return {enabled:true,paused:body.paused,stop_acknowledged:true,ready:true,queue:42,reviewed:318,runtime:{resources:{allowed:true}}};if(url==='/api/llm/models')return {models:reorder?[...body.models].reverse():body.models};return saved={mode:body.mode,generation:2,capabilities:{rules:true,laya:body.mode!=='R',local_qualification:body.mode!=='R',external:body.mode==='RLEAI'}}},
   get:async(url)=>{if(failRead)throw Error('offline');return url==='/api/processing-mode'?saved:{enabled:saved.mode!=='R',model:'K2 Horizon 3.7B',ready:true,reviewed:318,queue:42,notes_pending:2,needs_research:19}}
  }});
  vm.runInContext(source.slice(source.indexOf('const PROCESSING_LABELS ='),source.indexOf('// Leadscout:')),ctx);
@@ -45,7 +45,8 @@ test('resource pause and manual pause override a ready running model',()=>{
  const h=harness();
  const state={enabled:true,ready:true,state:'working',queue:42,reviewed:318,runtime:{resources:{allowed:false,recovering:true}}};
  assert.equal(h.ctx.backgroundAIState(state),'Waiting for Mac');
- assert.equal(h.ctx.backgroundAIState({...state,paused:true}),'Paused');
+ assert.equal(h.ctx.backgroundAIState({...state,paused:true,stop_acknowledged:false}),'Stopping');
+ assert.equal(h.ctx.backgroundAIState({...state,paused:true,stop_acknowledged:true}),'Paused');
  h.SET.localProcessing=state;
  assert.match(h.ctx.localProcessingSummary(),/waiting for mac.*42 waiting/);
 });
@@ -55,7 +56,7 @@ test('background pause uses separate endpoint and preserves processing mode',asy
  assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0])),{url:'/api/local-processing',body:{paused:true}});
  assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.localProcessing.paused,true);
  assert.equal(h.$('#local-ai-state').textContent,'Paused');assert.equal(h.$('#local-ai-toggle').textContent,'Resume');
- assert.match(h.$('#local-ai-help').textContent,/queue is saved.*Rules and scraping continue/);
+ assert.match(h.$('#local-ai-help').textContent,/queue is saved.*rules and scraping continue/);
 });
 test('unconfirmed background pause is shown as unknown, never still running',async()=>{
  const h=harness({failPost:true});h.SET.localProcessing={enabled:true,ready:true,state:'working'};
@@ -66,7 +67,7 @@ test('compact shared controls show resource waiting and pause without changing m
  const h=harness();h.ctx.esc=String;
  h.SET.localProcessing={enabled:true,paused:false,ready:true,state:'working',runtime:{resources:{allowed:false,recovering:true}}};
  assert.match(h.ctx.backgroundAIControlsHTML(),/Background AI · Waiting for Mac.*data-local-ai-toggle[^>]*>Pause/s);
- h.SET.localProcessing.paused=true;
+ h.SET.localProcessing.paused=true;h.SET.localProcessing.stop_acknowledged=true;
  assert.match(h.ctx.backgroundAIControlsHTML(),/Background AI · Paused.*>Resume/s);
 });
 
@@ -89,6 +90,6 @@ test('unverified local outputs stay separate from completed bio reviews and queu
  assert.match(h.ctx.localProcessingSummary(),/4 bios reviewed.*0 waiting.*2 notes need review.*3 profiles need review/);
  assert.doesNotMatch(h.ctx.localProcessingSummary(),/7 bios reviewed|3 waiting/);
  assert.equal(h.ctx.backgroundAIState(),'Ready');
- h.SET.localProcessing.paused=true;
+ h.SET.localProcessing.paused=true;h.SET.localProcessing.stop_acknowledged=true;
  assert.match(h.ctx.localProcessingSummary(),/paused.*3 profiles need review/);
 });

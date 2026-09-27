@@ -25,7 +25,7 @@ class CoverageProgressTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def next(self, lane):
-        return server.ext_next(self.conn, {'lane': [lane], 'kinds': ['list'], 'version': ['3.9.16']}, {})['job']
+        return server.ext_next(self.conn, {'lane': [lane], 'kinds': ['list'], 'version': ['3.9.17']}, {})['job']
 
     def page(self, lane, job, index, n=25, end=False, total=None):
         users = [{'ig_id': str(900000000 + index * 25 + j), 'handle': f'member_{index}_{j}'} for j in range(n)]

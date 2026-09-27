@@ -213,6 +213,16 @@ class LayaStub(BaseHTTPRequestHandler):
 
 class LayaTest(unittest.TestCase):
     def setUp(self):
+        # This fixture owns a separate temporary sidecar. Its deliberate timeout
+        # must not leave an uncertainty hold on the real process-wide engine.
+        activity = patch.dict(laya._activity, {'unknown': False, 'checked_at': float('-inf')})
+        activity.start()
+        self.addCleanup(activity.stop)
+        budget = laya.resource_budget.Governor(lambda: {
+            'memory_free_percent': 60, 'thermal_limited': False, 'error': None})
+        uncertain = patch.object(laya.resource_budget, 'set_uncertain', budget.set_uncertain)
+        uncertain.start()
+        self.addCleanup(uncertain.stop)
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), LayaStub)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.old = laya.URL, laya.DECIDE_TIMEOUT
