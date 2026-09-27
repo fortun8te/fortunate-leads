@@ -554,6 +554,8 @@ class ScoutPool:
         try:
             conn0 = db.connect(self.db_path)
             try:
+                if not db.get_setting(conn0, 'qualify') or db.get_setting(conn0, 'scout') is False:
+                    return
                 model = db.get_setting(conn0, 'scout_model') or 'space-bunny'
             finally:
                 conn0.close()
@@ -569,6 +571,9 @@ class ScoutPool:
                 # The agent can spend minutes researching. Check the exact profile it saw
                 # under the same short write transaction that saves its answer.
                 conn.execute('BEGIN IMMEDIATE')
+                if not db.get_setting(conn, 'qualify') or db.get_setting(conn, 'scout') is False:
+                    conn.rollback()
+                    return
                 current = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
                 stale = not current or any(_value(current, field) != _value(p, field) for field in PROFILE_FIELDS)
                 outcome = 'stale' if stale else 'failed' if data is None else 'verified' if verification[0] else 'unverified'

@@ -1410,6 +1410,7 @@ def api_scraper(conn, q, b):
             'alerts': accounts.alerts(conn, now, accts),
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')), 'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
+            'local_laya': bool(db.get_setting(conn, 'local_laya')),
             'llm': api_llm(conn, q, b),
             'soak': soak(conn, now), 'progress': progress(conn, accts),
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
@@ -1429,6 +1430,7 @@ def api_scraper_status(conn, q, b):
             'paused': bool(db.get_setting(conn, 'paused')),
             'qualify': bool(db.get_setting(conn, 'qualify')),
             'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
+            'local_laya': bool(db.get_setting(conn, 'local_laya')),
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
 
@@ -1552,11 +1554,17 @@ def api_biofetch(conn, q, b):
 
 
 def api_qualify(conn, q, b):
-    """{"on"?, "auto"?, "workers"?, "llm_min"?, "bio_min"?}: an absent key is left alone."""
+    """{"on"?, "auto"?, "local_laya"?, "workers"?, "llm_min"?, "bio_min"?}: absent keys stay unchanged."""
     if 'on' in b and not isinstance(b['on'], bool):
         raise Bad('on must be true or false')
     if 'auto' in b and not isinstance(b['auto'], bool):
         raise Bad('auto must be true or false')
+    if 'local_laya' in b and not isinstance(b['local_laya'], bool):
+        raise Bad('local_laya must be true or false')
+    if b.get('local_laya') and b.get('on', db.get_setting(conn, 'qualify')):
+        raise Bad('turn external AI off to use local-only Laya')
+    if b.get('auto') and b.get('local_laya', db.get_setting(conn, 'local_laya')):
+        raise Bad('automatic external AI cannot run in local-only mode')
     for key, lo, hi in (('workers', 1, 32), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
@@ -1566,13 +1574,20 @@ def api_qualify(conn, q, b):
     if 'auto' in b:
         # An explicit request to schedule later activation is separate from switching off now.
         db.set_setting(conn, 'qualify_auto', b['auto'])
+    if 'local_laya' in b:
+        db.set_setting(conn, 'local_laya', b['local_laya'])
+        if b['local_laya']:
+            db.set_setting(conn, 'qualify_auto', False)
     if 'workers' in b:
         db.set_setting(conn, 'llm_workers', b['workers'])
     for key in ('llm_min', 'bio_min'):
         if key in b:
             db.set_setting(conn, key, b[key])
     conn.commit()
-    return {'qualify': bool(db.get_setting(conn, 'qualify'))}
+    result = {'qualify': bool(db.get_setting(conn, 'qualify'))}
+    if 'local_laya' in b:
+        result['local_laya'] = bool(db.get_setting(conn, 'local_laya'))
+    return result
 
 
 def api_llm(conn, q, b):
@@ -2276,9 +2291,16 @@ def rebuild_laya_queue(conn, signature):
         raise
 
 
+def laya_allowed(conn):
+    if not control.stage_paused(conn, 'ai'):
+        return True
+    return (bool(db.get_setting(conn, 'local_laya'))
+            and not (control.stage_paused(conn, 'lists') and control.stage_paused(conn, 'bios')))
+
+
 def laya_step(conn):
     """Score people without a (current) Laya answer; bios first, list-only people too. Silently idle when the sidecar is down."""
-    if control.stage_paused(conn, 'ai') or not laya.available():
+    if not laya_allowed(conn) or not laya.available():
         return False
     caller_transaction = conn.in_transaction
     conn.create_function('laya_hash', 6, laya_hash, deterministic=True)
@@ -2312,12 +2334,12 @@ def laya_step(conn):
         rows = [r for r in rows if r['id'] not in current_ids]
     if not rows:
         return False
-    if control.stage_paused(conn, 'ai'):
+    if not laya_allowed(conn):
         return False
     answers = laya.decide([dict(r) for r in rows])   # no DB lock is held during the call
     if not answers:
         return False
-    if control.stage_paused(conn, 'ai'):
+    if not laya_allowed(conn):
         return False
     if set(answers) != {r['id'] for r in rows} or not all(laya.valid_answers(a) for a in answers.values()):
         return False
@@ -2504,13 +2526,19 @@ def run_llm(conn, rows, skip):
                       'tags': retained + fresh_auto, 'fresh_auto': fresh_auto})
     examples = fewshot(conn)
     conn.commit()
+    if control.stage_paused(conn, 'ai'):
+        return 0
     research(conn, items)
+    if control.stage_paused(conn, 'ai'):
+        return 0
     try:
         many = getattr(qualify, 'llm_verdicts', None)
         vs = many(items, examples) if many else [qualify.llm_verdict(i['person'], i['tags'], i['edges']) for i in items]
     except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
         traceback.print_exc()
         vs = [None] * len(items)
+    if control.stage_paused(conn, 'ai'):
+        return 0
     wrote = 0
     for it, v in zip(items, vs):
         p = it['person']
@@ -2860,6 +2888,8 @@ def repair_step(conn):
 
 def models_step(conn):
     """Once a day: pick up OpenRouter's free and stealth models (llm.refresh_models; stealth ones go first)."""
+    if not db.get_setting(conn, 'qualify'):
+        return False
     if not os.environ.get('FL_NO_ORSLOT'):   # tests stay offline
         llm.refresh_models()
         # hourly: probe providers that are not known-good, so Settings shows ok / spent / broken instead of 'untested'

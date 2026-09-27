@@ -166,6 +166,8 @@ class LeadscoutPipelineTest(unittest.TestCase):
 
     def test_stale_hermes_reply_is_not_saved_after_profile_changes(self):
         pid = self.lead()
+        db.set_setting(self.conn, 'qualify', True)
+        db.set_setting(self.conn, 'scout', True)
         old = dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone())
         self.conn.execute("UPDATE people SET bio='New profile for a different business', updated_at='9999-01-01' "
                           'WHERE id=?', (pid,))
@@ -176,6 +178,24 @@ class LeadscoutPipelineTest(unittest.TestCase):
             pool._work(old)
         self.assertIsNone(scout.result(self.conn, pid))
         self.assertNotIn(pid, pool.failed)
+
+    def test_hermes_reply_is_discarded_when_agents_are_turned_off(self):
+        pid = self.lead()
+        db.set_setting(self.conn, 'qualify', True)
+        db.set_setting(self.conn, 'scout', True)
+        self.conn.commit()
+        person = dict(self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone())
+        pool = scout.ScoutPool(self.conn.execute('PRAGMA database_list').fetchone()[2])
+
+        def stop_agents(_person, _model):
+            db.set_setting(self.conn, 'scout', False)
+            self.conn.commit()
+            return {'verdict': 'strong', 'reachable': True, 'summary': 'Old agent reply.', 'sources': []}
+
+        with patch.object(scout, 'run', side_effect=stop_agents):
+            pool._work(person)
+        self.assertIsNone(scout.result(self.conn, pid))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM deep_research_runs').fetchone()[0], 0)
 
     def test_status_counts_waiting_without_loading_candidates(self):
         pid = self.lead()
