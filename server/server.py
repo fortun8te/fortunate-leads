@@ -163,6 +163,13 @@ def ext_request(conn, q, b):
     if job is None or stale_lease(conn, job, q, b) or job['kind'] != b['kind'] or not job['leased_until'] or utc(job['leased_until']) <= now:
         conn.rollback()
         return {'granted': False, 'stale': True, 'wait_ms': 15000}
+    if (job['kind'] == 'profile' and accounts.main_bios_reserved(conn, row) or
+            job['kind'] == 'list' and job['direction'] == 'followers'
+            and accounts.follower_route_wait(conn, row, now)):
+        conn.execute("UPDATE jobs SET state='queued',lane=NULL,leased_until=NULL,lease_token=NULL,"
+                     "attempts=max(attempts-1,0) WHERE id=?", (job['id'],))
+        conn.commit()
+        return {'granted': False, 'stale': True, 'wait_ms': 15000}
     # Keep a valid job alive while its account waits fairly for the shared request slot.
     conn.execute('UPDATE jobs SET leased_until=? WHERE id=?',
                  (iso(now + timedelta(minutes=LEASE_MIN)), job['id']))
@@ -589,6 +596,11 @@ def ext_error(conn, q, b):
             fields['profile_cool_until'] = until
     if code in accounts.HOLDS:
         fields['hold'] = code
+    if home_redirect and was_list and job and job['direction'] == 'followers':
+        current = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        route_until = accounts.follower_route_wait(conn, current, datetime.now(timezone.utc)) if current else None
+        if route_until:
+            fields['list_endpoint_until'] = route_until
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
     if job and code not in ('other', 'not_found'):
@@ -645,6 +657,8 @@ def ext_error(conn, q, b):
                 conn.execute("UPDATE jobs SET retry_not_before=? WHERE kind='profile' AND handle=? AND state='queued'",
                              (retry, job['handle']))
             else:
+                if fields.get('list_endpoint_until'):
+                    retry = max(retry, fields['list_endpoint_until'], key=utc)
                 conn.execute('UPDATE jobs SET retry_not_before=? WHERE id=?', (retry, job['id']))
         if job['kind'] == 'list':
             state = ('partial' if final and collected and collected['received'] else

@@ -12,7 +12,7 @@ check('Add action focuses real queue form', 'document.activeElement.id === "seed
 cdp('Input.insertText', text='pending_handle'); settle()
 click_node('link','Detailed activity')
 check('Existing input is preserved on Collection', 'document.querySelector("#view-scraper #seed-in").value === "pending_handle"')
-click_node('link','Collection')
+click_node('link','Accounts')
 check('Existing input moves back without duplication', 'document.querySelectorAll("#seed-in").length === 1 && document.querySelector("#acc-targets #seed-in").value === "pending_handle"')
 for width in [1440,390]:
     cdp('Emulation.setDeviceMetricsOverride',width=width,height=1000,deviceScaleFactor=1,mobile=width<500);settle()

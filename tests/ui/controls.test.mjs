@@ -123,7 +123,7 @@ for (const failure of ['HTTP', 'network']) {
     if (failure === 'HTTP') h.respond(1, { error: 'Failed' }, false); else h.fail(1);
     await settle(); h.respond(2); await settle();
     assert.match(h.el.innerHTML, /role="alert" aria-atomic="true"/);
-    assert.match(h.el.innerHTML, /Couldn’t confirm pause for Collection\. Try again\./);
+    assert.match(h.el.innerHTML, /Couldn’t confirm pause for scraping\. Try again\./);
     assert.equal(h.button('collection').dataset.action, 'pause');
     assert.equal(h.button('collection').disabled, false);
     h.poll(); h.respond(3); await settle();
@@ -168,7 +168,7 @@ test('local setting-only changes refresh the summary, and offline states become 
   h.respond(1, local); await settle();
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
   h.poll(); h.fail(2); await settle();
-  assert.match(h.el.innerHTML, /<span>Collection<\/span><b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Unknown<\/b>/);
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Unknown<\/b>/);
 });
 
@@ -178,7 +178,7 @@ test('processing mode remains a configuration label when collection is paused', 
   const local = state(); local.local_laya = true;
   local.stages.forEach(s => { s.paused = true; s.state = 'paused'; });
   h.respond(0, local); await settle();
-  assert.match(h.el.innerHTML, /<span>Collection<\/span><b>Off<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Scraping<\/span><b>Off<\/b>/);
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Local<\/b>/);
   h.poll(); local.local_laya = false; h.respond(1, local); await settle();
   assert.match(h.el.innerHTML, /<span>Mode<\/span><b>Rules<\/b>/);
@@ -190,7 +190,7 @@ for (const initiallyPaused of [true, false]) {
     const initial = state(); initial.local_laya = true;
     for (const s of initial.stages) if (s.id !== 'ai') { s.paused = initiallyPaused; s.state = initiallyPaused ? 'paused' : 'running'; }
     h.respond(0, initial); await settle();
-    assert.match(h.el.innerHTML, new RegExp(`<button[^>]+data-stage="collection"[^>]*>${initiallyPaused ? 'Start' : 'Pause'} collection</button>`));
+    assert.match(h.el.innerHTML, new RegExp(`<button[^>]+data-stage="collection"[^>]*>${initiallyPaused ? 'Start' : 'Pause'} scraping</button>`));
     assert.doesNotMatch(h.el.innerHTML, /data-stage="all"/);
     h.click('collection');
     assert.deepEqual(JSON.parse(h.requests[1].options.body), { stage: 'collection', action: initiallyPaused ? 'resume' : 'pause' });
@@ -227,5 +227,5 @@ test('shared Instagram wait exposes its return time directly in the top bar', as
     wait: {scope:'workspace', why:'Instagram wait', seconds:1800, until:'2026-09-27T16:57:58Z'} }));
   await settle();
   assert.match(h.el.innerHTML, /Instagram wait · until/);
-  assert.match(h.el.innerHTML, /Pause collection/);
+  assert.match(h.el.innerHTML, /Pause scraping/);
 });

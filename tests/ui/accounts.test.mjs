@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
-const start = source.indexOf('function accountAccess(a) {');
+const start = source.indexOf('function collectionReason(');
 const end = source.indexOf('\nfunction renderAccounts()', start);
 assert.ok(start >= 0 && end > start);
 const snippet = source.slice(start, end);
@@ -26,8 +26,8 @@ const account = (changes = {}) => ({
 
 test('account card leads with access and work, with counts and controls in account settings', () => {
   const html = view.accountRow(account());
-  assert.match(html, /Access[\s\S]*Connected[\s\S]*Collection/);
-  assert.ok(html.indexOf('Account settings') > html.indexOf('Collection'));
+  assert.match(html, /Connected[\s\S]*Collect/);
+  assert.ok(html.indexOf('Account settings') > html.indexOf('Collect'));
   assert.ok(html.indexOf('Today · workspace caps') > html.indexOf('Account settings'));
   assert.match(html, /data-pause>Pause/);
   assert.match(html, /data-role="lists"/);
@@ -101,7 +101,7 @@ test('Accounts Start local models opens the configured startup path and reports 
 
   assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
   assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
-  assert.match(source, /Laya is ready\. The installed notes model was checked\. Collection and checking mode stay as selected/);
+  assert.match(source, /Laya is ready\. The installed notes model was checked\. Scraping and checking mode stay as selected/);
 });
 
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
@@ -126,7 +126,7 @@ test('cooldowns, login holds and offline profiles have distinct access instructi
 
 test('account collection mode stays visible and a shared wait replaces ready text', () => {
   const html = view.accountRow(account({status:'online', collection_wait:'Instagram wait until 22:08'}));
-  assert.match(html, /Instagram wait until 22:08/);
+  assert.match(html, /Waiting for Instagram to allow requests/);
   assert.doesNotMatch(html, /Ready for collection/);
   assert.ok(html.indexOf('data-role="lists"') < html.indexOf('Account settings'));
 });

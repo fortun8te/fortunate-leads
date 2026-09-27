@@ -393,7 +393,7 @@ class LaneTest(Base):
         jb = self.nxt('b', 'list')['job']                 # then the second account resumes at the saved cursor
         self.assertEqual((jb['kind'], jb['cursor'], jb['received']), ('list', 'c1', 2))
         self.assertIsNone(self.nxt('a', 'list')['job'])
-        self.assertEqual(self.nxt('a', 'list,profile')['job']['kind'], 'profile')   # main: bios only now
+        self.assertIsNone(self.nxt('a', 'list,profile')['job'])   # main is reserved for ordinary bios too
         self.call('/api/accounts/lane-b', {'role': 'bios'})   # nobody else takes lists: the main account does again
         self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE kind='list'")
         self.conn.commit()
