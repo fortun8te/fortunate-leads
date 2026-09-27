@@ -130,15 +130,28 @@ class ControlTest(LaneTest):
         self.bio_job()
         first = self.nxt('a')['job']
         self.assertEqual(first['kind'], 'list')
+        profile = self.nxt('a', 'profile')['job']
+        self.assertEqual(profile['kind'], 'profile')
         until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'running',
-                  'cool': {'list': until, 'profile': None}, 'list_endpoint_until': until})
+                  'cool': {'list': None, 'profile': None}, 'list_endpoint_until': until})
         self.assertIsNone(self.nxt('a', 'list')['job'])
         import control
         row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
         self.assertIn('Instagram returned its home page', control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))[0])
-        self.assertEqual(self.nxt('a', 'profile')['job']['kind'], 'profile')
+        kept = self.conn.execute('SELECT state,lane FROM jobs WHERE id=?', (profile['id'],)).fetchone()
+        self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertEqual(self.nxt('b', 'list')['job']['kind'], 'list')
+        real_limit = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'cool': {'list': real_limit, 'profile': None},
+                  'list_endpoint_until': until})
+        row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        why, seconds = control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))
+        self.assertIn('rate limit', why)
+        self.assertIn('public list redirects', why)
+        self.assertGreater(seconds, 110 * 60)
+        kept = self.conn.execute('SELECT state,lane FROM jobs WHERE id=?', (profile['id'],)).fetchone()
+        self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertTrue(self.conn.execute('SELECT 1 FROM jobs WHERE id=? AND state IN (\'queued\',\'leased\')', (first['id'],)).fetchone())
 
 

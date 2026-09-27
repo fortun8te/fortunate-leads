@@ -188,8 +188,7 @@ async function heartbeat(force) {
   if (await selfUpdate()) return;
   await whoami().catch(() => {});
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
-  const listUnavailable = Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0);
-  const cool = { list: listUnavailable > now ? iso(listUnavailable) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
+  const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
   try {
     const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null, cool,
       hold: st.hold ? st.hold.code : null, list_endpoint_until: st.listEndpointUntil > now ? iso(st.listEndpointUntil) : null,
@@ -393,14 +392,12 @@ async function runList(gen, job, tab) {
   mem.label = '@' + job.seed + ' ' + job.direction + ' · page ' + ((cursor ? prog.pages || 0 : 0) + 1);
   const cached = await knownId(job.seed);
   let igId = job.ig_id || (cached && cached.ig_id), total = FL.count(prog.total) ?? FL.count(cached && cached[job.direction]);
-  let targetProfile = null;
   // Counts from the handle cache guide progress but cannot prove this run saw everyone.
   let totalSource = total == null ? 'unknown' : FL.count(prog.total) != null && prog.jobId === job.id && prog.totalSource === 'current_run' ? 'current_run' : 'cached';
   // Refresh the seed once at the start of each run: an ID cache cannot prove a current count.
   if (!igId || !prog.countAttempted) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
-    targetProfile = r.p;
     if (FL.privateWall(r.info, job.seed, r.p))
       return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list');
     if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
@@ -425,7 +422,7 @@ async function runList(gen, job, tab) {
       if (FL.privateWall(proof.info, job.seed, proof.p))
         return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list');
       if (bad.reason === 'list_html_home_redirect') {
-        const p = proof.p || targetProfile;
+        const p = proof.p;
         const publicTarget = !!p && p.is_private === false && p.handle?.toLowerCase() === job.seed.toLowerCase();
         return fail(job, bad, mem.label, res, 'list', publicTarget);
       }

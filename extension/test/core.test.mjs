@@ -61,6 +61,7 @@ test('mapProfile: web_profile_info / GraphQL shape, private', () => {
   assert.equal(p.ig_id, '7'); assert.equal(p.website, 'https://x'); assert.equal(p.category, 'Artist');
   assert.deepEqual([p.followers, p.following, p.posts, p.is_private, p.pic_url], [10, 3, 0, true, 'sd']);
   assert.equal(FL.mapProfile({ pk: 1 }), null);
+  assert.equal(FL.mapProfile({ pk: 2, username: 'unknown' }).is_private, null);
 });
 
 test('pacing: list gaps 7-12 s, break of 90-180 s every 40-60 pages', () => {
@@ -129,6 +130,11 @@ test('three distinct confirmed public list redirects rest only the list endpoint
   assert.equal(st.cool.list.until, 0); // no invented Instagram rate limit
   assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['profile']);
   assert.equal(FL.statusOf(st, {}, T0 + 4 * MIN).text.includes('List API unavailable'), true);
+  st.cool.list.until = T0 + 2 * HOUR;
+  const shown = FL.statusOf(st, {}, T0 + 4 * MIN);
+  assert.match(shown.text, /Instagram list limit until/);
+  assert.equal(shown.badge, '2h'); // later real limit is the effective list wait
+  st.cool.list.until = 0;
   FL.recordListRedirect(st, 'four', true, T0 + 35 * MIN);
   assert.equal(st.listEndpointUntil, T0 + 95 * MIN); // failed recovery probe: longer rest
   FL.listPageSucceeded(st);
