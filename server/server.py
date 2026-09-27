@@ -87,9 +87,12 @@ def pfp_dir():
     return Path(CFG['db']).resolve().parent / 'pfp'
 
 
+OWNER_HANDLE = 'fortun8te'
+
+
 def me_handle(conn):
     row = conn.execute('SELECT handle FROM seeds WHERE is_me=1').fetchone()
-    return row[0] if row else None
+    return row[0] if row else OWNER_HANDLE
 
 
 def edges_of(conn, pid):
@@ -607,7 +610,7 @@ def ext_heartbeat(conn, q, b):
 LISTS = '(SELECT count(DISTINCT e.seed) FROM current_edges e WHERE e.person_id=p.id)'  # observed links only
 PEOPLE_FROM = 'FROM people p LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id'
 LEAD_SQL = f"SELECT p.*, v.tier, v.score, v.content_fit, v.role, v.reason, m.status, m.note, coalesce(m.updated_at, '') AS mark_rev, {LISTS} AS lists {PEOPLE_FROM}"
-NOT_ME = 'p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)'
+NOT_ME = "p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1) AND p.handle!='fortun8te' COLLATE NOCASE"
 # manual first, then rule tags, then auto; inside a source: role, niche, signal, size, source
 TAG_ORDER = ("CASE t.source WHEN 'manual' THEN 0 WHEN 'rule' THEN 1 ELSE 2 END, "
              "CASE t.grp WHEN 'role' THEN 0 WHEN 'niche' THEN 1 WHEN 'signal' THEN 2 WHEN 'size' THEN 3 ELSE 4 END, t.tag")
@@ -1446,15 +1449,16 @@ def progress(conn, accts):
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
     # The planner queues bios in batches; count everyone it will still plan, not just the current batch.
     unplanned = conn.execute(
-        "SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE p.bio_at IS NULL "
+        f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND p.bio_at IS NULL "
         "AND coalesce(p.is_private,0)=0 AND v.prefilter>=? AND instr(p.handle,'~')=0 "
+        "AND p.handle NOT IN (SELECT handle FROM seeds) "
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
     lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
-    q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                          "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+    q_left = conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                          "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
     q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
     q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
@@ -1663,8 +1667,8 @@ def api_pause(conn, q, b):
 
 
 def ai_left(conn):
-    return conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
-                        "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
+    return conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+                        "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                         (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
 
 
@@ -2173,7 +2177,7 @@ def rebuild_laya_queue(conn, signature):
                 SELECT p.id,coalesce(p.bio,'')='',v.prefilter
                 FROM people p LEFT JOIN laya l ON l.person_id=p.id
                 LEFT JOIN verdicts v ON v.person_id=p.id
-                WHERE {person_bound} AND instr(p.handle,'~')=0 AND NOT EXISTS
+                WHERE {person_bound} AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE AND NOT EXISTS
                   (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
                   AND (l.person_id IS NULL OR l.input_hash IS NOT
                     laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))""", args)
@@ -2205,16 +2209,17 @@ def laya_step(conn):
     if caller_transaction:
         # A caller's uncommitted profile edits must be visible, but its transaction
         # must not be committed or held behind a queue rebuild during a model call.
-        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+        rows = conn.execute(f"""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
             FROM people p LEFT JOIN laya l ON l.person_id=p.id LEFT JOIN verdicts v ON v.person_id=p.id
-            WHERE instr(p.handle,'~')=0 AND p.handle NOT IN (SELECT handle FROM seeds WHERE is_me=1)
+            WHERE instr(p.handle,'~')=0 AND {NOT_ME}
               AND (l.person_id IS NULL OR l.input_hash IS NOT
                 laya_hash(p.handle,p.name,p.bio,p.category,p.website,p.followers))
             ORDER BY coalesce(p.bio,'')='',v.prefilter DESC,p.id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     else:
-        rows = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
+        rows = conn.execute(f"""SELECT p.id,p.handle,p.name,p.bio,p.category,p.website,p.followers,l.input_hash AS lh
             FROM laya_queue q JOIN people p ON p.id=q.person_id
             LEFT JOIN laya l ON l.person_id=p.id
+            WHERE {NOT_ME}
             ORDER BY q.bio_blank,q.prefilter DESC,q.person_id LIMIT ?""", (LAYA_BATCH,)).fetchall()
     # A profile can change back to an already cached hash. Drop that one queue
     # entry rather than sending the same profile to the sidecar again.
@@ -2260,35 +2265,67 @@ def laya_step(conn):
 FEWSHOT_MAX = 8
 FEWSHOT_CHANGE = 5    # re-run LLM verdicts when the good/client/no marks moved by this many (or 20 %)
 FEWSHOT_RERUN = 35    # ... but only those at or near warm (45): a new example set will not lift a clear cold one
+FEWSHOT_TAG_MAX = getattr(qualify, 'FEWSHOT_TAG_MAX', 6)
+
+
+def feedback_example(conn, pid):
+    """A small, identity-stable example from Michael's mark and manual tags only."""
+    r = conn.execute("""SELECT p.id,p.handle,p.name,p.bio,m.status FROM people p
+        JOIN marks m ON m.person_id=p.id WHERE p.id=? AND m.status IN ('interested','talking','client','no')
+        AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0 AND p.handle!='fortun8te' COLLATE NOCASE
+        AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)""", (pid,)).fetchone()
+    if not r:
+        return None
+    tags = [re.sub(r'\s+', ' ', t[0]).strip()[:64] for t in conn.execute(
+        "SELECT tag FROM tags WHERE person_id=? AND source='manual' ORDER BY tag LIMIT ?",
+        (pid, FEWSHOT_TAG_MAX))]
+    return {'person_id': r['id'], 'handle': r['handle'], 'name': (r['name'] or '')[:80],
+            'bio': r['bio'][:200], 'label': 'no' if r['status'] == 'no' else 'good',
+            'status': r['status'],
+            'manual_tags': [t for t in tags if t]}
 
 
 def fewshot(conn):
-    """The few-shot example set, frozen until Michael's marks change a lot; then older LLM verdicts are re-run."""
+    """Use bounded owner examples for future calls; batch broad re-runs after several new marks."""
     n = conn.execute("SELECT count(*) FROM marks WHERE status IN ('interested','talking','client','no')").fetchone()[0]
     cur = db.get_setting(conn, 'fewshot') or {}
-    keep_members = cur and abs(n - cur.get('n', 0)) < max(FEWSHOT_CHANGE, cur.get('n', 0) // 5)
+    prior = cur.get('examples') or []
+    selected_n = cur.get('n', 0)
+    count_due = bool(cur) and abs(n - selected_n) >= max(FEWSHOT_CHANGE, selected_n // 5)
+    old_format = any('person_id' not in e for e in prior)
+    latest_client = conn.execute("""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+        WHERE m.status='client' AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+          AND p.handle!='fortun8te' COLLATE NOCASE
+          AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+        ORDER BY m.updated_at DESC,p.id DESC LIMIT 1""").fetchone()
+    new_client = latest_client and latest_client[0] not in {e.get('person_id') for e in prior}
+    rebuild = not cur or count_due or old_format or new_client
     ex = []
-    if keep_members:
-        # Keep selection stable, but refresh evidence and labels when an existing example changes.
-        for prior in cur.get('examples') or []:
-            r = conn.execute('SELECT p.handle,p.name,p.bio,m.status FROM people p JOIN marks m ON m.person_id=p.id WHERE p.handle=?',
-                             (prior['handle'],)).fetchone()
-            if r and r['bio'] and r['status'] in (*POSITIVE, 'no'):
-                ex.append({'handle':r['handle'],'name':r['name'],'bio':r['bio'][:200],
-                           'label':'no' if r['status']=='no' else 'good'})
-        version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
-        if ex == (cur.get('examples') or []) and version == cur.get('version'):
-            return ex
-    else:
-        for label, statuses in (('good', POSITIVE_SQL), ('no', "('no')")):
-            for r in conn.execute(f"SELECT p.handle,p.name,p.bio FROM marks m JOIN people p ON p.id=m.person_id WHERE m.status IN {statuses} "
-                                  "AND coalesce(p.bio,'')!='' ORDER BY m.updated_at DESC LIMIT ?", (FEWSHOT_MAX,)):
-                ex.append({'handle':r['handle'],'name':r['name'],'bio':(r['bio'] or '')[:200],'label':label})
+    if not rebuild:
+        ex = [e for e in (feedback_example(conn, p['person_id']) for p in prior) if e]
+        if len(ex) != len(prior) or any(a['label'] != b['label'] for a, b in zip(ex, prior)):
+            rebuild = True
+    if rebuild:
+        ex = []
+        for statuses in (POSITIVE_SQL, "('no')"):
+            ids = [r[0] for r in conn.execute(f"""SELECT p.id FROM marks m JOIN people p ON p.id=m.person_id
+                WHERE m.status IN {statuses} AND coalesce(p.bio,'')!='' AND instr(p.handle,'~')=0
+                  AND p.handle!='fortun8te' COLLATE NOCASE
+                  AND NOT EXISTS (SELECT 1 FROM seeds WHERE is_me=1 AND handle=p.handle)
+                ORDER BY CASE m.status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 ELSE 2 END,
+                         m.updated_at DESC,p.id DESC LIMIT ?""", (FEWSHOT_MAX,))]
+            ex.extend(e for e in (feedback_example(conn, pid) for pid in ids) if e)
     version = qualify.prompt_version(ex) if hasattr(qualify, 'prompt_version') else None
-    if cur and version and version != cur.get('version'):
+    if ex == prior and version == cur.get('version') and not count_due:
+        return ex
+    # A rubric/schema revision still invalidates warm verdicts. Owner note/tag
+    # edits update future prompts without turning every old verdict into a job.
+    base_prompt_changed = bool(version and cur.get('version') and
+                               version.rsplit(':', 1)[0] != cur['version'].rsplit(':', 1)[0])
+    if cur and (count_due or base_prompt_changed) and version and version != cur.get('version'):
         conn.execute("UPDATE verdicts SET model='rules' WHERE model NOT IN ('rules','error','leadscout') AND prompt IS NOT ? AND coalesce(score,0)>=?",
                      (version, FEWSHOT_RERUN))
-    db.set_setting(conn, 'fewshot', {'n': n, 'examples': ex, 'version': version})
+    db.set_setting(conn, 'fewshot', {'n': n if rebuild else selected_n, 'examples': ex, 'version': version})
     conn.commit()
     return ex
 
@@ -2296,7 +2333,7 @@ def fewshot(conn):
 def llm_candidates(conn, limit, exclude):
     """Top candidates by combined signal (prefilter = list data + network + Laya; score = rules on the bio)."""
     held = list(exclude)[:900]
-    return conn.execute("SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
+    return conn.execute(f"SELECT p.* FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
                         "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? "
                         f"AND p.id NOT IN ({','.join('?' * len(held))}) "
                         "ORDER BY coalesce(v.prefilter,0)+coalesce(v.score,0) DESC, p.id LIMIT ?",
@@ -2556,7 +2593,7 @@ def plan_profiles(conn):
         FROM people p JOIN verdicts v ON v.person_id=p.id {degree_join}
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
-          AND p.handle NOT IN (SELECT handle FROM seeds) AND instr(p.handle, '~')=0
+          AND p.handle NOT IN (SELECT handle FROM seeds) AND p.handle!='fortun8te' COLLATE NOCASE AND instr(p.handle, '~')=0
           AND p.id NOT IN (SELECT person_id FROM marks WHERE status='no')) WHERE n>=?
         ORDER BY prefilter DESC, n DESC, handle LIMIT ?""", (db.get_setting(conn, 'bio_min'), EARLY_LISTS if early else 0, need)).fetchall()
     ts = db.now()
