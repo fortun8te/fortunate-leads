@@ -14,6 +14,7 @@ const view = vm.runInNewContext(`${snippet}\n({ accountAccess, accountRow })`, {
   A: { confirm: null, renaming: null },
   esc: (x) => String(x ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
   ago: () => '2m', left: () => '8m', int: (x) => Number(x || 0).toLocaleString('en-US'),
+  ucf: (x) => x[0].toUpperCase() + x.slice(1),
   jobText: () => 'Waiting for work',
 });
 const account = (changes = {}) => ({
@@ -23,12 +24,69 @@ const account = (changes = {}) => ({
   today: { list: 12, profile: 3 }, hour: { people: 60 }, ...changes,
 });
 
-test('account card separates workspace budgets from Instagram access', () => {
+test('account card leads with access and work, with counts and controls in Advanced', () => {
   const html = view.accountRow(account());
-  assert.match(html, /Instagram access[\s\S]*Connected/);
-  assert.match(html, /Today · workspace caps[\s\S]*Lists/);
+  assert.match(html, /Access[\s\S]*Connected[\s\S]*Work · Lists/);
+  assert.ok(html.indexOf('Advanced') > html.indexOf('Work · Lists'));
+  assert.ok(html.indexOf('Today · workspace caps') > html.indexOf('Advanced'));
+  assert.match(html, /data-pause>Pause/);
+  assert.match(html, /data-role="lists"/);
+  assert.match(html, /data-bud/);
+  assert.match(html, /data-remove/);
   assert.match(html, /No cap/);
   assert.doesNotMatch(html, /no limit|unlimited/i);
+});
+
+test('Accounts uses one concise summary instead of KPI tiles', () => {
+  assert.match(html, /id="acc-summary"[^>]*aria-live="polite"/);
+  assert.doesNotMatch(html, /id="acc-kpis"/);
+  assert.match(source, /profiles online · .*people found this hour/);
+});
+
+test('polling keeps each account Advanced state and focused control', () => {
+  const document = { activeElement: null };
+  const list = {
+    rows: [],
+    contains(node) { return this.rows.some((row) => row.controls.includes(node)); },
+    querySelectorAll() { return this.rows; },
+    set innerHTML(markup) {
+      this.rows = [...markup.matchAll(/data-lane="([^"]+)"/g)].map((match) => {
+        const row = { dataset: { lane: match[1] }, details: { open: false } };
+        row.controls = ['SUMMARY', 'BUTTON'].map((tagName) => ({
+          tagName,
+          matches(selector) { return selector === 'button, summary'; },
+          closest() { return row; },
+          focus() { document.activeElement = this; },
+        }));
+        row.querySelector = () => row.details;
+        row.querySelectorAll = () => row.controls;
+        return row;
+      });
+    },
+  };
+  const elements = new Map([['#acc-list', list]]);
+  const $ = (selector) => {
+    if (!elements.has(selector)) elements.set(selector, { disabled: false, textContent: '', innerHTML: '' });
+    return elements.get(selector);
+  };
+  const renderSource = source.slice(source.indexOf('function renderAccounts() {'), source.indexOf('\nasync function editAccount(', source.indexOf('function renderAccounts() {')));
+  const context = vm.createContext({
+    $, document, A: { starting: false, wiz: null, dismissed: false, renaming: null },
+    S: { sc: { accounts: [{ lane_id: 'first', online: true }, { lane_id: 'second', online: true }], alerts: [], rate: { people_last_hour: 12 } }, scStale: false },
+    accountRow: (account) => `<section data-lane="${account.lane_id}"></section>`,
+    esc: String, int: String,
+  });
+  vm.runInContext(`${renderSource}\nrenderAccounts()`, context);
+  list.rows[0].details.open = true;
+  list.rows[0].controls[1].focus();
+  vm.runInContext('renderAccounts()', context);
+  assert.equal(list.rows[0].details.open, true);
+  assert.equal(list.rows[1].details.open, false);
+  assert.equal(document.activeElement, list.rows[0].controls[1]);
+  list.rows[0].controls[0].focus();
+  vm.runInContext('renderAccounts()', context);
+  assert.equal(list.rows[0].details.open, true);
+  assert.equal(document.activeElement, list.rows[0].controls[0]);
 });
 
 test('navigation uses a settings gear and removes the keyboard help button while keeping the shortcut', () => {
@@ -40,7 +98,9 @@ test('navigation uses a settings gear and removes the keyboard help button while
 test('Accounts Start engine opens the configured startup path and reports its progress', () => {
   assert.match(html, /id="acc-start">Start engine/);
   assert.match(html, /id="acc-start-status"[^>]*role="status"/);
-  assert.match(html, /opens the configured Chrome profiles, starts Laya, and resumes lists, bios, and AI/i);
+  assert.match(html, /opens the configured Chrome profiles, starts Laya, and resumes list and bio collection/i);
+  assert.match(html, /Your external AI setting stays as it is/);
+  assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
   assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
   assert.match(source, /Engine started.*configured Chrome profiles/);
 });

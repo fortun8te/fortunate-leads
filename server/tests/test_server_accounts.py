@@ -76,6 +76,7 @@ class LaneTest(Base):
         until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'running',
                   'list_endpoint_until': until, 'cool': {'list': None, 'profile': None}})
+        self.assertTrue(any(x.get('code') == 'list_endpoint_wait' for x in self.call('/api/accounts')[1]['alerts']))
         self.assertIsNone(self.nxt('a', 'list')['job'])
         handed = self.nxt('b', 'list')['job']
         self.assertEqual((handed['id'], handed['cursor'], handed['received']),
@@ -266,6 +267,23 @@ class LaneTest(Base):
         self.seeds('s1')
         self.assertIsNone(self.nxt('b', 'list')['job'])
         self.assertEqual(self.nxt('a', 'list')['job']['seed'], 's1')
+
+    def test_pick_job_rechecks_eligibility_after_pause_and_identity_switch(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.12', 'state': 'idle'})
+        self.seeds('s1')
+        now = datetime.now(timezone.utc)
+        self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
+        self.call('/api/accounts/lane-b', {'paused': True})
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['seed'], 's1')
+        self.call('/api/accounts/lane-b', {'paused': False})
+        self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
+        self.call('/api/ext/heartbeat', {'lane_id': 'lane-a',
+                  'account': {'ig_id': '999', 'handle': 'newacct'},
+                  'version': '3.9.12', 'state': 'idle'})
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['seed'], 's1')
 
     def test_main_takes_followers_when_every_alt_endpoint_is_waiting(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")

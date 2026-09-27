@@ -897,8 +897,7 @@ const ROW_COMMERCE = new Set(['AI: Runs ads', 'AI: Ad tracking detected', 'AI: H
 function rowTagFacet(t) {
   if (t.source === 'manual' && /^(client|customer)$/i.test(t.tag)) return 'client';
   if (ROW_RELATIONSHIP.has(t.tag)) return 'relationship';
-  if (t.tag === 'you follow') return 'outgoing';
-  if (t.tag === 'Instagram link') return 'link';
+  if (ROW_WEAK_CONNECTION.has(t.tag)) return 'access';
   if (FLAG_TAGS.has(t.tag)) return 'caution';
   if (HERO_TAGS.has(t.tag) || MAYBE_TAGS.has(t.tag)) return 'verdict';
   if (DECISION_TAGS.has(t.tag)) return 'decision';
@@ -911,26 +910,51 @@ function rowTagFacet(t) {
   if (t.grp === 'niche' || tagTier(t) === 'niche') return 'niche';
   return 'other:' + (t.grp || 'custom');
 }
-const ROW_FACET_ORDER = { client: 0, relationship: 1, caution: 2, verdict: 3, decision: 4, role: 5, commerce: 6, partner: 7, manual: 8, market: 9, stage: 10, niche: 11, other: 12, outgoing: 13, link: 14 };
-const rowFacetRank = (t) => ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
+const ROW_FACET_ORDER = { client: 0, manual: 1, relationship: 2, caution: 3, verdict: 4, decision: 5, role: 6, commerce: 7, partner: 8, market: 9, stage: 10, niche: 11, other: 12, access: 13 };
+const rowFacetRank = (t) => t.source === 'manual' && rowTagFacet(t) !== 'client' ? 1 : ROW_FACET_ORDER[rowTagFacet(t).split(':')[0]] ?? 10;
 // Tags that describe the person, not ordinary source/size metadata or a fit
 // badge already shown elsewhere in the row.
 function rowTags(r) {
   return (r.tags || []).filter((t) => (t.source === 'manual' || t.grp !== 'source' && t.grp !== 'size' || ROW_RELATIONSHIP.has(t.tag) || ROW_WEAK_CONNECTION.has(t.tag)) && !isFitTag(t.tag))
     .sort((a, b) => rowFacetRank(a) - rowFacetRank(b) || ORDER[a.source] - ORDER[b.source] || TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || Number(a.tag.startsWith('AI: ')) - Number(b.tag.startsWith('AI: ')) || a.tag.localeCompare(b.tag));
 }
+const chipIdentity = (t) => tagLabel(t.tag).trim().toLocaleLowerCase();
 function rowTagSelection(r, limit = 3) {
-  const tags = rowTags(r), shown = [], hidden = [], facets = new Set();
+  const tags = rowTags(r), shown = [], hidden = [], suppressed = [], facets = new Set(), labels = new Set();
   const informative = tags.some((t) => t.tag !== 'AI: Top fit' && !ROW_WEAK_CONNECTION.has(t.tag) && !ROW_GENERIC.has(t.tag));
   for (const t of tags) {
     const facet = rowTagFacet(t);
-    // The score already says "top fit". A profile link is access, not a
-    // relationship. Keep both in the overflow when real evidence exists.
-    const redundant = informative && (ROW_WEAK_CONNECTION.has(t.tag) || ROW_GENERIC.has(t.tag) || t.tag === 'AI: Top fit' && (r.business_fit != null || r.score != null));
-    if (!redundant && shown.length < limit && !facets.has(facet)) { shown.push(t); facets.add(facet); }
+    // Business fit is already displayed in the Fit column. A profile link is
+    // access, not a relationship; generic profile metadata adds no distinction.
+    const redundant = t.tag === 'AI: Top fit' && (r.business_fit != null || r.score != null && informative) ||
+      informative && (ROW_WEAK_CONNECTION.has(t.tag) || ROW_GENERIC.has(t.tag));
+    const equivalent = labels.has(chipIdentity(t)) || facet === 'decision' && facets.has('decision');
+    if (redundant || equivalent) { suppressed.push(t); continue; }
+    if (facets.has(facet)) { hidden.push(t); labels.add(chipIdentity(t)); continue; }
+    facets.add(facet); labels.add(chipIdentity(t));
+    if (shown.length < limit) shown.push(t);
     else hidden.push(t);
   }
-  return { shown, hidden };
+  return { shown, hidden, suppressed };
+}
+// Keep the full tag vocabulary available in details, but place repeated
+// verdicts and duplicate labels behind a small disclosure. Manual tags stay
+// visible and removable even when an automatic tag has the same label.
+function detailTagSelection(p) {
+  const tags = (p.tags || []).filter((t) => !(t.tag === 'knows you' && t.source !== 'manual') &&
+    (t.grp !== 'source' || t.source === 'manual' || t.tag === 'Instagram link' || t.tag === 'mentions you'))
+    .sort((a, b) => Number(b.source === 'manual') - Number(a.source === 'manual') || rowFacetRank(a) - rowFacetRank(b) ||
+      ORDER[a.source] - ORDER[b.source] || a.tag.localeCompare(b.tag));
+  const primary = [], related = [], labels = new Set();
+  const hasFounder = tags.some((t) => t.tag === 'Founder');
+  for (const t of tags) {
+    const label = chipIdentity(t);
+    const redundant = t.source !== 'manual' && (isFitTag(t.tag) || t.tag === 'AI: Top fit' && p.business_fit != null ||
+      ROW_GENERIC.has(t.tag) || t.tag === 'Instagram link' || t.tag === 'AI: Decision maker' && hasFounder);
+    if (redundant || labels.has(label)) related.push(t);
+    else { primary.push(t); labels.add(label); }
+  }
+  return { primary, related };
 }
 function whyHTML(r) {
   if (r.reason) return esc(r.reason);
@@ -1303,9 +1327,7 @@ function renderDetail() {
   const edges = p.edges || (p.via || []).map((s) => ({ seed: s }));
   const oldEdges = (p.edge_history || []).filter((e) => e.state !== 'observed');
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
-  const tags = (p.tags || []).filter((t) => !(t.tag === 'knows you' && t.source !== 'manual') &&
-    (t.grp !== 'source' || t.source === 'manual' || t.tag === 'Instagram link' || t.tag === 'mentions you'))
-    .sort((a, b) => ORDER[a.source] - ORDER[b.source] || (GORDER[a.grp] ?? 4) - (GORDER[b.grp] ?? 4));
+  const tags = detailTagSelection(p);
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
   const panel = $('#detail');
@@ -1338,7 +1360,8 @@ function renderDetail() {
       ${reason ? `<p class="d-reason">${esc(reason)}</p>` : !p.loading ? '<p class="d-reason muted">No qualification yet</p>' : ''}
     </div>
     <section class="d-sec d-tags-section"><h4>Tags</h4>
-      <div class="d-tags">${tags.length ? tags.map((t) => `<span class="d-tag-item">${tagChip(t)}${t.source === 'manual' ? `<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button>` : ''}</span>`).join('') : '<span class="muted">No tags yet</span>'}</div>
+      <div class="d-tags">${tags.primary.length ? tags.primary.map((t) => `<span class="d-tag-item">${tagChip(t)}${t.source === 'manual' ? `<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button>` : ''}</span>`).join('') : '<span class="muted">No distinct tags yet</span>'}</div>
+      ${tags.related.length ? `<details class="d-tag-secondary" data-detail-section="tags" data-owner="${p.id}" ${view.sections.tags ? 'open' : ''}><summary>Related tags (${tags.related.length})</summary><div class="d-tags d-tag-secondary-list">${tags.related.map((t) => `<span class="d-tag-item">${tagChip(t)}${t.source === 'manual' ? `<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button>` : ''}</span>`).join('')}</div></details>` : ''}
       <form class="tag-add" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add tag</button></form>
       ${quick.length ? `<div class="quick-tags" aria-label="Suggested tags">${quick.slice(0, 4).map((t) => `<button class="qt" data-addtag="${esc(t.tag)}" title="Add ${esc(t.tag)}">+ ${esc(t.tag)}</button>`).join('')}</div>` : ''}
     </section>
@@ -1867,7 +1890,7 @@ const T = {
     const sec = (key, title, list, cls = '') => {
       if (!list.length) return '';
       list = [...list].sort((a, b) => TIER_ORDER[tagTier(a)] - TIER_ORDER[tagTier(b)] || b.total - a.total || a.tag.localeCompare(b.tag));
-      const lim = this.more?.[key] || q ? 400 : 10;
+      const lim = this.more?.[key] || (q ? 20 : 10);
       return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
         <div class="tg-chips">${list.slice(0, lim).map(chip).join('')}
         ${list.length > lim ? `<button class="tchip more" data-tmore="${key}">+${list.length - lim} more</button>` : ''}</div></section>`;
@@ -1941,7 +1964,7 @@ const T = {
         : `<tr><td colspan="5" class="muted">No rules</td></tr>`;
   },
 };
-$('#tg-q').addEventListener('input', (e) => { T.q = e.target.value; T.render(); });
+$('#tg-q').addEventListener('input', (e) => { T.q = e.target.value; T.more = {}; T.render(); });
 $('#tg-all').onclick = () => {
   const q = T.q.toLowerCase();
   const rows = T.list.filter((t) => T.editable(t) && (!q || t.tag.toLowerCase().includes(q)));
@@ -1953,7 +1976,11 @@ $('#view-tags').addEventListener('click', (e) => {
   const go = e.target.closest('[data-go]');
   if (go) return goTag(go.dataset.go);
   const tm = e.target.closest('[data-tmore]');
-  if (tm) { T.more = Object.assign(T.more || {}, { [tm.dataset.tmore]: true }); return T.render(); }
+  if (tm) {
+    const key = tm.dataset.tmore;
+    T.more = Object.assign(T.more || {}, { [key]: (T.more?.[key] || (T.q ? 20 : 10)) + 50 });
+    return T.render();
+  }
   const ck = e.target.closest('[data-ck]');
   if (ck) { const t = ck.dataset.ck; if (T.checked.has(t)) T.checked.delete(t); else T.checked.add(t); return T.render(); }
   const ed = e.target.closest('[data-edit]');
@@ -2328,17 +2355,22 @@ function accountRow(a) {
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
   const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
   const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
+  const work = a.paused ? 'Work paused' : a.status === 'running'
+    ? a.job ? jobText(a) : ucf(a.activity || a.text || 'Waiting for work')
+    : `${role} work when available`;
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
-    : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div><button class="btn ghost acc-edit" data-rename title="Rename">Rename</button>`;
+    : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
     <div class="acc-top"><i class="dot ${ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill">Main</span>' : ''}
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-overview">
-      <div class="acc-fact"><span class="acc-key">Instagram access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b><small>${esc(access.detail)}</small></div>
-      <div class="acc-fact acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(role)}${a.job ? ` · ${esc(jobText(a))}` : ''} · ${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+      <div class="acc-fact"><span class="acc-key">Access</span><b class="acc-access ${access.kind}">${esc(access.label)}</b>${access.kind !== 'ok' ? `<small>${esc(access.detail)}</small>` : ''}</div>
+      <div class="acc-fact"><span class="acc-key">Work · ${esc(role)}</span><b>${esc(work)}</b></div>
     </div>
-    <div class="acc-bottom"><span class="muted">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</span><details class="adv acc-more"><summary>Advanced settings</summary>
+    <details class="adv acc-more"><summary>Advanced</summary>
+    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+    <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
       <div class="seg" title="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Your own account: bios only, unless Settings gives it a share of the lists"><i></i><span>Main account</span></button>
@@ -2349,33 +2381,42 @@ function accountRow(a) {
         <button class="btn">Save</button>
       </form>
     </div>
-    <div class="acc-foot"><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · Last error: ' + esc(a.last_error.slice(0, 100)) : ''}</span>
+    <div class="acc-foot"><button class="btn ghost acc-edit" data-rename>Rename</button><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago${a.last_error && a.status !== 'running' ? ' · Last error: ' + esc(a.last_error.slice(0, 100)) : ''}</span>
       <span class="grow"></span>
       <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
-    </details></div>
+    </details>
   </section>`;
 }
 
 function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
-  $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
+  $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
   $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start engine';
-  $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
+  $('#acc-alerts').innerHTML = alerts.filter((x, i) => x.code !== 'list_endpoint_wait' &&
+    alerts.findIndex((y) => y.text === x.text && y.level === x.level) === i)
+    .map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
-  const bios = accs.reduce((n, a) => n + (a.today?.profile || 0), 0), pages = accs.reduce((n, a) => n + (a.today?.list || 0), 0);
-  const kpi = (label, val, sub) => `<div class="tile"><span>${label}</span><b class="num">${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
-  $('#acc-kpis').innerHTML = [
-    kpi('Online', `${online}/${accs.length}`, ''),
-    kpi('People this hour', int(r.people_last_hour), ''),
-    kpi('Read today', `${int(pages)} pages · ${int(bios)} bios`, ''),
-  ].join('');
+  $('#acc-summary').textContent = accs.length
+    ? `${online} of ${accs.length} profiles online · ${int(r.people_last_hour)} people found this hour`
+    : 'No profiles connected yet';
   $('#acc-n').textContent = accs.length ? int(accs.length) : '';
   if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
   const list = $('#acc-list');
   if (list.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // don't clobber typing
+  const openLanes = new Set([...list.querySelectorAll('[data-lane]')]
+    .filter((row) => row.querySelector('.acc-more')?.open).map((row) => row.dataset.lane));
+  const focused = list.contains(document.activeElement) ? document.activeElement : null;
+  const focusRow = focused?.closest('[data-lane]');
+  const focusIndex = focused?.matches('button, summary') && focusRow
+    ? [...focusRow.querySelectorAll('button, summary')].indexOf(focused) : -1;
+  const focusLane = focusIndex >= 0 ? focusRow.dataset.lane : null;
   list.innerHTML = accs.length ? accs.map(accountRow).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'No account has checked in yet.'}</div>`;
+  for (const row of list.querySelectorAll('[data-lane]')) {
+    if (openLanes.has(row.dataset.lane)) row.querySelector('.acc-more').open = true;
+    if (row.dataset.lane === focusLane) row.querySelectorAll('button, summary')[focusIndex]?.focus({ preventScroll: true });
+  }
   if (A.renaming) { const i = $('#acc-label'); if (i && document.activeElement !== i) { i.focus(); i.select(); } }
   if (A.wiz) renderWizard();
 }
@@ -2448,7 +2489,7 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting Laya, opening configured Chrome profiles, and resuming all stages…';
+  status.textContent = 'Starting Laya, opening configured Chrome profiles, and resuming list and bio collection…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});

@@ -1789,7 +1789,7 @@ def api_control_set(conn, q, b):
 
 
 def api_engine_start(conn, q, b):
-    """Start local services and configured Chrome profiles, then resume all stages."""
+    """Start local services and configured Chrome profiles, then resume collection."""
     try:
         account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
         return engine_start.start(ROOT, account_count)

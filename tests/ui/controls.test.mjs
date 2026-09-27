@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/controls.js', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
+const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const state = (paused = false, waitStage = null) => ({
   all_paused: false,
@@ -17,17 +19,19 @@ const state = (paused = false, waitStage = null) => ({
 });
 
 // A small DOM/fetch harness isolates response ordering without a browser or a running server.
-function harness() {
+function harness({ detached = false } = {}) {
   const requests = [], events = {}, listeners = {};
   let interval, html = '', buttons = [];
+  const slot = { appendChild(node) { node.isConnected = true; this.child = node; } };
   const document = {
     body: {}, activeElement: null, readyState: 'complete', visibilityState: 'visible',
     createElement: () => el,
+    querySelector: selector => selector === '#stage-controls' ? slot : null,
     addEventListener: (name, callback) => { listeners[name] = callback; },
   };
   document.activeElement = document.body;
   const el = {
-    isConnected: true, dataset: {}, setAttribute() {},
+    isConnected: !detached, dataset: {}, setAttribute() {},
     contains: node => buttons.includes(node),
     querySelectorAll: () => [],
     querySelector: selector => buttons.find(button => selector.includes(`"${button.dataset.stage}"`)) || null,
@@ -49,7 +53,7 @@ function harness() {
     fetch(url, options) { return new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })); },
   });
   return {
-    requests, el, document,
+    requests, el, document, slot,
     respond(index, data = state(), ok = true) { requests[index].resolve({ ok, status: ok ? 200 : 500, json: async () => data }); },
     fail(index) { requests[index].reject(new Error('Network failure')); },
     poll() { for (let i = 0; i < 5; i++) interval(); },
@@ -59,6 +63,28 @@ function harness() {
   };
 }
 async function ready() { const h = harness(); h.respond(0); await settle(); return h; }
+
+test('stage controls mount inside the existing status area with the account and progress links', async () => {
+  assert.match(page, /<div class="status"[^>]*>[\s\S]*<a class="st-lanes"[^>]*href="#\/accounts"[\s\S]*<a class="st st-progress" href="#\/scraper"[\s\S]*<div id="stage-controls"><\/div>/);
+  assert.match(page, /<button class="btn" id="pause-btn" hidden>/);
+  assert.match(page, /<div id="stage-controls"><\/div>[\s\S]*<span class="st-act" id="st-act"><\/span>/);
+  assert.doesNotMatch(page, /id="st-act"[^>]*hidden/);
+  assert.match(style, /\.st-act:empty\s*\{\s*display:\s*none/);
+  const h = harness({ detached: true });
+  assert.equal(h.slot.child, h.el);
+  h.respond(0); await settle();
+  assert.equal((h.el.innerHTML.match(/class="fl-ctl-pill /g) || []).length, 3);
+  assert.doesNotMatch(h.el.innerHTML, /fl-ctl-now/);
+  assert.equal((h.requests.filter(request => request.url === '/api/control')).length, 1);
+});
+
+test('failed stage has a visible status and a link to details', async () => {
+  const h = harness();
+  const failed = state(); failed.stages[1].state = 'error';
+  h.respond(0, failed); await settle();
+  assert.match(h.el.innerHTML, /Read bios: needs attention/);
+  assert.match(h.el.innerHTML, /role="alert" aria-atomic="true">A stage needs attention\. <a href="#\/scraper">Open Scraper for details\.<\/a>/);
+});
 
 for (const outcome of ['success', 'failure']) {
   test(`a stale poll ${outcome} cannot overwrite a completed pause`, async () => {

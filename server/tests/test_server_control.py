@@ -92,15 +92,21 @@ class ControlTest(LaneTest):
         self.assertFalse(any(s['paused'] for s in out['stages'] if s['id'] != 'ai'))
         self.assertFalse(db.get_setting(self.conn, 'qualify'))
 
-    def test_explicit_start_all_includes_ai_and_paused_accounts(self):
+    def test_explicit_start_all_preserves_ai_choice_and_resumes_accounts(self):
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.2', 'state': 'running'})
         self.ctl(stage='all', action='pause')
         self.ctl(account='lane-a', action='pause')
         out = self.ctl(action='start_all')
-        self.assertFalse(any(s['paused'] for s in out['stages']))
+        self.assertFalse(any(s['paused'] for s in out['stages'] if s['id'] != 'ai'))
+        self.assertTrue(self.stage(out, 'ai')['paused'])
         self.assertFalse(out['accounts'][0]['paused'])
-        self.assertTrue(db.get_setting(self.conn, 'qualify'))
+        self.assertFalse(db.get_setting(self.conn, 'qualify'))
         self.assertFalse(db.get_setting(self.conn, 'qualify_auto'))
+        self.ctl(stage='ai', action='resume')
+        self.ctl(stage='lists', action='pause')
+        out = self.ctl(action='start_all')
+        self.assertFalse(self.stage(out, 'ai')['paused'])
+        self.assertTrue(db.get_setting(self.conn, 'qualify'))
         self.assertEqual(self.call('/api/control', {'stage': 'ai', 'action': 'start_all'})[0], 400)
 
     def test_account_pause_and_waits(self):

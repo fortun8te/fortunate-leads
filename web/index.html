@@ -38,19 +38,20 @@
   <div class="app">
   <div class="strip">
     <div class="offline" id="offline" role="status" aria-live="polite" hidden>Server offline <span class="num" id="offline-t"></span></div>
-    <div class="status" id="status">
+    <div class="status" id="status" aria-label="Collection status and controls">
       <div class="st-l">
         <a class="st-state" href="#/scraper"><i class="dot" id="st-dot"></i><span id="st-label">Connecting</span></a>
-        <a class="st-lanes" id="st-lanes" href="#/accounts" hidden></a>
-        <span class="st-act hide-md" id="st-act"></span>
-        <span class="st"><span class="hide-sm">Today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></span>
+        <a class="st-lanes" id="st-lanes" href="#/accounts" aria-label="Open account status" hidden></a>
+        <a class="st st-progress" href="#/scraper" title="Open detailed collection progress"><span>Today</span><b class="num" id="st-today">–</b><span class="meter hide-sm"><i id="st-meter"></i></span></a>
         <span class="st hide-sm" hidden><span>Pages/h</span><b class="num" id="st-pph">–</b></span>
         <span class="st hide-sm" hidden><span>People/h</span><b class="num" id="st-peh">–</b></span>
         <span class="st hide-md" hidden><span>Last limit</span><b class="num" id="st-hit">–</b></span>
       </div>
       <div class="st-r">
+        <div id="stage-controls"></div>
         <button class="btn" id="pause-btn" hidden>Pause</button>
       </div>
+      <span class="st-act" id="st-act"></span>
     </div>
   </div>
 
@@ -228,12 +229,12 @@
     <section class="view" id="view-accounts">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Accounts</h1><p>Connected Instagram profiles and what each one is doing.</p></div>
+          <div class="ph-t"><h1>Accounts</h1><p>Manage the profiles that collect lists and read bios.</p></div>
           <div class="ph-a"><button class="btn solid" id="acc-start">Start engine</button><button class="btn" id="acc-add">Add account</button></div>
         </header>
-        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Opens the configured Chrome profiles, starts Laya, and resumes lists, bios, and AI. AI provider usage may apply.</p>
+        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite">Opens the configured Chrome profiles, starts Laya, and resumes list and bio collection. Your external AI setting stays as it is.</p>
         <div class="alerts" id="acc-alerts"></div>
-        <div class="tiles" id="acc-kpis"></div>
+        <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>
         <div class="panel">
           <div class="p-head"><h3>Instagram profiles</h3><span class="num muted" id="acc-n"></span></div>

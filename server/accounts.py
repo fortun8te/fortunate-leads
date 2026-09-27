@@ -274,12 +274,14 @@ def request_budget_left(conn, row, kind, now):
     return used < limit
 
 
-def list_share(conn, rows, now):
+def list_share(conn, rows, now, eligible=None):
     """The main account's list share: the setting, or 1.0 while no other healthy account takes lists (a lone main
     account used to get no lists at all, so one connected extension sat 'Idle, queue empty' on a full queue)."""
     share = float(db.get_setting(conn, 'main_list_share') or 0)
     if share > 0:
         return share
+    if eligible is not None:
+        return 0.0 if any(not r['is_main'] and eligible(r) for r in rows) else 1.0
     others = [r for r in rows if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
               and not identity_cooling(conn, r, 'list', now) and list_budget_left(conn, r, now)
               and (r['role'] or 'both') in ('lists', 'both')]
@@ -352,15 +354,29 @@ def release(conn, now, only=None):
     """Give back the leases and list ownership of lanes that are not healthy. Caller commits.
     A healthy lane changing role (or yielding lists to a new account) and a paused lane may still be
     finishing a request. Keep that lease until its callback or expiry; login and list cooldowns hand off now."""
+    # Most polls have no ownership to clean up. Only lanes holding a live lease
+    # or an unfinished list can affect this release; checking every account's
+    # identity, cooldown and budget on every poll grows with the whole pool.
+    lane_filter = ' AND lane=?' if only is not None else ''
+    lane_args = (only,) if only is not None else ()
+    leased = list(conn.execute(
+        "SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL" + lane_filter,
+        lane_args))
+    owned = list(conn.execute(
+        "SELECT seed, direction, lane FROM lists WHERE lane IS NOT NULL "
+        "AND state NOT IN ('done','private','error','partial')" + lane_filter, lane_args))
+    list_lanes = {j['lane'] for j in leased if j['kind'] == 'list'} | {x['lane'] for x in owned}
+    profile_lanes = {j['lane'] for j in leased if j['kind'] == 'profile'}
+    if not list_lanes and not profile_lanes:
+        return 0
     rows = {r['lane_id']: r for r in conn.execute('SELECT * FROM accounts')}
-    share = list_share(conn, rows.values(), now)
-    ok = {k for k, r in rows.items() if keeps_lists(conn, r, now, share)}
+    share = list_share(conn, rows.values(), now) if list_lanes else 0.0
+    ok = {k for k in list_lanes if k in rows and keeps_lists(conn, rows[k], now, share)}
+    fine = {k for k in profile_lanes if k in rows and account_available(rows[k], now)
+            and identity_owner(conn, rows[k], now)}
     ts = iso(now)
-    fine = {k for k, r in rows.items() if account_available(r, now) and identity_owner(conn, r, now)}
     jobs, held = [], set()
-    for j in conn.execute("SELECT id, kind, lane, leased_until FROM jobs WHERE state='leased' AND lane IS NOT NULL"):
-        if only is not None and j['lane'] != only:
-            continue
+    for j in leased:
         if j['lane'] in (ok if j['kind'] == 'list' else fine):
             continue
         row = rows.get(j['lane'])
@@ -374,9 +390,7 @@ def release(conn, now, only=None):
                 held.add(j['lane'])
         else:
             jobs.append(j)
-    lists = [x for x in conn.execute("SELECT seed, direction, lane FROM lists WHERE lane IS NOT NULL "
-                                     "AND state NOT IN ('done','private','error','partial')")
-             if x['lane'] not in ok and x['lane'] not in held and (only is None or x['lane'] == only)]
+    lists = [x for x in owned if x['lane'] not in ok and x['lane'] not in held]
     for j in jobs:
         conn.execute("UPDATE jobs SET state='queued', leased_until=NULL, lane=NULL, lease_token=NULL, attempts=max(attempts-1, 0) WHERE id=?", (j['id'],))
     for x in lists:
@@ -423,13 +437,33 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     then lists another lane left mid-way (they have a cursor), then by priority."""
     ts = iso(now)
     accts = conn.execute('SELECT * FROM accounts').fetchall()
-    share = list_share(conn, accts, now)
-    ok = [r['lane_id'] for r in accts if keeps_lists(conn, r, now, share)]
+    # Eligibility is stable inside this one write transaction. The main-account
+    # fallbacks inspect the same lanes several times; keep their answers local
+    # to this pick so the next request always sees fresh cooldowns and identity.
+    owners, list_eligible = {}, {}
+
+    def owner(r):
+        key = r['lane_id']
+        if key not in owners:
+            owners[key] = identity_owner(conn, r, now)
+        return owners[key]
+
+    def eligible(r):
+        key = r['lane_id']
+        if key not in list_eligible:
+            list_eligible[key] = (healthy(r, now) and owner(r)
+                                  and not identity_cooling(conn, r, 'list', now)
+                                  and list_budget_left(conn, r, now)
+                                  and (r['role'] or 'both') in ('lists', 'both'))
+        return list_eligible[key]
+
+    share = list_share(conn, accts, now, eligible=eligible)
+    ok = [r['lane_id'] for r in accts if eligible(r) and (not r['is_main'] or share > 0)]
     okm = ','.join('?' * len(ok)) or "''"
     row = next((r for r in accts if r['lane_id'] == lane), None)
     if not row or identity_handoff_pending(conn, row, now):
         return None
-    kinds = [kind for kind in kinds if role_allows(row, kind) and identity_owner(conn, row, now)]
+    kinds = [kind for kind in kinds if role_allows(row, kind) and owner(row)]
     if not kinds:
         return None
     marks = ','.join('?' * len(kinds))
@@ -473,9 +507,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     if row['is_main'] and not regular_main:
         # Drive this exceptional lookup from the small set of denied lists,
         # rather than scanning every ordinary queued list on each poll.
-        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
-                   and not identity_cooling(conn, r, 'list', now) and list_budget_left(conn, r, now)
-                   and (r['role'] or 'both') in ('lists', 'both') and r['ig_id']]
+        alt_ids = [r['ig_id'] for r in accts if not r['is_main'] and eligible(r) and r['ig_id']]
         denied_alts = ''.join(" AND EXISTS(SELECT 1 FROM list_private_denials a "
                               "WHERE a.seed=j.seed AND a.direction=j.direction AND a.viewer_ig_id=?)"
                               for _ in alt_ids)
@@ -497,10 +529,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
         # An alternate can still read following while its follower endpoint is
         # redirecting. If all alternates are in that state, the main account is
         # the only available follower viewer despite the ordinary zero share.
-        follower_alts = [r for r in accts if not r['is_main'] and healthy(r, now) and identity_owner(conn, r, now)
-                         and not identity_cooling(conn, r, 'list', now)
-                         and list_budget_left(conn, r, now)
-                         and (r['role'] or 'both') in ('lists', 'both')
+        follower_alts = [r for r in accts if not r['is_main'] and eligible(r)
                          and not later(r['list_endpoint_until'], now)]
         if not follower_alts and not later(row['list_endpoint_until'], now) and 'list' in kinds:
             fallback = conn.execute(
@@ -645,7 +674,7 @@ def alerts(conn, now=None, accts=None):
     out_ = []
     for a in accts:
         if a['list_endpoint_until']:
-            out_.append({'level': 'warn', 'lane_id': a['lane_id'],
+            out_.append({'level': 'warn', 'code': 'list_endpoint_wait', 'lane_id': a['lane_id'],
                          'text': f"{a['name']} is getting Instagram home pages instead of public lists. Its list requests will retry later."})
         if a['hold'] == 'login':
             out_.append({'level': 'error', 'lane_id': a['lane_id'],

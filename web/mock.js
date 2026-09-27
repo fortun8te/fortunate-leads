@@ -575,8 +575,6 @@
       if (method === 'POST') {
         if (body?.action === 'start_all' && body?.stage == null) {
           scraper.paused = false;
-          scraper.qualify = true;
-          scraper.qualify_auto = true;
           stagePaused.lists = false;
           stagePaused.bios = false;
           for (const a of accounts) {
