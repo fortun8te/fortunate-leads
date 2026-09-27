@@ -14,7 +14,7 @@ import db
 
 MODEL = 'llama3.2:3b'
 MODEL_DIGEST = 'a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72'
-VERSION = 'owner-notes-2-relationships'
+VERSION = 'owner-notes-3-relationship-evidence'
 URL = 'http://127.0.0.1:11434'
 LABELS = {'current_client': 'Current client', 'past_client': 'Former client',
           'contacted': 'Contact already made', 'in_conversation': 'In conversation',
@@ -132,7 +132,19 @@ def validate(payload, note):
             continue
         if kind == 'spoke_before' and re.search(r"\b(never|haven.t|didn.t|nooit|niet gesproken|hope|want|will|hoop|wil)\b", quote, re.I):
             continue
-        if kind == 'colleague' and not re.search(r'\b(colleague|coworker|co-worker|co worker|collega|worked together|work together|working together|samengewerkt|samen gewerkt|samen werken)\b', quote, re.I):
+        if kind == 'colleague' and not re.search(r'\b(colleagues?|coworkers?|co-workers?|co workers?|collega(?:s)?|worked together|work together|working together|samengewerkt|samen gewerkt|samen werken)\b', quote, re.I):
+            continue
+        # A source quote must actually contain the claimed human connection.
+        # A follow observation alone is not evidence, even if the model labels it as such.
+        evidence = {
+            'acquaintance': r'\b(acquaintances?|met|meet|ontmoet|kennis|lived together|living together|samengewoond|samen gewoond|samen wonen)\b',
+            'knows_person': r'\b(acquaintances?|met|ontmoet|kennis|know (?:him|her|them)|ken (?:hem|haar)|lived together|samengewoond|samen gewoond)\b',
+            'friend': r'\b(friends?|vriend(?:en|in|innen)?)\b',
+            'worked_with': r'\b(worked (?:with|together)|working (?:with|together)|work (?:with|together)|paid (?:project|job|work)|project for|job for|samengewerkt|samen gewerkt|klus|opdracht)\b',
+            'know_them': r'\b(know (?:him|her|them|each other)(?: quite| very)? well|ken (?:hem|haar) goed|kennen elkaar goed)\b',
+            'briefly': r'\b(met|spoke|talked|contact|ontmoet|gesproken)\b',
+        }
+        if kind in evidence and not re.search(evidence[kind], quote, re.I):
             continue
         if kind == 'close' and not re.search(r"\b(close|best friend|goede vriend|beste vriend|hecht)\b", quote, re.I):
             continue

@@ -133,3 +133,24 @@ class RelationshipContext(unittest.TestCase):
         facts = owner_notes.validate({'facts': [{'kind': 'friend', 'quote': note}, {'kind': 'close', 'quote': note}]}, note)
         self.assertEqual(owner_notes.actionable(facts[0])['relationships'], ['friend'])
         self.assertEqual(owner_notes.actionable(facts[1])['familiarity'], 'close')
+
+
+class NoteRelationshipEvidence(unittest.TestCase):
+    def facts(self, kind, quote, note=None):
+        return owner_notes.validate({'facts': [{'kind': kind, 'quote': quote}]}, note or quote)
+
+    def test_plural_colleagues_are_explicit_work_evidence(self):
+        for quote in ('We are colleagues.', 'We were coworkers.', 'Wij zijn collegas.'):
+            self.assertEqual(len(self.facts('colleague', quote)), 1, quote)
+
+    def test_social_follow_cannot_become_a_human_relationship(self):
+        quote = 'She follows me on Instagram.'
+        note = quote + ' I have never met her.'
+        for kind in ('acquaintance', 'knows_person', 'friend', 'colleague', 'worked_with', 'close', 'know_them', 'briefly'):
+            self.assertEqual(self.facts(kind, quote, note), [], kind)
+
+    def test_explicit_acquaintance_and_meeting_are_still_accepted(self):
+        for quote in ('We met at a conference.', 'She is an acquaintance.',
+                      'We lived together for three weeks.', 'We hebben drie weken samen gewoond.'):
+            self.assertEqual(len(self.facts('acquaintance', quote)), 1, quote)
+        self.assertEqual(len(self.facts('friend', 'She is my friend and follows me on Instagram.')), 1)
