@@ -2129,9 +2129,11 @@ function renderScraper() {
   const offline = x.online ? '' : 'waiting for the extension';
   const listsDone = ls.length > 0 && ls.every(l => l.state === 'done');
   const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : sc.paused ? 'Paused'
+    : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No list entries this minute'
     : eta(L.eta_h) ? `${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')} · limit ${int(B.per_day)} a day`;
-  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
+  const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
+    ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
   // Speed scales with accounts: each extra Instagram account adds roughly one account's measured pace.
   const lanes = Math.max(1, (sc.accounts || []).filter((a) => a.online && !a.paused).length);
   const faster = L.eta_h > 72 && L.per_hour ? `<p class="muted">Each extra Instagram account adds about ${int(Math.round(L.per_hour / lanes))} people an hour. Add one under Accounts.</p>` : '';
