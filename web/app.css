@@ -620,6 +620,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .dot.need { background: var(--bad); }
 .st-lanes { display: flex; align-items: center; gap: 4px; flex: none; }
 .st-lanes .dot { width: 7px; height: 7px; }
+.acc-start-note { margin: calc(-1 * var(--s3)) 0 var(--s4); color: var(--fg3); font-size: var(--fs-sm); }
+.acc-start-note[data-state="error"] { color: var(--bad); }
 .acc { display: grid; gap: 16px; padding: 20px 16px; }
 .acc + .acc { border-top: 1px solid var(--line); }
 .acc.warn { box-shadow: inset 2px 0 0 var(--bad); }

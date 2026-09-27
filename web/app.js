@@ -2304,7 +2304,7 @@ function renderAccounts() {
   const sc = S.sc;
   const accs = sc?.accounts || [], alerts = sc?.alerts || [];
   $('#acc-start').disabled = A.starting || !sc || !!S.scStale || !accs.length;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start all';
+  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start engine';
   $('#acc-alerts').innerHTML = alerts.map((x) => `<div class="alert ${x.level}"><i></i><span>${esc(x.text)}</span></div>`).join('');
   const r = sc?.rate || {};
   const online = accs.filter((a) => a.online).length;
@@ -2390,15 +2390,23 @@ $('#acc-list').addEventListener('keydown', (e) => {
 $('#acc-start').addEventListener('click', async () => {
   if (A.starting) return;
   A.starting = true;
+  const status = $('#acc-start-status');
+  status.dataset.state = 'working';
+  status.textContent = 'Starting Laya, opening configured Chrome profiles, and resuming all stages…';
   renderAccounts();
   try {
-    const result = await api.post('/api/control', { action: 'start_all' });
+    const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
     window.dispatchEvent(new Event('fl:control-changed'));
-    toast('Started lists, bios and AI. Cooldowns still apply.');
+    const count = Number.isInteger(result?.profiles_opened) ? result.profiles_opened : null;
+    status.dataset.state = 'success';
+    status.textContent = `Engine started${count == null ? '' : ` with ${count} configured Chrome profiles`}. Login checks and Instagram limits still apply.`;
+    toast('Engine started. Login checks and Instagram limits still apply.');
     await loadScraper();
   } catch (e) {
-    toast(e.message || 'Could not start all');
+    status.dataset.state = 'error';
+    status.textContent = e.message || 'Could not start engine. Check service and profile setup.';
+    toast(e.message || 'Could not start engine');
   } finally {
     A.starting = false;
     renderAccounts();

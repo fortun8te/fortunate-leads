@@ -28,6 +28,7 @@ import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
+import engine_start  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
 import usage_ledger  # noqa: E402
@@ -1715,6 +1716,15 @@ def api_control_set(conn, q, b):
     return api_control(conn, q, b)
 
 
+def api_engine_start(conn, q, b):
+    """Start local services and configured Chrome profiles, then resume all stages."""
+    try:
+        account_count = conn.execute('SELECT count(*) FROM accounts').fetchone()[0]
+        return engine_start.start(ROOT, account_count)
+    except engine_start.EngineStartError as exc:
+        raise Bad(str(exc)) from None
+
+
 def api_budget(conn, q, b):
     budget = db.get_setting(conn, 'budget')
     changes = {}
@@ -1787,6 +1797,7 @@ ROUTES = [
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/heartbeat', ext_heartbeat),
     ('GET', r'/api/control', api_control), ('POST', r'/api/control', api_control_set),
+    ('POST', r'/api/engine/start', api_engine_start),
     ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
     ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
