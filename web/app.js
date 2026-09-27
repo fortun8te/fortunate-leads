@@ -1046,10 +1046,10 @@ async function refreshPerson(id) {
     if (S.open !== id || personReads.get(id) !== version) return;
     noteQueue.reconcile(id, p.note || '', p.mark_rev ?? '');
     S.person = p;
-    const poll = notePolls.get(id) || { note: p.note, attempts: 0, timer: null };
+    const poll = notePolls.get(id) || { note: p.note, markRev: p.mark_rev, attempts: 0, timer: null };
     clearTimeout(poll.timer);
-    if (poll.note !== p.note) { poll.note = p.note; poll.attempts = 0; }
-    if (p.note_interpretation?.state === 'pending' && poll.attempts < 20) {
+    if (poll.note !== p.note || poll.markRev !== p.mark_rev) { poll.note = p.note; poll.markRev = p.mark_rev; poll.attempts = 0; }
+    if ((p.ranking_pending || p.note_interpretation?.state === 'pending') && poll.attempts < 20) {
       poll.attempts++;
       poll.timer = setTimeout(() => { if (S.open === id && !document.hidden) refreshPerson(id); }, 3000);
     }
@@ -1305,7 +1305,7 @@ function humanRelationshipHTML(p) {
   const selected = humanRelationships(p), disabled = p.loading || p.failed ? 'disabled' : '';
   return `<h4>How you know them</h4><div class="marks relationship-choices" role="group" aria-label="How you know them">${Object.entries(HUMAN_RELATIONSHIPS).map(([key,label]) => `<button type="button" id="d-relationship-${key}" data-human-relationship="${key}" aria-label="${label} relationship" aria-pressed="${selected.includes(key)}" class="${selected.includes(key) ? 'on' : ''}" ${disabled}><i></i><b>${label}</b></button>`).join('')}</div>
     <p class="relationship-hint">Past or present. Add detail in your note.</p>
-    <div class="relationship-familiarity"><span>How well?</span><div class="marks" role="group" aria-label="How well you know them">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
+    <div class="relationship-familiarity"><span>How well? · Optional</span><div class="marks" role="group" aria-label="How well you know them (optional)">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
     <h4 class="relationship-conversation-title">Conversation</h4><div class="marks" role="group" aria-label="Conversation">${STATUSES.filter(s => s !== 'no').map(s => `<button type="button" id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${p.status === s ? 'on' : ''}" ${disabled}><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
     <button type="button" id="d-status-no" data-s="no" aria-pressed="${p.status === 'no'}" class="relationship-not-fit ${p.status === 'no' ? 'on' : ''}" ${disabled}>${p.status === 'no' ? '✓ ' : ''}Not a business fit</button>`;
 }
@@ -3064,6 +3064,35 @@ const M = {
     this.draw();
   },
   reloadSoon: debounce(() => M.load(), 250),
+  search(value) {
+    const query = value.trim();
+    if (query === this.query) return;
+    if (!this.query && query) this.overview = { byId: this.byId, x: this.x, y: this.y, k: this.k };
+    const restore = !query && this.overview;
+    this.query = query;
+    // Invalidate immediately, before the debounce starts another request.
+    ++this.loadSeq; this.loading = false;
+    this.relayout = !restore; this.stale = true;
+    if (restore) { this.byId = restore.byId; this.x = restore.x; this.y = restore.y; this.k = restore.k; this.autoFit = false; this.overview = null; }
+    this.sim?.stop(); this.hover = null;
+    $('#hover').hidden = true;
+    const results = $('#map-search-results');
+    if (results) { results.hidden = !query; results.textContent = query ? 'Searching…' : ''; }
+  },
+  renderSearch() {
+    const results = $('#map-search-results');
+    if (!results) return;
+    results.hidden = !this.query;
+    if (!this.query) { results.textContent = ''; return; }
+    const query = (this.rawData?.search_query || this.query).toLowerCase().replace(/^@/, '');
+    const seeds = this.seeds.filter(n => [n.label, n.name].some(value => String(value || '').toLowerCase().includes(query)));
+    const rank = n => {
+      const handle = String(n.handle || n.label).toLowerCase(), name = String(n.name || '').toLowerCase();
+      return handle === query ? 0 : name === query ? 1 : handle.startsWith(query) ? 2 : name.startsWith(query) ? 3 : 4;
+    };
+    const people = [...seeds, ...this.leads.filter(n => !seeds.some(s => s.pid && s.pid === +(n.id.slice(2))))].sort((a, b) => rank(a) - rank(b)).slice(0, 12);
+    results.innerHTML = people.length ? people.map(n => `<button class="map-search-hit" data-map-person="${esc(n.id)}"><b>@${esc(n.handle || n.label)}</b>${n.name ? `<span>${esc(n.name)}</span>` : ''}</button>`).join('') : '<span class="muted">No saved profiles match. Try a name or Instagram handle.</span>';
+  },
   url() {
     const p = LeadWorkflow.runtimeQuery(toQuery({ ...emptyFilter(), q: this.query }, 'score', false));
     p.set('scope', this.scope); p.set('limit', this.limit);
@@ -3080,6 +3109,7 @@ const M = {
       if (seq !== this.loadSeq) return;
       this.loading = false;
       if (!this.nodes.length) this.status(offlineSince ? 'Server offline' : 'Could not load map');
+      if (this.query && $('#map-search-results')) $('#map-search-results').textContent = 'Search unavailable. Try again.';
       return;
     }
     if (seq !== this.loadSeq) return;
@@ -3112,7 +3142,8 @@ const M = {
     // When filtered, seeds with nobody in the result only add noise: leave them out.
     if (this.query && d.nodes.some((n) => n.kind !== 'seed')) {
       const used = new Set((d.links || []).map((l) => l.source));
-      d = Object.assign({}, d, { nodes: d.nodes.filter((n) => n.kind !== 'seed' || used.has(n.id)) });
+      const query = (d.search_query || this.query).toLowerCase().replace(/^@/, '');
+      d = Object.assign({}, d, { nodes: d.nodes.filter((n) => n.kind !== 'seed' || used.has(n.id) || [n.label, n.name].some(value => String(value || '').toLowerCase().includes(query))) });
     }
     const sid = (s) => String(s).startsWith('s:') || String(s).startsWith('p:') ? String(s) : 's:' + s;
     this.nodes = d.nodes.map((n) => {
@@ -3246,7 +3277,7 @@ const M = {
     }
     // Find nearby free positions around the true source centroid. The spatial
     // hash only checks nearby avatars; positions stay organic and refreshes preserve their location.
-    if (this.nodes.length <= 1500) {
+    if (this.nodes.length <= 6000) {
       const cell = 40, occupied = new Map(), key = (x, y) => `${x},${y}`;
       const place = n => {
         const k = key(Math.floor(n.x / cell), Math.floor(n.y / cell));
@@ -3298,6 +3329,7 @@ const M = {
     const unchanged = old.size && topology === this.topology;
     this.topology = topology;
     this.simulate(unchanged ? 0 : old.size ? 0.12 : 1);
+    this.renderSearch();
     this.draw();
   },
   simulate(alpha) {
@@ -3328,13 +3360,13 @@ const M = {
       .force('collide', huge ? null : F.forceCollide((n) => n.kind === 'seed' ? n.r * 1.45 + 6 : n.r + 5).iterations(big ? 1 : 4).strength(1))
       .force('x', F.forceX((n) => n.kind === 'seed' ? n.homeX : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
       .force('y', F.forceY((n) => n.kind === 'seed' ? n.homeY : 0).strength((n) => n.kind === 'seed' ? 0.09 : 0.004))
-      .alpha(this.nodes.length <= 1500 ? 0 : alpha).alphaDecay(huge ? 0.08 : 0.07).alphaMin(huge ? 0.02 : 0.015).velocityDecay(huge ? 0.42 : 0.65)
+      .alpha(this.nodes.length <= 6000 ? 0 : alpha).alphaDecay(huge ? 0.08 : 0.07).alphaMin(huge ? 0.02 : 0.015).velocityDecay(huge ? 0.42 : 0.65)
       .on('tick', () => this.schedule())
       .on('end', () => { if (this.autoFit) this.fit(); });
-    // The seed-centroid layout is usable immediately. D3 settles in later
-    // frames; a synchronous tick loop could block input for hundreds of ms.
+    // Packed views stay still; selection provides bounded local movement.
+    // Larger fallback samples settle asynchronously, without blocking input.
     if (alpha >= 1) this.fit();
-    if (this.nodes.length <= 1500 || !this.shown || !alpha || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.stop();
+    if (this.nodes.length <= 6000 || !this.shown || !alpha || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.stop();
   },
   schedule() {
     if (this.raf) return;
@@ -3370,6 +3402,7 @@ const M = {
     this.draw();
   },
   centerOn(n, k) {
+    this.autoFit = false;
     this.k = Math.max(this.k, k || 1.6);
     this.x = this.w / 2 - n.x * this.k; this.y = this.h / 2 - n.y * this.k;
     this.draw();
@@ -3659,6 +3692,8 @@ const M = {
     return best;
   },
   select(n) {
+    this.sim?.stop().alpha(0);
+    this.autoFit = false;
     this.focus = n;
     // A brief local opening gives the chosen photo breathing room. It settles
     // after a few frames, respects reduced motion and never restarts on polling.
@@ -3803,11 +3838,21 @@ function seedCardClick(e) {
 window.addEventListener('connections-viewchange', () => {
   if (S.view === 'map') M.show();
 });
-// One search for the visible map, using the same server-backed people query.
-$('#map-q')?.addEventListener('input', debounce((e) => {
-  M.query = e.target.value.trim();
-  M.relayout = true; M.stale = true; M.load();
-}, 250));
+// Search all saved identities, then use named results to locate a person.
+const mapSearchLoad = debounce(() => M.load(), 250);
+$('#map-q')?.addEventListener('input', (e) => { M.search(e.target.value); mapSearchLoad(); });
+$('#map-search-results')?.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-map-person]');
+  const person = button && M.byId.get(button.dataset.mapPerson);
+  if (person) { M.select(person); M.centerOn(person); }
+});
+$('#map-q')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.target.value = ''; M.search(''); M.load(); }
+  if (e.key === 'ArrowDown' || e.key === 'Enter') {
+    const first = $('#map-search-results')?.querySelector('button');
+    if (first) { e.preventDefault(); if (e.key === 'Enter') first.click(); else first.focus(); }
+  }
+});
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
 $('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) { M.select(me); M.centerOn(me, 1.4); } };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));

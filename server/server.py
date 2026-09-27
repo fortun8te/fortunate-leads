@@ -1003,10 +1003,14 @@ def api_person(conn, q, b, pid):
     job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? AND state!='cancelled' "
                        "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
     pending = bool(job and job['state'] in ('queued', 'leased'))
+    ranking_pending = bool(conn.execute('SELECT 1 FROM processing_rule_queue WHERE person_id=?', (pid,)).fetchone())
+    if not ranking_pending and processing_modes.begin_work(conn, 'local_qualification') is not None:
+        ranking_pending = bool(conn.execute('SELECT 1 FROM local_queue WHERE person_id=? AND priority=1', (pid,)).fetchone())
     profile_read = {'state': {'leased': 'reading', 'error': 'failed'}.get(job['state'], job['state'])} if job else None
     return dict(lead_rows(conn, [row])[0], edges=edges_of(conn, pid), edge_history=edge_history_of(conn, pid),
                 verdict=verdict, note=row['note'], site=qual_api.site_row(conn, pid),
                 activity=workflows.history(conn, pid), profile_read_pending=pending, profile_read=profile_read,
+                ranking_pending=ranking_pending,
                 scout=deepscout.result(conn, pid), note_interpretation=owner_notes.result(conn, pid))
 
 
@@ -1146,9 +1150,14 @@ def tag_group(conn, tag, default='signal'):
 
 
 def touch(conn, pids):
-    """Bump updated_at: the qualify batch re-derives verdicts (manual role tags count) and the map rev changes."""
+    """Refresh owner edits ahead of bulk imports; also invalidate the map revision."""
+    pids = list(dict.fromkeys(pids))
     ts = db.now()
-    conn.executemany('UPDATE people SET updated_at=? WHERE id=?', [(ts, p) for p in dict.fromkeys(pids)])
+    conn.executemany('UPDATE people SET updated_at=? WHERE id=?', [(ts, p) for p in pids])
+    # The dedicated bounded rules worker keeps a tag/note edit from waiting behind
+    # thousands of newly scraped profiles. It clears each entry after saving rules.
+    conn.executemany('INSERT OR IGNORE INTO processing_rule_queue(person_id) VALUES(?)',
+                     [(p,) for p in pids])
 
 
 def add_manual(conn, pids, tags):
@@ -1400,9 +1409,18 @@ def api_connections(conn, q, b):
 
 def map_graph(conn, q):
     limit = min(10000, max(10, qint(q, 'limit') or 400))
+    try:
+        search = connection_graph.map_search(q.get('q', [''])[0])
+    except ValueError as exc:
+        raise Bad(str(exc)) from exc
+    if search:
+        limit = min(limit, 100)
     # The general lead seed filter intentionally includes discovery history. On the map,
     # a seed filter must mean an observed connection to that seed.
-    where, args = lead_filter({k: v for k, v in q.items() if k != 'seed'})
+    where, args = lead_filter({k: v for k, v in q.items() if k not in ('seed', 'q')}, status_default=not bool(search))
+    if search:
+        where.append(search['where'])
+        args.extend(search['args'])
     for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
         where.append('p.id IN (SELECT person_id FROM current_edges WHERE seed=?)')
         args.append(seed)
@@ -1424,15 +1442,20 @@ def map_graph(conn, q):
     # Materialize only ranking fields for the full match set. Display fields
     # are fetched after the limit; otherwise millions of names, notes and
     # reasons are copied into SQLite's temporary sort table on every refresh.
+    rank_column = f",{search['rank']} AS search_rank" if search else ''
+    if search:
+        args = [*search['rank_args'], *args]
     if summary_ready:
-        base = ('SELECT p.id, v.score, d.degree FROM map_person_degree d JOIN people p ON p.id=d.person_id '
-                f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond}')
+        base = (f'SELECT p.id, v.score, coalesce(d.degree,0) AS degree{rank_column} ' +
+                ('FROM people p LEFT JOIN map_person_degree d ON p.id=d.person_id ' if search else
+                 'FROM map_person_degree d JOIN people p ON p.id=d.person_id ')
+                + f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond}')
     else:
-        base = ('SELECT p.id, v.score, count(DISTINCT e.seed) AS degree '
-                'FROM people p JOIN current_edges e ON e.person_id=p.id '
+        base = (f'SELECT p.id, v.score, count(DISTINCT e.seed) AS degree{rank_column} '
+                f"FROM people p {'LEFT JOIN' if search else 'JOIN'} current_edges e ON e.person_id=p.id "
                 f'LEFT JOIN verdicts v ON v.person_id=p.id LEFT JOIN marks m ON m.person_id=p.id WHERE {cond} GROUP BY p.id')
-    by_score = 'ORDER BY score IS NULL, score DESC, degree DESC, id LIMIT ?'
-    multi_n = 0 if q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
+    by_score = 'ORDER BY ' + ('search_rank, ' if search else '') + 'score IS NULL, score DESC, degree DESC, id LIMIT ?'
+    multi_n = 0 if search or q.get('scope', ['leads'])[0] == 'all' else limit * 3 // 5  # scope=leads: people in several lists first
     # The common unfiltered overview can follow two exact ranking indexes and
     # stop after its display limit. Other filters still use the general query.
     # The UI always adds its local date; it changes only follow-up filters.
@@ -1483,7 +1506,7 @@ def map_graph(conn, q):
                    '(SELECT count(DISTINCT e.person_id) FROM current_edges e WHERE e.seed=s.handle)')
     degree_join = 'LEFT JOIN map_seed_degree md ON md.seed=s.handle ' if members_ready else ''
     seeds = conn.execute(f'SELECT s.handle, {seed_degree} AS degree, p.id AS pid, '
-                         'p.pic_file, p.followers, v.tier, v.score, m.status, m.note, coalesce(sd.is_me, 0) AS is_me '
+                         'p.name, p.pic_file, p.followers, v.tier, v.score, m.status, m.note, coalesce(sd.is_me, 0) AS is_me '
                          f'FROM {source_from} s LEFT JOIN seeds sd ON sd.handle=s.handle '
                          f'{degree_join}LEFT JOIN people p ON p.handle=s.handle LEFT JOIN verdicts v ON v.person_id=p.id '
                          'LEFT JOIN marks m ON m.person_id=p.id').fetchall()
@@ -1512,7 +1535,7 @@ def map_graph(conn, q):
         visible = owner.visible_tags(person, raw)
         alltags[pid] = {t['tag'] for t in visible}
         tags[pid] = [t['tag'] for t in visible[:MAP_TAGS]]
-    nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
+    nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'name': s['name'], 'tier': s['tier'], 'score': s['score'],
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
               'seeds': seeds_of.get(s['pid'], []), 'is_me': bool(s['is_me']), 'pid': s['pid'], 'note': s['note'] or None} for s in seeds]
@@ -1534,7 +1557,7 @@ def map_graph(conn, q):
         node['familiarity'] = facts.get('familiarity')
         node['owner_status'] = owner.owner_status(facts)
         node.update(owner.owner_recommendation(facts, node))
-    return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
+    return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'search_query': search['text'] if search else None, 'rev': data_rev(conn)}
 
 
 def ext_aggregate(conn, accts, now):

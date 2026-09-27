@@ -24,7 +24,7 @@ function mount(tags = [mention]) {
     plural: (n, word) => `${n} ${word}s`, avatar: () => '', igLink: () => '', safeUrl: () => null,
     swatch: () => '', tagTok: tag => `#"${tag}"`, words: value => [value],
     // Lead workflow helpers that renderDetail calls; not under test here.
-    detailAccess: { capture() {}, restore() {} }, noteQueue: { peek() {} }, noteStatus: () => '', noteConflictHTML: () => '', noteInsightsHTML: () => '',
+    detailAccess: { capture() {}, restore() {} }, noteQueue: { peek() {} }, noteStatus: () => '', noteConflictHTML: () => '', noteInsightsHTML: () => '', humanRelationshipHTML: () => '',
     rememberDetailView() {}, detailView: () => ({ sections: {}, tag: '' }),
     rememberWorkflowForm() {}, wireWorkflow() {}, activityHTML: () => '', workflowHTML: () => '', workflowSummaryHTML: () => '',
     fitBadge: () => '', detailProfileState: () => ({ source: 'Source not recorded' }),

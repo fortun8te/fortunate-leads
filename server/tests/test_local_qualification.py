@@ -32,7 +32,7 @@ class LocalQualification(unittest.TestCase):
         self.assertEqual(result['model_version'], self.runtime.MODEL_DIGEST)
         self.assertTrue(local.current_result(result, self.person))
         kwargs = self.runtime.complete_json.call_args.kwargs
-        self.assertEqual(kwargs, {'max_tokens': 700, 'timeout': 45})
+        self.assertEqual(kwargs, {'max_tokens': 700, 'timeout': 45, 'reasoning_budget_tokens': 200})
 
     def test_prompt_includes_confirmed_context_but_no_private_or_external_inputs(self):
         person = dict(self.person, relationships=['friend'], familiarity='close', manual_tags=['Known founder'],
