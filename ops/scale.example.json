@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy to data/scale.json (gitignored). No passwords or session files in git. home_addresses = your home public IPv4 and IPv6 (/64 is derived); every non-Tor egress is checked against them and refused if it matches.",
+  "home_addresses": ["203.0.113.7", "2001:db8:1234:5678::1"],
+  "egresses": [
+    {"id": "phone-a", "kind": "socks5", "host": "100.64.0.11", "port": 1080, "label": "old Android on mobile data (Tailscale IP)", "logged_in_ok": true},
+    {"id": "friend-b", "kind": "socks5", "host": "100.64.0.12", "port": 1080, "label": "friend's home box over Tailscale", "logged_in_ok": true},
+    {"id": "oci-v6-1", "kind": "bind", "source_addr": "2603:c020:4015:f7ff::1:1", "label": "Oracle free VM, IPv6 /64 #1 (logged-out only)"}
+  ],
+  "accounts": [
+    {"id": "bot1", "handle": "burner_one", "egress_id": "phone-a", "daily_budget": 3000},
+    {"id": "bot2", "handle": "burner_two", "egress_id": "friend-b", "daily_budget": 3000},
+    {"id": "main", "handle": "fortun8te", "is_main": true, "enabled": false, "allow_main": false}
+  ]
+}
