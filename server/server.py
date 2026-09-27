@@ -2,9 +2,7 @@ import argparse
 import biofetch
 import deepscout
 import websearch
-import collections
 from concurrent.futures import ThreadPoolExecutor
-import time
 import json
 import mimetypes
 import os
@@ -1450,7 +1448,9 @@ def progress(conn, accts):
     q_left = conn.execute("SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
-    q_rate = POOL[0].rate() if POOL[0] else None
+    q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
+    q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                          (iso(now - timedelta(hours=1)),)).fetchone()[0]
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
     return {
         'lists': {'left': lists_left, 'estimate': bool(unknown), 'per_hour': round(people_h) if people_h else None,
@@ -1463,7 +1463,10 @@ def progress(conn, accts):
                  'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
                                           1, bio_lanes, 'profile', now),
                  'estimate': not bios_h},
-        'qualify': {'left': q_left, 'per_hour': round(q_rate) if q_rate else None, 'eta_h': eta_hours(q_left, q_rate),
+        'qualify': {'left': q_left, 'per_hour': q_hour, 'per_minute': conn.execute(
+                    'SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                    (iso(now - timedelta(minutes=1)),)).fetchone()[0],
+                    'eta_h': eta_hours(q_left, q_rate),
                     'on': bool(db.get_setting(conn, 'qualify')), 'workers': db.get_setting(conn, 'llm_workers'),
                     'keys': len(llm.get().keys) if hasattr(llm, 'get') else None},
     }
@@ -2369,6 +2372,8 @@ def run_llm(conn, rows, skip):
                          v.get('prompt'), json.dumps(v.get('evidence') or []),
                          v.get('content_fit', min(getattr(qualify, 'ROLE_CAP', {}).get(v['role'], 100), v['fit']) if v.get('fit') is not None else None),
                          p['id'], p['updated_at'])).rowcount:
+            conn.execute('INSERT INTO ai_scoring_events(person_id,scored_at) VALUES(?,?)',
+                         (p['id'], db.now()))
             conn.execute("DELETE FROM tags WHERE person_id=? AND source='auto'", (p['id'],))
             conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,?,'auto')",
                              [(p['id'], t, g) for t, g in it['fresh_auto'] + (v.get('tags') or [])])
@@ -2407,7 +2412,6 @@ class LLMPool:
         self.running = 0
         self.skip = {}
         self.batch = batch
-        self.done = collections.deque(maxlen=2000)   # (time, verdicts written) for the ETA
 
     def step(self, conn):
         if not db.get_setting(conn, 'qualify'):
@@ -2432,21 +2436,10 @@ class LLMPool:
             threading.Thread(target=self._work, args=(g,), daemon=True).start()
         return True
 
-    def rate(self, window=900):
-        """Verdicts per hour over the last `window` seconds (None until there is data)."""
-        now = time.time()
-        recent = [(t, n) for t, n in list(self.done) if now - t <= window]
-        if not recent:
-            return None
-        span = max(60, now - recent[0][0])
-        return sum(n for _, n in recent) * 3600 / span
-
     def _work(self, rows):
         conn = db.connect(CFG['db'])
         try:
-            n = run_llm(conn, rows, self.skip)
-            if n:
-                self.done.append((time.time(), n))
+            run_llm(conn, rows, self.skip)
         except Exception:
             traceback.print_exc()
         finally:

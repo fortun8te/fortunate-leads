@@ -34,6 +34,29 @@ class ControlTest(LaneTest):
         self.assertEqual(self.stage(out, 'ai')['state'], 'paused')   # qualify defaults off
         self.assertFalse(out['all_paused'])
 
+    def test_ai_rates_count_saved_scores_not_profile_revisions(self):
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(seconds=20)).isoformat()
+        hour_old = (now - timedelta(minutes=5)).isoformat()
+        day_old = (now - timedelta(hours=2)).isoformat()
+        pid = db.upsert_person(self.conn, {'handle': 'scored', 'bio': 'founder'})
+        self.conn.execute("INSERT INTO verdicts(person_id,model,updated_at) VALUES(?,'llm','2020-01-01')", (pid,))
+        revision = db.get_setting(self.conn, 'lead_data_rev')
+        self.conn.executemany('INSERT INTO ai_scoring_events(person_id,scored_at) VALUES(?,?)',
+                              [(pid, recent), (pid, hour_old), (pid, day_old)])
+        self.assertEqual(db.get_setting(self.conn, 'lead_data_rev'), revision)
+        plan = self.conn.execute('EXPLAIN QUERY PLAN SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
+                                 (recent,)).fetchall()
+        self.assertTrue(any('ai_scoring_events_at' in row['detail'] for row in plan))
+        self.conn.commit()
+        ai = self.stage(self.ctl(), 'ai')
+        self.assertEqual((ai['minute'], ai['hour'], ai['today']),
+                         (1, 2, 2 + int(day_old[:10] == now.date().isoformat())))
+        self.conn.execute("UPDATE verdicts SET updated_at=? WHERE person_id=?", (now.isoformat(), pid))
+        self.conn.commit()
+        ai = self.stage(self.ctl(), 'ai')
+        self.assertEqual((ai['minute'], ai['hour']), (1, 2))
+
     def test_lists_and_bios_pause_separately(self):
         self.bio_job()
         self.seeds('s1')

@@ -491,6 +491,8 @@
       else if (s.state === 'waiting' && s.wait) {
         word = waitWord(s.wait.why, s.wait.seconds != null ? Math.max(0, s.wait.seconds - age) : null, stageClock);
       } else if (s.state === 'idle') word = /no instagram account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
+      else if (s.id === 'ai') word = 'running · ' + Math.round(s.minute || 0).toLocaleString('en-US') + '/min · '
+        + Math.round(s.hour || 0).toLocaleString('en-US') + '/h';
       else word = 'running' + (s.hour ? ' · ' + Math.round(s.hour).toLocaleString('en-US') + '/h' : '');
       return { id: s.id, name: STAGE_SHORT[s.id] || s.label, label: s.label, word, on: s.state === 'running' || s.state === 'waiting',
         paused: !!s.paused, action: s.paused ? 'resume' : 'pause', now: s.now || '', help: s.help || '' };

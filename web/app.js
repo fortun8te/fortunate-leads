@@ -2135,7 +2135,7 @@ function renderScraper() {
     stage('1. Collect lists', `${int(recv)} people collected, ${L.estimate ? 'about ' : ''}${int(L.left)} still to go · ${minuteRate(L.per_minute, 'list entries')}`,
       listsDone ? 100 : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen) + faster,
     stage('2. Read bios', bioLine, B.left === 0 ? 100 : 0, bioWhen),
-    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time${Q.per_hour ? ` · ${int(Q.per_hour)} per hour` : ''}`
+    stage('3. AI scoring', Q.on ? `${int(Q.left || 0)} people to score · ${Q.keys || 0} OpenRouter keys, ${Q.workers || 0} at a time · ${int(Q.per_minute || 0)} per minute · ${int(Q.per_hour || 0)} per hour`
       : `Off. Press Resume on AI at the top to let AI score ${int(Q.left || 0)} people with bios.`,
       Q.left ? 0 : 100, !Q.on ? 'Off' : !Q.left ? 'Done' : eta(Q.eta_h) ? eta(Q.eta_h) + ' left' : 'starting'),
   ].join('');
@@ -2650,7 +2650,7 @@ const Q = {
     const pct = s.verdicts ? Math.round((s.ai / s.verdicts) * 100) : 0;
     const when = !on ? 'AI scoring is off' : !Qp.left ? 'Everyone waiting has been checked' : eta(Qp.eta_h) ? eta(Qp.eta_h) + ' left' : 'starting';
     const kpi = (v, l) => `<div class="tile"><span>${l}</span><b class="num">${v}</b></div>`;
-    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour ? int(Qp.per_hour) : '–', 'AI checks per hour')}</div>
+    $('#ql-prog').innerHTML = `<div class="tiles">${kpi(int(s.ai ?? 0), 'Checked by AI')}${kpi(int(s.rules ?? 0), 'Keyword check only')}${kpi(int(Qp.left ?? 0), 'Waiting for AI')}${kpi(Qp.per_hour == null ? '–' : int(Qp.per_hour), 'AI checks per hour')}</div>
       <div class="ql-pbar"><div class="bar-p ${on && Qp.left ? 'run' : 'done'}"><i style="width:${pct}%"></i></div>
       <span class="muted">${esc(when)}${on ? ` · ${plural(Qp.workers || 0, 'check')} at a time · ${plural(Qp.keys || 0, 'OpenRouter key')}` : ''}</span></div>`;
     $('#ql-toggle').textContent = on ? 'Pause AI checks' : 'Start AI checks';
