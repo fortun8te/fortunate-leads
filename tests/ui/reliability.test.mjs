@@ -52,7 +52,7 @@ test('scraper separates active work from incomplete and capped list coverage',()
   assert.doesNotMatch(legacy,/entries missing|capped list|people collected/);
 });
 test('controls expose failed action and disable stale controls',async()=>{
-  const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],contains:()=>false};
+  const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null,contains:()=>false};
   let offline=false,postFail=false;
   const data={all_paused:false,stages:[{id:'lists',label:'Lists',state:'running',paused:false,now:'Reading',help:'Pause lists'}]};
   let code=readFileSync(new URL('../../web/controls.js',import.meta.url),'utf8');

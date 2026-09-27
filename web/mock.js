@@ -423,7 +423,7 @@
 
   // Scraper that makes progress: one list at a time, a page every ~9 s.
   const scraper = {
-    paused: false, qualify: false, qualify_auto: true, budget: { list: 3000, profile: 300 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
+    paused: false, qualify: false, qualify_auto: false, budget: { list: 3000, profile: 300 }, today: { list: 212, profile: 0 }, peopleToday: 2431,
     lists: SEED_LIST.flatMap((s, i) => ['followers', 'following'].map((d, j) => {
       const total = Math.floor(400 + rnd() * 6000);
       const st = i < 6 ? 'done' : i === 6 && j === 0 ? 'running' : s === 'packagingstudy' && d === 'following' ? 'private' : 'queued';
@@ -472,7 +472,8 @@
     return { pages_hour: on.reduce((s, a) => s + a.hour.pages, 0), people_hour: on.reduce((s, a) => s + a.hour.people, 0), last_hit_at: ago_(7 * 60000),
       online: on.length, accounts: accounts.length, pages_last_hour: accounts.reduce((s, a) => s + a.hour.pages, 0), people_last_hour: accounts.reduce((s, a) => s + a.hour.people, 0) };
   }
-  const settings = { main_list_share: 0 };
+  const settings = { main_list_share: 0, local_laya: true };
+  const scout = { on: false, available: true, model: 'grok', workers: 2, done_today: 0, done: 0, waiting: 0, usage: [], models: [{ id: 'grok', label: 'Grok' }, { id: 'space-bunny', label: 'Space Bunny' }] };
   const stagePaused = { lists: false, bios: false };
   const sites = new Map();
   function controlView() {
@@ -485,7 +486,7 @@
         hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
         today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
     });
-    return { stages, accounts, all_paused: stages.every((s) => s.paused), at: now() };
+    return { stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
   }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
@@ -508,7 +509,7 @@
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
-      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, soak: { '1h': w(1), '6h': w(1 / 5.6) },
+      paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: scraper.lists, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       progress: {
@@ -597,7 +598,7 @@
         // Resume all restarts collection; AI keeps its own explicit switch.
         const ids = body.stage === 'all' ? (pause ? ['lists', 'bios', 'ai'] : ['lists', 'bios']) : [body.stage];
         for (const id of ids) {
-          if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; }
+          if (id === 'ai') { scraper.qualify = !pause; if (pause) scraper.qualify_auto = false; else settings.local_laya = false; }
           else stagePaused[id] = pause;
         }
       }
@@ -752,11 +753,19 @@
     }
     if (path === '/api/scraper') return scraperView();
     if (path === '/api/scraper/status') {
-      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue } = scraperView();
-      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue };
+      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue } = scraperView();
+      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, local_laya, queue };
     }
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
     if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
+    if (path === '/api/scout') return { ...scout };
+    if (path === '/api/settings/scout') {
+      if ('on' in body && typeof body.on !== 'boolean') fail('on must be true or false');
+      if ('model' in body && !scout.models.some(m => m.id === body.model)) fail('unknown model');
+      if ('workers' in body && (!Number.isInteger(body.workers) || body.workers < 1 || body.workers > 8)) fail('workers must be 1-8');
+      for (const key of ['on', 'model', 'workers']) if (key in body) scout[key] = body[key];
+      return { ...scout };
+    }
     if (path === '/api/llm') return llmView();
     if (path === '/api/llm/health') return { proxy: { url: 'http://127.0.0.1:18741', up: false }, laya: { url: 'http://127.0.0.1:18742', up: true } };
     if (path === '/api/llm/keys') {
@@ -811,10 +820,15 @@
     }
     if (path === '/api/scraper/pause') { if (typeof body.paused !== 'boolean') fail('paused must be true or false'); scraper.paused = body.paused; stagePaused.lists = stagePaused.bios = body.paused; return { ok: true }; }
     if (path === '/api/settings/qualify') {
-      if ('on' in body) { if (typeof body.on !== 'boolean') fail('on must be true or false'); scraper.qualify = body.on; if (!body.on) scraper.qualify_auto = false; }
-      if ('auto' in body) scraper.qualify_auto = !!body.auto;
+      for (const key of ['on', 'auto', 'local_laya']) if (key in body && typeof body[key] !== 'boolean') fail(key + ' must be true or false');
+      const local = body.local_laya ?? settings.local_laya;
+      if (local && (body.on ?? scraper.qualify)) fail('turn external AI off to use local-only Laya');
+      if (local && body.auto) fail('automatic external AI cannot run in local-only mode');
+      if ('on' in body) { scraper.qualify = body.on; if (!body.on) scraper.qualify_auto = false; else settings.local_laya = false; }
+      if ('auto' in body) scraper.qualify_auto = body.auto;
+      if ('local_laya' in body) { settings.local_laya = body.local_laya; if (body.local_laya) scraper.qualify_auto = false; }
       for (const k of ['workers', 'llm_min', 'bio_min']) if (k in body) llm[k] = body[k];
-      return { ok: true, qualify: scraper.qualify };
+      return { ok: true, qualify: scraper.qualify, ...('local_laya' in body ? { local_laya: settings.local_laya } : {}) };
     }
     if (path === '/api/scraper/budget') { for (const [k, cap] of [['list',10000],['profile',2000]]) if (k in body && (!Number.isInteger(body[k]) || body[k] < 0 || body[k] > cap)) fail(k + ' budget must be a whole number within its limit'); scraper.budget = {...scraper.budget, ...body}; return { ok: true }; }
     if (path === '/api/scraper/snowball') {

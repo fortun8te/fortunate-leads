@@ -71,6 +71,8 @@ try:
     settle()
 
     # Per-stage controls retain state and don't affect the adjacent stage.
+    js('document.querySelector(".fl-ctl-summary").focus()')
+    key('Enter', 'Enter', '\r')
     js('document.querySelector("[data-stage=lists]").focus()')
     key('Enter', 'Enter', '\r')
     check('List pause leaves bios running', 'document.querySelector("[data-stage=lists]").dataset.action === "resume" && document.querySelector("[data-stage=bios]").dataset.action === "pause"')

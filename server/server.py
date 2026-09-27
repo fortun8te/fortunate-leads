@@ -28,6 +28,7 @@ import accounts  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
+import owner  # noqa: E402
 import engine_start  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
@@ -701,7 +702,7 @@ def lead_rows(conn, rows):
         via.setdefault(e['person_id'], []).append(e['seed'])
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         history_via.setdefault(e['person_id'], []).append(e['seed'])
-    return [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
+    result = [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
              'bio': r['bio'], 'website': r['website'], 'followers': r['followers'], 'following': r['following'],
              'posts': r['posts'], 'tier': r['tier'] or 'unread', 'score': r['score'],
              'business_fit': round(r['content_fit']) if r['content_fit'] is not None else None,
@@ -712,6 +713,15 @@ def lead_rows(conn, rows):
              'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
              'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
+    for person in result:
+        person['manual_tags'] = [t['tag'] for t in person['tags'] if t['source'] == 'manual']
+        person['owner_status'] = owner.owner_status(person)
+        person['reachable'] = True if person['owner_status'] in ('client', 'talking') else None
+        person['owner_conflict'] = owner.owner_conflict(person)
+        person['tags'] = owner.visible_tags(person, person['tags'])
+        person.update(owner.owner_recommendation(person, person))
+    return result
+
 
 
 def csv(q, key):
@@ -883,6 +893,9 @@ def api_person(conn, q, b, pid):
         except ValueError:
             ev = []
         verdict['evidence'] = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
+    owner_facts = with_owner(conn, dict(row))
+    if verdict:
+        verdict = owner.owner_recommendation(owner_facts, verdict)
     # Active work takes precedence over history; otherwise show the latest request for this profile.
     job = conn.execute("SELECT state FROM jobs WHERE kind='profile' AND handle=? AND state!='cancelled' "
                        "ORDER BY (state IN ('queued','leased')) DESC, id DESC LIMIT 1", (row['handle'],)).fetchone()
@@ -1353,6 +1366,9 @@ def map_graph(conn, q):
     node_of = {r['id']: f"p:{r['id']}" for r in people}
     node_of.update((s['pid'], f"s:{s['handle']}") for s in seeds if s['pid'])
     links, seeds_of, tags, alltags = [], {}, {}, {}
+    map_owners = {r['id']: dict(r) for r in people}
+    map_owners.update({s['pid']: dict(s) for s in seeds if s['pid']})
+    raw_tags = {}
     for chunk in chunks(node_of):
         marks = ','.join('?' * len(chunk))
         for e in conn.execute(f'SELECT e.*,v.active,v.observed_at,v.checked_at FROM edges e '
@@ -1363,10 +1379,14 @@ def map_graph(conn, q):
                           'observed_at': e['observed_at'], 'checked_at': e['checked_at']})
             if e['active'] == 1 and e['seed'] not in seeds_of.setdefault(e['person_id'], []):
                 seeds_of[e['person_id']].append(e['seed'])
-        for t in conn.execute(f'SELECT t.person_id, t.tag FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
-            alltags.setdefault(t['person_id'], set()).add(t['tag'])
-            if len(tags.setdefault(t['person_id'], [])) < MAP_TAGS:
-                tags[t['person_id']].append(t['tag'])
+        for t in conn.execute(f'SELECT t.* FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
+            raw_tags.setdefault(t['person_id'], []).append(dict(t))
+    for pid, person in map_owners.items():
+        raw = raw_tags.get(pid, [])
+        person['manual_tags'] = [t['tag'] for t in raw if t['source'] == 'manual']
+        visible = owner.visible_tags(person, raw)
+        alltags[pid] = {t['tag'] for t in visible}
+        tags[pid] = [t['tag'] for t in visible[:MAP_TAGS]]
     nodes = [{'id': f"s:{s['handle']}", 'kind': 'seed', 'label': s['handle'], 'tier': s['tier'], 'score': s['score'],
               'pic': f"/img/{s['pid']}" if s['pic_file'] else None, 'degree': s['degree'], 'followers': s['followers'],
               'status': s['status'], 'lists': len(seeds_of.get(s['pid'], [])), 'tags': tags.get(s['pid'], []),
@@ -1380,6 +1400,11 @@ def map_graph(conn, q):
                'tags': tags.get(r['id'], []), 'judge': judge(alltags.get(r['id'], set())),
                'pic': f"/img/{r['id']}" if r['pic_file'] else None, 'degree': r['degree'], 'lists': r['degree'],
                'status': r['status'], 'note': r['note'] or None, 'followers': r['followers'], 'seeds': seeds_of.get(r['id'], [])} for r in people]
+    for node in nodes:
+        pid = node.get('pid') if node['kind'] == 'seed' else int(node['id'].split(':', 1)[1])
+        facts = map_owners.get(pid, {})
+        node['owner_status'] = owner.owner_status(facts)
+        node.update(owner.owner_recommendation(facts, node))
     return {'nodes': nodes, 'links': links, 'total': total, 'limit': limit, 'rev': data_rev(conn)}
 
 
@@ -1579,7 +1604,7 @@ def api_qualify(conn, q, b):
         raise Bad('auto must be true or false')
     if 'local_laya' in b and not isinstance(b['local_laya'], bool):
         raise Bad('local_laya must be true or false')
-    if b.get('local_laya') and b.get('on', db.get_setting(conn, 'qualify')):
+    if b.get('local_laya', db.get_setting(conn, 'local_laya')) and b.get('on', db.get_setting(conn, 'qualify')):
         raise Bad('turn external AI off to use local-only Laya')
     if b.get('auto') and b.get('local_laya', db.get_setting(conn, 'local_laya')):
         raise Bad('automatic external AI cannot run in local-only mode')
@@ -2147,7 +2172,7 @@ def refresh_network(conn, pids, prior=None, me=None, nets=None):
                     previous, before['edges'], before['net']))
         if not valid:
             continue
-        score = qualify.blend(old['content_fit'], nets[pid])
+        score = owner.owner_recommendation(p, {'score': qualify.blend(old['content_fit'], nets[pid])})['score']
         _, lfit = laya_row(conn, pid)
         pre = qualify.prefilter(p, sorted({e['seed'] for e in edges}), nets[pid], lfit)
         if (score, pre, hashed, p['updated_at']) != (old['score'], old['prefilter'], old['input_hash'], old['updated_at']):

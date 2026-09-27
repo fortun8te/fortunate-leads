@@ -9,6 +9,7 @@ const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8'
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const state = (paused = false, waitStage = null) => ({
   all_paused: false,
+  local_laya: false,
   stages: ['lists', 'bios', 'ai'].map(id => ({
     id, label: { lists: 'Collect lists', bios: 'Read bios', ai: 'AI scoring' }[id],
     paused: id === 'lists' && paused,
@@ -64,12 +65,9 @@ function harness({ detached = false } = {}) {
 }
 async function ready() { const h = harness(); h.respond(0); await settle(); return h; }
 
-test('stage controls mount inside the existing status area with the account and progress links', async () => {
-  assert.match(page, /<div class="status"[^>]*>[\s\S]*<a class="st-lanes"[^>]*href="#\/accounts"[\s\S]*<a class="st st-progress" href="#\/scraper"[\s\S]*<div id="stage-controls"><\/div>/);
-  assert.match(page, /<button class="btn" id="pause-btn" hidden>/);
-  assert.match(page, /<div id="stage-controls"><\/div>[\s\S]*<span class="st-act" id="st-act"><\/span>/);
-  assert.doesNotMatch(page, /id="st-act"[^>]*hidden/);
-  assert.match(style, /\.st-act:empty\s*\{\s*display:\s*none/);
+test('stage controls replace the removed legacy status controls', async () => {
+  assert.match(page, /<div class="status"[^>]*>\s*<div id="stage-controls"><\/div>/);
+  assert.doesNotMatch(page, /id="(?:st-act|st-lanes|pause-btn|set-q-on)"/);
   const h = harness({ detached: true });
   assert.equal(h.slot.child, h.el);
   h.respond(0); await settle();
@@ -177,4 +175,32 @@ test('wait pills distinguish Instagram limits, daily caps, and routine request g
   await settle();
   assert.match(gap.el.innerHTML, /request gap · next in 45 s/);
   assert.doesNotMatch(gap.el.innerHTML, /Instagram limit/);
+});
+
+
+test('local Laya and external AI have separate states and external-only actions', async () => {
+  const h = harness();
+  const local = state();
+  local.local_laya = true;
+  local.stages[2].paused = true;
+  local.stages[2].state = 'paused';
+  h.respond(0, local); await settle();
+  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Enabled<\/b>/);
+  assert.match(h.el.innerHTML, /<span>External AI<\/span><b>Off<\/b>/);
+  assert.match(h.el.innerHTML, /aria-label="Turn external AI on"/);
+  assert.match(h.el.innerHTML, /<details class="fl-ctl-details">/);
+  assert.equal(h.button('ai').dataset.action, 'resume');
+  h.click('ai');
+  assert.deepEqual(JSON.parse(h.requests[1].options.body), { stage: 'ai', action: 'resume' });
+});
+
+test('local setting-only changes refresh the summary, and offline states become unknown', async () => {
+  const h = await ready();
+  h.poll(); const local = state(); local.local_laya = true;
+  h.respond(1, local); await settle();
+  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Enabled<\/b>/);
+  h.poll(); h.fail(2); await settle();
+  assert.match(h.el.innerHTML, /<span>Collection<\/span><b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML, /<span>Local Laya<\/span><b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML, /<span>External AI<\/span><b>Unknown<\/b>/);
 });

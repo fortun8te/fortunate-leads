@@ -502,15 +502,14 @@ def pick_models(data):
 
 
 def model_order(chosen, auto):
-    """Stealth models first (auto-added), then the chosen list (or the built-in fallback). Models that vanished from
-    the live free list are dropped, but the built-in fallback always stays so there is a working order."""
-    auto = auto if isinstance(auto, dict) else {}
-    stealth = [m for m in auto.get('stealth') or [] if isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m)]
-    live = set(stealth) | {m for m in auto.get('free') or [] if isinstance(m, str) and free_id(m)}
-    base = [m for m in (chosen or MODELS) if isinstance(m, str) and free_id(m)]
-    if live:
-        base = [m for m in base if m in live] or [m for m in MODELS if m in live] or list(MODELS)
-    return tuple(list(dict.fromkeys(stealth[:3] + base))[:MODELS_MAX])
+    """Keep the user's saved order. The catalogue offers choices; it never selects them.
+
+    A temporarily missing catalogue entry may still work, so availability does not
+    remove a saved choice. If none is configured, use the fixed built-in defaults.
+    """
+    base = [m for m in (chosen or MODELS)
+            if isinstance(m, str) and MODEL_RX.fullmatch(m) and free_id(m)]
+    return tuple(list(dict.fromkeys(base or MODELS))[:MODELS_MAX])
 
 
 def refresh_models(path=None, force=False, fetch=None):

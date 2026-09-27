@@ -86,3 +86,35 @@ test('start all resumes collection and paused lanes without changing AI choice',
   assert.equal(after.find((a)=>a.hold==='login').status,'needs_login');
   assert.equal(after.find((a)=>a.cooldown_until).status,'cooldown');
 });
+
+
+test('control demo separates local Laya from external AI', async () => {
+  const api = demo();
+  const initial = (await api('control')).data;
+  assert.equal(initial.local_laya, true);
+  assert.equal(initial.stages.find(s => s.id === 'ai').paused, true);
+  const paused = (await api('control', {stage: 'all', action: 'pause'})).data;
+  assert.equal(paused.local_laya, true);
+  const external = (await api('control', {stage: 'ai', action: 'resume'})).data;
+  assert.equal(external.local_laya, false);
+  assert.equal(external.stages.find(s => s.id === 'ai').paused, false);
+});
+
+test('checking mode roundtrips through settings, scraper and status without mixing local and external', async () => {
+  const api = demo();
+  for (const [on, local_laya] of [[false, true], [false, false], [true, false]]) {
+    const research = await api('settings/scout', { on: false });
+    assert.equal(research.status, 200);
+    assert.equal((await api('scout')).data.on, false);
+    const saved = await api('settings/qualify', { on, local_laya, auto: false });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.local_laya, local_laya);
+    for (const endpoint of ['scraper', 'scraper/status', 'control']) {
+      const { data } = await api(endpoint);
+      assert.equal(data.local_laya, local_laya, endpoint);
+      if (endpoint !== 'control') assert.equal(data.qualify, on, endpoint);
+    }
+  }
+  assert.equal((await api('settings/qualify', { on: true, local_laya: true })).status, 400);
+  assert.equal((await api('scraper/status')).data.local_laya, false);
+});
