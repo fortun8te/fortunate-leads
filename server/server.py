@@ -1401,10 +1401,10 @@ OBSERVED_RATE_WINDOW = timedelta(minutes=1)
 
 
 def measured_rate(conn, sql, now):
-    """Items per hour over the trailing window, measured from when work in it began (at least 15 minutes)."""
+    """Recent hourly pace; do not project an ETA after an hour without saved work."""
     since = iso(now - RATE_WINDOW)
-    n, first = conn.execute(sql, (since,)).fetchone()
-    if not n or not first:
+    n, first, last = conn.execute(sql, (since,)).fetchone()
+    if not n or not first or not last or now - utc(last) >= timedelta(hours=1):
         return None
     hours = max(0.25, (now - utc(first)).total_seconds() / 3600)
     return n / hours
@@ -1447,8 +1447,8 @@ def progress(conn, accts):
         "SELECT coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END, 0)"
         " - l.received, 0)), 0), count(CASE WHEN l.total IS NULL THEN 1 END) FROM lists l "
         "LEFT JOIN people p ON p.handle=l.seed WHERE l.state NOT IN ('done','private','error','partial')").fetchone()
-    pages_h = measured_rate(conn, 'SELECT count(*), min(at) FROM pages WHERE at>=?', now)
-    people_h = measured_rate(conn, 'SELECT coalesce(sum(users), 0), min(at) FROM pages WHERE at>=?', now)
+    pages_h = measured_rate(conn, 'SELECT count(*), min(at), max(at) FROM pages WHERE at>=?', now)
+    people_h = measured_rate(conn, 'SELECT coalesce(sum(users), 0), min(at), max(at) FROM pages WHERE at>=?', now)
     per_page = people_h / pages_h if pages_h and people_h else 25
     bio_min = db.get_setting(conn, 'bio_min') or 0
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
@@ -1459,13 +1459,13 @@ def progress(conn, accts):
         "AND p.handle NOT IN (SELECT handle FROM seeds) "
         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
     bios_left = queued + unplanned
-    bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at) FROM people WHERE bio_at>=?', now)
+    bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at), max(bio_at) FROM people WHERE bio_at>=?', now)
     lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
     q_left = conn.execute(f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
                           "AND v.model='rules' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
                           (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
-    q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
+    q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at), max(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
     q_hour = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
                           (iso(now - timedelta(hours=1)),)).fetchone()[0]
     bio_budget = (db.get_setting(conn, 'budget') or {}).get('profile') or 0
@@ -1476,9 +1476,7 @@ def progress(conn, accts):
         'bios': {'left': bios_left, 'queued': queued, 'per_hour': round(bios_h) if bios_h else None,
                  'per_minute': bios_min,
                  'per_day': sum(a['budget'].get('profile') or 0 for a in bio_lanes) or bio_budget * max(1, len(bio_lanes)),
-                 # No reads measured yet: fall back to what the daily bio limits allow.
-                 'eta_h': eta_with_budget(bios_left, bios_h or (sum(a['budget'].get('profile') or 0 for a in bio_lanes) / 24 or None),
-                                          1, bio_lanes, 'profile', now),
+                 'eta_h': eta_with_budget(bios_left, bios_h, 1, bio_lanes, 'profile', now),
                  'estimate': not bios_h},
         'qualify': {'left': q_left, 'per_hour': q_hour, 'per_minute': conn.execute(
                     'SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
