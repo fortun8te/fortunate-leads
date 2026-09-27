@@ -271,7 +271,8 @@ def kinds_for(conn, row, kinds, now):
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
     # The main lane may still take a particular list that every alt cannot view.
     # Its normal share is checked in pick_job, after that list is known.
-    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)]
+    return [k for k in kinds if k in allowed and request_budget_left(conn, row, k, now)
+            and (k != 'list' or not later(row['list_endpoint_until'], now))]
 
 
 def pick_job(conn, lane, kinds, now):
@@ -402,6 +403,7 @@ def out(conn, row, now, include_lists=True):
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
             'healthy': healthy(row, now), 'cooldown_until': full_cooldown(row, now),
+            'list_endpoint_until': row['list_endpoint_until'] if later(row['list_endpoint_until'], now) else None,
             'cool': {'list': row['list_cool_until'] if later(row['list_cool_until'], now) else None,
                      'profile': row['profile_cool_until'] if later(row['profile_cool_until'], now) else None},
             'rate': rate, 'last_limit': (rate or {}).get('last_hit_at'), 'last_error': row['last_error'],
@@ -440,6 +442,9 @@ def alerts(conn, now=None, accts=None):
 
     out_ = []
     for a in accts:
+        if a['list_endpoint_until']:
+            out_.append({'level': 'warn', 'lane_id': a['lane_id'],
+                         'text': f"{a['name']} is getting Instagram home pages instead of public lists. Its list requests will retry later."})
         if a['hold'] == 'login':
             out_.append({'level': 'error', 'lane_id': a['lane_id'],
                          'text': f"{a['name']} logged out — open its Chrome profile and log in{moved(a['lane_id'])}"})

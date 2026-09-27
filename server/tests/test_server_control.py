@@ -125,6 +125,22 @@ class ControlTest(LaneTest):
         self.assertTrue(self.stage(out, 'bios')['paused'])
         self.assertFalse(out['accounts'][0]['paused'])
 
+    def test_list_endpoint_issue_is_account_specific_and_preserves_bios(self):
+        self.seeds('s1', 's2')
+        self.bio_job()
+        first = self.nxt('a')['job']
+        self.assertEqual(first['kind'], 'list')
+        until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'running',
+                  'cool': {'list': until, 'profile': None}, 'list_endpoint_until': until})
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        import control
+        row = self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertIn('Instagram returned its home page', control.lane_wait(self.conn, row, 'list', datetime.now(timezone.utc))[0])
+        self.assertEqual(self.nxt('a', 'profile')['job']['kind'], 'profile')
+        self.assertEqual(self.nxt('b', 'list')['job']['kind'], 'list')
+        self.assertTrue(self.conn.execute('SELECT 1 FROM jobs WHERE id=? AND state IN (\'queued\',\'leased\')', (first['id'],)).fetchone())
+
 
 def load_tests(loader, tests, pattern):
     # only this file's tests; the lane helpers come from LaneTest, its tests run in their own module

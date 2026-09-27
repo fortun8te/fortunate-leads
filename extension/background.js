@@ -188,10 +188,11 @@ async function heartbeat(force) {
   if (await selfUpdate()) return;
   await whoami().catch(() => {});
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
-  const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
+  const listUnavailable = Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0);
+  const cool = { list: listUnavailable > now ? iso(listUnavailable) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
   try {
     const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null, cool,
-      hold: st.hold ? st.hold.code : null,
+      hold: st.hold ? st.hold.code : null, list_endpoint_until: st.listEndpointUntil > now ? iso(st.listEndpointUntil) : null,
       today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
       rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) } }, 10e3);
@@ -208,7 +209,9 @@ async function status(st) {
   const s = FL.statusOf(st, { ...mem, localPaused: !!(await get('localPaused')) }, now);
   chrome.action.setBadgeText({ text: s.badge });
   chrome.action.setBadgeBackgroundColor({ color: s.badge === '!' ? '#b3261e' : '#555' });
-  const bucket = (k) => ({ until: st.cool[k].until > now ? st.cool[k].until : 0, hits: st.cool[k].hits.filter((t) => now - t < FL.DAY).length,
+  const bucket = (k) => ({ until: Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0) > now ?
+      Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0) : 0,
+    hits: st.cool[k].hits.filter((t) => now - t < FL.DAY).length,
     left: Number.isFinite(left[k]) ? left[k] : null, readyAt: FL.readyAt(st, k) });
   await set({ view: { ...s, today: st.today, budget, job: mem.job ? mem.label : '', nextAt: Math.min(FL.readyAt(st, 'list'), FL.readyAt(st, 'profile')),
     lastError: st.hold ? st.hold.message : st.lastError, note: st.note, rate: FL.rateOf(st, now), at: now,
@@ -322,19 +325,22 @@ async function igRequest(gen, tab, url, kind, ctx) {
 const HOLD_MSG = { challenge: 'Instagram security check: complete it in the Instagram tab, then Resume',
   login: 'Log in to Instagram, then Resume' };
 // Records a failed job step. Local codes (network, unsupported, busy) keep the job for a retry and tell the server nothing.
-async function fail(job, bad, what, res, bucket) {
+async function fail(job, bad, what, res, bucket, publicTarget = false) {
   const now = Date.now(), sample = res ? FL.sampleOf(res, 1500) : '';
   const local = bad.code === 'network' || bad.code === 'unsupported' || bad.code === 'busy';
   const homeRedirect = bad.reason === 'list_html_home_redirect';
   const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what +
-    (homeRedirect ? ': Instagram returned its home page for the list API; profile wall unconfirmed, target will retry shortly. Check this viewer follows the target.' : '');
+    (homeRedirect ? ': Instagram returned its home page for the list API; target will retry later.' : '');
   const st = await editSt((st) => {
+    if (homeRedirect) FL.recordListRedirect(st, job.seed, publicTarget, now);
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt, bucket);
     else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now };
     else if (bad.code === 'other' && !homeRedirect) FL.backoff(st, now, 'other');
     else if (bad.code === 'network') FL.backoff(st, now, 'net');
     else if (bad.code === 'unsupported') st.infoOffUntil = now + 6 * FL.HOUR;
-    if (bad.code !== 'busy') st.lastError = hhmmss(now).slice(0, 5) + ' ' + line + (sample ? ' | ' + sample.slice(0, 300) : '');
+    if (bad.code !== 'busy') st.lastError = hhmmss(now).slice(0, 5) + ' ' + line +
+      (homeRedirect && st.listEndpointUntil > now ? ' List API unavailable for this account until ' + hhmmss(st.listEndpointUntil).slice(0, 5) + '.' : '') +
+      (sample ? ' | ' + sample.slice(0, 300) : '');
   });
   if (bad.code !== 'busy') {
     const d = { at: iso(now), version: VERSION, what, code: bad.code, reason: bad.reason || null, status: res ? res.status : 0, sample };
@@ -387,12 +393,14 @@ async function runList(gen, job, tab) {
   mem.label = '@' + job.seed + ' ' + job.direction + ' · page ' + ((cursor ? prog.pages || 0 : 0) + 1);
   const cached = await knownId(job.seed);
   let igId = job.ig_id || (cached && cached.ig_id), total = FL.count(prog.total) ?? FL.count(cached && cached[job.direction]);
+  let targetProfile = null;
   // Counts from the handle cache guide progress but cannot prove this run saw everyone.
   let totalSource = total == null ? 'unknown' : FL.count(prog.total) != null && prog.jobId === job.id && prog.totalSource === 'current_run' ? 'current_run' : 'cached';
   // Refresh the seed once at the start of each run: an ID cache cannot prove a current count.
   if (!igId || !prog.countAttempted) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);
+    targetProfile = r.p;
     if (FL.privateWall(r.info, job.seed, r.p))
       return fail(job, { code: 'private', reason: 'profile_private_wall' }, '@' + job.seed + ' ' + job.direction, r.res, 'list');
     if (!r.p || !r.p.ig_id) return fail(job, r.bad || { code: 'other', reason: 'no_ig_id' }, '@' + job.seed + ' lookup', r.res, 'list');
@@ -416,6 +424,11 @@ async function runList(gen, job, tab) {
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
       if (FL.privateWall(proof.info, job.seed, proof.p))
         return fail(job, { code: 'private', reason: 'profile_private_wall' }, mem.label, proof.res || res, 'list');
+      if (bad.reason === 'list_html_home_redirect') {
+        const p = proof.p || targetProfile;
+        const publicTarget = !!p && p.is_private === false && p.handle?.toLowerCase() === job.seed.toLowerCase();
+        return fail(job, bad, mem.label, res, 'list', publicTarget);
+      }
     }
     if (/^empty_/.test(bad.reason || '')) await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor || '' }));
     return fail(job, bad, mem.label, res, 'list');
@@ -423,6 +436,7 @@ async function runList(gen, job, tab) {
   const freshTotal = FL.pageTotal(res.json);
   if (freshTotal != null) { total = freshTotal; totalSource = 'current_run'; }
   const page = FL.parsePage(res.json), now = Date.now();
+  await editSt((st) => FL.listPageSucceeded(st));
   const stalled = !!(cursor && page.next_cursor === cursor && !page.done);
   await editProg(key, (p) => ({ ...(cursor && p.jobId === job.id ? p : {}), jobId: job.id, cursor, next: page.next_cursor, received: ctx.received + page.users.length,
     pages: (cursor ? p.pages || 0 : 0) + 1, total, totalSource, countAttempted: !!prog.countAttempted, emptyAt: null, limited: page.limited, at: now }));

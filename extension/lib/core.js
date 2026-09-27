@@ -215,7 +215,8 @@
   function fresh() {
     return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, listNextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
       cool: { list: bucket(), profile: bucket() }, hold: null, lastError: null, note: null,
-      log: [], plog: [], rlog: [], streak: { other: 0, net: 0 }, infoOffUntil: 0 };
+      log: [], plog: [], rlog: [], streak: { other: 0, net: 0 }, infoOffUntil: 0,
+      listRedirects: [], listEndpointUntil: 0, listEndpointStrikes: 0 };
   }
   function rollDay(st, now) {
     const k = dayKey(now);
@@ -235,7 +236,27 @@
     }
     st.streak = { other: 0, net: 0, ...(st.streak || {}) };
     for (const k of ['log', 'plog', 'rlog']) if (!Array.isArray(st[k])) st[k] = [];
+    if (!Array.isArray(st.listRedirects)) st.listRedirects = [];
+    st.listEndpointUntil = Number(st.listEndpointUntil) || 0;
+    st.listEndpointStrikes = Number(st.listEndpointStrikes) || 0;
     return rollDay(st, now);
+  }
+  // A home redirect on one target may be an access issue. Three different, freshly
+  // confirmed public targets point to this viewer's list endpoint instead.
+  function recordListRedirect(st, handle, publicProfile, now) {
+    st.listRedirects = (st.listRedirects || []).filter((x) => x && now - x.at < HOUR);
+    if (!publicProfile || !handle) return st;
+    const h = String(handle).toLowerCase();
+    st.listRedirects = st.listRedirects.filter((x) => x.handle !== h).concat({ handle: h, at: now });
+    if (st.listRedirects.length >= 3 || st.listEndpointStrikes > 0) {
+      st.listEndpointStrikes = Math.min(st.listEndpointStrikes + 1, 4);
+      st.listEndpointUntil = now + Math.min(30 * MIN * 2 ** (st.listEndpointStrikes - 1), 2 * HOUR);
+    }
+    return st;
+  }
+  function listPageSucceeded(st) {
+    st.listRedirects = []; st.listEndpointUntil = 0; st.listEndpointStrikes = 0;
+    return st;
   }
   // Called after every Instagram request of `kind` ('list' | 'profile'), page loads included.
   function afterRequest(st, kind, now, r = Math.random) {
@@ -296,11 +317,13 @@
 
   // Which job kinds may be asked for right now. Returns {kinds, wait, why}: kinds empty → sleep `wait` ms.
   function plan(st, left, now) {
-    const eligible = KINDS.filter((k) => left[k] > 0 && !(st.cool[k].until > now));
+    const unavailableUntil = (k) => Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0);
+    const eligible = KINDS.filter((k) => left[k] > 0 && !(unavailableUntil(k) > now));
     if (!eligible.length) {
       const cooling = KINDS.filter((k) => left[k] > 0);
       if (!cooling.length) return { kinds: [], wait: 10 * MIN, why: 'budget' };
-      return { kinds: [], wait: Math.max(1e3, Math.min(...cooling.map((k) => st.cool[k].until)) - now), why: 'cooldown' };
+      return { kinds: [], wait: Math.max(1e3, Math.min(...cooling.map(unavailableUntil)) - now),
+        why: st.listEndpointUntil > now ? 'list_endpoint' : 'cooldown' };
     }
     const win = windowOf(st, now);
     if (win.until > now) return { kinds: [], wait: Math.max(1e3, win.until - now), why: 'window' };
@@ -412,21 +435,25 @@
     if (st.hold) return { state: 'paused', text: 'Needs attention: ' + st.hold.message, badge: '!', key: 'off' };
     if (ctx.localPaused) return { state: 'paused', text: 'Paused', badge: '‖', key: 'stop' };
     if (ctx.serverPaused) return { state: 'paused', text: 'Paused in workspace', badge: '‖', key: 'stop' };
-    const lc = st.cool.list.until > now, pc = st.cool.profile.until > now;
+    const issue = st.listEndpointUntil > now;
+    const lc = st.cool.list.until > now || issue, pc = st.cool.profile.until > now;
     if (lc && pc) {
-      const until = Math.min(st.cool.list.until, st.cool.profile.until);
-      return { state: 'cooldown', text: 'Cooldown until ' + t(until), badge: badgeFor(until), key: 'cool' };
+      const until = Math.min(Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0), st.cool.profile.until);
+      return { state: 'cooldown', text: issue ? 'List API unavailable for this account until ' + t(st.listEndpointUntil) + ' · Bios cooling' :
+        'Cooldown until ' + t(until), badge: badgeFor(until), key: 'cool' };
     }
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!', key: 'off' };
     if (ctx.noTab) return { state: 'idle', text: TAB_TEXT[ctx.noTab] || TAB_TEXT.no_tab, badge: '!', key: 'off' };
     if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '', key: 'stop' };
-    const pre = lc ? 'Lists cooling until ' + t(st.cool.list.until) + ' · ' : pc ? 'Bios cooling until ' + t(st.cool.profile.until) + ' · ' : '';
-    const badge = lc ? badgeFor(st.cool.list.until) : '';
+    const pre = issue ? 'List API unavailable until ' + t(st.listEndpointUntil) + ' · ' :
+      lc ? 'Lists cooling until ' + t(st.cool.list.until) + ' · ' : pc ? 'Bios cooling until ' + t(st.cool.profile.until) + ' · ' : '';
+    const badge = lc ? badgeFor(Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0)) : '';
     if (ctx.job) return { state: 'running', text: pre + 'Scraping', badge, key: 'run' };
     if (ctx.laneWait) return { state: 'running', text: pre + 'Waiting for the last request to finish', badge, key: 'wait' };
-    const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now)).map((k) => readyAt(st, k)));
+    const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now) && (k !== 'list' || !issue)).map((k) => readyAt(st, k)));
     if (next > now && next < Infinity) return { state: 'running', text: pre + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
-    if (lc) return { state: 'cooldown', text: 'Lists cooling until ' + t(st.cool.list.until), badge, key: 'cool' };
+    if (lc) return { state: 'cooldown', text: issue ? 'List API unavailable for this account until ' + t(st.listEndpointUntil) :
+      'Lists cooling until ' + t(st.cool.list.until), badge, key: 'cool' };
     return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
   }
 
@@ -461,7 +488,8 @@
 
   const api = { controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
-    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf, privateWall };
+    afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, recordListRedirect, listPageSucceeded,
+    plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf, privateWall };
   // ---- Control strip (widget): the server's three stages as short rows. ctl = GET /api/control, now = ms ----
   const STAGE_SHORT = { lists: 'Lists', bios: 'Bios', ai: 'AI' };
   function stageClock(sec) {

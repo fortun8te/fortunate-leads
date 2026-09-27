@@ -94,6 +94,9 @@ def lane_wait(conn, row, kind, now):
     used = today.get(kind, 0) if (row['last_seen'] or '').startswith(iso(now)[:10]) else 0
     if budget and used >= budget:   # 0 = no daily limit
         return 'Daily request budget reached', int(((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now).total_seconds())
+    issue = utc(row['list_endpoint_until']) if kind == 'list' and row['list_endpoint_until'] else None
+    if issue and issue > now:
+        return 'Instagram returned its home page for several public lists; this account will retry later', int((issue - now).total_seconds())
     cool = row['list_cool_until'] if kind == 'list' else row['profile_cool_until']
     u = utc(cool) if cool else None
     if u and u > now:
