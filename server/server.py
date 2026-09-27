@@ -183,6 +183,15 @@ def ext_request(conn, q, b):
                      "attempts=max(attempts-1,0) WHERE id=?", (job['id'],))
         conn.commit()
         return {'granted': False, 'stale': True, 'wait_ms': 15000}
+    if job['experiment_viewer_ig_id']:
+        version = str(row['version'] or '').split('.')
+        viewer = accounts.account_from(q, b) or {}
+        if (row['is_main'] or row['ig_id'] != job['experiment_viewer_ig_id']
+                or viewer.get('ig_id') != job['experiment_viewer_ig_id']
+                or len(version) != 3 or not all(p.isdigit() for p in version)
+                or tuple(map(int, version)) < (3, 9, 20)):
+            conn.rollback()
+            return {'granted': False, 'stale': True, 'wait_ms': 15000}
     # Keep a valid job alive while its account waits fairly for the shared request slot.
     conn.execute('UPDATE jobs SET leased_until=? WHERE id=?',
                  (iso(now + timedelta(minutes=LEASE_MIN)), job['id']))
@@ -246,7 +255,7 @@ def ext_next(conn, q, b):
         lst = conn.execute('SELECT cursor, received FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
         out = {'id': job['id'], 'kind': 'list', 'seed': job['seed'], 'ig_id': seed and seed['ig_id'],
                'direction': job['direction'], 'cursor': lst and lst['cursor'], 'received': (lst and lst['received']) or 0,
-               'page_size': job['page_size']}
+               'page_size': job['page_size'], 'experiment_viewer_ig_id': job['experiment_viewer_ig_id']}
     else:
         p = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
@@ -335,7 +344,13 @@ def _ext_list_page(conn, q, b):
             request_key != ((old and old['cursor']) or '')):
         conn.commit()
         return {'received': received, 'stale': True}
-    if job and job['page_size'] and b.get('requested_count') != job['page_size']:
+    if job and job['experiment_viewer_ig_id']:
+        viewer = accounts.account_from(q, b) or {}
+        lane_row = conn.execute('SELECT ig_id,is_main FROM accounts WHERE lane_id=?', (accounts.lane_of(q, b),)).fetchone()
+        if (viewer.get('ig_id') != job['experiment_viewer_ig_id'] or not lane_row or lane_row['is_main']
+                or lane_row['ig_id'] != job['experiment_viewer_ig_id']):
+            raise Bad('experiment viewer changed during list run')
+    if job and job['page_size'] and (type(b.get('requested_count')) is not int or b.get('requested_count') != job['page_size']):
         raise Bad('page size changed during list run')
     valid = [u for u in (b.get('users') or []) if isinstance(u, dict) and isinstance(u.get('handle'), str)
              and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])]
@@ -482,7 +497,7 @@ def _ext_list_page(conn, q, b):
         conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,'
                      'http_status,requested_count,returned_count,new_links) VALUES(NULL,?,?,?,?,?,?,?,?,?,?)',
                      (ts, lane, job['id'], 'list', direction, 'page',
-                      metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 100),
+                      metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 200),
                       len(users), new_links))
     conn.commit()
     return {'received': received, 'stalled': True, 'partial': True} if stalled else {'received': received}
@@ -586,6 +601,35 @@ def ext_profile(conn, q, b):
     return {'id': pid}
 
 
+def scoped_follower_redirect(conn, job, b, now):
+    """Opt-in recovery for one verified route, never clearing an existing hold.
+
+    The typed HTML-home classification comes from the list response parser.
+    Missing response/lease evidence or any simultaneous warning retains the
+    default workspace policy. The existing route and target waits still apply.
+    """
+    if (db.get_setting(conn, 'follower_redirect_recovery') != 'route'
+            or not job or job['state'] != 'leased' or job['kind'] != 'list'
+            or job['direction'] != 'followers' or not job['viewer_ig_id']
+            or b.get('code') != 'other' or b.get('reason') != 'list_html_home_redirect'
+            or b.get('http_status') != 200
+            or b.get('retry_after') is not None or b.get('retry_at') is not None):
+        return False
+    try:
+        if not job['leased_until'] or utc(job['leased_until']) <= now:
+            return False
+        raw_hold = db.get_setting(conn, 'cooldown')
+        if raw_hold and clean_iso(raw_hold) is None:
+            return False
+        for row in conn.execute('SELECT hold,cooldown_until,list_cool_until,profile_cool_until FROM accounts'):
+            if row['hold'] or any(accounts.later(row[field], now) for field in
+                                  ('cooldown_until', 'list_cool_until', 'profile_cool_until')):
+                return False
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return True
+
+
 def ext_error(conn, q, b):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
@@ -623,7 +667,9 @@ def ext_error(conn, q, b):
             conn.commit()
             return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
-    if code in ('rate_limit', 'soft_block', 'login', 'challenge') or home_redirect:
+    route_recovery = home_redirect and not stale and scoped_follower_redirect(
+        conn, job, b, datetime.now(timezone.utc))
+    if code in ('rate_limit', 'soft_block', 'login', 'challenge') or (home_redirect and not route_recovery):
         now = datetime.now(timezone.utc)
         # Keep the longest known wait. A second account's shorter warning must
         # never reopen collection while the first one is still cooling.
@@ -651,6 +697,10 @@ def ext_error(conn, q, b):
         route_until = accounts.follower_route_wait(conn, current, datetime.now(timezone.utc)) if current else None
         if route_until:
             fields['list_endpoint_until'] = route_until
+            if route_recovery:
+                # Every lane rests this endpoint; ordinary profile pages and
+                # following remain subject to the unchanged shared hold.
+                db.set_setting(conn, 'followers_route_until', route_until)
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
     profile_siblings = accounts.profile_job_siblings(conn, job) if job and job['kind'] == 'profile' else []

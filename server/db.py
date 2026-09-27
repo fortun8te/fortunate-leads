@@ -63,7 +63,7 @@ CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person
 CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT,
-  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0, page_size INT);
+  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0, page_size INT, experiment_viewer_ig_id TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
@@ -268,6 +268,7 @@ def init(path):
                              ('jobs', 'lane', 'TEXT'), ('jobs', 'lease_token', 'TEXT'), ('jobs', 'viewer_ig_id', 'TEXT'),
                              ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
                              ('jobs', 'page_size', 'INT'), ('jobs', 'target_ig_id', 'TEXT'),
+                             ('jobs', 'experiment_viewer_ig_id', 'TEXT'),
                              ('collector_events', 'route', 'TEXT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
@@ -1212,15 +1213,20 @@ def start_list_run(conn, job_id, seed, direction):
         conn.execute('UPDATE lists SET run_job_id=? WHERE seed=? AND direction=?', (job_id, seed, direction))
 
 
-def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None):
+def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None, experiment_viewer_ig_id=None):
     seed = norm_handle(seed)
     if not seed or '~' in seed:
         raise ValueError('invalid Instagram seed handle')
     if direction not in ('followers', 'following'):
         raise ValueError('invalid list direction')
+    if experiment_viewer_ig_id is not None:
+        if not isinstance(experiment_viewer_ig_id, str) or not experiment_viewer_ig_id.isdigit() or direction != 'following' or page_size is None:
+            raise ValueError('following experiment requires a numeric viewer ID and page size')
     if page_size is not None:
-        if type(page_size) is not int or page_size not in (25, 50) or direction != 'followers' or refresh:
-            raise ValueError('experimental page size requires a fresh follower list')
+        follower_trial = direction == 'followers' and page_size in (25, 50) and experiment_viewer_ig_id is None
+        following_trial = direction == 'following' and page_size in (50, 100, 200) and experiment_viewer_ig_id is not None
+        if type(page_size) is not int or not (follower_trial or following_trial) or refresh:
+            raise ValueError('experimental page size requires a fresh supported list and pinned viewer')
         if (conn.execute('SELECT 1 FROM seeds WHERE handle=?', (seed,)).fetchone()
                 or conn.execute('SELECT 1 FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
                 or conn.execute('SELECT 1 FROM jobs WHERE seed=? AND direction=?', (seed, direction)).fetchone()
@@ -1243,8 +1249,8 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None)
                  (seed, direction, 'queued', ts))
     if not conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                         (seed, direction)).fetchone():
-        job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at, page_size) VALUES(?,?,?,?,?,?)',
-                              ('list', seed, direction, priority, ts, page_size)).lastrowid
+        job_id = conn.execute('INSERT INTO jobs(kind, seed, direction, priority, created_at, page_size, experiment_viewer_ig_id) VALUES(?,?,?,?,?,?,?)',
+                              ('list', seed, direction, priority, ts, page_size, experiment_viewer_ig_id)).lastrowid
         start_list_run(conn, job_id, seed, direction)
     return True
 
@@ -1286,8 +1292,11 @@ def repair_lists(conn, dry=False):
             conn.execute('INSERT INTO jobs(kind, handle, priority, created_at) VALUES(?,?,?,?)', ('profile', s, 10000, ts))
     todo = []
     partial_candidates = []
+    trial_seeds = {r[0].lower() for r in conn.execute('SELECT DISTINCT seed FROM jobs WHERE experiment_viewer_ig_id IS NOT NULL')}
     for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0 AND NOT EXISTS "
                              "(SELECT 1 FROM collection_discovery d WHERE d.handle=seeds.handle AND d.state='queued')"):
+        if s.lower() in trial_seeds:
+            continue  # Trials stop at their recorded result; never restart with an ordinary page size.
         for d in ('followers', 'following'):
             r = rows.get((s.lower(), d))
             if r is None:

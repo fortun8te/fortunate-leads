@@ -493,6 +493,7 @@ const editProg = (key, fn, gen = mem.gen) => edit('prog', (all) => {
   all = all || {}; all[key] = fn(all[key] || {}); return all;
 });
 async function runList(gen, job, tab) {
+  const requestedCount = FL.listPageSize(job, (await get('account'))?.ig_id);
   const key = job.seed.toLowerCase() + '/' + job.direction, cursor = job.cursor || null;
   let prog = FL.listProgress(job, ((await get('prog')) || {})[key]);
   mem.label = '@' + job.seed + ' ' + job.direction + ' · page ' + ((cursor ? prog.pages || 0 : 0) + 1);
@@ -514,7 +515,6 @@ async function runList(gen, job, tab) {
     await editProg(key, () => prog, gen);
     if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return; // job stays in `cur` and resumes
   }
-  const requestedCount = job.direction === 'following' ? 50 : job.page_size === 50 ? 50 : 25;
   const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + requestedCount +
     (cursor ? '&max_id=' + encodeURIComponent(cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   // Another lane may have moved this list on since we last saw it: the server's count is then the one to trust.

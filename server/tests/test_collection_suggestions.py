@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db
 import collection_suggestions as suggestions
+import discovery_policy
 
 
 class CollectionSuggestions(unittest.TestCase):
@@ -273,6 +274,61 @@ class CollectionSuggestions(unittest.TestCase):
         pid=self.person('follow_only',None)
         self.conn.execute('INSERT INTO map_person_degree(person_id,degree) VALUES(?,99)',(pid,))
         self.assertEqual(self.rows(),[])
+
+    def test_completion_policy_is_explicit_and_does_not_change_manual_preview(self):
+        self.person('large', 90, following=6000)
+        self.person('small', 80, following=90)
+        self.assertEqual(suggestions.policy(self.conn), 'saved_fit')
+        self.assertEqual(suggestions.suggest(self.conn, 1, following_only=True, automatic=True)['suggestions'][0]['handle'], 'large')
+        suggestions.set_policy(self.conn, 'bounded_completion')
+        self.assertEqual(self.rows()[0]['handle'], 'large')
+        self.assertEqual(suggestions.suggest(self.conn, 1, following_only=True, automatic=True)['suggestions'][0]['handle'], 'small')
+        with self.assertRaises(ValueError):
+            suggestions.set_policy(self.conn, 'fastest')
+
+    def test_completion_policy_preserves_owner_evidence_and_strong_fit_band(self):
+        self.person('small_good', 50, following=10)
+        self.person('large_strong', 90, following=6000)
+        self.person('client', None, 'client', following=7000)
+        suggestions.set_policy(self.conn, 'bounded_completion')
+        self.assertEqual(suggestions.queue_when_idle(self.conn, self.account())['handle'], 'client')
+        self.conn.execute("UPDATE jobs SET state='done'")
+        self.assertEqual(suggestions.queue_when_idle(self.conn, self.account())['handle'], 'large_strong')
+
+    def test_fourth_admission_advances_large_or_unknown_original_target(self):
+        for unknown in (False, True):
+            with self.subTest(unknown=unknown):
+                self.conn.execute('DELETE FROM collection_discovery')
+                self.conn.execute('DELETE FROM jobs')
+                self.conn.execute('DELETE FROM lists')
+                self.conn.execute('DELETE FROM people')
+                self.person('original', 95, following=None if unknown else 7000)
+                for i in range(5):
+                    self.person('small' + str(i), 80, following=10)
+                suggestions.set_policy(self.conn, 'bounded_completion')
+                row = self.account()
+                selected = []
+                for _ in range(4):
+                    selected.append(suggestions.queue_when_idle(self.conn, row)['handle'])
+                    self.conn.execute("UPDATE jobs SET state='done'")
+                self.assertEqual(selected, ['small0', 'small1', 'small2', 'original'])
+
+    def test_completion_ranking_is_read_only_and_keeps_partial_excluded(self):
+        self.person('partial', 99, following=2)
+        self.conn.execute("INSERT INTO lists(seed,direction,state,cursor,received,total) VALUES('partial','following','partial','keep',1,2)")
+        self.person('fresh', 80, following=20)
+        suggestions.set_policy(self.conn, 'bounded_completion')
+        before = self.conn.total_changes
+        rows = suggestions.suggest(self.conn, 1, following_only=True, automatic=True)['suggestions']
+        self.assertEqual(rows[0]['handle'], 'fresh')
+        self.assertEqual(self.conn.total_changes, before)
+        self.assertEqual(tuple(self.conn.execute("SELECT state,cursor,received FROM lists WHERE seed='partial'").fetchone()), ('partial','keep',1))
+
+    def test_request_estimate_keeps_unknown_and_counts_target_lookup(self):
+        self.assertIsNone(discovery_policy.estimated_requests(None))
+        self.assertEqual(discovery_policy.estimated_requests(1), 2)
+        self.assertEqual(discovery_policy.estimated_requests(90), 3)
+        self.assertEqual(discovery_policy.estimated_requests(91), 4)
 
 
 if __name__=='__main__': unittest.main()
