@@ -288,6 +288,9 @@ def follower_route_wait(conn, row, now):
     a shared wait. No current shared hold or saved cursor is modified.
     """
     deadlines = [row['list_endpoint_until']] if later(row['list_endpoint_until'], now) else []
+    shared_route = db.get_setting(conn, 'followers_route_until')
+    if later(shared_route, now):
+        deadlines.append(shared_route)
     events = conn.execute(
         "SELECT e.at FROM collector_events e JOIN jobs j ON j.id=e.job_id "
         "WHERE e.lane=? AND e.at>=? AND e.kind='list' AND e.direction='followers' "
@@ -354,6 +357,8 @@ def reopen_private_for_viewer(conn, row, now):
     for lst in conn.execute("SELECT DISTINCT l.seed,l.direction FROM list_private_denials seen "
                             "JOIN lists l ON l.seed=seen.seed AND l.direction=seen.direction WHERE "
                             "(l.state='private' OR (l.state='partial' AND l.released_why='private')) "
+                            "AND NOT EXISTS(SELECT 1 FROM jobs trial WHERE trial.seed=l.seed "
+                            "AND trial.experiment_viewer_ig_id IS NOT NULL) "
                             "AND NOT EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction AND d.viewer_ig_id=?)",
                             (row['ig_id'],)).fetchall():
         if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
@@ -565,9 +570,35 @@ def coalesce_profile_jobs(conn, job, now=None):
                         (survivor['id'],)).fetchone() if survivor else None
 
 
+LIST_PAGE_QUANTUM = 4
+
+
+def collection_turn(conn, lane, kinds):
+    """Rotate only after saved pages; leave leases, ownership and cursors intact."""
+    recent = conn.execute(
+        "SELECT job_id FROM collector_events WHERE lane=? AND kind='list' AND outcome='page' "
+        "AND job_id IS NOT NULL ORDER BY at DESC, id DESC LIMIT ?",
+        (lane, LIST_PAGE_QUANTUM)).fetchall()
+    last_list = recent[0]['job_id'] if recent else None
+    yield_list = bool(len(recent) == LIST_PAGE_QUANTUM
+                      and all(page['job_id'] == last_list for page in recent))
+    prefer_profile = False
+    if 'list' in kinds and 'profile' in kinds:
+        events = conn.execute(
+            "SELECT kind FROM collector_events WHERE lane=? AND job_id IS NOT NULL "
+            "AND (kind='profile' OR (kind='list' AND outcome='page')) "
+            "ORDER BY at DESC, id DESC LIMIT ?", (lane, LIST_PAGE_QUANTUM)).fetchall()
+        prefer_profile = bool(len(events) == LIST_PAGE_QUANTUM
+                              and all(event['kind'] == 'list' for event in events))
+    return last_list, yield_list, prefer_profile
+
+
 def pick_job(conn, lane, kinds, now, allow_page_size=True):
-    """The next job for this lane (inside the caller's write transaction), or None. Lists first: its own list,
-    then lists another lane left mid-way (they have a cursor), then by priority."""
+    """Select eligible work with four-page turns between checkpointed lists and bios.
+
+    Normal list priority applies at each turn. An available bio gets a turn
+    after four saved list pages; a continued list yields after its own quantum.
+    """
     ts = iso(now)
     accts = conn.execute('SELECT * FROM accounts').fetchall()
     # Eligibility is stable inside this one write transaction. The main-account
@@ -600,12 +631,20 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
              and not (kind == 'profile' and main_bios_reserved(conn, row))]
     if not kinds:
         return None
+    last_list, yield_list, prefer_profile = collection_turn(conn, lane, kinds)
     marks = ','.join('?' * len(kinds))
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
     route_waiting = [r['lane_id'] for r in accts if follower_route_wait(conn, r, now)]
     follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if lane in route_waiting else ''
     page_size_filter = '' if allow_page_size else ' AND j.page_size IS NULL'
+    parts = str(row['version'] or '').split('.')
+    experiment_capable = (not row['is_main'] and len(parts) == 3
+                          and all(part.isdigit() for part in parts)
+                          and tuple(map(int, parts)) >= (3, 9, 20))
+    page_size_filter += (' AND (j.experiment_viewer_ig_id IS NULL OR j.experiment_viewer_ig_id=?)'
+                         if experiment_capable else ' AND j.experiment_viewer_ig_id IS NULL')
+    experiment_args = (row['ig_id'],) if experiment_capable else ()
     # The same recovered route wait must govern eligibility and sticky ownership.
     # Heartbeats can omit list_endpoint_until while recorded redirects still block it.
     owner_filter = (" OR (j.direction='followers' AND l.lane IN ("
@@ -664,7 +703,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
               l.cursor IS NOT NULL DESC, coalesce(l.state='running', 0) DESC,
               coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-            (ts, ts, lane, *ok, *route_waiting, *viewer_args, *alt_ids, lane)).fetchone()
+            (ts, ts, lane, *ok, *route_waiting, *viewer_args, *alt_ids, *experiment_args, lane)).fetchone()
         if fallback:
             return fallback
         if 'profile' not in kinds:
@@ -682,11 +721,13 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
                    OR busy.handle=j.handle COLLATE NOCASE)))
           AND (j.kind='profile' OR l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
           AND (j.kind='profile' OR {viewer_filter}){follower_filter}{page_size_filter}
-        ORDER BY j.kind='list' DESC,
+        ORDER BY CASE WHEN ? THEN j.kind='profile' ELSE j.kind='list' END DESC,
+          CASE WHEN j.kind='list' AND j.id=? THEN CASE WHEN ? THEN -1 ELSE 1 END ELSE 0 END DESC,
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1"""
-    args = (*kinds, ts, ts, ts, lane, *ok, *route_waiting, *viewer_args, prefer_following, lane)
+    args = (*kinds, ts, ts, ts, lane, *ok, *route_waiting, *viewer_args, *experiment_args,
+            prefer_profile, last_list, yield_list, prefer_following, lane)
     while True:
         candidate = conn.execute(query, args).fetchone()
         if not candidate or candidate['kind'] != 'profile':

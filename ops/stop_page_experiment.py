@@ -29,8 +29,8 @@ def main():
             print('No page-size trial is recorded.')
             return
         marks = ','.join('?' for _ in ids)
-        jobs = conn.execute(f"SELECT id,seed,state,page_size FROM jobs WHERE id IN ({marks}) "
-                            "AND kind='list' AND direction='followers' ORDER BY id", ids).fetchall()
+        jobs = conn.execute(f"SELECT id,seed,direction,state,page_size FROM jobs WHERE id IN ({marks}) "
+                            "AND kind='list' ORDER BY id", ids).fetchall()
         active = [job for job in jobs if job['state'] in ('queued', 'leased')]
         for job in jobs:
             print(f"Job {job['id']} @{job['seed']}: {job['state']}, request {job['page_size']}")
@@ -40,7 +40,7 @@ def main():
                              'retry_not_before=NULL WHERE id=?', (job['id'],))
                 conn.execute("UPDATE lists SET state='partial',"
                              "error='Page-size trial stopped; saved links are partial.' "
-                             'WHERE seed=? AND direction=\'followers\' AND state!=\'done\'', (job['seed'],))
+                             'WHERE seed=? AND direction=? AND state!=\'done\'', (job['seed'],job['direction']))
             conn.commit()
             print(f'Stopped {len(active)} active trial jobs; saved links remain.')
         else:

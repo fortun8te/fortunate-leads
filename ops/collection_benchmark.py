@@ -40,6 +40,8 @@ def report(conn, since, until):
         'WHERE p.at>=? AND p.at<? GROUP BY p.lane,j.direction ORDER BY pages DESC', (start, end))]
     errors, page_sizes, experiment_cohort, experiment_window, experiment_accounts, first_event = [], [], [], [], [], None
     experiment_at = None
+    experiment_direction = 'followers'
+    experiment_people = {'unique_people': 0, 'new_people_observed_since_window_start': 0}
     collector_new = {}
     if has_events:
         collector_new = dict(conn.execute(
@@ -62,6 +64,11 @@ def report(conn, since, until):
     job_ids = cohort.get('job_ids', []) if isinstance(cohort, dict) else []
     job_ids = [job_id for job_id in job_ids if type(job_id) is int and job_id > 0]
     experiment_at = cohort.get('created_at') if isinstance(cohort, dict) and job_ids else None
+    experiment_direction = cohort.get('direction', 'followers') if isinstance(cohort, dict) else 'followers'
+    if experiment_direction not in ('followers', 'following'):
+        experiment_direction = 'followers'
+    trial_filter = ("j.direction='following' AND j.page_size IN (50,100,200)" if experiment_direction == 'following'
+                    else "j.direction='followers' AND j.page_size IN (25,50)")
     if job_ids and 'page_size' in {row[1] for row in conn.execute('PRAGMA table_info(jobs)')}:
         marks = ','.join('?' for _ in job_ids)
         experiment_cohort = [dict(row) for row in conn.execute(
@@ -70,7 +77,7 @@ def report(conn, since, until):
             "count(DISTINCT CASE WHEN j.state='partial' THEN j.id END) AS current_partial_jobs,"
             "count(DISTINCT CASE WHEN j.state='error' THEN j.id END) AS current_stopped_or_error_jobs "
             "FROM jobs j "
-            f"WHERE j.id IN ({marks}) AND j.kind='list' AND j.direction='followers' AND j.page_size IN (25,50) "
+            f"WHERE j.id IN ({marks}) AND j.kind='list' AND {trial_filter} "
             'GROUP BY j.page_size ORDER BY j.page_size', job_ids)]
         if has_events:
             experiment_window = [dict(row) for row in conn.execute(
@@ -80,7 +87,7 @@ def report(conn, since, until):
                 "sum(CASE WHEN e.reason='list_html_home_redirect' THEN 1 ELSE 0 END) AS redirects "
                 "FROM collector_events e JOIN jobs j ON j.id=e.job_id "
                 f"WHERE e.at>=? AND e.at<? AND j.id IN ({marks}) "
-                "AND j.kind='list' AND j.direction='followers' AND j.page_size IN (25,50) "
+                f"AND j.kind='list' AND {trial_filter} "
                 'GROUP BY j.page_size ORDER BY j.page_size', (start, end, *job_ids))]
             experiment_accounts = [dict(row) for row in conn.execute(
                 "SELECT j.page_size,e.lane,coalesce(a.handle,e.lane) AS account,"
@@ -91,8 +98,20 @@ def report(conn, since, until):
                 "FROM collector_events e JOIN jobs j ON j.id=e.job_id "
                 "LEFT JOIN accounts a ON a.lane_id=e.lane "
                 f"WHERE e.at>=? AND e.at<? AND j.id IN ({marks}) "
-                "AND j.kind='list' AND j.direction='followers' AND j.page_size IN (25,50) "
+                f"AND j.kind='list' AND {trial_filter} "
                 'GROUP BY j.page_size,e.lane ORDER BY j.page_size,e.lane', (start, end, *job_ids))]
+        people_row = conn.execute(
+            f'SELECT count(DISTINCT m.person_id),count(DISTINCT CASE WHEN p.first_seen>=? THEN m.person_id END) '
+            f'FROM list_members m JOIN people p ON p.id=m.person_id JOIN jobs j ON j.id=m.job_id '
+            f'WHERE m.job_id IN ({marks}) AND m.observed_at>=? AND m.observed_at<? AND {trial_filter}',
+            (start, *job_ids, start, end)).fetchone()
+        experiment_people = {'unique_people': people_row[0], 'new_people_observed_since_window_start': people_row[1],
+                             'new_people_per_hour': round(people_row[1] / hours, 2)}
+        for arm in experiment_window:
+            arm['rows_per_accepted_page'] = (round(arm['returned_users'] / arm['accepted_pages'], 2)
+                                             if arm['accepted_pages'] else None)
+            arm['returned_to_requested_ratio'] = (round(arm['returned_users'] / (arm['accepted_pages'] * arm['page_size']), 4)
+                                                   if arm['accepted_pages'] else None)
     return {'since': start, 'until': end, 'hours': round(hours, 3),
             'new_links_all_sources': new_by_direction, 'collector_new_links': collector_new,
             'collector_history_covers_window': bool(first_event and first_event <= start),
@@ -102,7 +121,10 @@ def report(conn, since, until):
             'errors_by_account_and_type': errors, 'follower_page_sizes_all_jobs': page_sizes,
             'experiment_cohort_current': experiment_cohort, 'experiment_in_window': experiment_window,
             'experiment_by_account_in_window': experiment_accounts,
-            'experiment_started_at': experiment_at,
+            'experiment_started_at': experiment_at, 'experiment_direction': experiment_direction,
+            'experiment_people_in_window': experiment_people,
+            'experiment_efficiency_note': 'Rows per page uses accepted pages, not all requests. Short terminal pages lower the ratio without proving a clamp.',
+            'experiment_rate_note': 'Includes elapsed waiting. Short-window rates are not daily forecasts; concurrent jobs may share discovery credit.',
             'error_history_starts': first_event}
 
 
@@ -136,9 +158,11 @@ def main():
     print('Current list coverage:', data['current_coverage'])
     print('Errors by account and request type:', data['errors_by_account_and_type'])
     print('Follower page sizes (all jobs in window):', data['follower_page_sizes_all_jobs'])
-    print('25/50 cohort (current state):', data['experiment_cohort_current'])
-    print('25/50 experiment (in window):', data['experiment_in_window'])
-    print('25/50 by account (in window):', data['experiment_by_account_in_window'])
+    print(data['experiment_direction'] + ' trial (current state):', data['experiment_cohort_current'])
+    print('Requested size and actual yield (in window):', data['experiment_in_window'])
+    print('Trial by account (in window):', data['experiment_by_account_in_window'])
+    print('Distinct trial people (in window):', data['experiment_people_in_window'])
+    print(data['experiment_efficiency_note'])
     if not data['error_history_starts']:
         print('Account error history starts after the collector-events update is deployed.')
 

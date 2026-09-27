@@ -10,6 +10,7 @@ import json
 import accounts
 import control
 import db
+import discovery_policy
 
 RANK_POOL = 2000
 OWNER_POOL = 500
@@ -79,9 +80,28 @@ LIMIT :limit
 """
 
 
-def suggest(conn, limit=6, *, following_only=False):
+def policy(conn):
+    value = db.get_setting(conn, discovery_policy.POLICY_KEY, discovery_policy.LEGACY)
+    return value if value in discovery_policy.POLICIES else discovery_policy.LEGACY
+
+
+def set_policy(conn, value):
+    """Explicit opt-in; caller owns the transaction, as with set_enabled."""
+    if value not in discovery_policy.POLICIES:
+        raise ValueError('auto_discover_policy must be saved_fit or bounded_completion')
+    db.set_setting(conn, discovery_policy.POLICY_KEY, value)
+
+
+def suggest(conn, limit=6, *, following_only=False, automatic=False):
     limit = min(MAX_RESULTS, max(1, int(limit)))
-    rows = conn.execute(CANDIDATES, {'rank_pool': RANK_POOL, 'owner_pool': OWNER_POOL, 'limit': limit, 'following_only': bool(following_only)})
+    selected_policy = policy(conn)
+    completion = automatic and following_only and selected_policy == discovery_policy.COMPLETION
+    rows = list(conn.execute(CANDIDATES, {'rank_pool': RANK_POOL, 'owner_pool': OWNER_POOL,
+                'limit': discovery_policy.CANDIDATE_POOL if completion else limit,
+                'following_only': bool(following_only)}))
+    if completion:
+        admitted = conn.execute("SELECT count(*) FROM collection_discovery WHERE state='queued'").fetchone()[0]
+        rows = discovery_policy.rank_for_completion(rows, admitted)[:limit]
     suggestions = []
     for row in rows:
         status = row['owner_status']
@@ -106,6 +126,7 @@ def suggest(conn, limit=6, *, following_only=False):
                             'observed_sources': row['observed_sources']})
     today = datetime.now(timezone.utc).date().isoformat()
     return {'suggestions': suggestions, 'bounded': True, 'auto_discover': enabled(conn),
+            'auto_discover_policy': selected_policy,
             'added_today': _added_today(conn, today),
             'history': [dict(r, directions=json.loads(r['directions'])) for r in conn.execute(
                 'SELECT handle,state,at,reason,directions FROM collection_discovery ORDER BY at DESC,handle LIMIT 10')]}
@@ -175,7 +196,7 @@ def queue_when_idle(conn, row, now=None):
     # Explore a fresh following network first. Automatic discovery does not
     # add another potentially enormous follower crawl or refresh old coverage.
     # Explicit requested follower lists still win the pick_job check above.
-    candidates = suggest(conn, 1, following_only=True)['suggestions']
+    candidates = suggest(conn, 1, following_only=True, automatic=True)['suggestions']
     if not candidates:
         return None
     candidate = candidates[0]

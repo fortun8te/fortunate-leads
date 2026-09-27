@@ -1,9 +1,10 @@
-"""Create matched, new follower jobs with immutable 25/50 request sizes.
+"""Create fresh trials: followers 25/50, or pinned-viewer following 50/100/200.
 
 Dry run by default. No Instagram request is made by this script. Existing jobs,
 cursors, pacing, and account budgets are left alone.
 """
 import argparse
+import json
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,45 @@ def current_extension(conn):
     return False
 
 
+def following_trial(conn, targets, viewer_id, priority=280, apply=False):
+    """One fresh target per arm. Target/cursor/viewer never changes within an arm."""
+    targets = [db.norm_handle(target) for target in targets]
+    if len(targets) != 3 or len(set(targets)) != 3 or not all(targets):
+        raise ValueError('following trial needs three distinct new targets, in 50/100/200 order')
+    if not isinstance(viewer_id, str) or not viewer_id.isdigit():
+        raise ValueError('following trial needs --viewer-ig-id')
+    viewers = conn.execute('SELECT * FROM accounts WHERE ig_id=?', (viewer_id,)).fetchall()
+    if not viewers or any(row['is_main'] for row in viewers):
+        raise ValueError('viewer must be a known alternate account')
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    compatible = False
+    for row in viewers:
+        parts = str(row['version'] or '').split('.')
+        compatible |= bool(len(parts) == 3 and all(p.isdigit() for p in parts) and
+                           tuple(map(int, parts)) >= (3, 9, 20) and (row['last_seen'] or '') >= cutoff)
+    if apply and not compatible:
+        raise ValueError('pinned alternate needs extension 3.9.20 online before creating trial jobs')
+    plan = []
+    for target, size in zip(targets, (50, 100, 200)):
+        person = conn.execute('SELECT ig_id,is_private,following FROM people WHERE handle=?', (target,)).fetchone()
+        if not person or not person['ig_id'] or person['is_private'] != 0:
+            raise ValueError(f'{target} needs a known public profile with stable ID')
+        if any(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (target,)).fetchone()
+               for table, column in [('seeds','handle'),('lists','seed'),('jobs','seed'),('edges','seed')]):
+            raise ValueError(f'{target} already has collection history; use a fresh target')
+        plan.append({'target':target,'target_ig_id':person['ig_id'],'following':person['following'],
+                     'requested_count':size,'viewer_ig_id':viewer_id,'cursor':None})
+    if apply:
+        ids=[]
+        for arm in plan:
+            db.queue_list(conn, arm['target'], 'following', priority=priority, page_size=arm['requested_count'],
+                          experiment_viewer_ig_id=viewer_id)
+            ids.append(conn.execute("SELECT id FROM jobs WHERE seed=? AND direction='following' ORDER BY id DESC LIMIT 1", (arm['target'],)).fetchone()[0])
+        db.set_setting(conn,'page_experiment_latest',{'created_at':db.now(),'job_ids':ids,
+                       'direction':'following','viewer_ig_id':viewer_id,'sizes':[50,100,200]})
+    return plan
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--db', type=Path, required=True)
@@ -51,15 +91,26 @@ def main():
     parser.add_argument('--max-followers', type=int, default=1200)
     parser.add_argument('--min-fit', type=int, default=50)
     parser.add_argument('--priority', type=int, default=280)
+    parser.add_argument('--direction', choices=['followers','following'], default='followers')
+    parser.add_argument('--targets', help='Three fresh handles, comma separated, for following 50/100/200')
+    parser.add_argument('--viewer-ig-id')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     if args.count < 2 or args.count % 2 or args.count > 12 or args.min_followers >= args.max_followers:
         parser.error('use an even --count from 2 to 12 and an increasing follower range')
     if not args.db.is_file():
         parser.error('database does not exist')
-    conn = sqlite3.connect(str(args.db))
+    conn = sqlite3.connect(str(args.db)) if args.apply else sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        if args.direction == 'following':
+            if args.apply:
+                conn.execute('BEGIN IMMEDIATE')
+            plan = following_trial(conn, (args.targets or '').split(','), args.viewer_ig_id, args.priority, args.apply)
+            print(json.dumps({'mode':'applied' if args.apply else 'dry_run','arms':plan}, indent=2))
+            if args.apply:
+                conn.commit()
+            return
         if args.apply:
             conn.execute('BEGIN IMMEDIATE')
             if not current_extension(conn):

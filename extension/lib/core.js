@@ -551,6 +551,21 @@
     return !state.offline && !state.serverPaused && (!state.stages || state.stages[kind] !== false);
   }
 
+  // Larger following pages are an explicit fresh-run experiment, bound to one viewer.
+  function listPageSize(job, viewerId) {
+    if (job.experiment_viewer_ig_id != null) {
+      if (job.direction !== 'following' || ![50, 100, 200].includes(job.page_size) ||
+          !viewerId || String(viewerId) !== job.experiment_viewer_ig_id)
+        throw new Error('invalid following page experiment');
+      return job.page_size;
+    }
+    if (job.direction === 'following') {
+      if (job.page_size != null) throw new Error('following experiment requires a pinned viewer');
+      return 50;
+    }
+    if (job.page_size != null && ![25, 50].includes(job.page_size)) throw new Error('invalid follower page size');
+    return job.page_size === 50 ? 50 : 25;
+  }
   const api = { controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, recordListRedirect, listPageSucceeded,
@@ -592,6 +607,7 @@
     });
   }
   api.stagesView = stagesView;
+  api.listPageSize = listPageSize;
   root.FL = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
