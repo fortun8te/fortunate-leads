@@ -109,7 +109,7 @@ class FeedbackLearningTest(unittest.TestCase):
         self.assertEqual(examples[0]['label'], 'no')
         self.assertEqual(examples[0]['feedback_source'], 'status_mark')
         self.assertNotIn('Client', qualify.fewshot_text(examples))
-        server.api_mark(self.conn, {}, {'status': None}, pid)
+        server.api_mark(self.conn, {}, {'status': None, 'relationships': []}, pid)
         self.assertEqual(server.fewshot(self.conn), [])
 
     def test_note_stays_local_and_tag_edit_changes_future_prompt_without_mass_rerun(self):

@@ -242,28 +242,37 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - Old system stays untouched as backup: `~/ig-follower-export`, `~/Documents/Codex/2026-09-23/here-s-the-full-prompt-with-2/work/`.
 
 ## Owner judgement in qualification (2026-09)
-Legacy manual Client labels are promoted once into an empty relationship. Explicit existing relationships are preserved.
-Changing or clearing that relationship removes its old Client alias and records the change, so the alias cannot restore it.
-Person detail includes `note_interpretation`, with state, model, supporting quotes and advisory facts. It never writes a
-relationship or score. Editing a note invalidates its saved interpretation immediately; replies for older note versions
-are discarded. Local note reads use only the fixed loopback Ollama endpoint and require local processing to be enabled.
 
-Setting a status or note (`/mark`) or a manual tag bumps `people.updated_at`, so the next qualify batch re-derives that
-person. The external LLM packet carries `OWNER'S OWN JUDGEMENT` (status) and hand-set tags, but never the private note. The
-external `input_hash` includes status and manual tags. A note edit invalidates the local interpretation without
-triggering a redundant external model call; an explicit relationship or label change rechecks the model inputs.
-Selected examples carry up to six manual tags into future bulk LLM prompts, labelled as Michael's preferences rather
-than proof about another profile. Automatic tags are excluded. Notes are interpreted by the local Ollama reader and
-are excluded from all external model packets and examples. A manual tag edit changes future prompt versions without
-re-running every prior verdict. The example tracks the person ID, so a
-transferred handle cannot inherit the old owner's mark. `@fortun8te` is treated as Michael's account even if its seed
-row is missing; it is excluded from Laya, bulk LLM and Leadscout candidates. Leadscout/Hermes still receives only public
-profile fields for its independent evidence check; owner notes and tags are not included in its prompt. These examples
-guide later prompts; they are not model retraining or independent validation of recommendation quality.
-An exact manual `client` tag (case-insensitive) also enters the next positive example set without requiring a Client
-status. The prompt calls it a manual preference signal, not a confirmed relationship; one of the eight positive slots
-is reserved when needed. An explicit Not a fit status overrides the tag. Removing the tag removes that tag-only example.
-This does not write a status, rescore all old verdicts, or train Laya/Broad.
+Human relationships and conversation progress are independent. `/api/person/:id/mark` accepts partial updates
+for `relationships` (worked_with, client, colleague, friend, acquaintance) and optional `familiarity`
+(briefly, know_them, close, or null), alongside existing status/note fields. Client implies Worked with,
+but implies neither current work nor closeness. The legacy Client status remains compatible and its
+history survives subsequent contact-stage changes. Conversation stages include Interested, Contacted,
+Talking and Spoke before. Not a fit is a business decision and may coexist with a personal relationship.
+
+Owner context is stored separately from notes and contact stages. Updates use the shared mark revision;
+stale edits conflict rather than overwrite a newer change. Relationship-only records survive note clearing,
+startup migration and duplicate-person merges. Relationship labels are projected consistently in detail,
+lead lists, graph data and tag filtering. Familiarity is never inferred from following or a client label.
+
+Relationship edits refresh local ranking and queue affected network recommendations for background updates.
+The human context is applied alongside Laya's profile classification; it does not retrain Laya. Friendship,
+colleague and acquaintance are not positive business-fit examples. Explicit client/preference feedback can
+inform future external prompts when external qualification is enabled. It does not rescore all old verdicts.
+Untouched profiles keep their existing content hashes.
+
+Person detail includes `note_interpretation`, with model, supporting quotes and advisory facts. The local
+reader can suggest work history, friendship, acquaintance, familiarity and past conversations. Suggestions
+never write relationships or scores automatically: the owner confirms them. Editing a note invalidates its
+saved interpretation immediately; replies for old versions are discarded. Note reads use only the fixed
+loopback Ollama endpoint and require local processing to be enabled.
+
+Raw private notes never enter external model packets or examples. Confirmed relationship fields and manual
+labels do enter the owner-context portion of qualification prompts, with explicit limits on inferring timing,
+closeness or business role. A note-only edit does not trigger a redundant external model call. `@fortun8te`
+is treated as Michael's own account even if its seed row is missing and is excluded from Laya, bulk LLM and
+Leadscout candidates. Leadscout/Hermes independently checks public evidence; owner facts take precedence in
+the final presentation without rewriting its historical result. Examples guide prompts, not model training.
 
 ## Evidence-based pair comparison
 

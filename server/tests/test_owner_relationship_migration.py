@@ -32,7 +32,7 @@ class OwnerRelationshipMigration(unittest.TestCase):
             person = server.api_person(conn, {}, {}, old)
             self.assertEqual(person['status'], 'client')
             self.assertEqual(person['owner_status'], 'client')
-            server.api_mark(conn, {}, {'status': None}, old)
+            server.api_mark(conn, {}, {'status': None, 'relationships': []}, old)
             self.assertIsNone(server.api_person(conn, {}, {}, old)['owner_status'])
             self.assertEqual(conn.execute('SELECT note FROM marks WHERE person_id=?', (old,)).fetchone()[0], 'Our original note')
             self.assertEqual(conn.execute("SELECT count(*) FROM activity WHERE person_id=? AND kind='tag'", (old,)).fetchone()[0], 1)

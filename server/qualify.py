@@ -13,7 +13,7 @@ import unicodedata
 from urllib.parse import urlsplit
 
 import llm
-from owner import owner_status, owner_recommendation
+from owner import owner_status, owner_recommendation, relationships, has_connection, RELATIONSHIPS, FAMILIARITIES
 
 TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only from a model verdict (never rules)
 PROXY = llm.PROXY
@@ -240,6 +240,7 @@ def network_strength(net) -> int:
         s += max(-12, min(20, round((y - 0.25) * 60)))
     s += {'mutual': 16, 'follows': 10, 'followed': 8}.get(net.get('me'), 0)
     s += min(18, 6 * int(net.get('client_seeds') or 0))
+    s += min(9, 3 * int(net.get('known_seeds') or 0))
     if too_big(net.get('followers'), net):
         s = min(s, 20)
     return _clamp(s)
@@ -270,8 +271,8 @@ def prefilter(person: dict, seeds: list[str], net=None, laya_fit=None) -> int:
         base = min(base, 35)
     if too_big(person.get('followers'), net) or other_market(person):
         base = min(base, 15)   # no bio read or model call for people there is no way in with
-    if owner_status(person) in ('client', 'talking'):
-        base = max(base, 65)  # existing relationship overrides audience/reachability gates
+    if has_connection(person):
+        base = max(base, 65 if owner_status(person) in ('client', 'talking') or person.get('familiarity') == 'close' else 45)  # existing relationship overrides audience/reachability gates
     return _clamp(base)
 
 
@@ -677,7 +678,7 @@ def network_lines(net):
 
 
 OWNER_STATUS = {'interested': 'Interested (worth contacting)', 'contacted': 'Contacted', 'talking': 'Talking (in conversation)',
-                'client': 'Client', 'no': 'Not a fit'}
+                'client': 'Client (timing unspecified)', 'spoke_before': 'Spoke before (not necessarily in contact now)', 'no': 'Not a fit'}
 
 
 def owner_lines(person):
@@ -685,6 +686,11 @@ def owner_lines(person):
     out = []
     if person.get('status') in OWNER_STATUS:
         out.append(f"OWNER'S OWN JUDGEMENT - status Michael set himself: {OWNER_STATUS[person['status']]}")
+    if relationships(person):
+        out.append("Owner-recorded relationship: " + ', '.join(RELATIONSHIPS[k] for k in relationships(person)))
+        out.append("Relationship timing is unspecified. Worked with includes past work; Client can mean past or current. Do not infer closeness or current contact.")
+    if person.get('familiarity') in FAMILIARITIES:
+        out.append("Owner-recorded familiarity: " + FAMILIARITIES[person['familiarity']])
     if person.get('manual_tags'):
         out.append("Tags Michael set by hand: " + ', '.join(person['manual_tags']))
         if person.get('status') not in ('client', 'no') and any(
@@ -693,7 +699,7 @@ def owner_lines(person):
                        "the profile still needs its own business-fit evidence.")
     if out:
         out.append("(Lines marked OWNER come from Michael himself: follow them. Explicit pipeline status takes precedence over conflicting labels. "
-                   "Client and Talking confirm an existing relationship and reachability. Keep business fit evidence-based; "
+                   "Owner relationships confirm history, not closeness, current contact, or guaranteed reachability. Keep business fit evidence-based; "
                    "a relationship does not prove a business role. Private notes are interpreted locally and are never included here.)")
     return out
 
@@ -1016,7 +1022,11 @@ def legacy_input_hash(person: dict, edges, net=None) -> str:
                         'seeds': sorted({(str(s).lower(), str(d)) for s, d in net.get('seeds', [])}),
                         'seed_yield': net.get('seed_yield'), 'seed_marked': net.get('seed_marked'),
                         'client_seeds': net.get('client_seeds'), 'me': net.get('me')})
+    if net and net.get('known_seeds'):
+        payload.append({'known_seeds': net['known_seeds']})
     owner = [person.get('status'), (person.get('note') or '').strip(), sorted(person.get('manual_tags') or [])]
+    if relationships(person) or person.get('familiarity'):
+        owner.extend([relationships(person), person.get('familiarity')])
     if any(owner):   # appended only when set, so hashes of people Michael never touched stay as they were
         payload.append(owner)
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
@@ -1028,4 +1038,6 @@ def input_hash(person: dict, edges=None, net=None) -> str:
             'is_private', 'is_verified', 'is_business')
     payload = ['content-v1', PROMPT_VERSION, [person.get(k) for k in keys],
                [person.get('status'), sorted(person.get('manual_tags') or [])]]
+    if relationships(person) or person.get('familiarity'):
+        payload.append([relationships(person), person.get('familiarity')])
     return hashlib.sha256(json.dumps(payload, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
