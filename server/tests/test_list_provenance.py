@@ -96,6 +96,8 @@ class ListProvenanceTest(unittest.TestCase):
         job = self.next()
         server.ext_error(self.conn, self.q, dict(job_id=job['id'], lease_token=job['lease_token'], code='other', message='Temporary failure'))
         self.assertEqual(self.conn.execute('SELECT first_page_seen FROM list_runs WHERE job_id=?', (job['id'],)).fetchone()[0], 1)
+        self.conn.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
+        self.conn.commit()  # simulate the target retry delay elapsing
         self.page(self.next(), ['bob'], total=None, total_source='cached')
         self.assertEqual(self.row()['state'], 'done')
         self.assertIsNone(self.row()['error'])
@@ -161,9 +163,11 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT state FROM jobs').fetchone()[0], 'queued')
 
     def test_terminal_error_after_pages_remains_partial(self):
+        self.q['ig_id'] = ['99']
         self.page(self.start(), ['alice'], done=False, next_cursor='a', total=2)
         job = self.next()
-        server.ext_error(self.conn, self.q, dict(job_id=job['id'], lease_token=job['lease_token'], code='private'))
+        server.ext_error(self.conn, self.q, dict(job_id=job['id'], lease_token=job['lease_token'], code='private',
+                                                 reason='profile_private_wall'))
         self.assertEqual((self.row()['state'], self.row()['received'], self.row()['cursor']), ('partial', 1, 'a'))
         self.assertEqual(self.active(), {'alice'})
 

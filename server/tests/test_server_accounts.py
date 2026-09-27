@@ -161,12 +161,25 @@ class LaneTest(Base):
         self.conn.commit()
         job = self.nxt('a', 'profile')['job']
         self.assertEqual(job['handle'], 'hot')
-        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit', 'message': '429'})
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit',
+                                           'retry_at': '2099-01-01T00:00:00Z', 'message': '429'})
         following = self.nxt('b', 'profile')['job']
         self.assertEqual(following['handle'], 'other')
         blocked = self.conn.execute("SELECT retry_not_before FROM jobs WHERE handle='hot'").fetchall()
         self.assertEqual(len(blocked), 2)
         self.assertTrue(all(datetime.fromisoformat(r[0]) > datetime.now(timezone.utc) for r in blocked))
+        self.assertTrue(all(datetime.fromisoformat(r[0]) < datetime.now(timezone.utc) + timedelta(hours=1)
+                            for r in blocked))  # a lane's long cooldown is not shared by the target
+
+    def test_explicit_retry_after_is_shared_with_target(self):
+        self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','hot',100)")
+        self.conn.commit()
+        job = self.nxt('a', 'profile')['job']
+        future = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+        self.post('a', '/api/ext/error', {'job_id': job['id'], 'code': 'rate_limit',
+                                           'retry_at': future, 'retry_after': future, 'message': '429'})
+        blocked = self.conn.execute('SELECT retry_not_before FROM jobs WHERE id=?', (job['id'],)).fetchone()[0]
+        self.assertGreaterEqual(datetime.fromisoformat(blocked), datetime.fromisoformat(future))
 
     def test_profile_only_cooldown_does_not_mask_list_readiness(self):
         self.nxt('a', 'list')

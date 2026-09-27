@@ -1,5 +1,6 @@
 """Web research: queries, relevance filtering, caching and packet lines, with SearXNG and websites faked."""
 import os
+import io
 import sys
 import tempfile
 import threading
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db
 import qualify
 import websearch
+import server
 
 PERSON = {'id': 1, 'handle': 'nounnaturals', 'name': 'Noun Naturals', 'website': 'nounnaturals.com', 'bio': 'Clean hair care'}
 HITS = [
@@ -106,6 +108,12 @@ class WebResearchTest(unittest.TestCase):
                 open_url.assert_not_called()
         finally:
             gate.release()
+
+    def test_malformed_search_shape_and_one_lookup_failure_are_isolated(self):
+        with patch.object(websearch.urllib.request, 'urlopen', return_value=io.BytesIO(b'[]')):
+            self.assertEqual(websearch.search('person', retry=False), [])
+        with patch.object(websearch, 'lookup', side_effect=ValueError('bad result')):
+            self.assertEqual(server.safe_research_lookup(PERSON), {'results': [], 'site': ''})
 
     def test_web_lines_reach_the_packet_and_count_as_evidence(self):
         found = {'results': HITS[1:2], 'site': 'nounnaturals.com: store on Shopify'}
