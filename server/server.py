@@ -496,7 +496,10 @@ def ext_error(conn, q, b):
                             for a in candidates)
             final = not remaining
         else:
-            final = code in ('private', 'not_found') or (code == 'other' and job['attempts'] >= 5)
+            # A home-page HTML redirect does not prove that this list is unavailable.
+            # Keep trying this target after its delay while other lists can run.
+            final = code in ('private', 'not_found') or (code == 'other' and b.get('reason') != 'list_html_home_redirect'
+                                                       and job['attempts'] >= 5)
         conn.execute('UPDATE jobs SET state=?, leased_until=NULL, lane=NULL, lease_token=NULL WHERE id=?',
                      ('done' if code in ('private', 'not_found') and final else 'error' if final else 'queued', job['id']))
         if code in ('rate_limit', 'soft_block'):

@@ -93,6 +93,20 @@ class PrivateListHandoff(unittest.TestCase):
         self.c.commit()
         self.assertEqual(self.next('bot')['seed'], 'another')
 
+    def test_repeated_html_redirect_does_not_permanently_fail_unknown_access(self):
+        for _ in range(6):
+            job = self.next('bot')
+            self.assertIsNotNone(job)
+            server.ext_error(self.c, {'lane': ['bot']}, {'job_id': job['id'],
+                'lease_token': job['lease_token'], 'code': 'other',
+                'reason': 'list_html_home_redirect', 'message': 'wall unconfirmed'})
+            row = self.c.execute('SELECT state,retry_not_before FROM jobs WHERE id=?', (job['id'],)).fetchone()
+            self.assertEqual(row['state'], 'queued')
+            self.assertIsNotNone(row['retry_not_before'])
+            self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'queued')
+            self.c.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
+            self.c.commit()
+
     def test_stale_denial_cannot_exclude_new_holder(self):
         job = self.next('bot')
         self.c.execute("UPDATE jobs SET state='queued',lane=NULL,lease_token=NULL,leased_until=NULL WHERE id=?", (job['id'],))
