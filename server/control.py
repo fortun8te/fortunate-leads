@@ -89,6 +89,23 @@ def mins(sec):
     return f'{sec} s' if sec < 60 else f'{round(sec / 60)} min' if sec < 3600 else f'{sec / 3600:.1f} h'
 
 
+def shared_collection_wait(conn, now):
+    """Describe the workspace hold that already blocks every Instagram request."""
+    raw = db.get_setting(conn, 'cooldown')
+    if not raw:
+        return None
+    until = utc(raw)
+    if until and until <= now:
+        return None
+    why = 'Instagram collection is resting'
+    if until is None:
+        return {'state': 'waiting', 'wait': {'why': why, 'seconds': None, 'until': None, 'scope': 'workspace'},
+                'now': 'Instagram collection is on hold. Check collection settings before continuing.'}
+    seconds = max(0, int((until - now).total_seconds()))
+    return {'state': 'waiting', 'wait': {'why': why, 'seconds': seconds, 'until': iso(until), 'scope': 'workspace'},
+            'now': f'Instagram collection is resting until {until.astimezone():%H:%M}. Resumes automatically.'}
+
+
 def lane_wait(conn, row, kind, now):
     """(why, seconds) when this account can't do `kind` right now, else None."""
     if row['hold']:
@@ -152,6 +169,9 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         if not queue:
             return dict(out, state='idle', now='Running, nothing waiting to be scored.')
         return dict(out, state='running', now=f'Scoring bios with the AI model, {queue:,} waiting.')
+    shared_wait = shared_collection_wait(conn, now)
+    if shared_wait:
+        return dict(out, **shared_wait)
     kind = KIND[stage]
     # accounts that could do this stage: online, not paused, role allows it
     role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
@@ -186,6 +206,9 @@ def account_out(conn, a, row, now, all_paused):
         return dict(base, state='paused', now='Paused by you.')
     if not a['online']:
         return dict(base, state='offline', now='Offline: its Chrome window is closed or asleep.')
+    shared_wait = shared_collection_wait(conn, now) if not all_paused else None
+    if shared_wait:
+        return dict(base, **shared_wait)
     if a['hold']:
         why, sec = lane_wait(conn, row, 'list', now)
         return dict(base, state='waiting', wait={'why': why, 'seconds': sec}, now=why + '.')

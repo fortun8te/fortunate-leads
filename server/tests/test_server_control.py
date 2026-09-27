@@ -67,6 +67,32 @@ class ControlTest(LaneTest):
         self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
         self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
 
+    def test_shared_hold_explains_waiting_lists_bios_and_accounts(self):
+        self.seeds('one')
+        self.nxt('a', 'list')  # A stale-looking active lease must not hide the shared hold.
+        self.bio_job()
+        until = datetime.now(timezone.utc) + timedelta(minutes=30)
+        db.set_setting(self.conn, 'cooldown', until.isoformat())
+        db.set_setting(self.conn, 'local_laya', True)
+        self.conn.commit()
+        out = self.ctl()
+        for stage in out['stages'][:2]:
+            self.assertEqual(stage['state'], 'waiting')
+            self.assertFalse(stage['paused'])
+            self.assertEqual(stage['wait']['until'], until.isoformat())
+            self.assertEqual(stage['wait']['scope'], 'workspace')
+            self.assertGreater(stage['wait']['seconds'], 1700)
+            self.assertIn('Resumes automatically', stage['now'])
+        account = out['accounts'][0]
+        self.assertEqual(account['state'], 'waiting')
+        self.assertEqual(account['wait']['until'], until.isoformat())
+        self.assertTrue(out['local_laya'])
+        self.assertIsNone(self.stage(out, 'ai')['wait'])
+        self.assertEqual(self.stage(out, 'ai')['state'], 'paused')
+        db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
+        self.conn.commit()
+        self.assertNotIn('collection is resting', self.stage(self.ctl(), 'lists')['now'])
+
     def test_shape(self):
         out = self.ctl()
         self.assertEqual([s['id'] for s in out['stages']], ['lists', 'bios', 'ai'])

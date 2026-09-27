@@ -135,7 +135,7 @@ function relationshipHTML(r) {
   if (!value) return '';
   const owner = r.relationship_owner || 'fortun8te';
   const evidence = (r.relationship_evidence || []).filter(e => e.seed?.toLowerCase() === owner.toLowerCase());
-  const detail = evidence.map(e => `@${owner} ${e.direction === 'followers' ? 'followers' : 'following'} list${e.observed_at ? ' · observed ' + new Date(e.observed_at).toLocaleString() : ' · observation time unavailable'}`).join('; ');
+  const detail = evidence.map(e => `@${owner} ${e.direction === 'followers' ? 'followers' : 'following'} list${e.observed_at ? ' · observed ' + (/^\d{4}-\d{2}-\d{2}$/.test(e.observed_at) ? e.observed_at : new Date(e.observed_at).toLocaleString()) : ' · observation time unavailable'}`).join('; ');
   return `<span class="owner-follow" data-relationship="${value}" title="${esc(detail || 'Observed in collected lists for @' + owner + '. Observation time unavailable.')}" aria-label="${esc(RELATIONSHIP_LABELS[value] + '. ' + (detail || 'Observed in collected lists for @' + owner))}">${esc(RELATIONSHIP_LABELS[value])}</span>`;
 }
 const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join(', ') + (seeds.length > n ? ` +${seeds.length - n}` : '');
