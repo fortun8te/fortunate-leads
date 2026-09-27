@@ -129,9 +129,11 @@ def ext_next(conn, q, b):
     accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
     version = b.get('version') or (q.get('version') or [None])[0] or (row and row['version'])
+    parts = str(version or '').split('.')
+    version_valid = all(part.isdigit() for part in parts)
+    version_number = tuple(int(part) for part in (parts + ['0', '0'])[:3]) if version_valid else (0, 0, 0)
     if version:
-        parts = str(version).split('.')
-        supported = all(p.isdigit() for p in parts) and tuple(int(p) for p in (parts + ['0', '0'])[:2]) >= (3, 8)
+        supported = version_number >= (3, 8, 0)
         if not supported:
             conn.commit()
             return dict(st, job=None, upgrade_required=True, minimum_version='3.8.0')
@@ -148,10 +150,14 @@ def ext_next(conn, q, b):
     # expired leases are re-leased below; a profile read that never comes back after N leases is parked, not retried forever
     conn.execute("UPDATE jobs SET state='error', leased_until=NULL WHERE kind='profile' AND state='leased' AND leased_until<? "
                  "AND attempts>=?", (ts, PROFILE_MAX_ATTEMPTS))
-    job = accounts.pick_job(conn, lane, kinds, now)
+    job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=version_number >= (3, 9, 12))
     if not job:
         conn.commit()
         return dict(st, job=None)
+    if job['page_size']:
+        if version_number < (3, 9, 12):
+            conn.commit()
+            return dict(st, job=None, upgrade_required=True, minimum_version='3.9.12')
     token = secrets.token_hex(16)
     conn.execute("UPDATE jobs SET state='leased', leased_until=?, attempts=attempts+1, lane=?, lease_token=?, viewer_ig_id=? WHERE id=?",
                  (iso(now + timedelta(minutes=LEASE_MIN)), lane, token, row['ig_id'], job['id']))
@@ -164,7 +170,8 @@ def ext_next(conn, q, b):
                             'WHERE s.handle=?', (job['seed'],)).fetchone()
         lst = conn.execute('SELECT cursor, received FROM lists WHERE seed=? AND direction=?', (job['seed'], job['direction'])).fetchone()
         out = {'id': job['id'], 'kind': 'list', 'seed': job['seed'], 'ig_id': seed and seed['ig_id'],
-               'direction': job['direction'], 'cursor': lst and lst['cursor'], 'received': (lst and lst['received']) or 0}
+               'direction': job['direction'], 'cursor': lst and lst['cursor'], 'received': (lst and lst['received']) or 0,
+               'page_size': job['page_size']}
     else:
         p = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
@@ -235,6 +242,12 @@ def _ext_list_page(conn, q, b):
     for field in ('done', 'limited'):
         if field in b and not isinstance(b[field], bool):
             raise Bad(f'{field} must be a boolean')
+    if b.get('has_more') is not None and not isinstance(b['has_more'], bool):
+        raise Bad('has_more must be a boolean or null')
+    if b.get('has_more') is True and b.get('done') and not b.get('limited'):
+        raise Bad('page promises more but was marked done')
+    if b.get('has_more') is False and b.get('next_cursor'):
+        raise Bad('page reports an end but retains a cursor')
     if not isinstance(b.get('users', []), list):
         raise Bad('users must be a list')
     requested = b.get('requested_cursor') if 'requested_cursor' in b else (old and old['cursor'])
@@ -248,6 +261,8 @@ def _ext_list_page(conn, q, b):
             request_key != ((old and old['cursor']) or '')):
         conn.commit()
         return {'received': received, 'stale': True}
+    if job and job['page_size'] and b.get('requested_count') != job['page_size']:
+        raise Bad('page size changed during list run')
     valid = [u for u in (b.get('users') or []) if isinstance(u, dict) and isinstance(u.get('handle'), str)
              and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])]
     page_key = db.list_page_key(seed, direction, [dict(u, ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int))
@@ -329,7 +344,7 @@ def _ext_list_page(conn, q, b):
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
     if seed_ig_id is not None:
         conn.execute('UPDATE seeds SET ig_id=? WHERE handle=?', (seed_ig_id, seed))
-    pids, flipped = [], set()
+    pids, flipped, new_links = [], set(), 0
     users = b.get('users') if isinstance(b.get('users'), list) else []
     for u in users:
         if (isinstance(u, dict) and isinstance(u.get('handle'), str) and db.norm_handle(u['handle'])
@@ -337,7 +352,7 @@ def _ext_list_page(conn, q, b):
             u = dict(u, name=text_or_none(u.get('name')), pic_url=text_or_none(u.get('pic_url')),
                      ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int)) and not isinstance(u.get('ig_id'), bool) else None)
             pid = db.upsert_person(conn, {k: u.get(k) for k in ('ig_id', 'handle', 'name', 'pic_url', 'is_private', 'is_verified')}, ts)
-            db.add_edge(conn, seed, pid, direction, ts, flipped=flipped)
+            new_links += int(db.add_edge(conn, seed, pid, direction, ts, flipped=flipped))
             db.observe_edge(conn, seed, pid, direction, page_key, job['id'] if job else None, ts)
             pids.append(pid)
             if job:
@@ -389,6 +404,12 @@ def _ext_list_page(conn, q, b):
     # A positive observation can restore a previous relationship without adding a new edge row.
     if pids or changed:
         clear_caches()
+    if job:
+        conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,'
+                     'http_status,requested_count,returned_count,new_links) VALUES(NULL,?,?,?,?,?,?,?,?,?,?)',
+                     (ts, lane, job['id'], 'list', direction, 'page',
+                      metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 100),
+                      len(users), new_links))
     conn.commit()
     return {'received': received, 'stalled': True, 'partial': True} if stalled else {'received': received}
 
@@ -401,6 +422,10 @@ def count_or_none(v):
     if isinstance(v, str) and re.fullmatch(r'\s*\d[\d,]*\s*', v):
         v = int(v.replace(',', ''))
     return v if isinstance(v, int) and 0 <= v < 10 ** 12 else None
+
+
+def metric_int(value, low, high):
+    return value if type(value) is int and low <= value <= high else None
 
 
 def ext_profile(conn, q, b):
@@ -457,6 +482,10 @@ def ext_error(conn, q, b):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
+    event_id = b.get('event_id') if isinstance(b.get('event_id'), str) and 0 < len(b['event_id']) <= 100 else None
+    if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
+        conn.commit()
+        return {'duplicate': True}
     # challenge/login: the extension holds itself (ext.state) until Michael resumes it in the popup. No global pause here:
     # the extension can't clear the server's `paused`, so setting it left scraping stuck after a popup Resume.
     # Per lane: a login wall hands that account's lists to the other lanes now; a list limit hands its list on.
@@ -469,6 +498,14 @@ def ext_error(conn, q, b):
             # Only a matching profile-page wall can rule out this viewer. A JSON
             # error alone may be a temporary Instagram restriction.
             code = 'soft_block'
+    kind = job['kind'] if job else b.get('kind')
+    if kind not in ('list', 'profile'):
+        kind = None
+    direction = job['direction'] if was_list else (b.get('direction') if kind == 'list' else None)
+    conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,reason,http_status) '
+                 'VALUES(?,?,?,?,?,?,?,?,?)',
+                 (event_id, ts, lane, job['id'] if job else None, kind, direction, str(code or 'other')[:40],
+                  str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599)))
     if stale:
         job = None  # account-level waits still apply, but the old callback cannot change a released job
         if code not in ('rate_limit', 'soft_block'):

@@ -349,6 +349,8 @@ async function fail(job, bad, what, res, bucket, publicTarget = false) {
   if (local) return;
   const cd = st.cool[bucket] && st.cool[bucket].until > now ? st.cool[bucket].until : 0;
   await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
+    event_id: Date.now().toString(36) + Math.random().toString(36).slice(2), kind: bucket,
+    direction: job.direction || null, http_status: res ? res.status : 0,
     retry_after: bad.retryAt ? iso(bad.retryAt) : null,
     reason: bad.reason || null,
     message: String(line + ' (HTTP ' + (res ? res.status : 0) + ')' + (sample ? ' | ' + sample : '')) }, false);
@@ -410,8 +412,8 @@ async function runList(gen, job, tab) {
     await editProg(key, () => prog);
     if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return; // job stays in `cur` and resumes
   }
-  // Followers: the web app sends search_surface=follow_list_page; Instagram caps follower pages at ~25 whatever count says.
-  const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + (job.direction === 'following' ? 50 : 25) +
+  const requestedCount = job.direction === 'following' ? 50 : job.page_size === 50 ? 50 : 25;
+  const url = IG + '/api/v1/friendships/' + igId + '/' + job.direction + '/?count=' + requestedCount +
     (cursor ? '&max_id=' + encodeURIComponent(cursor) : '') + (job.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   // Another lane may have moved this list on since we last saw it: the server's count is then the one to trust.
   const ctx = FL.listContext(job, prog, total, totalSource);
@@ -452,7 +454,8 @@ async function runList(gen, job, tab) {
   if (page.limited) await trail('list capped', { seed: job.seed, direction: job.direction });
   if (stalled) await trail('list cursor repeated', { seed: job.seed, direction: job.direction, cursor });
   await queueDone('/api/ext/list-page', { job_id: job.id, lease_token: job.lease_token, requested_cursor: job.cursor || null, seed: job.seed, ig_id: igId, direction: job.direction, users: page.users,
-    next_cursor: page.next_cursor, done: page.done, total, total_source: totalSource, limited: page.limited || undefined });
+    next_cursor: page.next_cursor, done: page.done, total, total_source: totalSource, limited: page.limited || undefined,
+    has_more: page.has_more, requested_count: requestedCount, http_status: res.status });
 }
 
 // ---- profile reads (bios) ----------------------------------------------------

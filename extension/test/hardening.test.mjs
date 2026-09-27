@@ -37,13 +37,21 @@ test('list: end detection (has_more false, empty tail, missing has_more)', () =>
   assert.equal(FL.parsePage({ users: [u(1)], next_max_id: 'c', has_more: false }).done, true);
   assert.equal(FL.parsePage({ users: [u(1)] }).done, true);
   assert.equal(FL.parsePage({ users: [u(1)], next_max_id: 'c' }).next_cursor, 'c'); // has_more missing mid-list: keep going
-  // empty tail after a cursor: genuine end only when the saved count is close to the observed total
-  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 }), null);
-  assert.equal(FL.parsePage({ users: [], status: 'ok' }).done, true);
-  // empty page that still promises more, but we already hold ~all of the list: tail, not a block
-  assert.equal(FL.classify(res({ users: [], next_max_id: 'x', status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 }), null);
-  // a list that is really empty (total 0 / unknown) is fine
-  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { total: 0 }), null);
+  // An empty page needs an explicit end, even when its count looks complete.
+  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 })?.reason,
+    'empty_page_without_end');
+  assert.equal(FL.classify(res({ users: [], has_more: false, status: 'ok' }), 'list', T0,
+    { cursor: 'c9', total: 500, received: 495 }), null);
+  assert.equal(FL.parsePage({ users: [], has_more: false, status: 'ok' }).done, true);
+  // A count near the received number cannot overrule a continuing cursor.
+  assert.equal(FL.classify(res({ users: [], next_max_id: 'x', status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 })?.reason, 'empty_page_with_more');
+  // Even a fresh count cannot overrule Instagram explicitly saying more pages exist.
+  const promisedMore = res({ users: [], has_more: true, next_max_id: 'x', status: 'ok' });
+  const atCount = { cursor: 'c9', total: 500, totalSource: 'current_run', received: 500 };
+  assert.equal(FL.classify(promisedMore, 'list', T0, atCount)?.reason, 'empty_page_with_more');
+  assert.equal(FL.classify(promisedMore, 'list', T0, { ...atCount, emptyAt: 'c9' })?.reason, 'empty_page_again');
+  // A truly empty list also needs Instagram to say it ended.
+  assert.equal(FL.classify(res({ users: [], has_more: false, status: 'ok' }), 'list', T0, { total: 0 }), null);
 });
 test('empty terminal page far below the observed count gets a guarded retry', () => {
   const terminal = res({ users: [], has_more: false, status: 'ok' });
@@ -59,6 +67,12 @@ test('empty terminal page far below the observed count gets a guarded retry', ()
 test('list: contradictory or unusable pages cannot silently finish a crawl', () => {
   const noCursor = { users: [u(1)], has_more: true, status: 'ok' };
   assert.deepEqual([FL.classify(res(noCursor), 'list').code, FL.classify(res(noCursor), 'list').reason], ['other', 'missing_cursor']);
+  assert.equal(FL.classify(res({ users: [u(1)], has_more: false, next_max_id: 'c', status: 'ok' }), 'list'), null);
+  const graphqlEnd = { data: { user: { edge_followed_by: { count: 1,
+    edges: [{ node: { id: '1', username: 'u1' } }],
+    page_info: { has_next_page: false, end_cursor: 'last-edge' } } } } };
+  assert.equal(FL.classify(res(graphqlEnd), 'list'), null);
+  assert.equal(FL.parsePage(graphqlEnd).next_cursor, null);
   const noUsableUsers = { users: [{ pk: 1 }, { username: '' }], has_more: false, status: 'ok' };
   assert.deepEqual([FL.classify(res(noUsableUsers), 'list').code, FL.classify(res(noUsableUsers), 'list').reason], ['other', 'unusable_users']);
 });

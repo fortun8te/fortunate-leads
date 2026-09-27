@@ -8,7 +8,7 @@ const res = (json, status = 200, extra = {}) => ({ status, json, text: JSON.stri
 
 test('classify: ok list page and ok profile', () => {
   assert.equal(FL.classify(res({ users: [{ pk: 1, username: 'a' }], next_max_id: '25', status: 'ok' }), 'list'), null);
-  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list'), null); // genuine end
+  assert.equal(FL.classify(res({ users: [], has_more: false, status: 'ok' }), 'list'), null); // genuine end
   assert.equal(FL.classify(res({ user: { pk: 1, username: 'a', biography: '' }, status: 'ok' }), 'profile'), null);
 });
 test('classify: soft blocks', () => {
@@ -253,7 +253,7 @@ test('classify/parsePage: alternate list shapes', () => {
     edges: [{ node: { id: '5', username: 'b' } }] } } }, status: 'ok' };
   assert.equal(FL.classify(res(gql), 'list'), null);
   assert.deepEqual(FL.parsePage(gql), { users: [{ ig_id: '5', handle: 'b', name: '', pic_url: '', is_private: false, is_verified: false }],
-    next_cursor: 'C1', done: false, limited: false });
+    next_cursor: 'C1', done: false, limited: false, has_more: true });
   assert.equal(FL.parsePage({ users: [{ pk: 1, username: 'a' }], next_max_id: 25 }).next_cursor, '25'); // numeric cursor
 });
 test('classify: redirects to login/challenge, html 200 is other with a sample', () => {
