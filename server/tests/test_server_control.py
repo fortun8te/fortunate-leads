@@ -114,7 +114,7 @@ class ControlTest(LaneTest):
         self.post('a', '/api/ext/heartbeat', {'version': '3.7.0', 'state': 'running', 'ready': {'list': soon}})
         lists = self.stage(self.ctl(), 'lists')
         self.assertEqual(lists['state'], 'waiting')
-        self.assertIn('break', lists['now'])
+        self.assertIn('Waiting between requests', lists['now'])
         self.assertGreater(lists['wait']['seconds'], 150)
         self.assertEqual(self.call('/api/control', {'account': 'nope', 'action': 'pause'})[0], 404)
         self.assertEqual(self.call('/api/control', {'stage': 'x', 'action': 'pause'})[0], 400)
