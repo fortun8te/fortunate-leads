@@ -1,6 +1,6 @@
 // Dev-only mock backend. Loaded only when the page URL has ?mock=1.
 // Implements the full UI API (see docs/CONTRACT.md) in memory, including shared filters,
-// tag facets, bulk edits, tag rules, saved views and the seed map.
+// tag facets, tag rules and the seed map.
 (function () {
   let seed = 11;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
@@ -329,14 +329,6 @@
     if (fit) t.push({ tag: fit, grp: 'signal', source: 'auto' });
   });
 
-  // Saved views.
-  let viewId = 4;
-  const views = [
-    { id: 1, name: 'Brands in 2+ lists', query: 'any=Brand,Store&min_lists=2' },
-    { id: 2, name: 'Founders, no agencies', query: 'tags=Founder&not=Agency,Freelancer' },
-    { id: 3, name: 'Contacted', query: 'status=contacted' },
-  ];
-
   const row = (p) => ({
     id: p.id, handle: p.handle, name: p.name, pic: p.pic, bio: p.bio, website: p.website, category: p.category,
     followers: p.followers, following: p.following, posts: p.posts, ...verdictFields(p.id),
@@ -527,16 +519,19 @@
   }
   function editTags(id, add, remove) {
     validateTags(add, remove);
+    const client = (add || []).some((t) => t.trim().toLowerCase() === 'client');
     const t = tags.get(id).filter((x) => !(remove || []).includes(x.tag) || x.source !== 'manual');
     (add || []).forEach((a) => {
       a = a.replace(/\s+/g, ' ').trim();
-      if (!a) return;
+      if (!a || a.toLowerCase() === 'client') return;
       const i = t.findIndex((x) => x.tag === a);
       if (i >= 0 && t[i].source !== 'manual') t.splice(i, 1);
       if (!t.some((x) => x.tag === a)) t.push({ tag: a, grp: 'custom', source: 'manual' });
     });
     tags.set(id, t);
+    if (client) { setMark(id, {status:'client'}); markRevs.set(id, new Date(Date.now() + bump()).toISOString()); }
     applyRules(); bump();
+    return client ? {converted_to_status:'client', status:'client', mark_rev:markRevs.get(id)} : {};
   }
 
   function route(method, url, body) {
@@ -550,28 +545,6 @@
       if (!/^[+-]?\d+$/.test(raw.trim())) fail(key + ' must be a whole number');
       return Math.min(hi, Math.max(lo, Number(raw) || fallback));
     };
-    if (path === '/api/leads/export' && method === 'POST') {
-      if (('ids' in body) === ('query' in body)) invalid('provide either ids or query');
-      if ('ids' in body) {
-        if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 5000 || body.ids.some((id) => !Number.isInteger(id) || id < 1)) invalid('ids must be 1-5000 positive ids');
-        if (body.ids.some((id) => !people[id - 1])) invalid('some selected people no longer exist; refresh your selection');
-      } else if (typeof body.query !== 'string' || body.query.length > 16000) invalid('query must be a URL query string');
-      const p = new URLSearchParams(body.query || '');
-      const chosen = Array.isArray(body.ids) ? people.filter((x) => body.ids.includes(x.id)) : sorted(filtered(p), p.get('sort') || 'score');
-      const columns = ['id', 'handle', 'name', 'instagram_url', 'bio', 'website', 'followers', 'following', 'posts', 'tier', 'score', 'role', 'status', 'note', 'tags', 'sources', 'bio_at', 'bio_src', 'follow_up_due', 'follow_up_note', 'follow_up_completed_at'];
-      const cell = (v) => {
-        let text = String(v ?? '');
-        if (typeof v !== 'number' && (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) text = "'" + text;
-        return '"' + text.replace(/"/g, '""') + '"';
-      };
-      const lines = [columns, ...chosen.map((p) => {
-        const r = row(p), f = r.follow_up || {};
-        Object.assign(r, { instagram_url: `https://www.instagram.com/${r.handle}/`, tags: r.tags.map((t) => t.tag).join('; '), sources: r.via.join('; '),
-          follow_up_due: f.due_on, follow_up_note: f.note, follow_up_completed_at: f.completed_at });
-        return columns.map((k) => r[k]);
-      })];
-      return new Response('\ufeff' + lines.map((values) => values.map(cell).join(',')).join('\r\n') + '\r\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="fortunate-leads-demo.csv"', 'Cache-Control': 'no-store' } });
-    }
     if (path === '/api/control') {
       if (method === 'POST') {
         if (body?.action === 'start_all' && body?.stage == null) {
@@ -641,6 +614,7 @@
     if (path === '/api/tags/rename') {
       const from = String(body.from || ''), to = String(body.to || '').trim();
       if (!from || !to) return { ok: false, error: 'from and to required' };
+      if (to.toLowerCase() === 'client') fail('Use the Client relationship status instead of adding a Client label.');
       let renamed = 0;
       tags.forEach((t, id) => {
         if (!t.some((x) => x.tag === from && x.source === 'manual')) return;
@@ -654,17 +628,6 @@
       let deleted = 0;
       tags.forEach((t, id) => { const n = t.filter((x) => !(x.tag === body.tag && x.source === 'manual')); if (n.length !== t.length) { deleted++; tags.set(id, n); } });
       bump(); return { deleted };
-    }
-    if (path === '/api/people/bulk') {
-      if (!Array.isArray(body.ids) || body.ids.length > 500) fail('ids must contain at most 500 people');
-      if ('status' in body) body = { ...body, status: validStatus(body.status) };
-      validateTags(body.add, body.remove);
-      const ids = [...new Set(body.ids.map(Number).filter((id) => tags.has(id)))];
-      ids.forEach((id) => {
-        if ((body.add && body.add.length) || (body.remove && body.remove.length)) editTags(id, body.add, body.remove);
-        if ('status' in body) { setMark(id, { status: body.status }); markRevs.set(id, marks.has(id) || notes.has(id) ? new Date(Date.now() + bump()).toISOString() : ''); }
-      });
-      return { ok: true, changed: ids.length };
     }
     if (path === '/api/tag-rules' && method === 'GET') return rules.map((r) => ({ ...r }));
     if (path === '/api/tag-rules/preview') { try { return { hits: ruleHits(q.get('field') || 'any', q.get('match')).length }; } catch (e) { return { ok: false, error: 'bad match: ' + e.message }; } }
@@ -680,16 +643,6 @@
       const i = rules.findIndex((r) => r.id === +m[1]);
       if (i >= 0) rules.splice(i, 1);
       applyRules();
-      return { ok: true };
-    }
-    if (path === '/api/views' && method === 'GET') return views.map((v) => ({ ...v }));
-    if (path === '/api/views' && method === 'POST') {
-      const v = { id: viewId++, name: String(body.name || 'View').trim(), query: String(body.query || '') };
-      views.push(v); return { ok: true, id: v.id };
-    }
-    if ((m = path.match(/^\/api\/views\/(\d+)\/delete$/))) {
-      const i = views.findIndex((v) => v.id === +m[1]);
-      if (i >= 0) views.splice(i, 1);
       return { ok: true };
     }
     if (path === '/api/counts') {   // each dimension counted without its own filter, like the server
@@ -724,7 +677,7 @@
         setFollowUp(id, followUpInput(body));
         return { ok: true, follow_up: followups.get(id) || null };
       }
-      if (m[3] === 'tags') { editTags(id, body.add, body.remove); return { ok: true }; }
+      if (m[3] === 'tags') return { ok: true, ...editTags(id, body.add, body.remove) };
       if (m[3] === 'read') {
         if (!['queued', 'reading'].includes(reads.get(id))) reads.set(id, 'queued');
         readQueue.add(id);
@@ -863,7 +816,6 @@
       if (failure === 500) console.warn('mock', s, e);
       res = { ok: false, error: e.message || 'mock error', ...e.detail };
     }
-    if (res instanceof Response) return Promise.resolve(res);
     const bad = res && res.ok === false;
     return new Promise((r) => setTimeout(() => r(new Response(JSON.stringify(res ?? { ok: false, error: 'not found' }), { status: failure || (!res ? 404 : bad ? 400 : 200), headers: { 'Content-Type': 'application/json' } })), 40 + Math.random() * 80));
   };

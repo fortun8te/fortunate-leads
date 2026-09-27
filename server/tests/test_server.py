@@ -383,7 +383,7 @@ class ServerTest(Base):
         n.close()
 
 
-class TagsViewsMapTest(Base):
+class TagsMapTest(Base):
     """Shared lead filter, tag facets, tag management, tag rules, saved views, map v2, queue safety."""
 
     def people(self, spec):
@@ -446,8 +446,10 @@ class TagsViewsMapTest(Base):
         # stub tiers: founder -> hot (80), hobby -> cold (30), no bio -> unread; lists break ties inside a tier
         self.assertEqual(self.rows('sort=fit'), ['ben', 'ann', 'cat', 'dan'])
         self.assertEqual(self.call('/api/leads?sort=nope')[0], 400)
-        self.call('/api/people/bulk', {'ids': [ids['ben']], 'status': 'interested'})
-        self.call('/api/people/bulk', {'ids': [ids['cat']], 'status': 'no'})
+        for pid in [ids['ben']]:
+            self.call(f'/api/person/{pid}/mark', {'status': 'interested'})
+        for pid in [ids['cat']]:
+            self.call(f'/api/person/{pid}/mark', {'status': 'no'})
         c = self.call('/api/counts?min_lists=2&tier=hot')[1]
         self.assertEqual((c['hot'], c['cold'], c['unread'], c['interested'], c['no'], c['total']), (1, 0, 1, 1, 0, 4))  # own dimension ignored
         c = self.call('/api/counts?min_lists=2')[1]
@@ -463,8 +465,10 @@ class TagsViewsMapTest(Base):
 
     def test_shared_filter(self):
         ids = self.people(self.SPEC)
-        self.call('/api/people/bulk', {'ids': [ids['ben'], ids['cat']], 'add': ['vip']})
-        self.call('/api/people/bulk', {'ids': [ids['cat']], 'add': ['nl']})
+        for pid in [ids['ben'], ids['cat']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['vip']})
+        for pid in [ids['cat']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['nl']})
         self.assertEqual(self.rows('tags=founder,vip&sort=followers'), ['ben'])
         self.assertEqual(self.rows('any=vip,via%20@s3&sort=followers'), ['cat', 'ben', 'dan'])
         self.assertEqual(self.rows('any=vip&not=nl'), ['ben'])
@@ -502,13 +506,16 @@ class TagsViewsMapTest(Base):
 
     def test_rename_and_delete_manual_tags(self):
         ids = self.people(self.SPEC)
-        self.call('/api/people/bulk', {'ids': [ids['ann'], ids['ben']], 'add': ['warm lead']})
-        self.call('/api/people/bulk', {'ids': [ids['ben']], 'add': ['priority']})
+        for pid in [ids['ann'], ids['ben']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['warm lead']})
+        for pid in [ids['ben']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['priority']})
         self.assertEqual(self.call('/api/tags/rename', {'from': 'warm lead', 'to': 'priority'})[1], {'ok': True, 'renamed': 2})
         rows = {(r['tag'], r['person_id'], r['source']) for r in self.conn.execute("SELECT * FROM tags WHERE tag IN ('warm lead','priority')")}
         self.assertEqual(rows, {('priority', ids['ann'], 'manual'), ('priority', ids['ben'], 'manual')})  # merged, no duplicate
         # renaming onto an auto tag name upgrades that person's tag to manual (it survives requalify)
-        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['x']})
+        for pid in [ids['ann']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['x']})
         self.call('/api/tags/rename', {'from': 'x', 'to': 'founder'})
         server.qualify_batch(self.conn)
         self.assertEqual(self.conn.execute("SELECT source, grp FROM tags WHERE tag='founder' AND person_id=?", (ids['ann'],)).fetchone()[:],
@@ -519,27 +526,11 @@ class TagsViewsMapTest(Base):
         self.assertEqual(self.call('/api/tags/rename', {'from': 'a,b', 'to': 'c'})[0], 400)
         self.assertEqual(self.call('/api/tags/delete', {})[0], 400)
 
-    def test_bulk(self):
-        ids = self.people(self.SPEC)
-        allids = list(ids.values())
-        out = self.call('/api/people/bulk', {'ids': allids + [999999], 'add': ['  batch   one ', 'b2'], 'status': 'contacted'})[1]
-        self.assertEqual(out, {'ok': True, 'updated': 4, 'updated_ids': sorted(allids), 'missing_ids': [999999]})
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='batch one' AND source='manual'").fetchone()[0], 4)
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status='contacted'").fetchone()[0], 4)
-        self.call(f"/api/person/{ids['ann']}/mark", {'status': 'interested', 'note': 'call'})
-        self.call('/api/people/bulk', {'ids': allids, 'remove': ['b2']})  # no status key: marks untouched
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM marks WHERE status IS NOT NULL").fetchone()[0], 4)
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM tags WHERE tag='b2'").fetchone()[0], 0)
-        self.call('/api/people/bulk', {'ids': allids, 'status': None})
-        self.assertEqual([tuple(r) for r in self.conn.execute('SELECT person_id, status, note FROM marks')], [(ids['ann'], None, 'call')])
-        self.assertEqual(self.call('/api/people/bulk', {'ids': list(range(5001))})[0], 400)
-        self.assertEqual(self.call('/api/people/bulk', {'ids': ['1']})[0], 400)
-        self.assertEqual(self.call('/api/people/bulk', {'ids': allids, 'status': 'meh'})[0], 400)
-        self.assertEqual(self.call('/api/people/bulk', {'ids': [], 'add': ['x']})[1], {'ok': True, 'updated': 0, 'updated_ids': [], 'missing_ids': []})
 
     def test_tag_rules(self):
         ids = self.people(self.SPEC)
-        self.call('/api/people/bulk', {'ids': [ids['cat']], 'add': ['Skincare']})  # manual tag with the same name
+        for pid in [ids['cat']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['Skincare']})
         code, rule = self.call('/api/tag-rules', {'tag': 'Skincare', 'field': 'bio', 'match': 'skin care, skincare, serum*', 'grp': 'niche'})
         self.assertEqual(code, 200, rule)
         self.assertEqual({k: rule[k] for k in ('tag', 'grp', 'field', 'hits')}, {'tag': 'Skincare', 'grp': 'niche', 'field': 'bio', 'hits': 1})
@@ -585,24 +576,13 @@ class TagsViewsMapTest(Base):
             self.assertEqual((code, out['ok']), (400, False), bad)
         self.assertEqual(len(self.call('/api/tag-rules')[1]), 2)
 
-    def test_saved_views(self):
-        self.assertEqual(self.call('/api/views')[1], [])
-        v = self.call('/api/views', {'name': ' Skincare US ', 'query': '?tags=Skincare,US&sort=connected'})[1]
-        self.assertEqual((v['ok'], v['name'], v['query']), (True, 'Skincare US', 'tags=Skincare,US&sort=connected'))
-        self.call('/api/views', {'name': 'Agencies', 'query': 'tags=Agency'})
-        self.call('/api/views', {'name': 'skincare us', 'query': 'tags=Skincare'})  # same name (any case) overwrites
-        views = self.call('/api/views')[1]
-        self.assertEqual([(x['name'], x['query']) for x in views], [('Agencies', 'tags=Agency'), ('Skincare US', 'tags=Skincare')])
-        self.assertEqual(set(views[0]), {'id', 'name', 'query'})
-        self.assertEqual(self.call(f"/api/views/{v['id']}/delete", {})[1], {'ok': True, 'deleted': 1})
-        self.assertEqual([x['name'] for x in self.call('/api/views')[1]], ['Agencies'])
-        self.assertEqual(self.call('/api/views', {'name': '', 'query': 'a=b'})[0], 400)
-        self.assertEqual(self.call('/api/views', {'name': 'x', 'query': None})[0], 400)
 
     def test_map_filter_nodes_and_seed_links(self):
         ids = self.people({'ann': ('founder', 5000, ['s1', 's2', 's3']), 'ben': ('founder', 300, ['s1', 's2']),
                            'cat': ('hobby', 90000, ['s2', 's3']), 'dan': (None, None, ['s1'])})
-        self.call('/api/people/bulk', {'ids': [ids['ann']], 'add': ['m1', 'm2'], 'status': 'interested'})
+        for pid in [ids['ann']]:
+            self.call(f'/api/person/{pid}/tags', {'add': ['m1', 'm2']})
+            self.call(f'/api/person/{pid}/mark', {'status': 'interested'})
         server.qualify_batch(self.conn)
         m = self.call('/api/map?scope=all')[1]
         leads = {n['label']: n for n in m['nodes'] if n['kind'] == 'lead'}

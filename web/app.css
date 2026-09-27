@@ -299,15 +299,6 @@ main { flex: 1; min-height: 0; position: relative; }
 /* ---------- Leads list ---------- */
 .lpane, .mpane { flex: 1; min-height: 0; display: none; flex-direction: column; }
 .lpane.on, .mpane.on { display: flex; }
-.bulk { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-height: 48px; padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--line2); }
-.bulk b { font-weight: 600; margin-right: 4px; }
-.bulk .input { width: 120px; }
-.bulk .select { max-width: 160px; }
-.bulk .sep { width: 1px; height: 20px; background: var(--line3); }
-.bulk .link { color: var(--fg); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
-.bulk .st-b { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line2); border-radius: var(--r); background: var(--bg1); }
-.bulk .st-b button { height: 26px; padding: 0 8px; border-radius: var(--r2); color: var(--fg2); font-weight: 500; }
-.bulk .st-b button:hover { background: var(--bg3); color: var(--fg); }
 
 /* One grid shared by the header and every row. */
 .thead, .row {
@@ -380,9 +371,6 @@ main { flex: 1; min-height: 0; position: relative; }
 .skel { position: absolute; left: 0; right: 0; height: var(--row); display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); }
 .skel i { display: block; height: 10px; border-radius: 5px; background: var(--bg2); }
 .skel i:first-child { width: var(--av); height: var(--av); border-radius: 50%; }
-.foot { height: 34px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 var(--s5); overflow: hidden; white-space: nowrap; border-top: 1px solid var(--line); background: var(--bg1); color: var(--fg3); font-size: var(--fs-sm); }
-.foot span { display: inline-flex; align-items: center; gap: 4px; }
-.foot .num { color: var(--fg2); }
 
 /* The list responds to its own width (filters, detail and viewport all change it). */
 @container (max-width: 900px) {
@@ -465,9 +453,6 @@ main { flex: 1; min-height: 0; position: relative; }
 
 /* ---------- Map ---------- */
 .mbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: 0 var(--s5) var(--s3); flex: none; border-bottom: 1px solid var(--line); }
-.mbar .search { position: relative; flex: 0 1 280px; min-width: 120px; }
-.mbar .search .input { width: 100%; padding-right: 54px; }
-.mbar .search .num { position: absolute; right: 10px; top: 7px; color: var(--fg3); font-size: var(--fs-sm); }
 .map-density { display: inline-flex; align-items: center; gap: 6px; color: var(--fg3); font-size: var(--fs-sm); white-space: nowrap; }
 .map-density .select { min-width: 104px; }
 .map-guide { margin: 0; padding: 9px var(--s5); color: var(--fg3); font-size: var(--fs-sm); line-height: 1.5; border-bottom: 1px solid var(--line); }
@@ -748,7 +733,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .qbar .fbtn, .qbar .select { flex: 1; justify-content: center; }
   .qbox input { min-width: 80px; }
   .thead, .row { padding: 0 12px; }
-  .foot, .legend { display: none; }
+  .legend { display: none; }
   .scr, .tg, .ql { padding: var(--s4) var(--s4) var(--s6); gap: var(--s4); }
   .kpi { padding: 10px 12px; }
   .kpi b { font-size: 18px; }
@@ -774,16 +759,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .models li { padding: 4px 12px; flex-wrap: wrap; }
   .mbar { padding: 8px 12px; }
   .mbar .seg button { padding: 0 8px; }
-  .mbar #map-labels { display: none; }
   .suggest { min-width: 0; right: -1px; }
   .tg .p-head .input { width: 100%; }
-  .bulk { gap: 6px; padding: 8px 12px; }
-  .bulk .grow, .bulk .sep { display: none; }
-  .bulk #bk-x { order: 1; margin-left: auto; }
-  .bulk #bk-form, .bulk #bk-form > *, .bulk #bk-rm { order: 2; }
-  .bulk .input { flex: 1; min-width: 0; }
-  .bulk .st-b { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
-  .bulk .st-b button { flex: 1 0 auto; }
 }
 
 /* Scraper: one plain sentence, three counts, three stages. */
@@ -1010,8 +987,6 @@ details.adv > summary .num { margin-left: var(--s2); font-weight: 400; }
 }
 
 /* Lead workflow controls share the existing compact detail panel. */
-.export-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 14px; border-bottom:1px solid var(--line); }
-.export-bar [role="status"] { font-size:12px; color:var(--fg2); flex:1; min-width:120px; }
 .workflow-form { display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; min-width:0; }
 .workflow-form > * { min-width:0; }
 .workflow-form label { font-size:12px; color:var(--fg2); }
@@ -1065,7 +1040,7 @@ button:disabled { cursor:default; opacity:.5; }
 .connections-panel { flex: 1; max-height: none; min-height: 0; overflow: auto; padding: 18px 24px; border-bottom: 1px solid var(--line2); background: var(--bg1); }
 #pane-map.comparing #stage, #pane-map.comparing .mbar > :not(#connections-toggle) { display: none; }
 /* Pair comparison uses all evidence, so overview filters must not appear to apply. */
-#view-work:has(#pane-map.on.comparing) :is(.qbar, #filters, #scrim, #save-view) { display: none; }
+#view-work:has(#pane-map.on.comparing) :is(.qbar, #filters, #scrim, #save-view, #detail) { display: none; }
 .connections-panel h2 { margin: 0 0 6px; font-size: 17px; }
 .connections-panel h3 { margin: 0 0 8px; font-size: 14px; }
 .connections-note { color: var(--fg2); margin: 8px 0; line-height: 1.55; }
@@ -1116,7 +1091,6 @@ button:disabled { cursor:default; opacity:.5; }
 .ql-why p, .ql-site p, .now-line span, .stg > .muted, .alert { overflow-wrap: anywhere; }
 #map-count { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
-  .mbar .search { flex: 1 1 100%; order: 2; }
   .mbar #map-count { flex: 1 1 100%; order: 3; }
   .ql-bar .seg { max-width: 100%; overflow-x: auto; }
   .ql-card { padding: var(--s4); }
@@ -1368,3 +1342,10 @@ button:disabled { cursor:default; opacity:.5; }
 .d-tag-edit { margin-top: var(--s2); display: grid; gap: var(--s2); }
 .kv-list { display: grid; gap: 6px; }
 .kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); }
+
+/* Leads stay focused on opening one person. */
+#pane-leads .row .c-sel .ck { display: none; }
+#pane-leads .row .c-sel .av { opacity: 1; }
+#pane-leads .row .c-st { font-size: var(--fs-sm); }
+
+.shell:not(:has(#pane-leads.on)) #density-btn { display: none; }

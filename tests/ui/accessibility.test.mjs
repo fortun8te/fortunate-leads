@@ -59,9 +59,9 @@ for (const [theme, t] of Object.entries({dark, light})) {
 }
 
 test('map explains its display limit and provides a textual alternative', () => {
-  const search = tags.find(m => attr(m[2], 'id') === 'map-q');
-  assert.equal(attr(search[2], 'aria-label'), 'Find in displayed map');
-  assert.match(attr(search[2], 'title'), /only displayed accounts.*3,000/);
+  assert.doesNotMatch(html, /id="map-q"/);
+  assert.match(html, /id="map-density"[^>]*aria-label="People shown on map"/);
+  assert.match(html, /<option value="3000">3,000 people/);
   assert.match(html, /<canvas[^>]*aria-label="[^"]*Open Leads[^\"]*same filters/);
   assert.match(html, /class="lg-ln dotted"[^>]*><\/i>Earlier: absent/);
 });

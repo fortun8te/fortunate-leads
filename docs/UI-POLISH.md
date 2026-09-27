@@ -1,5 +1,8 @@
 # Fortunate Leads UI polish
 
+Current update, 27 September 2026: bulk selection/editing, saved views and in-app CSV exports have been removed. Individual relationship, tag and note edits remain. Existing saved-view data and workspace backups are preserved. References to those removed features below describe the earlier implementation. See [CONTRACT.md](CONTRACT.md) for current APIs.
+
+
 Research and implementation, 26 September 2026.
 
 ## Decision

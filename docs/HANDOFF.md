@@ -1,5 +1,8 @@
 # Handoff — through 2026-09-26
 
+Current update, 27 September 2026: bulk selection/editing, saved views and in-app CSV exports have been removed. Individual relationship, tag and note edits remain. Existing saved-view data and workspace backups are preserved. References to those removed features below describe the earlier implementation. See [CONTRACT.md](CONTRACT.md) for current APIs.
+
+
 ## Update, 2026-09-26
 
 - Completed the researched lead workflow gaps: dated follow-ups and shared filters, paginated activity history, filtered/selected CSV exports, profile freshness and refresh in the main detail panel. See [usage](LEAD_WORKFLOWS.md) and [research with sources and rejected alternatives](FEATURE_RESEARCH.md).

@@ -22,7 +22,7 @@
     <a class="brand" href="#/leads"><i>F</i><span>Fortunate</span></a>
     <nav class="tabs" aria-label="Main navigation">
       <a href="#/leads" data-view="leads" aria-label="Leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads"></span></a>
-      <a href="#/map" data-view="map" aria-label="Map"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Map</span></a>
+      <a href="#/map" data-view="map" aria-label="Connections"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Connections</span></a>
       <a href="#/qual" data-view="qual" aria-label="Qualification"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Qualification</span><span class="num" id="n-qual"></span></a>
       <a href="#/tags" data-view="tags" aria-label="Tags"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1"/></svg><span>Tags</span></a>
       <a href="#/scraper" data-view="scraper" aria-label="Scraper"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/></svg><span>Scraper</span><span class="num" id="n-queue"></span></a>
@@ -50,20 +50,18 @@
       <div class="pane">
         <header class="ph ph-work">
           <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div></div>
-          <div class="ph-a"><button class="btn" id="save-view" title="Save these filters as a view (v)">Save view</button></div>
         </header>
         <div class="qbar">
           <button class="btn fbtn" id="filters-btn" aria-controls="filters" aria-expanded="false" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
           <div class="qbox" id="qbox">
             <svg class="search-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
             <div class="tokens" id="tokens"></div>
-            <input id="q" type="text" aria-label="Search leads or add filters" placeholder="Search leads or #tags" title="Try #tag, -#tag, fit:strong or lists:2+" autocomplete="off" spellcheck="false">
-            <kbd class="hide-sm">/</kbd>
+            <input id="q" type="text" aria-label="Search leads" placeholder="Search leads" autocomplete="off" spellcheck="false">
             <div class="suggest" id="suggest" hidden></div>
           </div>
           <select class="select" id="sort" title="Sort" aria-label="Sort leads">
-            <option value="follow_up">Follow-up date</option><option value="fit">Best business fit</option>
-            <option value="connected">Most connected</option>
+            <option value="follow_up">Follow-up date</option><option value="fit">Best fit</option>
+            <option value="connected">Shared lists</option>
             <option value="followers">Followers</option>
             <option value="recent">Newest</option>
             <option value="score">Priority</option>
@@ -72,29 +70,24 @@
         </div>
 
         <div class="lpane" id="pane-leads">
-          <div class="export-bar"><button class="btn" id="export-filtered">Export filtered</button><button class="btn" id="export-selected" disabled>Export selected</button><span id="export-state" role="status" aria-live="polite"></span></div>
-          <div class="bulk" id="bulk" hidden></div>
           <div class="thead">
-            <span class="c-sel"><button class="ck" id="sel-page" role="checkbox" aria-checked="false" aria-label="Select all loaded leads" title="Select all loaded"></button></span>
-            <span>Lead</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-fit-head">Fit</span><span class="c-st">Status</span>
+            <span class="c-sel" aria-hidden="true"></span>
+            <span>Lead</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-fit-head">Fit</span><span class="c-st">Relationship</span>
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
-          <div class="foot"><span class="num" id="count"></span></div>
         </div>
 
-        <div class="mpane" id="pane-map">
+        <div class="mpane comparing" id="pane-map">
           <div class="mbar">
-            <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
-            <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People found in multiple source lists, plus likely brands. This does not prove a personal connection.">Shared lists</button><button data-v="all" aria-pressed="false">All</button></div>
+            <button class="btn" id="connections-toggle" aria-expanded="true" aria-controls="connections-panel">Explore map</button>
+            <div class="seg" id="map-scope"><button data-v="leads" class="on" aria-pressed="true" title="People found in multiple source lists, plus likely brands.">Suggested</button><button data-v="all" aria-pressed="false">All</button></div>
             <label class="map-density" for="map-density">Show <select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option></select></label>
-            <label class="search"><input class="input" id="map-q" type="search" aria-label="Find in displayed map" placeholder="Find in displayed map" title="Searches only displayed accounts, up to 3,000 matching people." autocomplete="off" spellcheck="false"><span class="num" id="map-hits"></span></label>
             <div class="grow"></div>
             <span class="num muted hide-sm" id="map-count"></span>
             <button class="btn map-me" id="map-me" title="Find your account on the map" hidden></button>
-            <button class="btn" id="map-labels" aria-pressed="true" title="Labels (l)">Labels</button>
             <button class="btn" id="map-fit" title="Zoom to fit (f)">Fit</button>
           </div>
-          <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
+          <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles"></section>
           <p class="map-guide" id="map-guide">Dots are accounts. Compare profiles to see who follows whom. <a href="#/leads">Read as a list</a></p>
           <div class="stage" id="stage">
             <canvas id="canvas" role="img" aria-describedby="map-guide" aria-label="Connection map. Open Leads to review people and connections using the same filters."></canvas>
@@ -326,12 +319,9 @@
   <h4>List</h4>
   <span><kbd>j</kbd> <kbd>k</kbd></span><span>Next / previous</span>
   <span><kbd>enter</kbd></span><span>Open detail</span>
-  <span><kbd>x</kbd></span><span>Select row</span>
-  <span><kbd>shift</kbd> <kbd>j</kbd> <kbd>k</kbd></span><span>Extend selection</span>
-  <span><kbd>shift</kbd> <kbd>a</kbd></span><span>Select everyone in filter</span>
   <span><kbd>1</kbd>–<kbd>5</kbd> <kbd>0</kbd></span><span>Interested, contacted, talking, client, not a fit; 0 clears</span>
+  <span><kbd>t</kbd></span><span>Add label to lead</span>
   <span><kbd>m</kbd></span><span>Next step in the pipeline</span>
-  <span><kbd>t</kbd></span><span>Tag current or selected</span>
   <span><kbd>o</kbd></span><span>Open on Instagram</span>
   <h4>Filter</h4>
   <span><kbd>/</kbd></span><span>Search</span>
@@ -342,7 +332,6 @@
   <span><kbd>alt</kbd> click</span><span>None of</span>
   <span><kbd>backspace</kbd></span><span>Edit last filter token</span>
   <span><kbd>c</kbd></span><span>Clear filters</span>
-  <span><kbd>v</kbd></span><span>Save view</span>
   <span><kbd>[</kbd></span><span>Toggle filter sidebar</span>
   <h4>Map</h4>
   <span><kbd>f</kbd></span><span>Zoom to fit</span>

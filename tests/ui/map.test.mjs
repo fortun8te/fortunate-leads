@@ -143,10 +143,8 @@ test('map reports a bounded sample and search scope', () => {
   m.limit=3000; assert.match(m.url(),/limit=3000/);
   m.build({nodes:[seed('a'),lead(1)],links:[],total:50000,limit:3000});
   assert.match($('#map-count').textContent,/1 of 50000 matching people shown/);
-  $('#map-q').value='person';m.search();
-  assert.equal($('#map-hits').textContent,'1 displayed');
-  $('#map-q').value='not loaded';m.search();
-  assert.equal($('#map-hits').textContent,'0 displayed');
+  assert.doesNotMatch(markup, /id="map-q"|id="map-labels"/);
+  assert.match(markup, /data-v="leads"[^>]*>Suggested/);
 });
 test('smaller map density keeps an open person from the same revision only', async () => {
   const {m,api,$} = harness(), pending=[];
@@ -242,4 +240,15 @@ test('animation draws without changing the camera on each frame', () => {
   m.draw=()=>draws++;m.fit=()=>fits++;m.autoFit=true;
   c.schedule.call(m);frame();
   assert.equal(draws,1);assert.equal(fits,0);
+});
+
+test('comparison does not fetch the overview graph until explicitly explored', async () => {
+  const {m, $, api} = harness();let requests=0;
+  api.get=()=>{requests++;return Promise.resolve({rev:1,nodes:[],links:[]});};
+  $('#connections-panel').hidden=false;
+  await m.load();
+  assert.equal(requests,0);
+  $('#connections-panel').hidden=true;
+  await m.load();
+  assert.equal(requests,1);
 });

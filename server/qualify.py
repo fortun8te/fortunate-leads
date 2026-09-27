@@ -738,14 +738,14 @@ def fewshot_text(examples):
         value = f"- @{e.get('handle')}" + (f" ({e['name']})" if e.get('name') else '')
         value += ': ' + re.sub(r'\s+', ' ', str(e.get('bio') or ''))[:160]
         if e.get('feedback_source') == 'manual_client_tag':
-            value += ' | Michael manually tagged Client (preference signal, not a confirmed Client status)'
+            value += ' | Michael manually tagged Client (legacy relationship record; pipeline stage was not set)'
             if e.get('status') in OWNER_STATUS:
                 value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
         elif e.get('status') in OWNER_STATUS:
             value += f" | Michael marked: {OWNER_STATUS[e['status']]}"
             if e['status'] in ('interested', 'talking') and any(
                     str(tag).casefold() == 'client' for tag in e.get('manual_tags') or []):
-                value += ' | also manually tagged Client (not a Client status)'
+                value += ' | also has a legacy Client relationship label'
         if e.get('manual_tags'):
             value += ' | Michael\'s manual tags: ' + ', '.join(
                 json.dumps(str(t)[:64], ensure_ascii=False) for t in e['manual_tags'][:FEWSHOT_TAG_MAX])

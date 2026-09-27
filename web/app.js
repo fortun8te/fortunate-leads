@@ -131,11 +131,10 @@ const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', tier: '', q
 const S = {
   view: 'leads',
   f: emptyFilter(), sort: store.get('sort', 'fit'),
-  tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null, views: [],
+  tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null,
   rows: [], total: null, done: false, loading: false, error: false, gen: 0, nextOffset: 0, rev: null, stale: false,
   cur: -1, open: null, person: null, seedCard: null,
-  pick: new Set(), anchor: -1, picking: false,
-  tagMore: {}, tagFind: '', saving: false,
+  tagMore: {}, tagFind: '',
   side: false, fmore: store.get('fmore', false),
 };
 
@@ -305,7 +304,7 @@ function setView(v) {
   $('#view-settings').classList.toggle('on', v === 'settings');
   $('#pane-leads').classList.toggle('on', v === 'leads');
   $('#pane-map').classList.toggle('on', v === 'map');
-  if (work) $('#work-h').textContent = v === 'map' ? 'Map' : 'Leads';
+  if (work) $('#work-h').textContent = v === 'map' ? 'Connections' : 'Leads';
   syncTabs();
   if (v === 'map') M.show(); else if (prev === 'map') M.hide();
   if (v === 'leads' && prev !== 'leads') renderRows();
@@ -322,21 +321,8 @@ function setView(v) {
 }
 
 // Apply a filter change: URL, sidebar, tokens, list, facets, map.
-function filterScopeKey(f = S.f) {
-  const canonical = { ...f };
-  for (const key of ['tags', 'any', 'not']) canonical[key] = [...new Set(f[key])].sort();
-  return toQuery(canonical, S.sort, false).toString();
-}
-let appliedFilterKey = filterScopeKey(fromQuery(parseHash().qs).f);
 function filtersChanged(o = {}) {
   S.f.tags = [...new Set(S.f.tags)]; S.f.any = [...new Set(S.f.any)]; S.f.not = [...new Set(S.f.not)];
-  const nextFilterKey = filterScopeKey();
-  if (nextFilterKey !== appliedFilterKey) {
-    const hadSelection = S.pick.size || S.picking;
-    S.pick.clear(); S.anchor = -1;
-    if (hadSelection) toast('Selection cleared because filters changed');
-  }
-  appliedFilterKey = nextFilterKey;
   if (o.url !== false) setURL(o.push !== false);
   syncTabs();
   renderFilters(); renderTokens();
@@ -426,33 +412,6 @@ async function loadCounts() {
   $('#n-leads').textContent = fmt(d.total);
   renderFilters();
 }
-const viewState = { draft: '', busy: false, error: '', generation: 0, deleting: new Set() };
-// Keep older browser-only saves intact until their owner explicitly restores them.
-const browserViews = store.get('views', []);
-const legacyViews = Array.isArray(browserViews) ? browserViews.filter((v) => v && typeof v.name === 'string' && typeof v.query === 'string') : [];
-function savedViewQuery(query) {
-  const p = fromQuery(query);
-  for (const key of ['tags', 'any', 'not']) p.f[key] = [...new Set(p.f[key])].sort();
-  return toQuery(p.f, p.sort).toString();
-}
-function acceptSavedView(view) {
-  S.views = [...S.views.filter((v) => String(v.id) !== String(view.id) && v.name !== view.name), view]
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-async function loadViews() {
-  const generation = ++viewState.generation;
-  try {
-    const views = await api.get('/api/views');
-    if (generation !== viewState.generation) return;
-    if (!Array.isArray(views)) throw new Error('Invalid views response');
-    S.views = views; viewState.error = '';
-  } catch (e) {
-    if (generation !== viewState.generation) return;
-    viewState.error = 'Could not load saved views.';
-  }
-  renderFilters();
-}
-
 // ---------- sidebar ----------
 const swatch = (kind, extra = '', grp = '') => `<i class="sw ${KIND[kind] ?? ''} ${extra}${grp ? ' g-' + esc(grp) : ''}"></i>`;
 function tagItem(t, label) {
@@ -473,23 +432,16 @@ function tagSection(key, title, list, labelFn) {
     ${list.length > shown.length ? `<button class="fmore" data-more="${key}">+${list.length - shown.length} more</button>` : S.tagMore[key] && list.length > 8 ? `<button class="fmore" data-less="${key}">Less</button>` : ''}</div>`;
 }
 function renderFilters() {
-  const nameInput = $('#v-name');
-  if (S.saving && nameInput) viewState.draft = nameInput.value;
   const focused = document.activeElement;
-  const focus = ['f-find', 'v-name'].includes(focused?.id)
+  const focus = focused?.id === 'f-find'
     ? { id: focused.id, start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection } : null;
   const c = S.counts || {};
-  const qs = savedViewQuery(toQuery().toString());
-  const recoverable = legacyViews.map((v, index) => ({ ...v, index })).filter((v) => !S.views.some((saved) => saved.name === v.name && savedViewQuery(saved.query) === savedViewQuery(v.query)));
+  const qs = toQuery().toString();
   const active = filterCount();
   $('#fbtn-n').textContent = active ? ' ' + active : '';
-  let h = `<div class="fsec"><h4>Views<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}<button id="v-new" title="Save view (v)">Save</button></h4>
-    ${S.saving ? `<form class="fsave" id="v-form"><input class="input" id="v-name" aria-label="View name" placeholder="View name" autocomplete="off" maxlength="80" value="${esc(viewState.draft)}"><button class="btn solid" ${viewState.busy ? 'disabled' : ''}>${viewState.busy ? 'Saving…' : 'Save'}</button></form>` : ''}
+  let h = `<div class="fsec"><h4>Filters<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}</h4>
     <button class="fi${qs === '' ? ' on' : ''}" data-view="" aria-pressed="${qs === ''}"><span>Open leads</span></button>
-    <button class="fi${LeadDaily.isDueView(S.f, S.sort) ? ' on' : ''}" data-view="${esc(LeadDaily.dueQuery())}" aria-pressed="${LeadDaily.isDueView(S.f, S.sort)}"><span>Due follow-ups</span></button>
-    ${viewState.error ? `<span class="fnone" role="status">${esc(viewState.error)}</span><button class="fi" id="v-retry"><span>Retry</span></button>` : ''}
-    ${S.views.map((v) => `<button class="fi${savedViewQuery(v.query) === qs ? ' on' : ''}" data-view="${esc(v.query)}" aria-pressed="${savedViewQuery(v.query) === qs}" title="${esc(v.query)}"><span>${esc(v.name)}</span><i class="del" data-vdel="${esc(v.id)}" title="Delete view">&times;</i></button>`).join('')}
-    ${recoverable.length ? `<h4>Browser copies</h4><span class="fnone">Open a copy, then Save to restore it.</span>${recoverable.map((v) => `<button class="fi" data-vrecover="${v.index}"><span>${esc(v.name)}</span></button>`).join('')}` : ''}</div>
+    <button class="fi${LeadDaily.isDueView(S.f, S.sort) ? ' on' : ''}" data-view="${esc(LeadDaily.dueQuery())}" aria-pressed="${LeadDaily.isDueView(S.f, S.sort)}"><span>Due follow-ups</span></button></div>
     <div class="fsec"><h4>Status</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
     ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}" title="${esc(SDESC[s])}"><span>${slabel(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
@@ -516,7 +468,7 @@ function renderFilters() {
   h += tagSection('src', 'You', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
   h += tagSection('other', 'Other', auto.filter((t) => !['source', ...GROUPS.map((g) => g[0])].includes(t.grp)));
   const hid = S.f.tags.length + S.f.any.length + S.f.not.length + !!S.f.min + !!S.f.bio + !!S.f.seed + (S.f.fmin != null || S.f.fmax != null);
-  const open = S.fmore || !!S.tagFind || S.saving;
+  const open = S.fmore || !!S.tagFind;
   h += `<div class="f-tog"><button class="fi" id="f-more"><span>${open ? 'Fewer filters' : 'More filters'}</span>${hid && !open ? `<b>${hid} on</b>` : ''}</button>
     ${active ? '<button class="fi" id="f-clear" title="Clear filters (c)"><span>Clear all</span></button>' : ''}</div>`;
   const el = $('#filters');
@@ -535,21 +487,7 @@ $('#filters').addEventListener('click', async (e) => {
   if (more) { S.tagMore[more.dataset.more] = true; return renderFilters(); }
   if (less) { S.tagMore[less.dataset.less] = false; return renderFilters(); }
   if (t.id === 'f-reset' || t.closest('#f-clear')) return clearFilters();
-  if (t.closest('#f-more')) { S.fmore = !(S.fmore || S.tagFind || S.saving); S.tagFind = ''; S.saving = false; store.set('fmore', S.fmore); return renderFilters(); }
-  if (t.id === 'v-new') { S.saving = !S.saving; renderFilters(); if (S.saving) $('#v-name')?.focus(); return; }
-  if (t.closest('#v-retry')) return loadViews();
-  const recover = t.closest('[data-vrecover]');
-  if (recover) {
-    if (viewState.busy) return;
-    const view = legacyViews[+recover.dataset.vrecover];
-    if (!view) return;
-    applyQuery(view.query);
-    viewState.draft = view.name;
-    if ($('#v-name')) $('#v-name').value = view.name;
-    startSaveView(); return;
-  }
-  const vdel = t.closest('[data-vdel]');
-  if (vdel) { e.stopPropagation(); return deleteView(vdel.dataset.vdel); }
+  if (t.closest('#f-more')) { S.fmore = !(S.fmore || S.tagFind); S.tagFind = ''; store.set('fmore', S.fmore); return renderFilters(); }
   const b = t.closest('button');
   if (!b) return;
   const d = b.dataset;
@@ -566,7 +504,6 @@ $('#filters').addEventListener('click', async (e) => {
   filtersChanged();
 });
 $('#filters').addEventListener('input', (e) => {
-  if (e.target.id === 'v-name') viewState.draft = e.target.value;
   if (e.target.id === 'f-find') { S.tagFind = e.target.value; renderFilters(); }
 });
 $('#filters').addEventListener('keydown', (e) => {
@@ -574,68 +511,12 @@ $('#filters').addEventListener('keydown', (e) => {
     const first = $('#filters [data-tag]');
     if (first) clickTag(first.dataset.tag, e);
   }
-  if (e.target.id === 'v-name' && e.key === 'Escape') { S.saving = false; renderFilters(); $('#v-new')?.focus(); }
-});
-$('#filters').addEventListener('submit', (e) => {
-  e.preventDefault();
-  if (e.target.id === 'v-form') saveView($('#v-name').value.trim());
 });
 function applyQuery(qs) {
   const p = fromQuery(qs);
   S.f = p.f; S.sort = p.sort; $('#sort').value = S.sort; $('#q').value = S.f.q;
   filtersChanged();
 }
-async function saveView(name) {
-  if (!name || viewState.busy) return;
-  const query = toQuery().toString();
-  const draft = $('#v-name')?.value ?? name;
-  viewState.draft = draft; viewState.busy = true; ++viewState.generation;
-  renderFilters();
-  try {
-    const saved = await api.post('/api/views', { name, query });
-    ++viewState.generation;
-    acceptSavedView(saved);
-    const latest = $('#v-name')?.value ?? viewState.draft;
-    if (latest === draft) { S.saving = false; viewState.draft = ''; }
-    toast('View saved');
-  } catch (e) {
-    toast('Could not save view. Try again.');
-  } finally {
-    viewState.busy = false; renderFilters();
-  }
-}
-async function deleteView(id) {
-  const v = S.views.find((x) => String(x.id) === String(id));
-  const key = String(id);
-  if (!v || viewState.deleting.has(key)) return;
-  viewState.deleting.add(key); ++viewState.generation;
-  try {
-    await api.post(`/api/views/${encodeURIComponent(id)}/delete`);
-    ++viewState.generation;
-    S.views = S.views.filter((x) => String(x.id) !== key);
-    renderFilters();
-  } catch (e) {
-    toast('Could not delete view. Try again.'); return;
-  } finally {
-    viewState.deleting.delete(key);
-  }
-  toast(`Deleted ${v.name}`, () => restoreDeletedView(v));
-}
-async function restoreDeletedView(view) {
-  ++viewState.generation;
-  try {
-    const restored = await api.post('/api/views', { name: view.name, query: view.query });
-    ++viewState.generation; acceptSavedView(restored); renderFilters(); toast('View restored');
-  } catch (e) {
-    toast('Could not restore view. Try again.', () => restoreDeletedView(view));
-  }
-}
-function startSaveView() {
-  if (narrow()) setDrawer(true);
-  else if (!S.side) toggleSide();
-  S.saving = true; renderFilters(); $('#v-name')?.focus();
-}
-$('#save-view').onclick = startSaveView;
 function setDrawer(open) { $('#filters').classList.toggle('show', open); $('#scrim').hidden = !open; syncFilterToggle(); }
 $('#filters-btn').onclick = (e) => { e.stopPropagation(); toggleSide(); };
 $('#scrim').onclick = () => setDrawer(false);
@@ -794,7 +675,7 @@ $('#sort').onchange = (e) => { S.sort = e.target.value; store.set('sort', S.sort
 const lists = (r) => Math.max(0, Math.round(+(r.lists ?? (Array.isArray(r.via) ? new Set(r.via).size : 0)) || 0));
 async function resetLeads(keep) {
   const gen = ++S.gen;
-  if (!keep) { S.rows = []; S.total = null; S.cur = -1; S.anchor = -1; $('#scroll').scrollTop = 0; }
+  if (!keep) { S.rows = []; S.total = null; S.cur = -1; $('#scroll').scrollTop = 0; }
   S.nextOffset = 0; S.rev = null; S.stale = false;
   S.done = false; S.error = false;
   // Rendering retained rows must not start an append before this replacement.
@@ -821,10 +702,9 @@ async function loadMore(gen = S.gen, n = PAGE, replace = false) {
     else if (S.rev != null && d.rev != null && d.rev !== S.rev) S.stale = true;
     S.nextOffset = Number.isInteger(d.next_offset) ? d.next_offset : offset + d.rows.length;
     if (replace) {
-      const currentId = S.rows[S.cur]?.id, anchorId = S.rows[S.anchor]?.id;
+      const currentId = S.rows[S.cur]?.id;
       S.rows = [...new Map(d.rows.map((r) => [r.id, r])).values()];
       S.cur = currentId == null ? -1 : S.rows.findIndex((r) => r.id === currentId);
-      S.anchor = anchorId == null ? -1 : S.rows.findIndex((r) => r.id === anchorId);
     } else {
       const seen = new Set(S.rows.map((r) => r.id));
       S.rows.push(...d.rows.filter((r) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; }));
@@ -967,12 +847,11 @@ const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${e
 const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
 function rowHTML(r, i, h) {
   const n = lists(r);
-  const picked = S.pick.has(r.id);
-  const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', picked ? 'picked' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
+  const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
   const tags = rowTagSelection(r);
   const mobileHidden = [...tags.shown.slice(2), ...tags.hidden];
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
-    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}<button class="ck${picked ? ' on' : ''}" data-ck role="checkbox" aria-checked="${picked}" aria-label="Select @${esc(r.handle)}" title="Select (x)"></button></div>
+    <div class="c-sel">${avatar(r.pic, r.name || r.handle)}</div>
     <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${whyHTML(r)}</div><div class="row-mobile-tags">${tags.shown.slice(0, 2).map((t) => tagChip(t)).join('')}${mobileHidden.length ? `<span class="more" title="${esc(mobileHidden.map((t) => t.tag).join(' · '))}">+${mobileHidden.length}</span>` : ''}</div></div>
     <div class="tags c-tags">${tags.shown.map((t) => tagChip(t)).join('')}${tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : ''}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
@@ -985,18 +864,9 @@ function renderRows() {
   const active = document.activeElement;
   const activeRow = active?.closest('#rows .row');
   const focusId = activeRow?.dataset.personId;
-  const focusKey = active?.matches('[data-ck]') ? '[data-ck]' : active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
+  const focusKey = active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
   const box = $('#rows'), sc = $('#scroll'), h = rowH();
   if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
-  $('#count').textContent = S.total == null ? '' : plural(S.total, 'person', 'people') + (S.pick.size ? ` · ${int(S.pick.size)} selected` : '');
-  $('#pane-leads').classList.toggle('selecting', S.pick.size > 0);
-  renderBulk();
-  $('#export-selected').disabled = exporting || !S.pick.size;
-  const loadedPicked = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
-  $('#sel-page').setAttribute('role', 'checkbox');
-  $('#sel-page').setAttribute('aria-label', 'Select all loaded leads');
-  $('#sel-page').setAttribute('aria-checked', loadedPicked ? 'true' : S.pick.size ? 'mixed' : 'false');
-  $('#sel-page').className = 'ck' + (loadedPicked ? ' on' : S.pick.size ? ' part' : '');
   if (!S.rows.length) {
     box.style.height = '100%';
     if (S.loading || (S.total == null && !S.error)) {
@@ -1037,17 +907,9 @@ $('#rows').addEventListener('click', (e) => {
   const i = +row.dataset.i;
   const tag = e.target.closest('[data-tag]');
   if (tag) { e.preventDefault(); return clickTag(tag.dataset.tag, e); }
-  if (e.target.closest('[data-ck]') || e.target.closest('.c-sel') || e.metaKey || e.ctrlKey) { e.preventDefault(); return togglePick(i, e.shiftKey); }
-  if (e.shiftKey) { e.preventDefault(); window.getSelection()?.removeAllRanges(); return rangePick(i); }
   select(i);
   openDetail(S.rows[i].id, { keyboard: e.detail === 0 });
 });
-$('#sel-page').onclick = () => {
-  const all = S.rows.length && S.rows.every((r) => S.pick.has(r.id));
-  if (all || S.pick.size) S.pick.clear(); else S.rows.forEach((r) => S.pick.add(r.id));
-  renderRows();
-};
-
 function select(i, scroll) {
   if (!S.rows.length) return;
   const moveFocus = scroll && document.activeElement?.closest('#rows .row');
@@ -1060,142 +922,12 @@ function select(i, scroll) {
   renderRows();
   if (moveFocus) $(`#rows [data-person-id="${S.rows[S.cur].id}"] .lead-open`)?.focus({ preventScroll: true });
 }
-function togglePick(i, range) {
-  const r = S.rows[i];
-  if (!r) return;
-  if (range && S.anchor >= 0) return rangePick(i);
-  if (S.pick.has(r.id)) S.pick.delete(r.id); else S.pick.add(r.id);
-  S.anchor = i; S.cur = i;
-  renderRows();
-}
-function rangePick(i) {
-  const a = S.anchor >= 0 ? S.anchor : S.cur >= 0 ? S.cur : i;
-  for (let k = Math.min(a, i); k <= Math.max(a, i); k++) if (S.rows[k]) S.pick.add(S.rows[k].id);
-  S.cur = i;
-  renderRows();
-}
-async function pickAllInFilter() {
-  if (S.picking) return;
-  if (S.stale) { toast('Results changed. Refresh the list before selecting everyone.'); return; }
-  S.picking = true; renderBulk();
-  const ids = [...new Set(S.rows.map((r) => r.id))].slice(0, 5000);
-  const gen = S.gen;
-  try {
-    const total = S.total ?? 0;
-    if (total > 5000) toast('Selecting the first 5,000');
-    let offset = S.nextOffset;
-    let changed = false;
-    while (ids.length < Math.min(total, 5000)) {
-      const d = await fetchLeads(offset, 500);
-      if (gen !== S.gen || !d.rows.length) break;
-      if (S.rev != null && d.rev != null && d.rev !== S.rev) { S.stale = true; changed = true; toast('Results changed. Refresh the list before selecting everyone.'); break; }
-      offset += d.rows.length;
-      const seen = new Set(ids);
-      for (const r of d.rows) if (ids.length < 5000 && !seen.has(r.id)) { ids.push(r.id); seen.add(r.id); }
-      if (offset >= d.total) break;
-    }
-    if (gen === S.gen && !changed) S.pick = new Set(ids);
-  } catch (e) { toast('Could not select all'); }
-  S.picking = false;
-  renderRows();
-}
-function clearPick() { S.pick.clear(); S.anchor = -1; renderRows(); }
-
-// ---------- bulk bar ----------
-let bulkKey = '';
-function renderBulk() {
-  const el = $('#bulk');
-  const n = S.pick.size;
-  if (!n) { el.hidden = true; bulkKey = ''; return; }
-  const key = [n, S.total, S.picking, [...S.pick].join(',')].join('|');
-  if (key === bulkKey && !el.hidden) return;
-  bulkKey = key;
-  const focused = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
-  const addVal = $('#bk-add')?.value || '';
-  const counts = new Map();
-  S.rows.forEach((r) => { if (S.pick.has(r.id)) (r.tags || []).forEach((t) => { if (t.source === 'manual') counts.set(t.tag, (counts.get(t.tag) || 0) + 1); }); });
-  const rm = [...counts].sort((a, b) => b[1] - a[1]);
-  el.innerHTML = `<b>${int(n)} selected</b>
-    ${S.total > n ? `<button class="link" id="bk-all"${S.picking ? ' disabled' : ''}>${S.picking ? 'Selecting…' : `Select first ${int(Math.min(S.total, 5000))}`}</button>` : ''}
-    <form id="bk-form" style="display:contents"><input class="input" id="bk-add" list="tag-dl" placeholder="Add tag" autocomplete="off" value="${esc(addVal)}"><button class="btn">Tag</button></form>
-    ${rm.length ? `<select class="select" id="bk-rm" title="Remove tag"><option value="">Remove tag</option>${rm.map(([t, c]) => `<option value="${esc(t)}">${esc(t)} (${c})</option>`).join('')}</select>` : ''}
-    <span class="sep"></span>
-    <span class="st-b">${STATUSES.map((s, i) => `<button data-bs="${s}" title="${esc(SDESC[s])} (${i + 1})">${slabel(s)}</button>`).join('')}<button data-bs="" title="Clear status (0)">Clear</button></span>
-    <span class="grow"></span>
-    <button class="btn" id="bk-x" title="Clear selection (esc)">&times;</button>`;
-  el.hidden = false;
-  if (focused) $('#' + focused)?.focus();
-}
-function clearBulkSelection() {
-  const i = S.rows[S.cur] && S.pick.has(S.rows[S.cur].id) ? S.cur : S.rows.findIndex((r) => S.pick.has(r.id));
-  clearPick();
-  if (S.view === 'leads' && i >= 0) {
-    select(i, true);
-    $(`#rows [data-person-id="${S.rows[i].id}"] .lead-open`)?.focus({ preventScroll: true });
-  } else if (S.view === 'leads') $('#q').focus({ preventScroll: true });
-}
-$('#bulk').addEventListener('click', (e) => {
-  if (e.target.id === 'bk-all') return pickAllInFilter();
-  if (e.target.id === 'bk-x') return clearBulkSelection();
-  const s = e.target.closest('[data-bs]');
-  if (s) bulk({ status: s.dataset.bs || null });
-});
-$('#bulk').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const v = $('#bk-add').value.trim();
-  if (v) { $('#bk-add').value = ''; $('#bk-add').blur(); bulk({ add: [v] }); }
-});
-$('#bulk').addEventListener('change', (e) => { if (e.target.id === 'bk-rm' && e.target.value) bulk({ remove: [e.target.value] }); });
-$('#bulk').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); clearBulkSelection(); } });
-
-async function bulk(op, ids = [...S.pick], quiet) { return serializeMutation(() => bulkNow(op, ids, quiet)); }
 let mutationQueue = Promise.resolve();
 function serializeMutation(fn) {
   const run = mutationQueue.then(fn, fn);
   mutationQueue = run.catch(() => {});
   return run;
 }
-async function bulkNow(op, ids, quiet) {
-  if (!ids.length) return;
-  ids = [...new Set(ids)];
-  if (ids.length > 5000) { toast('Select up to 5,000 people at once'); return; }
-  const body = { ids };
-  if (op.add) body.add = op.add;
-  if (op.remove) body.remove = op.remove;
-  if ('status' in op) body.status = op.status;
-  // Remember previous status per id for undo.
-  const prevStatus = new Map();
-  if ('status' in op) S.rows.forEach((r) => { if (ids.includes(r.id)) prevStatus.set(r.id, r.status || null); });
-  let result;
-  try { result = await api.post('/api/people/bulk', body); }
-  catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not save'); return; }
-  const updated = Number.isInteger(result?.updated) ? result.updated : null;
-  if (updated === null) { resetLeads(true); loadFacetsSoon(); loadCounts(); if (!quiet) toast('Saved. Refreshing to confirm how many people changed. Undo unavailable for this change.'); return; }
-  if (updated !== ids.length) {
-    resetLeads(true); loadFacetsSoon(); loadCounts();
-    if (!quiet) toast(`${int(updated)} of ${int(ids.length)} people updated. List refreshed.`);
-    return;
-  }
-  const set = new Set(ids);
-  S.rows.forEach((r) => {
-    if (!set.has(r.id)) return;
-    if ('status' in op) r.status = op.status;
-    if (op.add) op.add.forEach((t) => { if (!(r.tags || []).some((x) => x.tag === t)) r.tags = [...(r.tags || []), { tag: t, grp: S.tagBy.get(t)?.grp || 'custom', source: 'manual' }]; });
-    if (op.remove) r.tags = (r.tags || []).filter((x) => !op.remove.includes(x.tag) || x.source !== 'manual');
-  });
-  if (S.person && set.has(S.person.id)) refreshPerson(S.person.id);
-  bulkKey = ''; renderRows(); loadFacetsSoon(); loadCounts();
-  M.patch(ids, op);
-  if (quiet) return;
-  const what = 'status' in op ? (op.status ? `marked ${slabel(op.status)}` : 'status cleared') : op.add ? `tagged ${op.add[0]}` : `untagged ${op.remove[0]}`;
-  const canUndo = 'status' in op && prevStatus.size === ids.length;
-  toast(`${ucf(plural(ids.length, 'person', 'people'))} ${what}${canUndo ? '' : '. Undo unavailable for this change.'}`, canUndo ? () => {
-      const by = new Map();
-      prevStatus.forEach((s, id) => { const k = s || ''; by.set(k, [...(by.get(k) || []), id]); });
-      by.forEach((g, s) => bulk({ status: s || null }, g, true));
-  } : undefined);
-}
-
 // ---------- marking ----------
 function mark(id, status) { return serializeMutation(() => markNow(id, status)); }
 async function markNow(id, status) {
@@ -1418,11 +1150,14 @@ $('#detail').addEventListener('click', async (e) => {
     try { await api.post(`/api/person/${p.id}/read`); if (S.person?.id === p.id) { S.person.profile_read_pending = true; renderDetail(); } toast('Profile refresh queued'); } catch (err) { e.target.disabled = false; toast('Could not queue: ' + err.message); }
   }
 });
-$('#detail').addEventListener('submit', (e) => {
+$('#detail').addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (e.target.id !== 'tag-form') return;
-  const v = $('#tag-in').value.trim();
-  if (v && S.person) { $('#tag-in').value = ''; editTags(S.person.id, [v], []); }
+  if (e.target.id !== 'tag-form' || !S.person) return;
+  const input = $('#tag-in'), draft = input.value, value = draft.trim(), id = S.person.id;
+  if (!value) return;
+  const saved = await editTags(id, [value], []);
+  if (saved && detailView(id).tag === draft) detailView(id).tag = '';
+  if (saved && S.person?.id === id && $('#tag-in')?.value === draft) $('#tag-in').value = '';
 });
 $('#detail').addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !LeadAccessibility.isEditableTarget(e.target)) return;
@@ -1450,10 +1185,11 @@ $('#detail').addEventListener('input', (e) => {
 window.addEventListener('beforeunload', (e) => { if (noteQueue.dirty()) { noteQueue.flushAll().catch(() => {}); e.preventDefault(); e.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) noteQueue.flushAll().catch(() => {}); });
 async function editTags(id, add, remove) {
-  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast('Could not save tag'); return; }
+  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || 'Could not save label'); return; }
   await refreshPerson(id);
   loadFacetsSoon();
-  if (add.length) toast(`Tagged ${add[0]}`);
+  if (add.length) toast(/^client$/i.test(add[0]) ? 'Relationship set to Client' : `Tagged ${add[0]}`);
+  return true;
 }
 
 // Date-only follow-ups stay in the browser's local calendar; saved views remain relative.
@@ -1701,29 +1437,6 @@ $('#detail').addEventListener('click', async (e) => {
   } catch (error) { workflowMessage(id, 'activity', 'Could not load older activity: ' + error.message); }
   finally { activityMoreBusy.delete(id); if (S.person?.id === id && $('#activity-more')) $('#activity-more').disabled = false; }
 });
-let exporting = false;
-async function exportLeads(selected) {
-  if (exporting) return;
-  const ids = [...S.pick], params = LeadWorkflow.runtimeQuery(toQuery());
-  params.set('sort', S.sort);
-  const query = params.toString();
-  if (selected && !ids.length) return;
-  exporting = true;
-  const state = $('#export-state'); state.textContent = 'Saving notes and preparing CSV…';
-  $('#export-filtered').disabled = true; $('#export-selected').disabled = true;
-  try {
-    await noteQueue.flushAll();
-    const response = await fetch('/api/leads/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selected ? { ids } : { query }) });
-    if (!response.ok) { let message = 'HTTP ' + response.status; try { message = (await response.json()).error || message; } catch {} throw new Error(message); }
-    const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement('a');
-    link.href = url; link.download = `fortunate-leads-${selected ? 'selected' : 'filtered'}-${LeadWorkflow.localToday()}.csv`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
-    state.textContent = selected ? `Exported ${ids.length} selected leads` : 'Exported all matching leads';
-  } catch (error) { state.textContent = 'Export failed: ' + error.message + '. Your selection is kept; try again.'; }
-  finally { exporting = false; $('#export-filtered').disabled = false; $('#export-selected').disabled = !S.pick.size; }
-}
-$('#export-filtered').onclick = () => exportLeads(false);
-$('#export-selected').onclick = () => exportLeads(true);
-
 // ---------- keyboard ----------
 const detailAccess = LeadAccessibility.createDetailFocus({
   panel: $('#detail'), isMobile: narrow,
@@ -1765,7 +1478,6 @@ document.addEventListener('keydown', (e) => {
     if ($('#filters').classList.contains('show')) { setDrawer(false); return; }
     if (S.open || S.seedCard) { closeDetail(); return; }
     if (S.view === 'map' && M.focus) { M.focus = null; M.draw(); return; }
-    if (S.pick.size) { clearPick(); return; }
     if (S.view === 'leads' && S.cur >= 0) { S.cur = -1; renderRows(); }
     return;
   }
@@ -1785,19 +1497,20 @@ document.addEventListener('keydown', (e) => {
   const work = S.view === 'leads' || S.view === 'map';
   if (k === '/' && S.view === 'tags') { e.preventDefault(); $('#tg-q').focus(); return; }
   if (!work) return;
+  if (S.view === 'map' && $('#pane-map').classList.contains('comparing')) {
+    if (k === '/') { e.preventDefault(); $('#connection-target').focus(); }
+    return;
+  }
   if (k === '/') { e.preventDefault(); $('#q').focus(); return; }
   if (k === '#') { e.preventDefault(); const q = $('#q'); q.value = (q.value.trim() ? q.value.trim() + ' ' : '') + '#'; q.focus(); suggest(); return; }
   if (k === '[') { toggleSide(); return; }
   if (k === 'c') { clearFilters(); return; }
-  if (k === 'v') { e.preventDefault(); startSaveView(); return; }
   if (S.view === 'map') {
     // Comparison has its own selection; do not act on the retained overview person.
     if ($('#pane-map').classList.contains('comparing')) return;
     if (k === 'f') { M.fit(); return; }
     if (k === '+' || k === '=') { M.zoomBy(1.4); return; }
     if (k === '-') { M.zoomBy(1 / 1.4); return; }
-    if (k === 'l') { M.toggleLabels(); return; }
-    if (k === 'n') { M.next(); return; }
     const p = S.person;
     if (p && /^[0-5]$/.test(k)) mark(p.id, k === '0' ? null : STATUSES[+k - 1]);
     if (p && k === 'm') mark(p.id, CYCLE[(CYCLE.indexOf(p.status ?? null) + 1) % CYCLE.length]);
@@ -1811,20 +1524,12 @@ document.addEventListener('keydown', (e) => {
   if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp' || k === 'J' || k === 'K') {
     e.preventDefault();
     const down = k === 'j' || k === 'J' || k === 'ArrowDown';
-    const from = S.cur;
     select(S.cur < 0 ? 0 : S.cur + (down ? 1 : -1), true);
-    if (e.shiftKey && S.rows[S.cur]) {
-      if (from >= 0 && S.rows[from]) S.pick.add(S.rows[from].id);
-      S.pick.add(S.rows[S.cur].id); S.anchor = S.anchor < 0 ? from : S.anchor; renderRows();
-    } else if (S.open && S.rows[S.cur]) openDetail(S.rows[S.cur].id);
+    if (S.open && S.rows[S.cur]) openDetail(S.rows[S.cur].id);
     return;
   }
-  if (k === 'x') { if (S.cur < 0) select(0); togglePick(S.cur); return; }
-  if (k === 'A') { pickAllInFilter(); return; }
   const r = focusedRow ? S.rows[S.cur] : current();
   if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id, { keyboard: true }); return; }
-  if (S.pick.size && /^[0-5]$/.test(k)) { bulk({ status: k === '0' ? null : STATUSES[+k - 1] }); return; }
-  if (S.pick.size && k === 't') { e.preventDefault(); $('#bk-add')?.focus(); return; }
   if (!r) return;
   if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
   if (/^[0-5]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
@@ -2928,16 +2633,16 @@ function mapDots(leads, k, x, y, w, h, important) {
 }
 const M = {
   sim: null, nodes: [], seeds: [], leads: [], links: [], historyLinks: [], seedLinks: [], byId: new Map(), nbr: new Map(), selfRelation: new Map(), rev: null, scope: 'leads',
-  k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: store.get('labels', true),
+  k: 1, x: 0, y: 0, w: 0, h: 0, hover: null, focus: null, matches: [], mi: -1, labels: true,
   loaded: false, stale: true, fitted: false, timer: null, raf: 0, maxShared: 1, shown: false, loading: false, loadSeq: 0,
   limit: 400, rawData: null, audienceKey: null, dataRev: null,
   show() {
+    if ($('#connections-panel')?.hidden === false) { this.hide(); return; }
     this.shown = true;
     this.resize();
     if (!this.loaded || this.stale) this.load();
     clearInterval(this.timer); this.timer = setInterval(() => { if (!document.hidden) this.load(true); }, 30000);
     if (this.sim && this.sim.alpha() > this.sim.alphaMin() && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) this.sim.restart();
-    $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels));
     $('#map-density').value = String(this.limit);
   },
   hide() { this.shown = false; clearInterval(this.timer); if (this.sim) this.sim.stop(); $('#hover').hidden = true; },
@@ -2959,6 +2664,7 @@ const M = {
     return '/api/map?' + p;
   },
   async load(poll) {
+    if ($('#connections-panel')?.hidden === false) return;
     if (this.loading && poll) return;
     const seq = ++this.loadSeq;
     this.loading = true;
@@ -3102,8 +2808,7 @@ const M = {
     const unchanged = old.size && topology === this.topology;
     this.topology = topology;
     this.simulate(unchanged ? 0 : old.size ? 0.12 : 1);
-    this.search();
-    if (!nl) this.draw();
+    this.draw();
   },
   simulate(alpha) {
     if (this.sim) this.sim.stop();
@@ -3209,7 +2914,6 @@ const M = {
     };
     if (list.length) { if (reduced) { step(); this.draw(); } else requestAnimationFrame(step); }
   },
-  toggleLabels() { this.labels = !this.labels; store.set('labels', this.labels); $('#map-labels').classList.toggle('on', this.labels); $('#map-labels').setAttribute('aria-pressed', String(this.labels)); this.draw(); },
   // Neighbourhood of the hovered or focused node.
   hood() {
     const n = this.hover || this.focus;
@@ -3455,23 +3159,6 @@ const M = {
     }
     return best;
   },
-  search() {
-    const q = $('#map-q').value.trim().toLowerCase().replace(/^@/, '');
-    this.matches = q ? this.nodes.filter((n) => ((n.handle || n.label || '') + ' ' + (n.name || '')).toLowerCase().includes(q))
-      .sort((a, b) => (b.kind === 'seed') - (a.kind === 'seed') || b.L - a.L) : [];
-    this.matchSet = new Set(this.matches.map((n) => n.id));
-    this.mi = -1;
-    $('#map-hits').textContent = q ? `${int(this.matches.length)} displayed` : '';
-    this.draw();
-  },
-  next() {
-    if (!this.matches.length) return;
-    this.mi = (this.mi + 1) % this.matches.length;
-    const n = this.matches[this.mi];
-    $('#map-hits').textContent = `${this.mi + 1}/${this.matches.length} displayed`;
-    this.select(n);
-    this.centerOn(n, 1.8);
-  },
   select(n) {
     this.focus = n;
     // A seed that is also a person opens that person's panel (status, tags, note) with its lists below.
@@ -3611,10 +3298,12 @@ function seedCardClick(e) {
     M.zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.offsetX, e.offsetY);
   }, { passive: false });
 })();
+window.addEventListener('connections-viewchange', () => {
+  if (S.view === 'map') M.show();
+});
 $('#map-fit').onclick = () => { M.autoFit = false; M.fit(); };
 $('#map-me').onclick = () => { const me = M.seeds.find((n) => n.is_me); if (me) { M.select(me); M.centerOn(me, 1.4); } };
 if (window.ResizeObserver) new ResizeObserver(() => { if (S.view === 'map') M.resize(); }).observe($('#stage'));
-$('#map-labels').onclick = () => M.toggleLabels();
 $('#map-density').onchange = (e) => {
   const limit = Number(e.target.value);
   if (![400, 1000, 3000].includes(limit) || limit === M.limit) return;
@@ -3622,8 +3311,6 @@ $('#map-density').onchange = (e) => {
 };
 $('#zoom-in').onclick = () => M.zoomBy(1.4);
 $('#zoom-out').onclick = () => M.zoomBy(1 / 1.4);
-$('#map-q').addEventListener('input', debounce(() => M.search(), 120));
-$('#map-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); M.next(); } });
 $('#map-scope').addEventListener('click', (e) => {
   const b = e.target.closest('[data-v]');
   if (!b || b.dataset.v === M.scope) return;
@@ -3633,7 +3320,7 @@ $('#map-scope').addEventListener('click', (e) => {
 
 // Server came back: refresh whatever the offline spell left stale or empty.
 function reconnected() {
-  resetLeads(true); loadFacets(); loadCounts(); loadViews();
+  resetLeads(true); loadFacets(); loadCounts();
   M.stale = true; if (S.view === 'map') M.load();
   if (S.view === 'tags') T.show();
   if (S.open) refreshPerson(S.open);
@@ -3652,7 +3339,7 @@ syncFilterToggle();
   history.replaceState(null, '', hashFor(view));
   renderFilters(); renderTokens();
   resetLeads();
-  loadFacets(); loadCounts(); loadScraper(); loadViews();
+  loadFacets(); loadCounts(); loadScraper();
   noteQueue.flushAll().catch(() => toast('Some notes are not saved. Your drafts are kept.'));
   setView(view);
 })();
@@ -3664,7 +3351,7 @@ document.addEventListener('visibilitychange', () => {
   else loadScraperStatus();
 });
 setInterval(() => { if (!document.hidden) { loadCounts(); loadFacets(); } }, 30000);
-setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open && !S.pick.size) resetLeads(true); }, 45000);
+setInterval(() => { if (S.view === 'leads' && !document.hidden && S.rows.length && $('#scroll').scrollTop < 5 && !S.open) resetLeads(true); }, 45000);
 setInterval(() => { if (offlineSince) setOnline(false); if (S.view === 'scraper') renderScraper(); }, 1000);
 // Due/overdue follow-up lists roll over at local midnight; a queued profile read shows up once it lands.
 const refresher = LeadRefresh.createRefreshCoordinator({

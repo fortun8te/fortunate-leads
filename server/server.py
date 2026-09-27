@@ -56,7 +56,6 @@ READ_PRIORITY = 10000
 LEASE_MIN = 10
 PROFILE_MAX_ATTEMPTS = 8   # expired profile leases get delayed retries, then stop after this many attempts
 QUALIFY_MAX_ATTEMPTS = 5
-BULK_MAX = 5000
 SSL = ssl.create_default_context(cafile='/etc/ssl/cert.pem' if Path('/etc/ssl/cert.pem').is_file() else None)
 PLAN_BATCH = 200   # profile jobs kept queued at a time when the profile budget is unlimited
 
@@ -224,7 +223,6 @@ def stale_lease(conn, job, q, b):
     if job['lane'] and job['lane'] != lane:
         return True
     return bool(job['lease_token'] and b.get('lease_token') != job['lease_token'])
-
 
 
 def ext_list_page(conn, q, b):
@@ -753,7 +751,6 @@ def lead_rows(conn, rows):
     return result
 
 
-
 def csv(q, key):
     return [x.strip() for x in (q.get(key, [''])[0]).split(',') if x.strip()]
 
@@ -1020,6 +1017,13 @@ def clean_tag(t):
     return t
 
 
+def manual_tag(t):
+    tag = clean_tag(t)
+    if tag.casefold() == 'client':
+        raise Bad('Use the Client relationship status instead of adding a Client label.')
+    return tag
+
+
 def tag_group(conn, tag, default='signal'):
     row = conn.execute("SELECT grp FROM tags WHERE tag=? ORDER BY source='manual' DESC LIMIT 1", (tag,)).fetchone()
     return row[0] if row else default
@@ -1038,22 +1042,34 @@ def add_manual(conn, pids, tags):
 
 
 def api_tag_edit(conn, q, b, pid):
-    person_row(conn, pid)
     for key in ('add', 'remove'):
         if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
             raise Bad(f'{key} must be a list of tags')
-    add_manual(conn, [pid], [clean_tag(t) for t in b.get('add') or []])
-    for t in b.get('remove') or []:
-        if isinstance(t, str):
+    additions = [clean_tag(t) for t in b.get('add') or []]
+    client = any(t.casefold() == 'client' for t in additions)
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        person_row(conn, pid)
+        add_manual(conn, [pid], [t for t in additions if t.casefold() != 'client'])
+        for t in b.get('remove') or []:
             conn.execute("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", (pid, t))
-    rules.sync(conn, [pid])
-    touch(conn, [pid])
-    conn.commit()
-    return {}
+        rules.sync(conn, [pid])
+        if client:
+            set_status(conn, [pid], status='client')
+        touch(conn, [pid])
+        result = {}
+        if client:
+            updated = person_row(conn, pid)
+            result = {'converted_to_status': 'client', 'status': 'client', 'mark_rev': updated['mark_rev']}
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def api_tag_rename(conn, q, b):
-    src, dst = clean_tag(b.get('from')), clean_tag(b.get('to'))
+    src, dst = clean_tag(b.get('from')), manual_tag(b.get('to'))
     if src == dst:
         return {'renamed': 0}
     pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (src,))]
@@ -1076,39 +1092,7 @@ def api_tag_delete(conn, q, b):
     return {'deleted': len(pids)}
 
 
-def api_bulk(conn, q, b):
-    ids = b.get('ids')
-    if not isinstance(ids, list) or len(ids) > BULK_MAX or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
-        raise Bad(f'ids must be a list of up to {BULK_MAX} ids')
-    for key in ('add', 'remove'):
-        if key in b and (not isinstance(b[key], list) or not all(isinstance(t, str) for t in b[key])):
-            raise Bad(f'{key} must be a list of tags')
-    add = [clean_tag(t) for t in b.get('add') or []]
-    remove = [t for t in b.get('remove') or [] if isinstance(t, str)]
-    status = b.get('status')
-    status = status_in(status) if isinstance(status, str) else status
-    if 'status' in b and status is not None and status not in STATUSES:
-        raise Bad('bad status')
-    conn.execute('BEGIN IMMEDIATE')
-    try:
-        pids = [r[0] for chunk in chunks(dict.fromkeys(ids))
-                for r in conn.execute(f"SELECT id FROM people WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
-        add_manual(conn, pids, add)
-        conn.executemany("DELETE FROM tags WHERE person_id=? AND tag=? AND source='manual'", [(p, t) for p in pids for t in remove])
-        rules.sync(conn, pids)
-        if 'status' in b:  # absent = leave marks alone; null = clear the status (a note is kept)
-            set_status(conn, pids, status=status)
-        touch(conn, pids)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    found = set(pids)
-    return {'updated': len(pids), 'updated_ids': pids,
-            'missing_ids': [pid for pid in dict.fromkeys(ids) if pid not in found]}
-
-
-# ---------- tag rules and saved views ----------
+# ---------- tag rules ----------
 
 def rule_out(conn, r):
     hits = conn.execute("SELECT count(*) FROM tags WHERE tag=? AND source='rule'", (r['tag'],)).fetchone()[0]
@@ -1171,38 +1155,6 @@ def api_rule_delete(conn, q, b, rid):
         rules.write_rule_tags(conn, other, pids)
     conn.commit()
     return {'deleted': 1}
-
-
-def api_views(conn, q, b):
-    return [dict(r) for r in conn.execute('SELECT id, name, query FROM saved_views ORDER BY name COLLATE NOCASE, id')]
-
-
-def api_view_save(conn, q, b):
-    name, query = b.get('name'), b.get('query')
-    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
-        raise Bad('name must be 1-80 characters')
-    if not isinstance(query, str) or len(query) > 4000:
-        raise Bad('query must be a URL query string')
-    name, query = name.strip(), query.strip().lstrip('?')
-    try:
-        parsed = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=50)
-    except ValueError:
-        raise Bad('query must be a URL query string') from None
-    if any(len(values) != 1 for values in parsed.values()):
-        raise Bad('query fields must not repeat')
-    lead_filter(parsed)
-    if parsed.get('sort', ['score'])[0] not in SORTS:
-        raise Bad('bad sort')
-    conn.execute('INSERT INTO saved_views(name, query, created_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET query=excluded.query',
-                 (name, query, db.now()))
-    conn.commit()
-    return {'id': conn.execute('SELECT id FROM saved_views WHERE name=?', (name,)).fetchone()[0], 'name': name, 'query': query}
-
-
-def api_view_delete(conn, q, b, vid):
-    n = conn.execute('DELETE FROM saved_views WHERE id=?', (vid,)).rowcount
-    conn.commit()
-    return {'deleted': n}
 
 
 def api_read(conn, q, b, pid):
@@ -1964,10 +1916,8 @@ ROUTES = [
     ('GET', r'/api/ext/control', api_control), ('POST', r'/api/ext/control', api_control_set),
     ('GET', r'/api/leads', api_leads), ('GET', r'/api/tags', api_tags), ('GET', r'/api/counts', api_counts),
     ('POST', r'/api/tags/rename', api_tag_rename), ('POST', r'/api/tags/delete', api_tag_delete),
-    ('POST', r'/api/people/bulk', api_bulk),
     ('GET', r'/api/tag-rules', api_rules), ('POST', r'/api/tag-rules', api_rule_add), ('GET', r'/api/tag-rules/preview', api_rule_preview),
     ('POST', r'/api/tag-rules/(\d+)/delete', api_rule_delete),
-    ('GET', r'/api/views', api_views), ('POST', r'/api/views', api_view_save), ('POST', r'/api/views/(\d+)/delete', api_view_delete),
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
     ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
@@ -2093,8 +2043,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             return self.send(500, {'ok': False, 'error': 'Internal server error'})
-        if isinstance(out, workflows.CsvResponse):
-            return self.send(200, out.data, 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="fortunate-leads.csv"', 'Cache-Control': 'no-store'})
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):

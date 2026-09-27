@@ -1,10 +1,7 @@
 """Small, local follow-up workflow; no outbound messages or scheduling service."""
-import csv
-import io
 import json
 import re
 from datetime import date, datetime, timezone
-from urllib.parse import parse_qs
 import db
 
 S = None
@@ -171,74 +168,9 @@ def filters(q, where, args):
         where.append(prefix + suffix + ')')
 
 
-class CsvResponse:
-    def __init__(self, data):
-        self.data = data
-
-
-def safe_cell(value):
-    if value is None:
-        return ''
-    if not isinstance(value, str):
-        return value
-    # Defend formula prefixes hidden behind spaces, BOM and control characters.
-    probe = re.sub(r'^[\s\x00-\x1f\ufeff]+', '', value)
-    if probe.startswith(('=', '+', '-', '@')) or value.startswith(('\t', '\r', '\n')):
-        return "'" + value
-    return value
-
-
-def api_export(conn, q, b):
-    if ('ids' in b) == ('query' in b):
-        raise ValueError('provide either ids or query')
-    if 'ids' in b:
-        ids = b['ids']
-        if not isinstance(ids, list) or not ids or len(ids) > S.BULK_MAX or any(type(i) is not int or i < 1 for i in ids):
-            raise ValueError(f'ids must be 1-{S.BULK_MAX} positive ids')
-        # Temporary table avoids SQLite variable limits and preserves exact selected scope.
-        conn.execute('CREATE TEMP TABLE IF NOT EXISTS export_ids(id INTEGER PRIMARY KEY)')
-        conn.execute('DELETE FROM export_ids')
-        conn.executemany('INSERT OR IGNORE INTO export_ids VALUES(?)', [(i,) for i in ids])
-        found = conn.execute('SELECT count(*) FROM people JOIN export_ids ON people.id=export_ids.id').fetchone()[0]
-        if found != len(set(ids)):
-            raise ValueError('some selected people no longer exist; refresh your selection')
-        where, args, order = ['p.id IN (SELECT id FROM export_ids)'], [], 'p.id'
-    else:
-        if not isinstance(b['query'], str) or len(b['query']) > 16000:
-            raise ValueError('query must be a URL query string')
-        query = parse_qs(b['query'].lstrip('?'))
-        where, args = S.lead_filter(query)
-        where = [S.NOT_ME] + where
-        sort = query.get('sort', ['score'])[0]
-        if sort not in S.SORTS:
-            raise ValueError('invalid sort')
-        order = S.SORTS[sort] + ',p.id'
-    # Encode each batch as it is written instead of copying the complete Unicode CSV.
-    output = io.BytesIO()
-    text_output = io.TextIOWrapper(output, encoding='utf-8-sig', newline='')
-    writer = csv.writer(text_output)
-    fields = ['id','handle','name','instagram_url','bio','website','followers','following','posts','tier','score','role','status','note','tags','sources','bio_at','bio_src','follow_up_due','follow_up_note','follow_up_completed_at']
-    writer.writerow(fields)
-    cursor = conn.execute(S.LEAD_SQL + ' WHERE ' + ' AND '.join(where) + ' ORDER BY ' + order, args)
-    while True:
-        batch = cursor.fetchmany(400)
-        if not batch:
-            break
-        for row in S.lead_rows(conn, batch):
-            row['instagram_url'] = 'https://www.instagram.com/' + row['handle'] + '/'
-            row['tags'] = '; '.join(t['tag'] for t in row['tags'])
-            row['sources'] = '; '.join(row['via'])
-            follow = row['follow_up'] or {}
-            row.update(follow_up_due=follow.get('due_on'), follow_up_note=follow.get('note'), follow_up_completed_at=follow.get('completed_at'))
-            writer.writerow([safe_cell(row.get(k)) for k in fields])
-    text_output.flush()
-    return CsvResponse(output.getvalue())
-
-
 def routes(server):
     global S
     S = server
     return [('POST', r'/api/person/(\d+)/follow-up', api_follow_up),
             ('GET', r'/api/person/(\d+)/activity', api_history),
-            ('POST', r'/api/person/(\d+)/activity', api_interaction),
-            ('POST', r'/api/leads/export', api_export)]
+            ('POST', r'/api/person/(\d+)/activity', api_interaction)]

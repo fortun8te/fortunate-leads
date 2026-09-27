@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-test('demo supports follow-ups, history, profile refresh and real CSV downloads', async () => {
+test('demo supports follow-ups, history, profile refresh', async () => {
   const window = { fetch: () => { throw Error('Unexpected external request'); } };
   const context = vm.createContext({ window, URL, URLSearchParams, Response, console, location: { origin: 'http://127.0.0.1:8777' }, setTimeout: (fn) => fn(), setInterval: () => 0 });
   vm.runInContext(await readFile(new URL('../../web/mock.js', import.meta.url), 'utf8'), context);
@@ -25,9 +25,16 @@ test('demo supports follow-ups, history, profile refresh and real CSV downloads'
   assert.ok(person.follow_up.completed_at);
   assert.ok(person.profile_read_pending);
   assert.ok(person.activity.rows.some((a) => a.body === 'Asked for examples'));
-  const response = await request('/api/leads/export', { ids: [20] });
-  assert.match(response.headers.get('content-type'), /text\/csv/);
-  assert.match(await response.text(), /Send portfolio/);
   await json('/api/person/20/follow-up', { action: 'clear' });
   assert.equal((await json('/api/person/20')).follow_up, null);
+  const converted = await json('/api/person/20/tags', { add: ['Client', 'Friend'] });
+  assert.equal(converted.converted_to_status, 'client');
+  person = await json('/api/person/20');
+  assert.equal(person.status, 'client');
+  assert.equal(person.note, 'Keep the status when editing notes');
+  assert.ok(!person.tags.some((t) => t.tag.toLowerCase() === 'client'));
+  for (const [path, body] of [['/api/people/bulk', {ids:[20]}], ['/api/leads/export', {ids:[20]}], ['/api/views', undefined]]) {
+    assert.equal((await request(path, body)).status, 404);
+  }
+
 });

@@ -95,15 +95,3 @@ test('activity edits are retained independently while the follow-up form is abse
   vm.runInNewContext(fn+'\nrememberWorkflowForm();',{workflowDrafts:drafts,$:(s)=>fields[s]||null});
   assert.equal(drafts.get(7).body,'New draft during refresh');assert.equal(drafts.get(7).kind,'call');assert.equal('due' in drafts.get(7),false);
 });
-
-test('filtered export explicitly sends Best fit sorting even when saved queries omit it', async () => {
-  const {readFile}=await import('node:fs/promises');const vm=await import('node:vm');
-  const source=await readFile(new URL('../../web/app.js',import.meta.url),'utf8');
-  const fn=source.slice(source.indexOf('async function exportLeads('),source.indexOf("$('#export-filtered').onclick"));
-  let exported;
-  const state={pick:new Set(),sort:'fit'};
-  const nodes=new Map();const select=(s)=>{if(!nodes.has(s))nodes.set(s,{});return nodes.get(s);};
-  const context=vm.createContext({S:state,exporting:false,LeadWorkflow:globalThis.LeadWorkflow,toQuery:()=>new URLSearchParams(),$:select,noteQueue:{flushAll:async()=>{}},fetch:async(url,options)=>{exported=JSON.parse(options.body);return {ok:false,status:500,json:async()=>({error:'stop after capturing request'})};}});
-  await vm.runInContext(fn+'\nexportLeads(false);',context);
-  assert.equal(new URLSearchParams(exported.query).get('sort'),'fit');
-});

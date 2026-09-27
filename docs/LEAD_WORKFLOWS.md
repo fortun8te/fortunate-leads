@@ -28,13 +28,9 @@ Notes save independently for each person, including when switching leads. Failed
 
 When two records resolve to the same Instagram identity, their history moves to the retained person. An unfinished reminder takes precedence over a completed one, then the earlier date wins; conflicts are recorded in the timeline. Distinct notes are combined when they fit the existing note limit. If they do not, the current note stays editable and the other full note is retained in the merge history.
 
-## Export leads
+## Workspace backup
 
-**Export filtered** downloads every matching lead, including rows beyond the current screen. **Export selected** downloads exactly the selected people. The selected export supports the existing limit of 5,000 IDs and reports an error if a selected record no longer exists.
-
-The CSV includes profile details, qualification, tags, source accounts, status, the current note, profile-read time and the current reminder. It does not contain the full activity history, collection cursors or application settings. Use the existing database backup procedure for a complete backup.
-
-The export quotes CSV fields and prefixes formula-like text with an apostrophe to reduce spreadsheet formula execution on first open. That protective prefix can remain visible in other tools. Spreadsheet save-and-reopen behavior varies; do not treat the CSV as trusted executable content. The server assembles the final file in memory, so memory use grows with large exports.
+Use the existing database backup procedure or `ops/export_workspace.py` for a complete workspace snapshot. Existing saved-view data remains in the database for recovery. Bulk selection, saved views and in-app CSV downloads were removed from the app.
 
 ## Refresh profile information
 

@@ -47,14 +47,19 @@
   panel.append(heading, intro, form, status, results);
   let request = 0;
   let controller;
-  toggle.addEventListener('click', () => {
-    panel.hidden = !panel.hidden;
-    toggle.setAttribute('aria-expanded', String(!panel.hidden));
-    toggle.classList.toggle('on', !panel.hidden);
-    mapPane?.classList.toggle('comparing', !panel.hidden);
-    toggle.textContent = panel.hidden ? 'Compare profiles' : 'Back to overview';
-    if (!panel.hidden) inputs[0].focus();
-  });
+  function setComparison(open, notify = true) {
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.classList.toggle('on', open);
+    mapPane?.classList.toggle('comparing', open);
+    toggle.textContent = open ? 'Explore map' : 'Compare profiles';
+    if (notify) {
+      window.dispatchEvent(new CustomEvent('connections-viewchange'));
+      if (open) inputs[1].focus();
+    }
+  }
+  setComparison(true, false);
+  toggle.addEventListener('click', () => setComparison(panel.hidden));
 
   function evidenceDetails(links, nodes) {
     const details = el('details', undefined, 'connections-evidence');

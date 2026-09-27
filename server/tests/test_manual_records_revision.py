@@ -26,20 +26,16 @@ class ManualRecordRevisionTest(Base):
             results = list(pool.map(lambda note: self.call(self.path, {'note': note, 'if_match': ''}), ['one', 'two']))
         self.assertEqual(sorted(code for code, body in results), [200, 409])
 
-    def test_partial_legacy_save_preserves_other_field_and_bulk_changes_revision(self):
+    def test_partial_legacy_save_preserves_other_field_and_status_changes_revision(self):
         _, first = self.call(self.path, {'note': 'keep note', 'status': 'client'})
-        result = self.call('/api/people/bulk', {'ids': [self.pid, self.pid, 99999], 'status': 'talking'})[1]
-        self.assertEqual(result['updated'], 1)
-        self.assertEqual(result['updated_ids'], [self.pid])
-        self.assertEqual(result['missing_ids'], [99999])
+        self.assertEqual(self.call(self.path, {'status': 'talking'})[0], 200)
         self.assertEqual(self.call(self.path, {'note': 'stale', 'mark_rev': first['mark_rev']})[0], 409)
         self.assertEqual(self.call(self.path, {'status': None})[1]['note'], 'keep note')
 
     def test_bad_revision_and_tag_shapes_do_not_mutate(self):
         for revision in (None, 0, [], {}):
             self.assertEqual(self.call(self.path, {'note': 'bad', 'mark_rev': revision})[0], 400)
-        for path, base in ((f'/api/person/{self.pid}/tags', {}), ('/api/people/bulk', {'ids': [self.pid]})):
-            self.assertEqual(self.call(path, dict(base, add='tag'))[0], 400)
+        self.assertEqual(self.call(f'/api/person/{self.pid}/tags', {'add': 'tag'})[0], 400)
         self.assertIsNone(self.call(f'/api/person/{self.pid}')[1]['note'])
 
     def test_remove_is_manual_only_and_restores_matching_rule(self):

@@ -49,15 +49,8 @@ try:
     key('Escape', 'Escape')
     check('Escape returns to the same lead', f'document.querySelector("#detail").hidden && document.activeElement.classList.contains("lead-open") && document.activeElement.closest(".row").dataset.personId === {json.dumps(first)}')
 
-    js('document.querySelector(".row [data-ck]").focus()')
-    key(' ', 'Space', ' ')
-    check('Space selects once and keeps checkbox focus', 'document.activeElement.matches("[data-ck]") && document.activeElement.getAttribute("aria-checked") === "true" && document.querySelector("#detail").hidden')
-    key(' ', 'Space', ' ')
-    check('Space deselects once', 'document.activeElement.getAttribute("aria-checked") === "false"')
-    js('document.querySelectorAll(".lead-open")[2].focus()')
-    key('x', 'KeyX', 'x')
-    check('Row shortcut acts on the keyboard-focused lead', 'document.activeElement.closest(".row").querySelector("[data-ck]").getAttribute("aria-checked") === "true" && document.querySelectorAll(".row.picked").length === 1')
-    key('x', 'KeyX', 'x')
+    check('Leads has no selection controls', '!document.querySelector("#rows [data-ck], #sel-page, #bulk")')
+    js('document.activeElement.blur()')
 
     # Density and virtualization must agree after scrolling far down.
     key('d', 'KeyD', 'd')

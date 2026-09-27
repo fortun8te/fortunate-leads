@@ -27,7 +27,8 @@ function mount() {
     '#help': help,
     '#detail': { contains: () => false },
     '#tag-in': { focus: record('tag-focus') },
-    '#q': { focus: record('search-focus') }
+    '#q': { focus: record('search-focus') },
+    '#connection-target': { focus: record('target-focus') }
   };
   const location = { hash: '#/map' };
   const context = {
@@ -62,11 +63,11 @@ test('returning to overview restores navigation and actions for its selected per
   assert.deepEqual(ui.effects, [
     ['mark', 123, 'saved'], ['mark', 123, null], ['mark', 123, 'contacted'],
     ['open', 'https://www.instagram.com/overview_person/', '_blank', 'noopener'],
-    ['tag-focus'], ['fit'], ['zoom', 1.4], ['zoom', 1 / 1.4], ['labels'], ['next']
+    ['tag-focus'], ['fit'], ['zoom', 1.4], ['zoom', 1 / 1.4]
   ]);
 });
 
-test('comparison retains app help, density, search and navigation shortcuts', () => {
+test('comparison retains app shortcuts and focuses target instead of hidden overview search', () => {
   const ui = mount();
   ui.press('?');
   assert.equal(ui.help.hidden, false);
@@ -75,7 +76,7 @@ test('comparison retains app help, density, search and navigation shortcuts', ()
   ui.press('/');
   ui.press('g');
   ui.press('l');
-  assert.deepEqual(ui.effects, [['density', 'compact'], ['search-focus']]);
+  assert.deepEqual(ui.effects, [['density', 'compact'], ['target-focus']]);
   assert.equal(ui.location.hash, '#/leads');
 });
 

@@ -41,7 +41,7 @@ tags(person_id INT, tag TEXT, grp TEXT, source TEXT CHECK(source IN('auto','manu
   -- DBs from before 'rule' are rebuilt in place by db.migrate_tags() on start (data kept).
 tag_rules(id INTEGER PRIMARY KEY, tag TEXT, grp TEXT DEFAULT 'signal', field TEXT CHECK(field IN('bio','name','handle','category','website','any')),
   match TEXT, created_at TEXT)
-saved_views(id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE NOCASE, query TEXT, created_at TEXT)   -- query = URL query string, no '?'
+saved_views(id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE NOCASE, query TEXT, created_at TEXT)   -- retained legacy data; no saved-view API
 verdicts(person_id INT PRIMARY KEY, prefilter INT, score INT, tier TEXT, role TEXT, reason TEXT,
   model TEXT, input_hash TEXT, updated_at TEXT, prompt TEXT, evidence TEXT)   -- tier: hot|warm|cold|unread
   -- prompt = qualify.prompt_version (prompt + few-shot set) of an LLM verdict; evidence = JSON list of exact bio quotes
@@ -174,10 +174,9 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - `GET /api/tags?<filter>` → `[{"tag","grp","source":"auto"|"rule"|"manual","count","total"}]` — one entry per (tag, source); `count` = people in the current filtered set with it, `total` = overall. Sorted count desc, total desc, tag. Tags with `count: 0` are included.
 
 ### Tag management (manual tags)
-- `POST /api/person/{id}/tags` `{"add":["..."],"remove":["..."]}` — add makes the tag manual (an auto/rule tag of the same name becomes manual); remove deletes the tag whatever its source (auto/rule tags come back when their rule still matches).
-- `POST /api/tags/rename` `{"from","to"}` → `{"ok","renamed":n}` — manual tags only. If a person already has `to` (any source) the two merge into one manual `to`. Group: that of an existing `to`, else of `from`.
+- `POST /api/person/{id}/tags` `{"add":["..."],"remove":["..."]}` — add makes the tag manual (an auto/rule tag of the same name becomes manual); remove deletes manual tags only. An exact case-insensitive `Client` addition sets the relationship status to `client` atomically, preserves the note and existing legacy labels, and returns `{ok, converted_to_status:"client", status:"client", mark_rev}`. A previous status is recorded in activity. No new Client tag is created.
+- `POST /api/tags/rename` `{"from","to"}` → `{"ok","renamed":n}` — manual tags only. If a person already has `to` (any source) the two merge into one manual `to`. Group: that of an existing `to`, else of `from`. Renaming a label to Client is rejected with guidance to use the relationship field.
 - `POST /api/tags/delete` `{"tag"}` → `{"ok","deleted":n}` — manual tags only; auto/rule tags of that name stay.
-- `POST /api/people/bulk` `{"ids":[..≤5000], "add"?:[..], "remove"?:[..], "status"?:null|"interested"|"contacted"|"talking"|"client"|"no"}` → `{"ok","updated":n}` (n = ids that exist). `status` key absent = marks untouched; `null` = clear the status (notes kept).
 - Tag names: trimmed, inner whitespace collapsed, 1–64 chars, no commas (commas separate filter values) → else 400.
 
 ### Tag rules (user-defined auto tagging, source `rule`)
@@ -189,19 +188,14 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - Guards (→ 400 with a reason): regex ≤ 200 chars, ≤ 6 quantifiers of which ≤ 2 are `*`/`+`/wider than `{0,3}`, no quantified group containing `|` or another quantifier (`(a+)+`, `(?:a?){26}`, `(ab|cd)+`), no backreferences, must run the worst-case probe strings in < 5 ms; keywords ≤ 1000 chars, ≤ 100 keywords, one `*` each. Only the first 160 chars of each field are scanned. A full scan over everyone that takes > 20 s is abandoned (400, nothing written). The scan runs before any write, so it never blocks ingest.
 - Rules re-apply to the people touched by every list page and profile, and in the qualify batch; a rule tag disappears when its person stops matching. Manual and auto tags are never touched by rules.
 
-### Saved views
-- `GET /api/views` → `[{"id","name","query"}]` (sorted by name). `POST /api/views` `{"name","query"}` → `{"ok","id","name","query"}` — `query` is the URL query string (leading `?` stripped); saving an existing name (any case) overwrites it. `POST /api/views/{id}/delete` → `{"ok","deleted":0|1}`.
-
-### Follow-ups, activity and CSV export (2026-09-26)
+### Follow-ups and activity
 
 - Lead rows also include `bio_at`, `bio_src` and `follow_up`, either null or `{due_on,note,completed_at,updated_at}`. Person detail includes `profile_read_pending` and `activity:{rows,next_cursor}` with the newest 50 entries.
 - `POST /api/person/{id}/follow-up` accepts `{due_on:"YYYY-MM-DD",note?:str}` with a valid calendar date and a note up to 500 characters. An existing reminder is rescheduled and reopened. `{action:"complete"}` completes it; `{action:"clear"}` removes it. Action and date/note fields cannot be mixed. Responses include `follow_up`. Unchanged operations append no event.
-- Shared filters for leads/counts/tags/map and filtered export accept `follow_up=due|overdue|scheduled|completed|none` and `today=YYYY-MM-DD`. Due means unfinished and `due_on <= today`; overdue uses `<`; scheduled means any unfinished reminder. None means no reminder row, not a completed row. Without `today`, the server's local calendar date is used. The UI injects the browser's current local date into requests and leaves it out of saved queries. `sort=follow_up` places open reminders first by due date, then person ID.
+- Shared filters for leads/counts/tags/map accept `follow_up=due|overdue|scheduled|completed|none` and `today=YYYY-MM-DD`. Due means unfinished and `due_on <= today`; overdue uses `<`; scheduled means any unfinished reminder. None means no reminder row, not a completed row. Without `today`, the server's local calendar date is used. The UI injects the browser's current local date into requests and leaves it out of saved queries. `sort=follow_up` places open reminders first by due date, then person ID.
 - `GET /api/person/{id}/activity?limit=50&cursor=...` returns `{rows,next_cursor}`. Limit is 1-100. Treat `next_cursor` as opaque and URL-encode it. Ordering is occurrence time descending, then ID descending. Each row has `{id,kind,body,before_value,after_value,happened_at,created_at}`; before/after are decoded JSON values.
 - `POST /api/person/{id}/activity` accepts `{kind:"dm"|"reply"|"call"|"meeting"|"note",body,happened_at?}`. Body must contain 1-5,000 characters. Optional occurrence time must be an ISO timestamp with timezone; otherwise server time is used. Times normalize to UTC. Returns the latest history page plus `ok`.
-- Automatic event kinds include `status`, `note`, `follow_up_scheduled`, `follow_up_completed`, `follow_up_cleared`, `follow_up_merged` and `identity_merged`. Status and note events record real changes, including bulk actions and undo. New tables are additive; existing states are not backfilled as invented historical events. Identity merging moves all activity and preserves conflicting reminder/note context.
-- `POST /api/leads/export` accepts exactly one of `{query:"URL query string"}` or `{ids:[positive integer IDs]}`. Query limit: 16,000 characters. Selected limit: 1-5,000 IDs; duplicate IDs collapse, missing IDs fail visibly. Selected scope is independent of filters. Filtered scope uses the shared filter, excludes the owner's account, and respects sorting; pagination parameters do not truncate it.
-- Successful export returns raw UTF-8 CSV with BOM, `Content-Disposition: attachment; filename="fortunate-leads.csv"` and `Cache-Control: no-store`. Failures remain ordinary JSON errors with existing same-origin checks. Fields: `id,handle,name,instagram_url,bio,website,followers,following,posts,tier,score,role,status,note,tags,sources,bio_at,bio_src,follow_up_due,follow_up_note,follow_up_completed_at`. Tags/sources are semicolon-separated. Empty filtered results still return the header. Text formula prefixes are guarded; numeric values stay numeric. CSV is assembled in memory and is not a complete backup.
+- Automatic event kinds include `status`, `note`, `follow_up_scheduled`, `follow_up_completed`, `follow_up_cleared`, `follow_up_merged` and `identity_merged`. Status and note events record real changes. New tables are additive; existing states are not backfilled as invented historical events. Identity merging moves all activity and preserves conflicting reminder/note context.
 
 ### People, map, scraper
 - `GET /api/counts?<filter>` → `{"hot","warm","cold","unread","interested","contacted","talking","client","no","none","open","total","with_bio"}` — tier counts within the filter without its `tier`; status counts within the filter without its `status` (`none` = unmarked, `open` = all but `no`); `total`/`with_bio` = the whole database. Cached per query and `data_rev`.
@@ -248,7 +242,7 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - Old system stays untouched as backup: `~/ig-follower-export`, `~/Documents/Codex/2026-09-23/here-s-the-full-prompt-with-2/work/`.
 
 ## Owner judgement in qualification (2026-09)
-Setting a status or note (`/mark`, bulk) or a manual tag bumps `people.updated_at`, so the next qualify batch re-derives that
+Setting a status or note (`/mark`) or a manual tag bumps `people.updated_at`, so the next qualify batch re-derives that
 person. The LLM packet carries `OWNER'S OWN JUDGEMENT` (status) / `OWNER'S OWN NOTE` / hand-set tags lines, and
 `input_hash` includes status + note + manual tags when any is set (hashes of untouched people are unchanged), so a changed
 judgement re-runs the model for that person.
