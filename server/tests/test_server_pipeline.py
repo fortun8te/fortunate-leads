@@ -95,6 +95,24 @@ class PipelineTest(Base):
         self.assertIsNone(progress['lists']['eta_h'])
         self.assertIsNone(progress['bios']['per_hour'])
 
+    def test_progress_separates_active_eta_from_incomplete_lists(self):
+        self.conn.execute("INSERT INTO people(handle,followers,following,first_seen,updated_at) "
+                          "VALUES('seed',1000,300,'2026-01-01','2026-01-01')")
+        self.conn.executemany(
+            'INSERT INTO lists(seed,direction,state,received,total,error) VALUES(?,?,?,?,?,?)', [
+                ('seed', 'followers', 'queued', 10, 100, None),
+                ('seed', 'following', 'partial', 20, 200, 'Instagram limited this list; 20 returned'),
+                ('other', 'followers', 'error', 5, 50, 'temporary failure'),
+            ])
+        self.conn.commit()
+
+        lists = server.progress(self.conn, [])['lists']
+        self.assertEqual(lists['left'], 90)
+        self.assertEqual(lists['incomplete_lists'], 2)
+        self.assertEqual(lists['incomplete_left'], 225)
+        self.assertEqual(lists['capped_lists'], 1)
+        self.assertIsNone(lists['eta_h'])
+
     def test_model_write_records_score_time_and_durable_rate(self):
         ids = self.people({'scored': ('founder', [('s1', 'followers')])})
         server.qualify_batch(self.conn)

@@ -24,8 +24,32 @@ test('running list with unknown total never renders Done; unknown bio metrics re
   const c=base({document:{activeElement:null},ago:()=>'',eta:()=>null, ST_LABEL:{},ST_DOT:{},LIST_STATE:{},listFilter:'all',listsAll:false});
   c.S.sc={ext:{online:true}, lists:[{state:'running',seed:'test',received:100,total:null}], soak:{'1h':{pages:1}}, progress:{lists:{left:5000,estimate:true,eta_h:null}}};
   vm.runInContext(section('function renderScraper()', 'let listsAll ='),c);c.renderScraper();
-  const html=c.$('#stages').innerHTML;assert.match(html,/about 5000 still to go/);assert.match(html,/Reading now/);assert.doesNotMatch(html.split('2. Read bios')[0],/>Done</);
+  const html=c.$('#stages').innerHTML;assert.match(html,/about 5000 left in active lists/);assert.match(html,/Reading now/);assert.doesNotMatch(html.split('2. Read bios')[0],/>Done</);
   c.S.scStale=true;c.renderScraper();assert.match(c.$('#now').innerHTML,/Connection lost/);
+});
+test('scraper separates active work from incomplete and capped list coverage',()=>{
+  const c=base({document:{activeElement:null},ago:()=>'',eta:()=> 'about 2 h',ST_LABEL:{},ST_DOT:{},LIST_STATE:{},listFilter:'all',listsAll:false});
+  c.S.sc={ext:{online:true},accounts:[{online:true,paused:false}],lists:[
+    {state:'running',seed:'active',direction:'followers',received:40,total:100},
+    {state:'partial',seed:'capped',direction:'followers',received:50,total:100},
+    {state:'error',seed:'failed',direction:'following',received:10,total:100},
+  ],soak:{'1h':{pages:2}},progress:{lists:{left:60,incomplete_lists:2,incomplete_left:140,capped_lists:1,per_minute:5,per_hour:100,eta_h:2}}};
+  vm.runInContext(section('function renderScraper()', 'let listsAll ='),c);c.renderScraper();
+  const lists=c.$('#stages').innerHTML.split('2. Read bios')[0];
+  assert.match(lists,/100 list entries saved/);
+  assert.match(lists,/60 left in active lists/);
+  assert.match(lists,/2 incomplete lists \(about 140 entries missing\)/);
+  assert.match(lists,/1 capped list/);
+  assert.match(lists,/Active lists: about 2 h left/);
+  assert.doesNotMatch(lists,/bar-p|people collected|Each extra Instagram account/);
+  assert.match(c.$('#now').innerHTML,/list entries saved so far/);
+  delete c.S.sc.progress.lists.incomplete_lists;
+  delete c.S.sc.progress.lists.incomplete_left;
+  delete c.S.sc.progress.lists.capped_lists;
+  c.renderScraper();
+  const legacy=c.$('#stages').innerHTML.split('2. Read bios')[0];
+  assert.match(legacy,/2 incomplete lists/);
+  assert.doesNotMatch(legacy,/entries missing|capped list|people collected/);
 });
 test('controls expose failed action and disable stale controls',async()=>{
   const el={isConnected:true,innerHTML:'',dataset:{},setAttribute(){},addEventListener(){},querySelectorAll:()=>[],contains:()=>false};

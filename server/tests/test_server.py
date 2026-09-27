@@ -282,11 +282,14 @@ class ServerTest(Base):
         self.assertEqual(self.call('/api/settings/qualify', {'on': True})[1], {'ok': True, 'qualify': True})
         self.assertTrue(self.call('/api/scraper')[1]['qualify'])
         self.call('/api/settings/qualify', {'on': False, 'auto': True})
-        # auto (opt-in): stays off while a list is queued, flips on when all are done
-        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers']})
+        # auto (opt-in): stays off while either direction is queued, flips on when both are done
+        self.call('/api/scraper/seeds', {'handles': ['s'], 'directions': ['followers', 'following']})
         self.assertFalse(server.auto_qualify(self.conn))
         job = self.call('/api/ext/next')[1]['job']
-        self.page(job, [{'ig_id': '1', 'handle': 'a'}], done=True)
+        self.page(job, [{'ig_id': str(i), 'handle': f'a{i}'} for i in range(3)], done=True)
+        self.assertFalse(server.auto_qualify(self.conn))
+        job = self.call('/api/ext/next')[1]['job']
+        self.page(job, [{'ig_id': str(i), 'handle': f'a{i}'} for i in range(3)], done=True)
         self.assertTrue(server.auto_qualify(self.conn))
         self.assertTrue(self.call('/api/scraper')[1]['qualify'])
         self.call('/api/settings/qualify', {'on': False, 'auto': False})
