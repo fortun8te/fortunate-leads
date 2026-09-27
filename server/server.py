@@ -1562,7 +1562,9 @@ def llm_usage_report(days=30, purpose='qualification'):
     except (OSError, ValueError, sqlite3.Error):
         return {'available': False, 'error': 'usage_ledger_unavailable',
                 'accounting_gap': gap, 'window_days': days, 'purpose': purpose}
-    return dict(report, available=True, complete=gap is None, accounting_gap=gap)
+    first = report['recording_since']
+    covered_window = bool(first) and datetime.fromisoformat(first) <= datetime.now(timezone.utc) - timedelta(days=days)
+    return dict(report, available=True, complete=gap is None and covered_window, accounting_gap=gap)
 
 
 def api_llm_usage(conn, q, b):

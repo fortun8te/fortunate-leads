@@ -151,6 +151,7 @@ class PipelineTest(Base):
             self.assertEqual([p['key'] for p in out['providers']], [None, 'sk-…9876'])
             self.assertNotIn('secret', json.dumps(out))
             self.assertEqual(out['workers'], 8)
+            self.assertFalse(out['usage']['complete'])  # a new ledger cannot cover earlier calls
             self.assertIn('llm', self.call('/api/scraper')[1])
         finally:
             server.llm.PROVIDERS[0] = old
