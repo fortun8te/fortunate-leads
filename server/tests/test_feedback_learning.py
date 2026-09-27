@@ -16,6 +16,7 @@ import laya  # noqa: E402
 import qualify  # noqa: E402
 import server  # noqa: E402
 import processing_modes
+from test_server import external_ready
 
 
 class FeedbackLearningTest(unittest.TestCase):
@@ -165,8 +166,7 @@ class FeedbackLearningTest(unittest.TestCase):
             ts = self.conn.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0]
             self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) VALUES(?,90,90,'local:k2',?)",
                               (pid, ts))
-            self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear',?)", (pid,ts))
-        self.conn.commit()
+        external_ready(self.conn, [own, other])
         self.assertEqual([r['id'] for r in server.llm_candidates(self.conn, 10, set())], [other])
         self.assertEqual([r['id'] for r in server.api_leads(self.conn, {}, {})['rows']], [other])
 
@@ -215,8 +215,7 @@ class FeedbackLearningTest(unittest.TestCase):
             ts = self.conn.execute('SELECT updated_at FROM people WHERE id=?', (pid,)).fetchone()[0]
             self.conn.execute("INSERT INTO verdicts(person_id,prefilter,score,model,updated_at) "
                               "VALUES(?,90,90,'local:k2',?)", (pid, ts))
-            self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'hash','needs_research','role_unclear',?)", (pid,ts))
-        self.conn.commit()
+        external_ready(self.conn, [own, other])
         snapshot = server.progress(self.conn, [])
         self.assertEqual(snapshot['bios']['left'], 1)
         self.assertEqual(snapshot['qualify']['left'], 1)

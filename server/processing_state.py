@@ -48,9 +48,18 @@ def ensure(conn):
     columns = ('handle','name','bio','website','category','followers','following','posts',
                'is_private','is_verified','is_business')
     changed = ' OR '.join(f'OLD.{c} IS NOT NEW.{c}' for c in columns)
+    old_trigger = conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='processing_people_update'").fetchone()
+    if old_trigger and 'DELETE FROM local_reviews' not in old_trigger[0]:
+        # Replace the previous insert-only trigger once during schema setup.
+        conn.execute('DROP TRIGGER processing_people_update')
+        db.set_setting(conn, 'local_empty_cleanup_complete', False)
+        db.set_setting(conn, 'local_empty_cleanup_cursor', 0)
     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS processing_people_update
         AFTER UPDATE OF {','.join(columns)} ON people WHEN {changed}
-        BEGIN {_queue_sql('NEW.id')} END''')
+        BEGIN
+        DELETE FROM local_queue WHERE person_id=NEW.id AND trim(coalesce(NEW.bio,''))='';
+        DELETE FROM local_reviews WHERE person_id=NEW.id AND trim(coalesce(NEW.bio,''))='';
+        {_queue_sql('NEW.id')} END''')
     conn.execute('''CREATE TRIGGER IF NOT EXISTS processing_people_delete AFTER DELETE ON people
         BEGIN DELETE FROM local_queue WHERE person_id=OLD.id;
         DELETE FROM local_reviews WHERE person_id=OLD.id;
@@ -76,10 +85,42 @@ def enqueue(conn, person_id):
     conn.execute(_queue_sql('?'), (person_id,))
 
 
+def cleanup_empty_step(conn, limit=500):
+    """Remove legacy phantom work in bounded primary-key windows, once.
+
+    Walk both queues and completed reviews so an old empty-bio review without a
+    queue entry cannot remain counted as reviewed. New edits use the trigger.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 5000:
+        raise ValueError('limit must be a whole number between 1 and 5000')
+    if db.get_setting(conn, 'local_empty_cleanup_complete', False):
+        return 0
+    cursor = db.get_setting(conn, 'local_empty_cleanup_cursor', 0) or 0
+    ids = set()
+    for table in ('local_queue', 'local_reviews'):
+        ids.update(r[0] for r in conn.execute(
+            f'SELECT person_id FROM {table} WHERE person_id>? ORDER BY person_id LIMIT ?', (cursor,limit)))
+    ids = sorted(ids)[:limit]
+    if not ids:
+        db.set_setting(conn, 'local_empty_cleanup_complete', True)
+        return 0
+    # Same bounded ID window for both tables; no full profile scan or giant IN list.
+    high = ids[-1]
+    for table in ('local_queue', 'local_reviews'):
+        conn.execute(f"""DELETE FROM {table} WHERE person_id>? AND person_id<=?
+            AND NOT EXISTS(SELECT 1 FROM people p WHERE p.id={table}.person_id
+                AND trim(coalesce(p.bio,''))!='')""", (cursor,high))
+    db.set_setting(conn, 'local_empty_cleanup_cursor', high)
+    if len(ids) < limit:
+        db.set_setting(conn, 'local_empty_cleanup_complete', True)
+    return len(ids)
+
+
 def seed_step(conn, limit=500, policy=None):
     """Queue existing bios once, walking bounded primary-key windows."""
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 5000:
         raise ValueError('limit must be a whole number between 1 and 5000')
+    cleanup_empty_step(conn, limit)
     if policy is not None and policy != db.get_setting(conn, 'local_queue_seed_policy'):
         if not isinstance(policy, str) or not policy:
             raise ValueError('policy must be a nonempty string')

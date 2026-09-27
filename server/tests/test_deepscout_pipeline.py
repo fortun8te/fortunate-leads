@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_server import db, server
+from test_server import db, server, external_ready
 
 
 scout = server.deepscout
@@ -134,16 +134,16 @@ class LeadscoutPipelineTest(unittest.TestCase):
         pid = self.lead()
         rows = self.conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchall()
 
-        self.conn.execute("INSERT INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'fixture','needs_research','unclear ownership',?)", (pid, db.now()))
-        self.conn.commit()
+        external_ready(self.conn, [pid])
 
         def answer(*args, **kwargs):
             self.scout_lead(pid)
             return {'score': 55, 'tier': 'warm', 'role': 'buyer', 'reason': 'older model read',
                     'model': 'hermes-broad:grok', 'fit': 55, 'content_fit': 55, 'tags': []}
 
-        with patch.object(server.external_harness, 'broad', side_effect=answer):
-            server.run_llm(self.conn, rows, {})
+        with patch.object(server.external_harness, 'broad', side_effect=answer) as broad:
+            self.assertEqual(server.run_llm(self.conn, rows, {}), 0)
+        broad.assert_called_once()
         row = self.conn.execute('SELECT model, content_fit FROM verdicts WHERE person_id=?', (pid,)).fetchone()
         self.assertEqual((row['model'], row['content_fit']), ('leadscout', 85))
 

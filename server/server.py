@@ -41,6 +41,7 @@ import local_model  # noqa: E402
 import resource_budget  # noqa: E402
 import local_qualification  # noqa: E402
 import external_harness  # noqa: E402
+import external_queue  # noqa: E402
 import meta_network  # noqa: E402
 import laya  # noqa: E402
 import llm  # noqa: E402
@@ -2058,10 +2059,18 @@ def api_pause(conn, q, b):
     return {}
 
 
+def external_candidates_sql():
+    return (f"FROM local_reviews l JOIN people p ON p.id=l.person_id JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
+            "AND l.status='needs_research' AND v.model LIKE 'local:%' AND v.updated_at=p.updated_at "
+            "AND NOT EXISTS(SELECT 1 FROM local_queue q WHERE q.person_id=p.id) "
+            "AND NOT EXISTS(SELECT 1 FROM marks m LEFT JOIN owner_note_reads n ON n.person_id=m.person_id "
+            "WHERE m.person_id=p.id AND trim(coalesce(m.note,''))!='' AND coalesce(n.state,'pending')!='ready') "
+            f"AND {external_queue.eligible_sql(now='?')} AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? ")
+
+
 def ai_left(conn):
-    return conn.execute(f"SELECT count(*) FROM local_reviews l JOIN people p ON p.id=l.person_id JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
-                        "AND l.status='needs_research' AND v.model LIKE 'local:%' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=?",
-                        (db.get_setting(conn, 'llm_min') or 0,)).fetchone()[0]
+    return conn.execute('SELECT count(*) ' + external_candidates_sql(),
+        (time.time(), db.get_setting(conn, 'llm_min') or 0)).fetchone()[0]
 
 
 def api_control(conn, q, b):
@@ -2116,8 +2125,20 @@ def api_processing_mode(conn, q, b):
 
 
 def notes_pending(conn):
-    return sum(owner_notes.result(conn, r[0])['state'] in ('pending', 'unavailable', 'failed')
+    return sum(owner_notes.result(conn, r[0])['state'] in ('pending', 'unavailable')
                for r in conn.execute("SELECT person_id FROM marks WHERE trim(coalesce(note,''))<>''"))
+
+
+def api_note_retry(conn, q, b, pid):
+    if not conn.execute('SELECT 1 FROM people WHERE id=?', (pid,)).fetchone():
+        raise NotFound('No such profile')
+    if not processing_modes.allows(conn, 'notes'):
+        raise Bad('Choose RLAI to read notes locally.')
+    queued = owner_notes.retry(conn, int(pid))
+    conn.commit()
+    if queued:
+        schedule_local_services(conn)
+    return {'queued': queued}
 
 
 _processing_summary_cache = {}
@@ -2156,6 +2177,8 @@ def api_local_processing(conn, q, b):
     counts = summary.pop('counts')
     runtime = local_model.status() if enabled else {'ready': False, 'resources': resource_budget.state()}
     pending = notes_pending(conn) if enabled else 0
+    failed = sum(owner_notes.result(conn, r[0])['state'] == 'failed' for r in conn.execute(
+        "SELECT person_id FROM marks WHERE trim(coalesce(note,''))<>''")) if enabled else 0
     budget = runtime.get('resources', {})
     waiting = budget.get('recovering') or budget.get('thermal_limited') or budget.get('error')
     state = ('off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
@@ -2164,7 +2187,7 @@ def api_local_processing(conn, q, b):
     return dict(summary, queue=summary['pending'], reviewed=sum(counts.values()),
                 needs_research=counts.get('needs_research', 0), enabled=enabled,
                 model=local_model.MODEL, ready=bool(runtime.get('ready')),
-                notes_pending=pending, state=state, runtime=runtime, paused=paused,
+                notes_pending=pending, notes_failed=failed, state=state, runtime=runtime, paused=paused,
                 processing=processing_modes.snapshot(conn))
 
 
@@ -2278,6 +2301,7 @@ ROUTES = [
     ('GET', r'/api/processing-mode', api_processing_mode), ('POST', r'/api/processing-mode', api_processing_mode),
     ('GET', r'/api/local-processing', api_local_processing),
     ('POST', r'/api/local-processing', api_local_processing),
+    ('POST', r'/api/person/(\d+)/note-retry', api_note_retry),
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
     ('POST', r'/api/settings/accounts', api_account_settings),
@@ -2845,10 +2869,10 @@ def local_processing_step(conn):
         if not result or not local_qualification.current_result(result, person, context):
             result = local_qualification.evaluate(person, tags, edges, net, note_context=context)
     except (local_model.Busy, local_model.Unavailable, ValueError) as exc:
-        delay = 2 if isinstance(exc, local_model.Busy) else 60
+        delay = exc.retry_after if isinstance(exc, local_model.Busy) else 60
         processing_state.retry(conn, person['id'], job['revision'], str(exc), delay)
         conn.commit()
-        return False
+        return WorkerDelay(delay)
     conn.execute('BEGIN IMMEDIATE')
     latest = conn.execute('SELECT * FROM people WHERE id=?', (person['id'],)).fetchone()
     if not latest or not processing_modes.result_current(conn, ticket):
@@ -2941,7 +2965,7 @@ def laya_step(conn):
         with resource_budget.lease('laya'):
             answers = laya.decide([dict(r) for r in rows])
     except resource_budget.Deferred:
-        return False
+        return WorkerDelay(resource_budget.state()['retry_after'])
     if not answers:
         return False
     if not conn.in_transaction:
@@ -3073,11 +3097,28 @@ def fewshot(conn):
 def llm_candidates(conn, limit, exclude):
     """External work is an escalation from a current local review."""
     held = list(exclude)[:900]
-    return conn.execute(f"SELECT p.* FROM local_reviews l JOIN people p ON p.id=l.person_id JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND coalesce(p.bio,'')!='' "
-                        "AND l.status='needs_research' AND v.model LIKE 'local:%' AND v.updated_at=p.updated_at AND (coalesce(v.prefilter,0)+coalesce(v.score,0))/2>=? "
+    return conn.execute('SELECT p.* ' + external_candidates_sql() +
                         f"AND p.id NOT IN ({','.join('?' * len(held))}) "
                         "ORDER BY coalesce(v.prefilter,0)+coalesce(v.score,0) DESC, p.id LIMIT ?",
-                        (db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
+                        (time.time(), db.get_setting(conn, 'llm_min'), *held, limit)).fetchall()
+
+
+def current_local_review(conn, person):
+    """External work must wait for the latest local context, including saved notes."""
+    if conn.execute('SELECT 1 FROM local_queue WHERE person_id=?', (person['id'],)).fetchone():
+        return None
+    if (person.get('note') or '').strip() and owner_notes.result(conn, person['id'])['state'] != 'ready':
+        return None
+    row = conn.execute('SELECT * FROM local_reviews WHERE person_id=?', (person['id'],)).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result['verdict'] = json.loads(result['verdict'] or 'null')
+    except (ValueError, TypeError):
+        return None
+    return result if local_qualification.current_result(result, person,
+        owner_notes.local_context(conn, person['id'])) else None
 
 
 # All model workers share the same small research pool. A pool per model batch
@@ -3147,28 +3188,61 @@ def run_llm(conn, rows, skip):
     try:
         vs = []
         for item in items:
-            local = conn.execute('SELECT status,escalation_reason FROM local_reviews WHERE person_id=?', (item['person']['id'],)).fetchone()
+            conn.execute('BEGIN IMMEDIATE')
+            latest = conn.execute('SELECT * FROM people WHERE id=?', (item['person']['id'],)).fetchone()
+            person = with_owner(conn, dict(latest)) if latest else None
+            local = current_local_review(conn, person) if person else None
             reason = local['escalation_reason'] if local and local['status'] == 'needs_research' else None
+            if not reason or qualify.input_hash(person, edges_of(conn, person['id']),
+                    network_context(conn, [person['id']], me).get(person['id'])) != qualify.input_hash(
+                    item['person'], item['edges'], item['net']):
+                if person and local is None and (person.get('bio') or '').strip():
+                    conn.execute('INSERT OR IGNORE INTO local_queue(person_id) VALUES(?)', (person['id'],))
+                conn.commit()
+                vs.append(None)
+                continue
+            token = external_queue.claim(conn, person['id'], local['input_hash'])
+            conn.commit()
+            if token is None:
+                vs.append(None)
+                continue
+            item['local_review'] = local
+            item['claim_token'] = token
             vs.append(external_harness.broad(item['person'], item['tags'], item['edges'], item['net'], examples,
                 escalation_reason=reason, model=db.get_setting(conn, 'scout_model') or 'grok',
                 allowed=lambda: processing_modes.result_current(conn, ticket)) if reason else None)
     except Exception:  # never let one bad reply spin the worker on the same rows: fall back like 'no model'
         traceback.print_exc()
+        conn.rollback()
         vs = [None] * len(items)
     conn.execute('BEGIN IMMEDIATE')
     if not processing_modes.result_current(conn, ticket):
-        conn.rollback()
+        # The call finished even though its answer is no longer allowed. Keep
+        # the attempt terminal so resuming cannot spend again on the same input.
+        for item in items:
+            review = item.get('local_review')
+            if review:
+                external_queue.complete(conn, item['person']['id'], review['input_hash'], None,
+                                        claim_token=item['claim_token'])
+        conn.commit()
         return 0
     wrote = 0
     for it, v in zip(items, vs):
         p = it['person']
+        review = it.get('local_review')
+        if review and not external_queue.complete(conn, p['id'], review['input_hash'], v, claim_token=it['claim_token']):
+            continue
         if v is None:
-            skip[p['id']] = datetime.now().timestamp() + 1800
+            if review:
+                skip[p['id']] = datetime.now().timestamp() + 1800
             continue
         latest = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
         if latest is None or latest['updated_at'] != p['updated_at']:
             continue
         latest_p = with_owner(conn, dict(latest))
+        current_review = current_local_review(conn, latest_p)
+        if not review or not current_review or (current_review['input_hash'], current_review['updated_at']) != (review['input_hash'], review['updated_at']):
+            continue
         latest_net = network_context(conn, [p['id']], me).get(p['id'])
         if qualify.input_hash(latest_p, edges_of(conn, p['id']), latest_net) != qualify.input_hash(p, it['edges'], it['net']):
             continue
@@ -3524,6 +3598,11 @@ def pfp_step(conn):
     return True
 
 
+class WorkerDelay:
+    def __init__(self, seconds):
+        self.seconds = max(1, min(60, float(seconds)))
+
+
 def worker(stop, step, busy_wait, idle_wait):
     conn = None
     try:
@@ -3545,7 +3624,7 @@ def worker(stop, step, busy_wait, idle_wait):
                         except Exception:
                             pass
                         conn = None
-            stop.wait(busy_wait if busy else idle_wait)
+            stop.wait(busy.seconds if isinstance(busy, WorkerDelay) else busy_wait if busy else idle_wait)
     finally:
         if conn is not None:
             conn.close()

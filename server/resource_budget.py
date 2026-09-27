@@ -12,7 +12,9 @@ import time
 
 
 class Deferred(RuntimeError):
-    pass
+    def __init__(self, message, retry_after=1):
+        super().__init__(message)
+        self.retry_after = max(1.0, float(retry_after))
 
 
 def _probe():
@@ -90,8 +92,11 @@ class Governor:
                 reason = 'Another local AI check is running.'
             if not reason and now < self._next_at:
                 reason = 'Brief pause to keep your Mac responsive.'
-            sample.update(allowed=not bool(reason), reason=reason or '', busy=bool(self._active),
-                          active_stage=self._active, retry_in=max(0, round(self._next_at - now)),
+            retry_after = (10 if self._pressured or sample.get('error') or sample.get('thermal_limited')
+                           or (startup and (free is None or free < 35)) else
+                           1 if self._active else max(1, self._next_at - now))
+            sample.update(retry_after=retry_after, allowed=not bool(reason), reason=reason or '', busy=bool(self._active),
+                          active_stage=self._active, retry_in=max(0, self._next_at - now),
                           recovering=self._pressured)
             return sample
 
@@ -111,7 +116,7 @@ class Governor:
                     raise Deferred('Another local AI check is running.')
             state = self.state(startup=startup)
             if not state['allowed']:
-                raise Deferred(state['reason'])
+                raise Deferred(state['reason'], state['retry_after'])
             # Cross-process rest window uses wall time, whereas local timing is
             # monotonic. Clamp stale/future values so clock changes cannot stall AI.
             if self.lock_path:
@@ -122,7 +127,7 @@ class Governor:
                     remaining = 0
                 if remaining > 0:
                     self._next_at = self.clock() + remaining
-                    raise Deferred('Brief pause to keep your Mac responsive.')
+                    raise Deferred('Brief pause to keep your Mac responsive.', remaining)
             started = self.clock()
             self._active = stage
             yield

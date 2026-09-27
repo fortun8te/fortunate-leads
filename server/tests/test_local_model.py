@@ -92,6 +92,20 @@ class LocalModelTest(unittest.TestCase):
                 self.assertFalse(model.maintain_service()['stopped'])
                 self.assertEqual(run.call_count, 1)
 
+    def test_resource_retry_deadline_survives_adapter(self):
+        with patch.object(model.resource_budget, 'lease', side_effect=model.resource_budget.Deferred('rest', 3.25)), patch.object(model, '_request') as call:
+            with self.assertRaises(model.Busy) as deferred:
+                model.complete_json('s', 'u', {})
+            self.assertEqual(deferred.exception.retry_after, 3.25)
+            call.assert_not_called()
+
+    def test_transport_backoff_reports_remaining_time_separately(self):
+        with patch.object(model.time, 'monotonic', return_value=100):
+            model._retry_at = 120
+            with self.assertRaises(model.Busy) as deferred:
+                model.complete_json('s', 'u', {})
+            self.assertEqual(deferred.exception.retry_after, 20)
+
     def test_redirects_rejected(self):
         with self.assertRaises(model.Unavailable):
             model.NoRedirect().redirect_request(None, None, None, None, None, None)

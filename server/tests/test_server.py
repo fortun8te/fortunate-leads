@@ -43,8 +43,15 @@ def external_ready(conn, pids):
     server.processing_state.ensure(conn)
     server.processing_modes.set_mode(conn, 'RLEAI')
     for pid in pids:
-        conn.execute("INSERT OR REPLACE INTO local_reviews(person_id,input_hash,status,escalation_reason,updated_at) VALUES(?,'fixture','needs_research','business_unclear',?)", (pid, db.now()))
-        conn.execute("UPDATE verdicts SET model='local:test' WHERE person_id=?", (pid,))
+        person = server.with_owner(conn, dict(conn.execute('SELECT * FROM people WHERE id=?', (pid,)).fetchone()))
+        context = server.owner_notes.local_context(conn, pid)
+        conn.execute("""INSERT OR REPLACE INTO local_reviews
+            (person_id,input_hash,prompt,model,model_version,status,escalation_reason,updated_at,private_context_hash)
+            VALUES(?,?,?,?,?,'needs_research','business_unclear',?,?)""",
+            (pid, server.local_qualification.input_hash(person, context), server.local_qualification.PROMPT_VERSION,
+             server.local_model.MODEL, server.local_model.MODEL_DIGEST, db.now(), (context or {}).get('snapshot')))
+        conn.execute("UPDATE verdicts SET model=? WHERE person_id=?", ('local:'+server.local_model.MODEL, pid))
+        conn.execute('DELETE FROM local_queue WHERE person_id=?', (pid,))
     conn.commit()
 
 
@@ -335,6 +342,8 @@ class ServerTest(Base):
         server.external_harness.broad = lambda *args, **kwargs: {'score': 90, 'tier': 'hot', 'role': 'buyer', 'reason': 'llm', 'model': 'm',
                                                              'tags': [('Skincare', 'niche')]}
         try:
+            self.assertTrue(server.external_queue.retry(self.conn, pid))
+            self.conn.commit()
             self.assertTrue(server.llm_step(self.conn, {}))
         finally:
             server.external_harness.broad = lambda *args, **kwargs: None
@@ -726,7 +735,7 @@ class TagsMapTest(Base):
             self.assertIn(pid, skip)
         finally:
             server.external_harness.broad = lambda *args, **kwargs: None
-        self.assertEqual(self.conn.execute('SELECT model, tier FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('local:test', 'hot'))
+        self.assertEqual(self.conn.execute('SELECT model, tier FROM verdicts WHERE person_id=?', (pid,)).fetchone()[:], ('local:' + server.local_model.MODEL, 'hot'))
 
     def test_retag_on_taxonomy_change(self):
         server.processing_modes.set_mode(self.conn, 'RLEAI')

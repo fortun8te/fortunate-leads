@@ -1229,6 +1229,7 @@ $('#detail').addEventListener('click', async (e) => {
   if (rmt) { e.stopPropagation(); return editTags(p.id, [], [rmt.dataset.rmtag]); }
   const tag = e.target.closest('[data-tag]');
   if (tag) return clickTag(tag.dataset.tag, e);
+  if (e.target.closest('[data-note-retry]')) return retryNoteRead(p.id);
   const suggestion = e.target.closest('[data-note-fact]');
   if (suggestion) return applyNoteFact(p.id, Number(suggestion.dataset.noteFact));
   const rel = e.target.closest('[data-human-relationship]');
@@ -1354,13 +1355,26 @@ function applyNoteFact(id, index) {
     return noteFactPatch(p, fact);
   });
 }
+const noteRetryBusy = new Set();
+async function retryNoteRead(id) {
+  if (noteRetryBusy.has(id) || S.person?.id !== id || !S.person.note_interpretation?.can_retry) return;
+  noteRetryBusy.add(id); renderNoteState(id);
+  try {
+    await noteQueue.flush(id);
+    await api.post(`/api/person/${id}/note-retry`, {});
+    const poll = notePolls.get(id);
+    if (poll) poll.attempts = 0;
+    await refreshPerson(id);
+  } catch { toast('Could not retry reading. Your note is saved.'); }
+  finally { noteRetryBusy.delete(id); if (S.person?.id === id) renderNoteState(id); }
+}
 function noteInsightsHTML(p) {
   const state = p.note_interpretation;
   const draft = noteQueue.peek(p.id);
   if (!p.note || !state || draft && (draft.pending || draft.draft !== p.note)) return '';
   if (state.state === 'disabled') return '<span class="muted">Note saved. Local processing is off.</span>';
   if (state.state === 'pending') return '<span class="muted">Reading your note locally…</span>';
-  if (state.state === 'unavailable' || state.state === 'failed') return '<span class="muted">Note saved. Local understanding is unavailable.</span>';
+  if (state.state === 'unavailable' || state.state === 'failed') return `<span class="muted">${esc(state.message || 'Note saved. Local understanding is unavailable.')}</span>${state.can_retry ? ` <button class="btn ghost" type="button" data-note-retry ${noteRetryBusy.has(p.id) ? 'disabled' : ''}>${noteRetryBusy.has(p.id) ? 'Retrying…' : 'Retry reading'}</button>` : ''}`;
   if (state.state !== 'ready') return '';
   const facts = (state.facts || []).map((fact, index) => {
     if (!fact.label || typeof fact.quote !== 'string' || !p.note.includes(fact.quote)) return '';
@@ -1811,7 +1825,7 @@ const T = {
         ${note ? `<p class="tg-section-note">${esc(note)}</p>` : ''}</section>`;
     };
     const inGroup = key => rows.filter(t => category(t) === key);
-    const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Collection'], ['other','Other']]
+    const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Scraping'], ['other','Other']]
       .map(([key,title]) => sec(key,title,inGroup(key))).join('');
     $('#tg-groups').innerHTML = sec('fit', 'Best prospects', fit, 'tg-top', 'Exceptional fit is a label you add to a rare opportunity. Blue reflects the saved assessment.')
       + `<div class="tg-main">${sec('business', 'Business signals', inGroup('business'))}${sec('review', 'Needs review', inGroup('review'), '', 'Exclusions stay quiet. Amber means a decision is needed.')}</div>`
@@ -2187,7 +2201,7 @@ function collectionReason(value, fallback = 'Scraping paused') {
   if (/login|logged.out|authentication|session.expired/.test(reason)) return 'Sign in to Instagram again';
   if (/challenge|checkpoint|security/.test(reason)) return 'Complete the Instagram security check';
   if (/private|access.denied|forbidden/.test(reason)) return 'This account cannot access the list';
-  if (/429|rate.limit|slow.down|feedback|required.wait|cooldown|instagram.wait|instagram.collection.is.resting/.test(reason)) return 'Waiting for Instagram to allow requests';
+  if (/429|rate.limit|slow.down|feedback|required.wait|cooldown|instagram.wait|instagram.requested.a.pause|instagram.warning|instagram.collection.is.resting/.test(reason)) return 'Waiting for Instagram to allow requests';
   if (/html|redirect|unexpected.response|home.page|502|503|504/.test(reason)) return 'Instagram did not return the list. Progress is saved.';
   if (/unconfirmed|permit|in.flight|shared|workspace/.test(reason)) return 'Waiting for the current request to finish';
   if (/budget|daily|cap.reached/.test(reason)) return 'Daily allowance reached';
@@ -2344,14 +2358,18 @@ function collectionCoverageHTML(sc) {
   const stages = sc.stages || sc.control?.stages || [];
   const held = stages.find(stage => stage.wait?.scope === 'workspace');
   const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
-  const state = held ? collectionReason(held.reason_code || held.wait?.why, 'Scraping is waiting') : sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused) ? 'Paused' : collectionStages.some(stage => stage.state === 'running') ? 'Collecting' : 'Waiting';
+  const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
+  const state = pausedByUser ? 'Paused by you' : held ? collectionReason(held.reason_code || held.wait?.why, 'Scraping is waiting') : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
+  const until = held?.wait?.until;
+  const resumes = !pausedByUser && until && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.now()
+    ? ` · Retries automatically at ${new Date(until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}. Progress is saved.` : '';
   const active = (sc.lists || []).filter(list => ['queued','running'].includes(list.state) && list.completion !== 'complete');
   const progress = sc.progress?.lists;
-  const estimate = state === 'Collecting' && active.length && active.every(list => Number.isFinite(list.expected ?? list.total)) && progress?.per_minute > 0 && progress?.left > 0 && Number.isFinite(progress?.eta_h) && progress.eta_h > 0 ? ` · Active queue: ${eta(progress.eta_h)} left` : '';
+  const estimate = state === 'Scraping' && active.length && active.every(list => Number.isFinite(list.expected ?? list.total)) && progress?.per_minute > 0 && progress?.left > 0 && Number.isFinite(progress?.eta_h) && progress.eta_h > 0 ? ` · Active queue: ${eta(progress.eta_h)} left` : '';
   const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
   const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting`;
   const speed = bios?.per_minute == null ? '' : ` · ${int(bios.per_minute)} bios read this minute`;
-  return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(estimate)}</span><span>${esc(localProcessingSummary())}</span>${backgroundAIControlsHTML()}</div>`;
+  return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(resumes)}${esc(estimate)}</span><span>${esc(localProcessingSummary())}</span>${backgroundAIControlsHTML()}</div>`;
 }
 
 function renderAccounts() {
@@ -2582,7 +2600,7 @@ function localProcessingSummary() {
   if (!local) return 'Local AI status unavailable';
   if (!local.enabled) return 'Local AI off';
   const counts = `${int(local.reviewed || 0)} bios reviewed · ${int(local.queue || 0)} waiting${local.seeding ? ' · finding more saved bios' : ''}`;
-  const notes = local.notes_pending ? ` · ${int(local.notes_pending)} notes waiting` : '';
+  const notes = (local.notes_pending ? ` · ${int(local.notes_pending)} notes waiting` : '') + (local.notes_failed ? ` · ${int(local.notes_failed)} notes need review` : '');
   const research = local.needs_research ? ` · ${int(local.needs_research)} need more research` : '';
   const state = backgroundAIState(local);
   if (!['Ready','Running'].includes(state)) return `Background AI ${state.toLowerCase()} · ${counts}${notes}`;
@@ -2877,8 +2895,8 @@ const Q = {
     const mode = settingsMode(S.sc);
     const known = !!mode;
     const on = mode === 'external';
-    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for review` : 'Review is up to date') : mode === 'local' ? localProcessingSummary() : 'Rules only';
-    $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${int(s.verdicts ?? this.total ?? 0)} people checked</span><span class="muted">${esc(status)}</span>${mode === 'external' ? `<span class="muted">${esc(localProcessingSummary())}</span>` : ''}${backgroundAIControlsHTML()}</p>`;
+    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for external review` : 'External review enabled') : mode === 'local' ? localProcessingSummary() : 'Rules only';
+    $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${s.rules == null ? 'Rules count unavailable' : `Rules checked ${int(s.rules)} profiles`}</span><span class="muted">${esc(status)}</span>${mode === 'external' ? `<span class="muted">${esc(localProcessingSummary())}</span>` : ''}${backgroundAIControlsHTML()}</p>`;
     $('#ql-toggle').textContent = 'Checking mode';
     $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
   },

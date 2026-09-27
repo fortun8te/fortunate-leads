@@ -60,3 +60,13 @@ test('note suggestions show exact quotes and only offer a non-conflicting relati
   assert.doesNotMatch(ctx.noteInsightsHTML({...person,status:'no'}),/data-s=/);
   assert.match(ctx.noteInsightsHTML({...person,note_interpretation:{state:'unavailable'}}),/Note saved/);
 });
+test('failed note offers explicit retry only when server permits it',async()=>{
+ const calls=[],person={id:7,note:'We worked together.',note_interpretation:{state:'failed',can_retry:true,message:'Could not understand this note. Your note is saved.'}};
+ const ctx=vm.createContext({S:{person},noteQueue:{peek:()=>null,flush:async()=>{}},notePolls:new Map([[7,{attempts:20}]]),esc:String,renderNoteState(){},api:{post:async(path,body)=>calls.push({path,body})},refreshPerson:async()=>calls.push('refresh'),toast:s=>calls.push(s)});
+ vm.runInContext(source.slice(source.indexOf('const HUMAN_RELATIONSHIPS ='),source.indexOf('function renderNoteState(')),ctx);
+ assert.match(ctx.noteInsightsHTML(person),/data-note-retry.*Retry reading/);
+ assert.doesNotMatch(ctx.noteInsightsHTML({...person,note_interpretation:{...person.note_interpretation,can_retry:false}}),/data-note-retry/);
+ await ctx.retryNoteRead(7);
+ assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{path:'/api/person/7/note-retry',body:{}},'refresh']);
+ assert.equal(ctx.notePolls.get(7).attempts,0);
+});
