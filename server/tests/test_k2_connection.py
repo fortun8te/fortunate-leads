@@ -21,8 +21,10 @@ class ConnectionTest(unittest.TestCase):
         mock = patch.object(k2_connection, 'CONFIG_PATH', path)
         mock.start()
         self.addCleanup(mock.stop)
-        local_model._remote_ready_endpoint = None
-        local_model._activity_unknown = False
+        for name, value in (('_remote_ready_endpoint', None), ('_activity_unknown', False)):
+            state = patch.object(local_model, name, value)
+            state.start()
+            self.addCleanup(state.stop)
 
     def test_default_is_fixed_local_and_status_does_not_probe_remote(self):
         self.assertEqual(k2_connection.read(), k2_connection.DEFAULT)
