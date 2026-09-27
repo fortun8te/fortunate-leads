@@ -45,3 +45,5 @@
  .collection-targets #lists-f { display:flex; flex-wrap:wrap; max-width:100%; gap:2px; }
  .collection-targets #lists-f button { flex:0 0 auto; }
 }
+
+.acc-mode { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:12px 0; }

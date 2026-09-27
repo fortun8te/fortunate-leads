@@ -270,7 +270,8 @@ def init(path):
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
                              ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                              ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
-                             ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT')):
+                             ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT'),
+                             ('people', 'pic_refresh', 'INT NOT NULL DEFAULT 0')):
         if col not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
             if table == 'list_runs' and col == 'member_count':
@@ -557,7 +558,7 @@ def norm_handle(h):
 
 
 # Background bookkeeping that the lead list, facets and map never show; writing it must not invalidate their cache.
-REV_QUIET = {'people': {'pic_file', 'updated_at'}, 'verdicts': {'updated_at', 'input_hash', 'prompt'}}
+REV_QUIET = {'people': {'pic_file', 'pic_refresh', 'updated_at'}, 'verdicts': {'updated_at', 'input_hash', 'prompt'}}
 
 
 def add_rev_triggers(conn, tables):
@@ -764,8 +765,12 @@ def upsert_person(conn, u, ts=None):
             # changing the profile that qualification consumes. Preserve that
             # freshness, but do not schedule another rules pass for the same data.
             content_changed = any(k not in ('bio_at', 'bio_src') for k in changes)
-            if 'pic_url' in changes:  # invalidate either cached download outcome
-                changes['pic_file'] = None
+            if 'pic_url' in changes:
+                # CDN URLs rotate independently of the photo. Keep the last
+                # downloaded image visible while a refresh waits for network access.
+                changes['pic_refresh'] = int(bool(current['pic_file']))
+                if not current['pic_file']:
+                    changes['pic_file'] = None
             if content_changed:
                 changes['updated_at'] = max(ts, current['updated_at'])
             conn.execute(f"UPDATE people SET {', '.join(k + '=?' for k in changes)} WHERE id=?",

@@ -122,3 +122,11 @@ test('cooldowns, login holds and offline profiles have distinct access instructi
   assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);
   assert.doesNotMatch(view.accountRow(account({ status: 'running' })), /private source|private list/i);
 });
+
+
+test('account collection mode stays visible and a shared wait replaces ready text', () => {
+  const html = view.accountRow(account({status:'online', collection_wait:'Instagram wait until 22:08'}));
+  assert.match(html, /Instagram wait until 22:08/);
+  assert.doesNotMatch(html, /Ready for collection/);
+  assert.ok(html.indexOf('data-role="lists"') < html.indexOf('Account settings'));
+});

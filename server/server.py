@@ -3127,41 +3127,51 @@ def fetch_pic(url):
 _pfp_check_id = 0
 
 
-def repair_pfp_cache(conn):
-    """Check a bounded slice of cached files so deleted files are downloaded again."""
+def repair_pfp_cache(conn, limit=32):
+    """Reconcile a bounded local slice, including orphaned photos, without HTTP.
+
+    The returned change count and cursor allow an explicit one-pass recovery.
+    This also runs during collection pauses and network holds.
+    """
     global _pfp_check_id
-    rows = conn.execute('SELECT id, pic_file FROM people WHERE pic_file IS NOT NULL AND pic_file != \'\' '
-                        'AND id > ? ORDER BY id LIMIT 32', (_pfp_check_id,)).fetchall()
+    rows = conn.execute('SELECT id, pic_file FROM people WHERE id > ? ORDER BY id LIMIT ?',
+                        (_pfp_check_id, max(1, min(int(limit), 1000)))).fetchall()
     if not rows:
         _pfp_check_id = 0
-        return False
-    repaired = False
+        return 0
+    repaired = 0
+    directory = pfp_dir()
     for row in rows:
         _pfp_check_id = row['id']
-        f = pfp_dir() / f"{row['id']}.jpg"
-        if not valid_pic_file(f):
-            conn.execute('UPDATE people SET pic_file=NULL WHERE id=? AND pic_file=?',
-                         (row['id'], row['pic_file']))
-            repaired = True
+        filename = f"{row['id']}.jpg"
+        valid = valid_pic_file(directory / filename)
+        if valid and row['pic_file'] != filename:
+            # Reuse existing bytes; do not create thousands of network refreshes.
+            repaired += conn.execute('UPDATE people SET pic_file=? WHERE id=? AND pic_file IS ?',
+                                     (filename, row['id'], row['pic_file'])).rowcount
+        elif not valid and row['pic_file']:
+            repaired += conn.execute('UPDATE people SET pic_file=NULL, pic_refresh=0 '
+                                     'WHERE id=? AND pic_file=?',
+                                     (row['id'], row['pic_file'])).rowcount
     if repaired:
         conn.commit()
     return repaired
 
 
 def pfp_step(conn):
-    if meta_network.blocked(conn):
-        return False
     repaired = repair_pfp_cache(conn)
-    r = conn.execute('SELECT p.id, p.pic_url FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
-                     'WHERE p.pic_url IS NOT NULL AND p.pic_file IS NULL '
-                     'ORDER BY p.updated_at DESC LIMIT 1').fetchone()
-    if not r:
-        return repaired
     if meta_network.blocked(conn):
-        return False
+        return bool(repaired)
+    r = conn.execute('SELECT p.id, p.pic_url, p.pic_file FROM people p '
+                     'WHERE p.pic_url IS NOT NULL AND (p.pic_file IS NULL OR p.pic_refresh=1) '
+                     'ORDER BY (p.pic_file IS NULL) DESC, p.updated_at DESC LIMIT 1').fetchone()
+    if not r:
+        return bool(repaired)
+    if meta_network.blocked(conn):
+        return bool(repaired)
     data = fetch_pic(r['pic_url'])
+    directory = pfp_dir()
     if data:
-        directory = pfp_dir()
         directory.mkdir(parents=True, exist_ok=True)
         name = None
         try:
@@ -3172,7 +3182,13 @@ def pfp_step(conn):
         finally:
             if name and os.path.exists(name):
                 os.unlink(name)
-    conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f"{r['id']}.jpg" if data else '', r['id']))
+    # A failed refresh must not hide an existing valid photo. Compare the URL
+    # before clearing refresh state so an in-flight URL update is not lost.
+    filename = f"{r['id']}.jpg" if data or valid_pic_file(directory / f"{r['id']}.jpg") else ''
+    updated = conn.execute('UPDATE people SET pic_file=?, pic_refresh=0 WHERE id=? AND pic_url=?',
+                           (filename, r['id'], r['pic_url'])).rowcount
+    if not updated:
+        conn.execute('UPDATE people SET pic_refresh=1 WHERE id=? AND pic_url IS NOT NULL', (r['id'],))
     conn.commit()
     return True
 
