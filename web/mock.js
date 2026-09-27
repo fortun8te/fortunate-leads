@@ -752,6 +752,10 @@
       return { nodes, links, seed_links: seedLinks(), total, limit, rev: mapRev };
     }
     if (path === '/api/scraper') return scraperView();
+    if (path === '/api/scraper/status') {
+      const { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue } = scraperView();
+      return { ext, accounts, rate, alerts, paused, qualify, qualify_auto, queue };
+    }
     if (path === '/api/accounts') { const v = scraperView(); return { accounts: v.accounts, alerts: v.alerts, rate: v.rate, main_list_share: settings.main_list_share }; }
     if (path === '/api/settings/accounts') { if (typeof body.main_list_share !== 'number' || !Number.isFinite(body.main_list_share) || body.main_list_share < 0 || body.main_list_share > 1) fail('main_list_share must be a number 0-1'); settings.main_list_share = Math.round(body.main_list_share * 100) / 100; return { ok: true, main_list_share: settings.main_list_share }; }
     if (path === '/api/llm') return llmView();
