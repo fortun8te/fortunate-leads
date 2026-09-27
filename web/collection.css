@@ -1,0 +1,27 @@
+/* Collection progress uses the same source form and queue table in both views. */
+.fl-ctl-status-link { color:var(--fg); text-decoration:none; padding:5px 8px; border-radius:8px; }
+.fl-ctl-status-link:hover { background:var(--bg2); }
+.fl-ctl-top { display:flex; align-items:center; flex-wrap:wrap; gap:8px 20px; }
+.fl-ctl-top .fl-ctl-direct { position:static; margin:4px 0 4px auto; width:auto; }
+.collection-targets .tbl { min-width:0; }
+.list-direction-mobile { display:none; }
+.collection-targets { margin:24px 0; }
+.collection-target-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; }
+.collection-target-heading h2 { font-size:18px; margin:0 0 5px; }
+.collection-target-heading p { margin:0; font-size:13px; }
+.collection-targets #seed-panel { margin-bottom:16px; }
+.collection-targets #seed-panel .p-head { display:none; }
+.collection-targets #seed-in { min-height:62px; height:62px; resize:vertical; }
+.collection-targets .tbl-wrap { max-height:420px; overflow:auto; }
+.collection-targets .tbl thead { position:sticky; top:0; z-index:1; background:var(--panel,var(--bg)); }
+.collection-targets .list-reason { max-width:360px; }
+@media(max-width:600px) {
+ .collection-target-heading { align-items:flex-start; }
+ .collection-target-heading p { max-width:220px; }
+ .collection-targets .p-head { flex-wrap:wrap; gap:8px; }
+ .collection-targets .tbl .prog { display:none; }
+ .collection-targets .list-direction-mobile { display:block; font-size:11px; color:var(--fg3); margin-top:3px; }
+ .collection-targets .tbl td,.collection-targets .tbl th { padding:10px 8px; }
+ .collection-targets .list-reason { max-width:150px; }
+ .collection-targets #seed-panel .row-flex { flex-wrap:wrap; }
+}

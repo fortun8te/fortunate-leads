@@ -8,7 +8,7 @@ goto_url(base + '/?mock=1')
 wait_for_load()
 settle()
 try:
-    check('Sample leads and all stage controls load', 'document.querySelectorAll(".row").length > 0 && document.querySelectorAll(".fl-ctl-pill").length === 3')
+    check('Sample leads and collection action load', 'document.querySelectorAll(".row").length > 0 && document.querySelectorAll(".fl-ctl-direct").length === 1')
     click_node('button', 'Dark') if js('document.documentElement.dataset.theme === "light"') else None
     routes = [('Leads', 'work'), ('Map', 'work'), ('Qualification', 'qual'), ('Tags', 'tags'), ('Scraper', 'scraper'), ('Accounts', 'accounts'), ('Settings', 'settings')]
     for width, height in [(1440, 1000), (390, 844)]:

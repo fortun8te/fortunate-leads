@@ -399,7 +399,7 @@ class LaneTest(Base):
         self.conn.commit()
         self.assertEqual(self.nxt('a', 'list')['job']['kind'], 'list')
 
-    def test_main_takes_lists_when_alts_reach_their_budget(self):
+    def test_main_stays_reserved_when_alts_reach_their_budget(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle'})
@@ -407,7 +407,7 @@ class LaneTest(Base):
         self.call('/api/accounts/lane-b', {'budget': {'list': 1, 'profile': 300}})
         self.seeds('s1')
         self.assertIsNone(self.nxt('b', 'list')['job'])
-        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 's1')
+        self.assertIsNone(self.nxt('a', 'list')['job'])
 
     def test_pick_job_rechecks_eligibility_after_pause_and_identity_switch(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
@@ -418,7 +418,7 @@ class LaneTest(Base):
         now = datetime.now(timezone.utc)
         self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
         self.call('/api/accounts/lane-b', {'paused': True})
-        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['seed'], 's1')
+        self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
         self.call('/api/accounts/lane-b', {'paused': False})
         self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
         self.call('/api/ext/heartbeat', {'lane_id': 'lane-a',
@@ -426,7 +426,7 @@ class LaneTest(Base):
                   'version': '3.9.16', 'state': 'idle'})
         self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['seed'], 's1')
 
-    def test_main_takes_followers_when_every_alt_endpoint_is_waiting(self):
+    def test_main_stays_reserved_when_every_alt_endpoint_is_waiting(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
         self.post('a', '/api/ext/heartbeat', {'version': '3.9.6', 'state': 'idle'})
@@ -441,8 +441,47 @@ class LaneTest(Base):
         self.conn.commit()
         self.assertEqual(self.nxt('b', 'list')['job']['seed'], 'other')
         self.assertIsNone(self.nxt('c', 'list')['job'])
-        job = self.nxt('a', 'list')['job']
-        self.assertEqual((job['seed'], job['cursor'], job['received']), ('target', 'next', 25))
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        saved = self.conn.execute("SELECT cursor,received FROM lists WHERE seed='target'").fetchone()
+        self.assertEqual(tuple(saved), ('next', 25))
+
+    def test_main_access_fallback_requires_denials_from_offline_alts_too(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        for who in ('a', 'b', 'c'):
+            self.post(who, '/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle'})
+        self.seeds('target', direction='followers')
+        self.age('lane-c', 20)
+        self.conn.execute("INSERT INTO list_private_denials VALUES('target','followers','102',?)", (db.now(),))
+        self.conn.commit()
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        self.conn.execute("INSERT INTO list_private_denials VALUES('target','followers','103',?)", (db.now(),))
+        self.conn.commit()
+        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 'target')
+
+    def test_main_stays_reserved_with_offline_alt_but_explicit_share_is_respected(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        for who in ('a', 'b'):
+            self.post(who, '/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle'})
+        self.seeds('target')
+        self.age('lane-b', 20)
+        self.assertIsNone(self.nxt('a', 'list')['job'])
+        alerts = [x['text'] for x in self.call('/api/accounts')[1]['alerts']]
+        self.assertIn('Your main account is reserved. Reconnect an alternate to continue lists.', alerts)
+        self.call('/api/settings/accounts', {'main_list_share': 0.1})
+        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 'target')
+
+    def test_main_daily_budget_applies_to_access_fallback(self):
+        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+        self.conn.commit()
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle', 'today': {'list': 20}})
+        self.post('b', '/api/ext/heartbeat', {'version': '3.9.16', 'state': 'idle'})
+        self.call('/api/accounts/lane-a', {'budget': {'list': 20, 'profile': 100}})
+        self.seeds('target')
+        self.conn.execute("INSERT INTO list_private_denials VALUES('target','followers','102',?)", (db.now(),))
+        self.conn.commit()
+        self.assertIsNone(self.nxt('a', 'list')['job'])
 
     def test_server_does_not_lease_during_account_cooldown(self):
         self.seeds('target', direction='following')

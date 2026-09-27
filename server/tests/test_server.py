@@ -504,7 +504,8 @@ class TagsMapTest(Base):
         self.assertEqual(self.call('/api/tags?tags=nothing')[1][0]['count'], 0)
         ann = self.call(f"/api/person/{ids['ann']}")[1]
         self.assertEqual(ann['tags'][0], {'tag': 'zz manual', 'grp': 'signal', 'source': 'manual'})
-        self.assertEqual([t['grp'] for t in ann['tags'][1:]], ['role', 'source', 'source'])
+        self.assertEqual([t['grp'] for t in ann['tags'][1:]], ['role', 'signal', 'source', 'source'])
+        self.assertIn({'tag': 'Fit: strong', 'grp': 'signal', 'source': 'auto'}, ann['tags'])
 
     def test_rename_and_delete_manual_tags(self):
         ids = self.people(self.SPEC)
@@ -590,7 +591,7 @@ class TagsMapTest(Base):
         leads = {n['label']: n for n in m['nodes'] if n['kind'] == 'lead'}
         ann = leads['ann']
         self.assertEqual((ann['lists'], ann['degree'], ann['status'], ann['followers'], ann['seeds']), (3, 3, 'interested', 5000, ['s1', 's2', 's3']))
-        self.assertEqual(ann['tags'], ['m1', 'm2', 'founder', 'via @s1'])  # max 4, manual first
+        self.assertEqual(ann['tags'], ['m1', 'm2', 'founder', 'Fit: strong'])  # max 4, manual first, saved fit before provenance
         self.assertEqual(leads['dan']['tags'], ['via @s1'])
         self.assertEqual(m['seed_links'], [{'source': 's:s1', 'target': 's:s2', 'shared': 2},
                                            {'source': 's:s2', 'target': 's:s3', 'shared': 2},

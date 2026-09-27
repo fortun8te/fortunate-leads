@@ -30,6 +30,7 @@ import control  # noqa: E402
 import connection_graph  # noqa: E402
 import db  # noqa: E402
 import owner  # noqa: E402
+import tag_projection  # noqa: E402
 import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
 import meta_network  # noqa: E402
@@ -751,7 +752,7 @@ def lead_rows(conn, rows):
     nets = network_context(conn, ids)
     tags, via, history_via = {}, {}, {}
     followups = {r['person_id']: {k: r[k] for k in ('due_on', 'note', 'completed_at', 'updated_at')} for r in conn.execute(f'SELECT * FROM followups WHERE person_id IN ({marks})', ids)}
-    for t in conn.execute(f'SELECT * FROM tags t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
+    for t in conn.execute(f'SELECT * FROM ({tag_projection.relation()}) t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
         tags.setdefault(t['person_id'], []).append({'tag': t['tag'], 'grp': t['grp'], 'source': t['source']})
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM current_edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         via.setdefault(e['person_id'], []).append(e['seed'])
@@ -809,8 +810,7 @@ def lead_filter(q, status_default=True):
         if any(t not in ('hot', 'warm', 'cold', 'unread') for t in tiers):
             raise Bad('bad tier')
         within("coalesce(v.tier,'unread') IN ({})", tiers)
-    effective_tags = ('SELECT t.person_id FROM tags t LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE '
-                      + owner.visible_tag_sql() + ' AND ')
+    effective_tags = 'SELECT t.person_id FROM (' + tag_projection.relation() + ') t WHERE '
     for t in dict.fromkeys(csv(q, 'tags')):  # all of
         within('p.id IN (' + effective_tags + 't.tag={})', [t])
     if csv(q, 'any'):  # at least one of
@@ -903,17 +903,26 @@ def api_tags(conn, q, b):
 
 
 def tag_facets(conn, q):
-    """Facets: per (tag, source) the people in the current filtered set (`count`) and overall (`total`). One grouped scan."""
+    """Per-tag counts for the filtered set and overall, including current fit labels."""
     where, args = lead_filter(q)
-    counts = dict(((r[0], r[1]), r[2]) for r in conn.execute(
-        f"""WITH f AS MATERIALIZED (SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)})
-        SELECT t.tag, t.source, count(*) FROM f JOIN tags t ON t.person_id=f.id
-        LEFT JOIN marks tm ON tm.person_id=t.person_id
-        WHERE {owner.visible_tag_sql()} GROUP BY t.tag, t.source""", args))
-    out = [{'tag': r[0], 'grp': r[2], 'source': r[1], 'count': counts.get((r[0], r[1]), 0), 'total': r[3]}  # totals: covering index
-           for r in conn.execute(f'SELECT t.tag, t.source, min(t.grp), count(*) FROM tags t '
-                                 f'LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE {owner.visible_tag_sql()} '
-                                 'GROUP BY t.tag, t.source')]
+    counts, totals = {}, {}
+    # Group each branch separately so SQLite can retain the stored-tag covering
+    # index instead of materializing the entire tag relation before filtering.
+    for branch, projected in enumerate(tag_projection.parts()):
+        selected = f"SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)}"
+        count_sql = (f"WITH f AS MATERIALIZED ({selected}) SELECT t.tag,t.source,count(*) "
+                     f"FROM f JOIN ({projected}) t ON t.person_id=f.id GROUP BY t.tag,t.source"
+                     if branch == 0 else
+                     f"SELECT t.tag,t.source,count(*) FROM ({projected}) t "
+                     f"WHERE t.person_id IN ({selected}) GROUP BY t.tag,t.source")
+        for tag, source, n in conn.execute(count_sql, args):
+            counts[tag, source] = counts.get((tag, source), 0) + n
+        for tag, source, grp, n in conn.execute(
+            f'SELECT t.tag,t.source,min(t.grp),count(*) FROM ({projected}) t GROUP BY t.tag,t.source'):
+            previous = totals.get((tag, source), (grp, 0))
+            totals[tag, source] = (grp, previous[1] + n)
+    out = [{'tag': tag, 'grp': grp, 'source': source, 'count': counts.get((tag, source), 0), 'total': total}
+           for (tag, source), (grp, total) in totals.items()]
     return sorted(out, key=lambda f: (-f['count'], -f['total'], f['tag'], f['source']))
 
 
@@ -1402,7 +1411,7 @@ def map_graph(conn, q):
                           'observed_at': e['observed_at'], 'checked_at': e['checked_at']})
             if e['active'] == 1 and e['seed'] not in seeds_of.setdefault(e['person_id'], []):
                 seeds_of[e['person_id']].append(e['seed'])
-        for t in conn.execute(f'SELECT t.* FROM tags t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
+        for t in conn.execute(f'SELECT t.* FROM ({tag_projection.relation()}) t WHERE t.person_id IN ({marks}) ORDER BY t.person_id, {TAG_ORDER}', chunk):
             raw_tags.setdefault(t['person_id'], []).append(dict(t))
     for pid, person in map_owners.items():
         raw = raw_tags.get(pid, [])

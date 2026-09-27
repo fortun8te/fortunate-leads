@@ -15,7 +15,7 @@ const view = vm.runInNewContext(`${snippet}\n({ accountAccess, accountRow })`, {
   esc: (x) => String(x ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
   ago: () => '2m', left: () => '8m', int: (x) => Number(x || 0).toLocaleString('en-US'),
   ucf: (x) => x[0].toUpperCase() + x.slice(1),
-  jobText: () => 'Waiting for work',
+  jobText: () => 'Waiting for work', backIn: () => 'in 8 min',
 });
 const account = (changes = {}) => ({
   lane_id: 'lane-1', handle: 'sample', name: '@sample', label: null,
@@ -71,7 +71,7 @@ test('polling keeps each account Advanced state and focused control', () => {
   };
   const renderSource = source.slice(source.indexOf('function renderAccounts() {'), source.indexOf('\nasync function editAccount(', source.indexOf('function renderAccounts() {')));
   const context = vm.createContext({
-    $, document, A: { starting: false, wiz: null, dismissed: false, renaming: null },
+    $, document, renderScraper(){}, A: { starting: false, wiz: null, dismissed: false, renaming: null },
     S: { sc: { accounts: [{ lane_id: 'first', online: true }, { lane_id: 'second', online: true }], alerts: [], rate: { people_last_hour: 12 } }, scStale: false },
     accountRow: (account) => `<section data-lane="${account.lane_id}"></section>`,
     esc: String, int: String, accountAccess: view.accountAccess, collectionCoverageHTML: () => '',
@@ -95,13 +95,13 @@ test('navigation uses a settings gear and removes the keyboard help button while
   assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
 
-test('Accounts Start local services opens the configured startup path and reports its progress', () => {
-  assert.match(html, /id="acc-start">Start local services/);
+test('Accounts Start local models opens the configured startup path and reports its progress', () => {
+  assert.match(html, /id="acc-start">Start local models/);
   assert.match(html, /id="acc-start-status"[^>]*role="status"/);
 
   assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
   assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
-  assert.match(source, /Local services started\. Collection and checking mode are unchanged/);
+  assert.match(source, /Laya is ready\. The installed notes model was checked\. Collection and checking mode stay as selected/);
 });
 
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
@@ -117,7 +117,7 @@ test('cooldowns, login holds and offline profiles have distinct access instructi
   assert.doesNotMatch(overlapping, /retry 8m/);
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /Instagram limit active[\s\S]*See the top status bar for the wait time/);
+  })), /Instagram limit active[\s\S]*Resumes in 8 min/);
   assert.match(view.accountRow(account({ status: 'needs_login', hold: 'login' })), /Open this Chrome profile and sign in/);
   assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);
   assert.doesNotMatch(view.accountRow(account({ status: 'running' })), /private source|private list/i);

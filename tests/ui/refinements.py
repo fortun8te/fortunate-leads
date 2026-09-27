@@ -61,7 +61,7 @@ try:
     js('document.querySelector(".fl-ctl-summary").focus()')
     key('Enter', 'Enter', '\r')
     click_node('button', 'Pause collect lists')
-    check('320px resumed-state controls fit each card', '[...document.querySelectorAll(".fl-ctl-pill button")].every(e=>e.getBoundingClientRect().right<=e.parentElement.getBoundingClientRect().right) && document.documentElement.scrollWidth<=innerWidth')
+    check('320px resumed-state controls fit each card', '!!document.querySelector(".fl-ctl-direct") && document.querySelector(".fl-ctl-direct").getBoundingClientRect().right<=innerWidth && document.documentElement.scrollWidth<=innerWidth')
     click_node('button', 'Resume collect lists')
     shot('leads-dark-320')
 

@@ -35,14 +35,18 @@ test('map accents follow the tag palette with visible contrast in both themes', 
   const dark = {}, light = {};
   for (const block of style.matchAll(/:root(\[data-theme="light"\])?\s*\{([^}]+)\}/g)) {
     const tokens = block[1] ? light : dark;
-    for (const token of block[2].matchAll(/(--[\w-]+):\s*(#[0-9a-f]{6})/gi)) tokens[token[1]] = token[2];
+    for (const token of block[2].matchAll(/(--[\w-]+):\s*(#[0-9a-f]{6}|var\(--[\w-]+\))/gi)) tokens[token[1]] = token[2];
   }
   const luminance = hex => {
     const channels = [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)/255).map(v => v<=.04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
     return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722;
   };
+  const resolved = (tokens, name) => {
+    const value = tokens[name] || dark[name];
+    return value?.startsWith('var(') ? resolved(tokens, value.slice(4, -1)) : value;
+  };
   for (const tokens of [dark,light]) for (const name of ['--t-map-strong','--t-caution']) {
-    const a=luminance(tokens[name]), b=luminance(tokens['--bg']);
+    const a=luminance(resolved(tokens, name)), b=luminance(resolved(tokens, '--bg'));
     assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05)>=3, `${name} needs visible contrast on ${tokens['--bg']}`);
   }
 });
@@ -278,4 +282,46 @@ test('map search ignores hidden Leads filters and positions are organic', () => 
   m.build({nodes:[seed('a'),...people],links:people.map(p=>({source:'s:a',target:p.id,state:'observed'})),total:80});
   const uniqueX=new Set(m.leads.map(n=>Math.round(n.x)));
   assert.ok(uniqueX.size>60,'avatars must not form rows of grid cells');
+});
+
+
+test('recorded overlap brings related sources closer and keeps you at the centre', () => {
+  const data = () => {
+    const seeds = ['me','a','b','c','d','e'].map(seed); seeds[0].is_me=true;
+    const people = Array.from({length:72},(_,i)=>lead(i));
+    const links = people.flatMap((p,i) => [
+      {source:seeds[Math.floor(i/12)].id,target:p.id,state:'observed'},
+      ...(i<24 ? [{source:i<12?'s:a':'s:me',target:p.id,state:'observed'}] : []),
+      ...(i>=24&&i<48 ? [{source:i<36?'s:c':'s:b',target:p.id,state:'observed'}] : [])
+    ]);
+    return {nodes:[...seeds,...people],links,total:people.length};
+  };
+  const {m}=harness();m.build(data());
+  const distance=(a,b)=>Math.hypot(m.byId.get('s:'+a).x-m.byId.get('s:'+b).x,m.byId.get('s:'+a).y-m.byId.get('s:'+b).y);
+  const related=(distance('me','a')+distance('b','c'))/2;
+  const unrelated=(distance('me','d')+distance('me','e')+distance('a','d')+distance('b','e'))/4;
+  assert.ok(related<unrelated*0.7, `related ${related}, unrelated ${unrelated}`);
+  assert.equal(m.byId.get('s:me').x,0);assert.equal(m.byId.get('s:me').y,0);
+  for(let i=0;i<m.nodes.length;i++)for(let j=i+1;j<m.nodes.length;j++) {
+    const a=m.nodes[i],b=m.nodes[j];assert.ok(Math.hypot(a.x-b.x,a.y-b.y)>=a.r+b.r);
+  }
+  const other=harness().m;other.build(data());
+  assert.deepEqual(m.nodes.map(n=>[n.x,n.y]),other.nodes.map(n=>[n.x,n.y]));
+});
+
+test('selection gently opens nearby avatars, stops, and respects reduced motion', () => {
+  const run = reduced => {
+    const {c,m}=harness(), frames=[];let draws=0;
+    c.matchMedia=()=>({matches:reduced});c.requestAnimationFrame=fn=>frames.push(fn);
+    m.draw=()=>draws++;
+    const selected={id:'p:a',x:0,y:0,r:12};
+    const nearby={id:'p:b',x:30,y:0,r:12};
+    const distant={id:'p:c',x:150,y:0,r:12};
+    m.nodes=[selected,nearby,distant];m.relax(selected,18,40,12);
+    let count=0;while(frames.length){frames.shift()();count++;assert.ok(count<=18);}
+    assert.ok(nearby.x>36);assert.equal(selected.x,0);assert.equal(distant.x,150);
+    assert.ok(draws>0);if(reduced)assert.equal(count,0);
+    return nearby.x;
+  };
+  assert.equal(run(false),run(true));
 });

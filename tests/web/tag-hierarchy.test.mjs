@@ -47,7 +47,7 @@ test('roles and review candidates do not inherit the verdict or hard-caution tre
   assert.match(ui.tagChip(tag('Client', 'custom', 'manual'), false), /t-client/);
 });
 
-test('dense lead rows lead with user labels and count distinct remaining evidence', () => {
+test('dense lead rows lead with saved fit then user labels and count distinct remaining evidence', () => {
   const { ui } = mount();
   const row = { id: 7, handle: 'store', tags: [
     tag('Fit: strong'), tag('Brand', 'role'), tag('Founder'), tag('Shop Link'),
@@ -57,19 +57,19 @@ test('dense lead rows lead with user labels and count distinct remaining evidenc
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.ok(desktopTags, 'desktop tag cell is present');
   assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 3);
-  assert.match(desktopTags, /data-tag="Warm intro"[\s\S]*data-tag="Founder"[\s\S]*data-tag="Brand"/);
-  assert.match(desktopTags, /title="Shop Link · Jewelry"\>\+2/);
-  assert.doesNotMatch(html, /data-tag="Fit: strong"|data-tag="via @seed"/);
+  assert.match(desktopTags, /data-tag="Fit: strong"[\s\S]*data-tag="Warm intro"[\s\S]*data-tag="Founder"/);
+  assert.match(desktopTags, /title="Brand · Shop Link · Jewelry"\>\+3/);
+  assert.doesNotMatch(html, /data-tag="via @seed"/);
 });
 
-test('client, relationship and caution outrank fit and niche; synonymous decisions use one slot', () => {
+test('saved fit outranks client, relationship and niche; synonymous decisions use one slot', () => {
   const { ui } = mount();
   const dense = ui.rowTagSelection({ score: 91, tags: [
     tag('AI: Skincare', 'niche'), tag('Scout: Strong'), tag('Too big'),
     tag('Client', 'custom', 'manual'), tag('follows you', 'source'),
     tag('Founder', 'role'), tag('AI: Decision maker', 'ai'),
   ] });
-  assert.deepEqual(Array.from(dense.shown, (t) => t.tag), ['Client', 'follows you', 'Too big']);
+  assert.deepEqual(Array.from(dense.shown, (t) => t.tag), ['Scout: Strong', 'Client', 'follows you']);
   assert.equal(dense.hidden.length, 3);
   assert.deepEqual(Array.from(dense.suppressed, (t) => t.tag), ['AI: Decision maker']);
 
@@ -77,7 +77,7 @@ test('client, relationship and caution outrank fit and niche; synonymous decisio
     tag('AI: Skincare', 'niche'), tag('Shop Link'), tag('Founder', 'role', 'manual'),
     tag('AI: Decision maker', 'ai'), tag('Scout: Strong'), tag('Too big'),
   ] });
-  assert.deepEqual(Array.from(decision.shown, (t) => t.tag), ['Founder', 'Too big', 'Scout: Strong']);
+  assert.deepEqual(Array.from(decision.shown, (t) => t.tag), ['Scout: Strong', 'Founder', 'Too big']);
   assert.deepEqual(Array.from(decision.hidden, (t) => t.tag), ['Shop Link', 'AI: Skincare']);
   assert.deepEqual(Array.from(decision.suppressed, (t) => t.tag), ['AI: Decision maker']);
 });
@@ -91,9 +91,9 @@ test('near-synonymous fit and identity chips cannot fill a lead row', () => {
   ] };
   const html = ui.rowHTML(row, 0, 64);
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
-  assert.match(desktopTags, /data-tag="client"[\s\S]*data-tag="follows you"[\s\S]*data-tag="Founder"/);
-  assert.doesNotMatch(desktopTags, /data-tag="AI: Decision maker"|data-tag="AI: Top fit"|data-tag="AI: Skincare"/);
-  assert.match(desktopTags, /\+2/);
+  assert.match(desktopTags, /data-tag="AI: Top fit"[\s\S]*data-tag="client"[\s\S]*data-tag="follows you"/);
+  assert.doesNotMatch(desktopTags, /data-tag="AI: Decision maker"|data-tag="AI: Skincare"/);
+  assert.match(desktopTags, /\+3/);
   assert.match(ui.tagChip(tag('AI: Skincare', 'niche'), false), /data-tag="AI: Skincare"[^>]*title="AI: Skincare · auto"[^>]*><span>Skincare<\/span>/);
 
   const sparse = ui.rowTagSelection({ tags: [tag('Founder', 'role'), tag('AI: Decision maker', 'ai'), tag('AI: Top fit', 'ai')] });
@@ -102,7 +102,7 @@ test('near-synonymous fit and identity chips cannot fill a lead row', () => {
   assert.equal(sparse.suppressed.length, 1);
 });
 
-test('generic profile access and a repeated fit verdict stay out of informative rows', () => {
+test('saved fit remains visible while generic profile access stays out of informative rows', () => {
   const { ui } = mount();
   const row = { id: 9, handle: 'shop', business_fit: 86, score: 90, tags: [
     tag('Instagram link', 'source'), tag('you follow', 'source'),
@@ -110,9 +110,9 @@ test('generic profile access and a repeated fit verdict stay out of informative 
     tag('AI: Supplements', 'niche'), tag('Shop Link', 'signal'),
   ] };
   const selected = ui.rowTagSelection(row);
-  assert.deepEqual(Array.from(selected.shown, (t) => t.tag), ['AI: Decision maker', 'Shop Link', 'AI: Supplements']);
-  assert.equal(selected.hidden.length, 0);
-  assert.deepEqual(Array.from(selected.suppressed, (t) => t.tag).sort(), ['AI: Top fit', 'Instagram link', 'you follow'].sort());
+  assert.deepEqual(Array.from(selected.shown, (t) => t.tag), ['AI: Top fit', 'AI: Decision maker', 'Shop Link']);
+  assert.deepEqual(Array.from(selected.hidden, t=>t.tag), ['AI: Supplements']);
+  assert.deepEqual(Array.from(selected.suppressed, (t) => t.tag).sort(), ['Instagram link', 'you follow'].sort());
   const accessOnly = ui.rowTagSelection({ tags: [tag('Instagram link', 'source')] });
   assert.equal(accessOnly.shown[0].tag, 'Instagram link');
   const repeatedNiche = ui.rowTagSelection({ tags: [
@@ -162,9 +162,9 @@ test('detail keeps user tags prominent and makes repeated labels accessible', ()
     tag('Warm intro', 'custom', 'manual'), tag('Verified'), tag('Instagram link', 'source'),
     tag('Fit: strong', 'signal'), tag('Founder', 'role'), tag('AI: Decision maker', 'ai'),
   ] });
-  assert.deepEqual(Array.from(chosen.primary, (t) => t.tag), ['Warm intro', 'Founder', 'Skincare']);
+  assert.deepEqual(Array.from(chosen.primary, (t) => t.tag), ['Warm intro', 'AI: Top fit', 'Founder', 'Skincare']);
   assert.deepEqual(Array.from(chosen.related, (t) => t.tag).sort(),
-    ['AI: Top fit', 'AI: Skincare', 'Verified', 'Instagram link', 'Fit: strong', 'AI: Decision maker'].sort());
+    ['AI: Skincare', 'Verified', 'Instagram link', 'Fit: strong', 'AI: Decision maker'].sort());
 });
 
 test('Tags overview keeps the Figma groups directly visible', () => {
@@ -173,7 +173,10 @@ test('Tags overview keeps the Figma groups directly visible', () => {
   context.rows = rows;
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`, context);
   const html = groupNode.innerHTML;
-  assert.doesNotMatch(html, /Best prospects/);
+  assert.match(html, /Best prospects/);
+  const best = html.match(/<section class="tg-sec tg-top">([\s\S]*?)<\/section>/)[1];
+  assert.deepEqual([...best.matchAll(/data-go="([^"]+)"/g)].map(m=>m[1]), ['Exceptional fit','AI: Top fit','Fit: strong','Fit: good']);
+  assert.equal([...best.matchAll(/<b class="num">0<\/b>/g)].length, 4);
   assert.match(html, /Business signals[\s\S]*Needs review[\s\S]*Everything else[\s\S]*Products/);
   assert.match(html, /tchip t-niche/);
   assert.doesNotMatch(html, /<details/);
@@ -185,9 +188,9 @@ test('Tags search shows a bounded page and reveals additional matches on request
   const { context, groupNode } = mount();
   context.rows = Array.from({ length: 75 }, (_, i) => tag(`Signal ${i}`, 'signal'));
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('signal');`, context);
-  assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 20);
-  assert.match(groupNode.innerHTML, /\+55 more/);
-  vm.runInContext("groups.more = { signal: 70 }; groups.renderGroups('signal');", context);
+  assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 50);
+  assert.match(groupNode.innerHTML, /\+25 more/);
+  vm.runInContext("groups.more = { clues: 70 }; groups.renderGroups('signal');", context);
   assert.equal([...groupNode.innerHTML.matchAll(/data-go=/g)].length, 70);
   assert.match(groupNode.innerHTML, /\+5 more/);
 });
@@ -210,4 +213,57 @@ test('Figma emphasis is independent of selection and preserves explicit owner im
   assert.equal(ui.tagIcon(tag('Apparel', 'niche')), '');
   assert.match(ui.tagIcon(tag('AI: Top fit')), /data-icon="verified"/);
   assert.match(ui.tagChip(tag('Brand', 'role')), /data-importance="standard"[\s\S]*data-filter-mode="inc"/);
+});
+
+test('a saved fit survives an existing score while the row uses only one fit slot', () => {
+  const {ui} = mount();
+  const tags = [tag('Fit: strong'), tag('AI: Top fit','ai'), tag('Fit: good'), tag('Founder','role'), tag('Brand','role')];
+  const chosen = ui.rowTagSelection({business_fit:95,score:99,tags});
+  const fits = new Set(['Fit: strong','AI: Top fit','Fit: good']);
+  assert.equal(chosen.shown.filter(t=>fits.has(t.tag)).length,1);
+  assert.equal(chosen.suppressed.filter(t=>fits.has(t.tag)).length,2);
+  assert.equal(chosen.hidden.filter(t=>fits.has(t.tag)).length,0,'duplicate fits must not inflate overflow');
+  assert.equal([...chosen.shown,...chosen.hidden].filter(t=>fits.has(t.tag)).length,1);
+  assert.match(ui.rowHTML({id:12,handle:'fit',business_fit:95,score:99,tags:[tag('Fit: strong')]},0,64),/data-tag="Fit: strong"/);
+});
+
+test('exceptional owner labels stay visible in Best prospects with actual counts and filter keys', () => {
+  const {context,groupNode} = mount();
+  context.rows = [{...tag('Design partner','custom','manual'),total:7},{...tag('AI: Top fit','ai'),total:23}];
+  vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`,context);
+  const best = groupNode.innerHTML.match(/<section class="tg-sec tg-top">([\s\S]*?)<\/section>/)[1];
+  assert.match(best,/data-importance="exceptional"[^>]*data-go="Design partner"[^>]*>[\s\S]*?<span>Design partner<\/span><b class="num">7<\/b>/);
+  assert.match(best,/data-go="AI: Top fit"[^>]*>[\s\S]*?<span>Top fit<\/span><b class="num">23<\/b>/);
+  assert.equal([...best.matchAll(/data-go="AI: Top fit"/g)].length,1);
+});
+
+test('audience sizes are quiet while source lists use background emphasis', () => {
+  const {ui}=mount();
+  for(const source of ['auto','rule','manual']) {
+    assert.equal(ui.tagImportance(tag('1k-10k','size',source)),'quiet');
+    assert.equal(ui.tagImportance(tag('via @sample','source',source)),'background');
+  }
+});
+
+test('Founder and semantic labels retain the same presentation across evidence sources', () => {
+  const {ui}=mount();
+  for(const source of ['auto','rule','manual']) {
+    const founder=tag('Founder','role',source);
+    assert.equal(ui.tagTone(founder),'positive');
+    assert.equal(ui.tagImportance(founder),'standard');
+    assert.match(ui.tagChip(founder),/data-tone="positive"[\s\S]*data-tag="Founder"[\s\S]*<span>Founder<\/span>/);
+    const fit=tag('Fit: strong','signal',source);
+    assert.match(ui.tagChip(fit),/data-tag="Fit: strong"[\s\S]*<span>Strong fit<\/span>/);
+    assert.match(ui.tagItem({...fit,sources:[source],count:3}),/data-tag="Fit: strong"[\s\S]*<span>Strong fit<\/span>/);
+  }
+});
+
+test('equivalent product labels stay in Products regardless of AI source metadata', () => {
+  const {context,groupNode}=mount();
+  context.rows=[tag('AI: Skincare','ai'),tag('Skincare','niche','rule')];
+  vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`,context);
+  const products=groupNode.innerHTML.match(/<h3>Products<\/h3>([\s\S]*?)<\/section>/)?.[1]||'';
+  assert.match(products,/data-go="AI: Skincare"/);
+  assert.match(products,/data-go="Skincare"/);
+  assert.doesNotMatch(products,/data-tone="positive"|data-tone="review"/);
 });
