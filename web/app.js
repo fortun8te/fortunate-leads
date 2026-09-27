@@ -2601,10 +2601,11 @@ function localProcessingSummary() {
   if (!local.enabled) return 'Local AI off';
   const counts = `${int(local.reviewed || 0)} bios reviewed · ${int(local.queue || 0)} waiting${local.seeding ? ' · finding more saved bios' : ''}`;
   const notes = (local.notes_pending ? ` · ${int(local.notes_pending)} notes waiting` : '') + (local.notes_failed ? ` · ${int(local.notes_failed)} notes need review` : '');
+  const unverified = local.unverified ? ` · ${int(local.unverified)} profiles need review` : '';
   const research = local.needs_research ? ` · ${int(local.needs_research)} need more research` : '';
   const state = backgroundAIState(local);
-  if (!['Ready','Running'].includes(state)) return `Background AI ${state.toLowerCase()} · ${counts}${notes}`;
-  return `K2 · ${counts}${notes}${research}`;
+  if (!['Ready','Running'].includes(state)) return `Background AI ${state.toLowerCase()} · ${counts}${notes}${unverified}`;
+  return `K2 · ${counts}${notes}${unverified}${research}`;
 }
 function renderCheckingMode() {
   const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];

@@ -2184,7 +2184,9 @@ def api_local_processing(conn, q, b):
     state = ('off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
              'starting' if _service_start_state['state'] == 'starting' else 'unavailable' if not runtime.get('ready') else
              'working' if summary.get('pending') or pending or summary.get('seeding') else 'ready')
-    return dict(summary, queue=summary['pending'], reviewed=sum(counts.values()),
+    return dict(summary, queue=summary['pending'],
+                reviewed=counts.get('complete', 0) + counts.get('needs_research', 0),
+                unverified=counts.get('unverified', 0) + counts.get('insufficient_evidence', 0),
                 needs_research=counts.get('needs_research', 0), enabled=enabled,
                 model=local_model.MODEL, ready=bool(runtime.get('ready')),
                 notes_pending=pending, notes_failed=failed, state=state, runtime=runtime, paused=paused,
@@ -2868,11 +2870,13 @@ def local_processing_step(conn):
     try:
         if not result or not local_qualification.current_result(result, person, context):
             result = local_qualification.evaluate(person, tags, edges, net, note_context=context)
-    except (local_model.Busy, local_model.Unavailable, ValueError) as exc:
+    except (local_model.Busy, local_model.Unavailable) as exc:
         delay = exc.retry_after if isinstance(exc, local_model.Busy) else 60
         processing_state.retry(conn, person['id'], job['revision'], str(exc), delay)
         conn.commit()
         return WorkerDelay(delay)
+    except ValueError as exc:
+        result = local_qualification.failure_result(person, context, exc)
     conn.execute('BEGIN IMMEDIATE')
     latest = conn.execute('SELECT * FROM people WHERE id=?', (person['id'],)).fetchone()
     if not latest or not processing_modes.result_current(conn, ticket):
@@ -2883,9 +2887,7 @@ def local_processing_step(conn):
     if not local_qualification.current_result(result, current, context):
         conn.rollback()
         return False
-    if result['status'] == 'retry':
-        processing_state.retry(conn, person['id'], job['revision'], result.get('error', 'Local review could not be verified'), 300)
-    elif processing_state.put_review(conn, person['id'], result, revision=job['revision'],
+    if processing_state.put_review(conn, person['id'], result, revision=job['revision'],
                                     private_context_hash=(context or {}).get('snapshot')):
         edges = edges_of(conn, person['id'])
         net = network_context(conn, [person['id']]).get(person['id'], {})

@@ -84,3 +84,11 @@ test('terminal note failures are shown separately without claiming running work'
  assert.match(h.ctx.localProcessingSummary(),/2 notes need review/);
  assert.doesNotMatch(h.ctx.localProcessingSummary(),/2 notes waiting/);
 });
+test('unverified local outputs stay separate from completed bio reviews and queued work',()=>{
+ const h=harness();h.SET.localProcessing={enabled:true,ready:true,state:'ready',reviewed:4,queue:0,unverified:3,notes_failed:2};
+ assert.match(h.ctx.localProcessingSummary(),/4 bios reviewed.*0 waiting.*2 notes need review.*3 profiles need review/);
+ assert.doesNotMatch(h.ctx.localProcessingSummary(),/7 bios reviewed|3 waiting/);
+ assert.equal(h.ctx.backgroundAIState(),'Ready');
+ h.SET.localProcessing.paused=true;
+ assert.match(h.ctx.localProcessingSummary(),/paused.*3 profiles need review/);
+});
