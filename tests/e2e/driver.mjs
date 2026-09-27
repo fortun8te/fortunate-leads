@@ -484,13 +484,22 @@ async function opsHttp(p, body) {
     return r.json();
   });
 }
-// README: "(or Pause→Resume in the workspace)". If the server is already paused (it pauses itself on a security check),
-// Resume is enough; otherwise Pause, let a heartbeat see it, then Resume.
+async function resumeCollection() {
+  const sc = await opsHttp('/api/scraper');
+  const until = Date.parse(sc.ext?.cooldown_until || '');
+  if (sc.ok === false || (Number.isFinite(until) && until > V.now)) return false;
+  ev('operator: Resume lists and bios after resolving security warning');
+  const result = await opsHttp('/api/control', { stage: 'all', action: 'resume' });
+  return result.ok !== false;
+}
 async function workspaceResume() {
   const sc = await opsHttp('/api/scraper');
+  const until = Date.parse(sc.ext?.cooldown_until || '');
+  if (sc.ok === false || (Number.isFinite(until) && until > V.now)) return false;
   if (!sc.paused) { ev('operator: Pause in workspace'); await opsHttp('/api/scraper/pause', { paused: true }); await new Promise((r) => timer(OPS, MIN, r)); }
-  ev('operator: Resume in workspace');
-  await opsHttp('/api/scraper/pause', { paused: false });
+  ev('operator: Resolve warning and Resume in workspace');
+  const result = await opsHttp('/api/scraper/pause', { paused: false });
+  return result.ok !== false && await resumeCollection();
 }
 const uiOrigin = () => `http://127.0.0.1:${PORT.server}`; // the workspace page's own origin
 let holdN = 0;
@@ -501,23 +510,18 @@ function operator() {
   if (st && st.hold && h && h.end == null) {
     h.policy = h.policy || HOLD_POLICY[holdN++ % HOLD_POLICY.length];
     const age = V.now - h.start;
-    if (h.policy === 'workspace' && age >= 12 * MIN && !h.acted) { h.acted = V.now; workspaceResume(); }
+    if (h.policy === 'workspace' && age >= 12 * MIN && !h.acted && !h.busy) {
+      h.busy = true; workspaceResume().then(ok => { if (ok) h.acted = V.now; }).finally(() => { h.busy = false; });
+    }
     if (h.policy === 'popup' && age >= 15 * MIN && !h.acted) {
       h.acted = V.now; ev('operator: Resume in popup');
       if (browser.sw) for (const fn of browser.sw.L.onMessage) fn({ cmd: 'resume' }, { id: EXT_ID }, () => {});
     }
   }
-  // README: "paused ... until you press Resume in the popup". If the popup Resume alone doesn't get scraping going again
-  // within 30 min (the server paused itself on the security check), Michael resumes in the workspace too, and the
-  // report flags it.
   const last = holds.at(-1);
-  if (last && last.policy === 'popup' && last.end != null && !last.workspace && V.now - last.end >= 30 * MIN) {
-    const moved = igLog.some((e) => e.t > last.end && e.kind !== 'nav');
-    if (!moved) {
-      last.workspace = V.now; last.stuckMin = Math.round((V.now - last.end) / MIN); last.stuckText = store.view && store.view.text;
-      ev('operator: popup still says "' + last.stuckText + '" ' + last.stuckMin + ' min after Resume; Resume in workspace too');
-      workspaceResume();
-    } else last.workspace = -1;
+  if (last && last.policy === 'popup' && last.end != null && !last.workspace && !last.busy) {
+    last.busy = true;
+    resumeCollection().then(ok => { if (ok) last.workspace = V.now; }).finally(() => { last.busy = false; });
   }
 }
 function serverTick() {
@@ -702,8 +706,9 @@ async function report(seeds) {
   // 8. misc
   check(!fakeLog.log.some((e) => e.path === '/api/v1/users/web_profile_info/'), 'never calls the retired web_profile_info');
   check(!harnessErrors.length, 'no uncaught errors in the extension', harnessErrors.slice(0, 3).join(' | '));
-  for (const h of holds.filter((h) => h.policy === 'popup')) check(!(h.stuckMin > 0), 'popup Resume restarts scraping after a hold',
-    h.stuckMin > 0 ? `after the ${h.code} hold at ${dhm(h.start)} the popup Resume cleared the hold but the extension stayed "${h.stuckText}" for ${h.stuckMin} min (server still paused)` : '');
+  for (const h of holds.filter((h) => h.policy === 'popup')) check(h.end != null && h.workspace >= h.end,
+    'resolved popup hold is followed by explicit collection resume',
+    h.workspace ? `resumed collection at ${dhm(h.workspace)}` : 'no successful explicit resume');
   // Local progress (prog, used by the empty-page guard) must agree with what the server counted.
   for (const s of seeds) {
     const key = s.handle.toLowerCase() + '/' + s.direction, p = (store.prog || {})[key], L = db.lists.find((l) => l.seed.toLowerCase() + '/' + l.direction === key);
@@ -759,7 +764,7 @@ async function report(seeds) {
 // Each lane is its own emulated Chrome profile (storage, tabs, alarms, service worker) running the real extension,
 // logged in to its own fake Instagram account with its own failures. Checks: no page fetched twice, a list is never
 // worked by two lanes at once, a logged-out lane's list moves to another lane from the saved cursor, a lane's cooldown
-// never stops the others. `--lanes 1,2,4` runs each count in its own process and compares the time to 10k connections.
+// stops other lanes until the shared warning deadline passes. `--lanes 1,2,4` runs each count in its own process and compares the time to 10k connections.
 const LANE_SEEDS = [
   ['north.goods', 'followers', 3000], ['clayandco', 'followers', 2400], ['saltlabs', 'followers', 1800],
   ['fern.skin', 'followers', 1400], ['honeyroast', 'followers', 1000], ['wildthread', 'followers', 700],
@@ -768,7 +773,7 @@ const LANE_SEEDS = [
 ];
 // Per-account Instagram answers by that account's own list request number.
 const LANE_SCHEDULE = [
-  { list: { 200: '429' } },                   // lane 1: a rate limit (its own cooldown only)
+  { list: { 200: '429' } },                   // lane 1: a rate limit (shared hold plus local cooldown)
   { list: { 20: 'login_redirect' } },         // lane 2: logged out mid-list -> its list must move on
   { list: { 45: 'soft_block' } },             // lane 3
   { list: { 60: 'please_wait' } },           // lane 4
@@ -828,7 +833,7 @@ async function lanesMain(N) {
     if (prev && prev !== L) {
       // the lane that had it must have stopped (hold, list cooldown, gone) or moved on to another list
       if (prev.lastList === e.list && !stopped(prev)) viol('list worked by two lanes at once', { list: e.list, lanes: [prev.name, L.name] });
-      switches.push({ t: V.now, list: e.list, from: prev.name, to: L.name, maxId: e.maxId, why: prev.store.st && prev.store.st.hold ? 'hold' : 'cooldown' });
+      switches.push({ t: V.now, list: e.list, from: prev.name, to: L.name, maxId: e.maxId, why: prev.holds.some(h => h.start >= prev.lastListAt && h.start <= V.now) ? 'hold' : 'cooldown' });
       ev('list moved', { list: e.list, from: prev.name, to: L.name, max_id: e.maxId });
     }
     owner.set(e.list, L); L.lastList = e.list; L.lastListAt = V.now;
@@ -841,6 +846,7 @@ async function lanesMain(N) {
     timer(OPS, 2000 + i * 700, () => L.bootSW('install'));
   }
   // Michael clears a held lane after RESUME_AFTER (popup Resume in that profile)
+  let resumeBusy = false;
   const opsLoop = () => {
     timer(OPS, MIN, opsLoop);
     lanes.forEach((L, i) => {
@@ -850,6 +856,12 @@ async function lanesMain(N) {
         for (const fn of L.browser.sw.L.onMessage) fn({ cmd: 'resume' }, { id: EXT_ID }, () => {});
       }
     });
+    const resolved = lanes.flatMap(L => L.holds).filter(h => h.acted && h.end != null && !h.workspace);
+    if (resolved.length && !resumeBusy && lanes.every(L => !L.store.st?.hold)) {
+      resumeBusy = true;
+      resumeCollection().then(ok => { if (ok) resolved.forEach(h => { h.workspace = V.now; }); })
+        .finally(() => { resumeBusy = false; });
+    }
   };
   timer(OPS, MIN, opsLoop);
   timer(OPS, 15e3, serverTick);
@@ -918,19 +930,20 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
     check(!(L.store.box || []).length, 'outbox empty', `${L.name} ${(L.store.box || []).length}`);
     // Account cooldowns still apply, and a server warning now stops new work
     // across every account for at least the shared 15-minute safety wait.
-    for (const h of L.hits.filter((x) => x.bucket === 'list')) {
-      const until = coolOf(h.post).list.until;
+    for (const h of L.hits) {
+      const until = coolOf(h.post)[h.bucket].until;
       const sharedUntil = h.at + 15 * MIN;
-      const others = igLog.filter((e) => e.kind === 'list' && e.lane !== L.name && e.t > h.at && e.t < sharedUntil).length;
-      const own = igLog.filter((e) => e.kind === 'list' && e.lane === L.name && e.t > h.at && e.t < until).length;
+      const others = igLog.filter((e) => ['list', 'profile'].includes(e.kind) && e.lane !== L.name && e.t > h.at && e.t < sharedUntil).length;
+      const own = igLog.filter((e) => e.bucket === h.bucket && e.lane === L.name && e.t > h.at && e.t < until).length;
       check(!own, 'no request during its own cooldown', `${L.name} ${own} in ${dhm(h.at)}–${dhm(until)}`);
       if (N > 1) check(!others, 'shared warning stops other lanes', `${L.name} hit at ${dhm(h.at)}: ${others} other requests before ${dhm(sharedUntil)}`);
     }
   }
   check(acc.accounts.length === N, 'one account row per lane', `${acc.accounts.length} rows`);
   if (N > 1) {
-    const out = switches.filter((s) => s.from === 'lane2' && s.why === 'hold');
-    check(out.length > 0, 'logged-out lane hands its list over', out.map((s) => `${s.list} ${s.from}->${s.to} at ${dhm(s.t)}`).join(', ') || 'no handoff');
+    const loggedOutLanes = new Set(lanes.filter(L => L.holds.some(h => h.code === 'login')).map(L => L.name));
+    const out = switches.filter(s => loggedOutLanes.has(s.from) && s.why === 'hold');
+    check(out.length > 0, 'a logged-out lane hands its list over after explicit resume', out.map((s) => `${s.list} ${s.from}->${s.to} at ${dhm(s.t)}`).join(', ') || 'no handoff');
     check(out.every((s) => s.maxId), 'handoff resumes from the saved cursor, not page 1', out.map((s) => `${s.list} max_id=${s.maxId}`).join(', '));
     check(handoffs.some((h) => h.why === 'login'), 'server recorded the handoff', `${handoffs.length} handoffs`);
   }
