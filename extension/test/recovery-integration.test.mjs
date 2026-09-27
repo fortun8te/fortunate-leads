@@ -9,6 +9,7 @@ function worker(data = {}, hooks = {}) {
   const ctx = vm.createContext({FL, Date, Set, URLSearchParams, AbortController, setTimeout, clearTimeout,
     importScripts() {}, chrome: {
       runtime: {getManifest: () => ({version: '3.9.0'}), onMessage: {addListener() {}}},
+      action: {setBadgeText() {}, setBadgeBackgroundColor() {}},
       storage: {local: {
         get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(k => [k, structuredClone(data[k])])),
         set: async values => { hooks.write?.(values); Object.assign(data, structuredClone(values)); },

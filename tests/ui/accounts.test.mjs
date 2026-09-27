@@ -49,12 +49,12 @@ test('cooldowns, login holds and offline profiles have distinct access instructi
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
     list_endpoint_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /List API unavailable/);
+  })), /Follower lists paused/);
   const overlapping = view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 2 * 60 * 60000).toISOString(),
     list_endpoint_until: new Date(Date.now() + 30 * 60000).toISOString(),
   }));
-  assert.match(overlapping, /Instagram also requested a wait[\s\S]*later retry time/);
+  assert.match(overlapping, /Instagram also requested a wait[\s\S]*when that wait ends/);
   assert.doesNotMatch(overlapping, /retry 8m/);
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
