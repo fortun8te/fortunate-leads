@@ -250,24 +250,21 @@
     return rollDay(st, now);
   }
   // A home redirect on one target may be an access issue. Three different, freshly
-  // confirmed public targets point to this viewer's list endpoint instead.
+  // confirmed public followers targets pause only that direction for this viewer.
   function recordListRedirect(st, handle, direction, publicProfile, now) {
     st.listRedirects = (st.listRedirects || []).filter((x) => x && now - x.at < HOUR);
     if (!publicProfile || !handle || !['followers', 'following'].includes(direction)) return st;
     const h = String(handle).toLowerCase();
     st.listRedirects = st.listRedirects.filter((x) => x.handle !== h || x.direction !== direction)
       .concat({ handle: h, direction, at: now });
-    // One direction can fail on target access while the other still works.
-    // Do not hold both directions until each independently fails on several
-    // freshly confirmed public targets.
-    const blocked = (dir) => st.listRedirects.filter((x) => x.direction === dir).length >= 3;
-    if (blocked('followers') && blocked('following')) {
+    if (direction === 'followers' && st.listRedirects.filter((x) => x.direction === 'followers').length >= 3) {
       st.listEndpointStrikes = Math.min(st.listEndpointStrikes + 1, 4);
       st.listEndpointUntil = now + Math.min(30 * MIN * 2 ** (st.listEndpointStrikes - 1), 2 * HOUR);
     }
     return st;
   }
-  function listPageSucceeded(st) {
+  function listPageSucceeded(st, direction) {
+    if (direction !== 'followers') return st;
     st.listRedirects = []; st.listEndpointUntil = 0; st.listEndpointStrikes = 0;
     return st;
   }
@@ -330,13 +327,13 @@
 
   // Which job kinds may be asked for right now. Returns {kinds, wait, why}: kinds empty → sleep `wait` ms.
   function plan(st, left, now) {
-    const unavailableUntil = (k) => Math.max(st.cool[k].until || 0, k === 'list' ? st.listEndpointUntil || 0 : 0);
+    const unavailableUntil = (k) => st.cool[k].until || 0;
     const eligible = KINDS.filter((k) => left[k] > 0 && !(unavailableUntil(k) > now));
     if (!eligible.length) {
       const cooling = KINDS.filter((k) => left[k] > 0);
       if (!cooling.length) return { kinds: [], wait: 10 * MIN, why: 'budget' };
       return { kinds: [], wait: Math.max(1e3, Math.min(...cooling.map(unavailableUntil)) - now),
-        why: st.listEndpointUntil > now ? 'list_endpoint' : 'cooldown' };
+        why: 'cooldown' };
     }
     const win = windowOf(st, now);
     if (win.until > now) return { kinds: [], wait: Math.max(1e3, win.until - now), why: 'window' };
@@ -449,28 +446,28 @@
     if (ctx.localPaused) return { state: 'paused', text: 'Paused', badge: '‖', key: 'stop' };
     if (ctx.serverPaused) return { state: 'paused', text: 'Paused in workspace', badge: '‖', key: 'stop' };
     const issue = st.listEndpointUntil > now;
-    const lc = st.cool.list.until > now || issue, pc = st.cool.profile.until > now;
-    const listUntil = Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0);
-    const listIssueText = ['List API unavailable until ' + t(st.listEndpointUntil),
-      st.cool.list.until > now ? 'Instagram list limit until ' + t(st.cool.list.until) : null].filter(Boolean).join(' · ');
+    const lc = st.cool.list.until > now, pc = st.cool.profile.until > now;
+    const listUntil = st.cool.list.until || 0;
+    const listIssueText = 'Followers paused after home redirects until ' + t(st.listEndpointUntil);
     if (lc && pc) {
       const until = Math.min(listUntil, st.cool.profile.until);
-      return { state: 'cooldown', text: issue ? listIssueText + ' · Bios cooling until ' + t(st.cool.profile.until) :
+      return { state: 'cooldown', text: issue ? listIssueText + ' · Instagram list limit until ' + t(st.cool.list.until) + ' · Bios cooling until ' + t(st.cool.profile.until) :
         'Cooldown until ' + t(until), badge: badgeFor(until), key: 'cool' };
     }
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!', key: 'off' };
     if (ctx.noTab) return { state: 'idle', text: TAB_TEXT[ctx.noTab] || TAB_TEXT.no_tab, badge: '!', key: 'off' };
     if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '', key: 'stop' };
-    const pre = issue ? listIssueText + ' · ' :
-      lc ? 'Lists cooling until ' + t(st.cool.list.until) + ' · ' : pc ? 'Bios cooling until ' + t(st.cool.profile.until) + ' · ' : '';
+    const pre = [issue ? listIssueText : null,
+      lc ? 'Instagram list limit until ' + t(st.cool.list.until) : null,
+      pc ? 'Bios cooling until ' + t(st.cool.profile.until) : null].filter(Boolean).join(' · ');
+    const prefix = pre ? pre + ' · ' : '';
     const badge = lc ? badgeFor(listUntil) : '';
-    if (ctx.job) return { state: 'running', text: pre + 'Scraping', badge, key: 'run' };
-    if (ctx.laneWait) return { state: 'running', text: pre + 'Waiting for the last request to finish', badge, key: 'wait' };
-    const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now) && (k !== 'list' || !issue)).map((k) => readyAt(st, k)));
-    if (next > now && next < Infinity) return { state: 'running', text: pre + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
-    if (lc) return { state: 'cooldown', text: issue ? listIssueText :
-      'Lists cooling until ' + t(st.cool.list.until), badge, key: 'cool' };
-    return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
+    if (ctx.job) return { state: 'running', text: prefix + 'Scraping', badge, key: 'run' };
+    if (ctx.laneWait) return { state: 'running', text: prefix + 'Waiting for the last request to finish', badge, key: 'wait' };
+    const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now)).map((k) => readyAt(st, k)));
+    if (next > now && next < Infinity) return { state: 'running', text: prefix + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
+    if (lc) return { state: 'cooldown', text: pre, badge, key: 'cool' };
+    return { state: 'idle', text: prefix + 'Idle, queue empty', badge: '', key: 'stop' };
   }
 
   // ---- Lanes: one install = one Chrome profile = one Instagram account ----

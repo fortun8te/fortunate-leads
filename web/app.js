@@ -2258,10 +2258,10 @@ function accountAccess(a) {
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
   const instagramWait = a.cooldown_until && Date.parse(a.cooldown_until) > Date.now();
   if (a.list_endpoint_until && Date.parse(a.list_endpoint_until) > Date.now()) return {
-    label: 'List API unavailable',
+    label: 'Follower lists paused',
     detail: instagramWait
-      ? 'Instagram also requested a wait. See the top status bar for the later retry time.'
-      : 'Several public lists returned Instagram’s home page. Bio reads can still run; see the top status bar for retry time.',
+      ? 'Instagram also requested a wait. Following lists and bios resume when that wait ends.'
+      : 'Follower requests returned Instagram’s home page. Following lists and bios can still run; this account will retry followers later.',
     kind: 'wait' };
   if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: 'See the top status bar for the wait time.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };

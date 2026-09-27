@@ -9,6 +9,7 @@ function worker(data = {}, hooks = {}) {
   const ctx = vm.createContext({FL, Date, Set, URLSearchParams, AbortController, setTimeout, clearTimeout,
     importScripts() {}, chrome: {
       runtime: {getManifest: () => ({version: '3.9.0'}), onMessage: {addListener() {}}},
+      action: {setBadgeText() {}, setBadgeBackgroundColor() {}},
       storage: {local: {
         get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(k => [k, structuredClone(data[k])])),
         set: async values => { hooks.write?.(values); Object.assign(data, structuredClone(values)); },
@@ -171,7 +172,7 @@ test('follower-only public home redirects leave following available without clai
     await ctx.run({...job(), id: 20 + i, seed});
   }
   assert.equal(data.st.listRedirects.length, 3);
-  assert.equal(data.st.listEndpointUntil, 0);
+  assert.ok(data.st.listEndpointUntil > Date.now());
   assert.equal(data.st.cool.list.until, 0);
   assert.ok(data.box.every(x => x.body.reason === 'list_html_home_redirect'));
   assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['list', 'profile']);
