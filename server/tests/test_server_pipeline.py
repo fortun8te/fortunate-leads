@@ -81,6 +81,20 @@ class PipelineTest(Base):
         progress = server.progress(self.conn, [])
         self.assertEqual((progress['lists']['per_minute'], progress['bios']['per_minute']), (0, 0))
 
+    def test_progress_does_not_project_old_speed_across_a_stall(self):
+        old = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+        self.conn.execute("INSERT INTO lists(seed,direction,state,received,total) VALUES('seed','followers','queued',0,100)")
+        self.conn.execute("INSERT INTO pages(job_id,cursor,at,lane,users) VALUES(1,'a',?,'lane-a',50)", (old,))
+        self.conn.execute("INSERT INTO people(handle,bio,bio_at,first_seen,updated_at) VALUES('old-bio','x',?,?,?)",
+                          (old, old, old))
+        self.conn.commit()
+        progress = server.progress(self.conn, [])
+        self.assertEqual(progress['lists']['left'], 100)
+        self.assertEqual(progress['lists']['per_minute'], 0)
+        self.assertIsNone(progress['lists']['per_hour'])
+        self.assertIsNone(progress['lists']['eta_h'])
+        self.assertIsNone(progress['bios']['per_hour'])
+
     def test_model_write_records_score_time_and_durable_rate(self):
         ids = self.people({'scored': ('founder', [('s1', 'followers')])})
         server.qualify_batch(self.conn)
