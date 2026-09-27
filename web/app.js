@@ -2744,7 +2744,6 @@ $('#ql-list').addEventListener('click', (e) => {
 
 // ---------- map ----------
 const LEAD_R = [0, 4, 5.6, 7, 8.2, 9.4];
-const JUDGE_COLOR = { good: '#ff8a1f', bad: '#e5484d' };
 // Profile photos for the map, pre-cropped to circles on small canvases.
 const MAP_PIC_LIMIT = 3200;
 const PICS = new Map(); let picsLoading = 0; const picQueue = [];
@@ -3183,12 +3182,12 @@ const M = {
       for (const n of dots) if (filter(n)) circle(n, Math.max(n.r, minPx));
       c.fill();
     };
-    // Tags decide the colour: green = good signs, red = red flags; everyone else stays grey by fit. Judged dots draw on top.
+    // Tag verdicts use the same restrained accents as tag chips in both themes.
     for (const f of [...FITS].reverse()) {
       if (dim) pass((n) => !on(n) && !n.judge && n.fit === f, fitColor[f], 0.18);
       pass((n) => on(n) && !n.judge && n.fit === f, fitColor[f], 1);
     }
-    for (const [j, color] of [['bad', JUDGE_COLOR.bad], ['good', JUDGE_COLOR.good]]) {
+    for (const [j, color] of [['bad', css('--t-caution')], ['good', css('--t-strong')]]) {
       if (dim) pass((n) => !on(n) && n.judge === j, color, 0.2);
       pass((n) => on(n) && n.judge === j, color, 1);
     }

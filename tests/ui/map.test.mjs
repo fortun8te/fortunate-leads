@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
+const style = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
+const markup = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
 const workflowSource = readFileSync(new URL('../../web/workflow.js', import.meta.url), 'utf8');
 const code = source.slice(source.indexOf('const LEAD_R ='), source.indexOf('function hoverCard('));
 function harness() {
@@ -25,6 +27,26 @@ function harness() {
 }
 const seed = name => ({id:'s:'+name,kind:'seed',label:name,degree:1,pid:null});
 const lead = id => ({id:'p:'+id,kind:'lead',label:'person'+id,lists:1,degree:1});
+test('map accents follow the tag palette with visible contrast in both themes', () => {
+  assert.match(source,/css\('--t-caution'\)/);
+  assert.match(source,/css\('--t-strong'\)/);
+  assert.match(markup,/fdot lg-good/);
+  assert.match(markup,/fdot lg-bad/);
+  assert.doesNotMatch(markup,/background:#ff8a1f|background:#e5484d/);
+  const dark = {}, light = {};
+  for (const block of style.matchAll(/:root(\[data-theme="light"\])?\s*\{([^}]+)\}/g)) {
+    const tokens = block[1] ? light : dark;
+    for (const token of block[2].matchAll(/(--[\w-]+):\s*(#[0-9a-f]{6})/gi)) tokens[token[1]] = token[2];
+  }
+  const luminance = hex => {
+    const channels = [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)/255).map(v => v<=.04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
+    return channels[0]*.2126+channels[1]*.7152+channels[2]*.0722;
+  };
+  for (const tokens of [dark,light]) for (const name of ['--t-strong','--t-caution']) {
+    const a=luminance(tokens[name]), b=luminance(tokens['--bg']);
+    assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05)>=3, `${name} needs visible contrast on ${tokens['--bg']}`);
+  }
+});
 test('overview keeps one useful dot per crowded screen cell and preserves chosen people', () => {
   const {c} = harness();
   const dots = Array.from({length:10000}, (_, i) => ({id:'p:'+i,kind:'lead',x:i % 100,y:Math.floor(i / 100),r:4,L:1}));
