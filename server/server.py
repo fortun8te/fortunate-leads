@@ -601,7 +601,7 @@ def ext_heartbeat(conn, q, b):
         ready = db.get_setting(conn, 'ext_ready') or {}
         ready[lane] = {k: clean_iso(b['ready'].get(k)) for k in ('list', 'profile')}
         db.set_setting(conn, 'ext_ready', ready)
-    if row['hold'] or accounts.later(row['list_cool_until'], datetime.now(timezone.utc)) or row['paused']:
+    if row['hold'] or accounts.list_wait_until(row, datetime.now(timezone.utc)) or row['paused']:
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
     conn.commit()
     return ext_state(conn, row)

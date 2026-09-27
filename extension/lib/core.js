@@ -199,7 +199,8 @@
       category: u.category || u.category_name || u.business_category_name || null,
       followers: count(u.follower_count ?? u.edge_followed_by?.count), following: count(u.following_count ?? u.edge_follow?.count),
       posts: count(u.media_count ?? u.edge_owner_to_timeline_media?.count),
-      is_private: !!u.is_private, is_verified: !!u.is_verified,
+      // Missing privacy is unknown, not evidence that this target is public.
+      is_private: typeof u.is_private === 'boolean' ? u.is_private : null, is_verified: !!u.is_verified,
       is_business: !!(u.is_business || u.is_business_account || u.account_type === 2),
       pic_url: u.hd_profile_pic_url_info?.url || u.profile_pic_url_hd || u.profile_pic_url || null,
     };
@@ -437,22 +438,25 @@
     if (ctx.serverPaused) return { state: 'paused', text: 'Paused in workspace', badge: '‖', key: 'stop' };
     const issue = st.listEndpointUntil > now;
     const lc = st.cool.list.until > now || issue, pc = st.cool.profile.until > now;
+    const listUntil = Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0);
+    const listIssueText = ['List API unavailable until ' + t(st.listEndpointUntil),
+      st.cool.list.until > now ? 'Instagram list limit until ' + t(st.cool.list.until) : null].filter(Boolean).join(' · ');
     if (lc && pc) {
-      const until = Math.min(Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0), st.cool.profile.until);
-      return { state: 'cooldown', text: issue ? 'List API unavailable for this account until ' + t(st.listEndpointUntil) + ' · Bios cooling' :
+      const until = Math.min(listUntil, st.cool.profile.until);
+      return { state: 'cooldown', text: issue ? listIssueText + ' · Bios cooling until ' + t(st.cool.profile.until) :
         'Cooldown until ' + t(until), badge: badgeFor(until), key: 'cool' };
     }
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!', key: 'off' };
     if (ctx.noTab) return { state: 'idle', text: TAB_TEXT[ctx.noTab] || TAB_TEXT.no_tab, badge: '!', key: 'off' };
     if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '', key: 'stop' };
-    const pre = issue ? 'List API unavailable until ' + t(st.listEndpointUntil) + ' · ' :
+    const pre = issue ? listIssueText + ' · ' :
       lc ? 'Lists cooling until ' + t(st.cool.list.until) + ' · ' : pc ? 'Bios cooling until ' + t(st.cool.profile.until) + ' · ' : '';
-    const badge = lc ? badgeFor(Math.max(st.cool.list.until || 0, st.listEndpointUntil || 0)) : '';
+    const badge = lc ? badgeFor(listUntil) : '';
     if (ctx.job) return { state: 'running', text: pre + 'Scraping', badge, key: 'run' };
     if (ctx.laneWait) return { state: 'running', text: pre + 'Waiting for the last request to finish', badge, key: 'wait' };
     const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now) && (k !== 'list' || !issue)).map((k) => readyAt(st, k)));
     if (next > now && next < Infinity) return { state: 'running', text: pre + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
-    if (lc) return { state: 'cooldown', text: issue ? 'List API unavailable for this account until ' + t(st.listEndpointUntil) :
+    if (lc) return { state: 'cooldown', text: issue ? listIssueText :
       'Lists cooling until ' + t(st.cool.list.until), badge, key: 'cool' };
     return { state: 'idle', text: pre + 'Idle, queue empty', badge: '', key: 'stop' };
   }
