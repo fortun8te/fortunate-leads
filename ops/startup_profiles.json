@@ -3,5 +3,10 @@
     "Michael",
     "BOT",
     "BOT2"
+  ],
+  "chrome_profile_dirs": [
+    "Profile 2",
+    "Profile 5",
+    "Profile 6"
   ]
 }
