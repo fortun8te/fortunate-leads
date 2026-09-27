@@ -467,6 +467,7 @@
     const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now)).map((k) => readyAt(st, k)));
     if (next > now && next < Infinity) return { state: 'running', text: prefix + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
     if (lc) return { state: 'cooldown', text: pre, badge, key: 'cool' };
+    if (issue) return { state: 'idle', text: prefix + 'No other work ready', badge: '', key: 'wait' };
     return { state: 'idle', text: prefix + 'Idle, queue empty', badge: '', key: 'stop' };
   }
 

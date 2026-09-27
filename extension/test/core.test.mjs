@@ -131,7 +131,8 @@ test('three public follower redirects pause followers only and a follower page c
   assert.equal(st.listEndpointUntil, T0 + 34 * MIN);
   assert.equal(st.cool.list.until, 0); // no invented Instagram rate limit
   assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['list', 'profile']);
-  assert.equal(FL.statusOf(st, {}, T0 + 4 * MIN).text.includes('Followers paused'), true);
+  assert.match(FL.statusOf(st, {}, T0 + 4 * MIN).text, /Followers paused.*No other work ready/);
+  assert.doesNotMatch(FL.statusOf(st, {}, T0 + 4 * MIN).text, /queue empty/);
   st.cool.list.until = T0 + 2 * HOUR;
   const shown = FL.statusOf(st, {}, T0 + 4 * MIN);
   assert.match(shown.text, /Instagram list limit until/);
