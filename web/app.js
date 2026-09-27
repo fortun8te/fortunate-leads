@@ -2250,6 +2250,9 @@ function accountAccess(a) {
   if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
   if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
+  if (a.list_endpoint_until && Date.parse(a.list_endpoint_until) > Date.now()) return {
+    label: `List API unavailable · retry ${left(a.list_endpoint_until)}`,
+    detail: 'Instagram returned its home page for several public lists. Bio reads can still run when available.', kind: 'wait' };
   if (a.cooldown_until && Date.parse(a.cooldown_until) > Date.now()) return { label: `Instagram cooldown · ${left(a.cooldown_until)}`, detail: 'This profile waits before its next request.', kind: 'wait' };
   if (a.status === 'cooldown') return { label: 'Instagram cooldown', detail: 'This profile waits before its next request.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };

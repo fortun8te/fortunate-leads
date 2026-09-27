@@ -33,6 +33,10 @@ test('account card separates workspace budgets from Instagram access', () => {
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
   assert.match(view.accountRow(account({
     status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
+    list_endpoint_until: new Date(Date.now() + 8 * 60000).toISOString(),
+  })), /List API unavailable/);
+  assert.match(view.accountRow(account({
+    status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
   })), /Instagram cooldown/);
   assert.match(view.accountRow(account({ status: 'needs_login', hold: 'login' })), /Open this Chrome profile and sign in/);
   assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);

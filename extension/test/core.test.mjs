@@ -117,6 +117,25 @@ test('a third hit early in the day rests 2 h instead of nearly a full day', () =
   FL.applyHit(st, t + 2 * HOUR, null, 'profile');
   assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
 });
+test('three distinct confirmed public list redirects rest only the list endpoint', () => {
+  const st = FL.fresh();
+  FL.recordListRedirect(st, 'one', true, T0);
+  FL.recordListRedirect(st, 'one', true, T0 + MIN);
+  FL.recordListRedirect(st, 'private', false, T0 + 2 * MIN);
+  FL.recordListRedirect(st, 'two', true, T0 + 3 * MIN);
+  assert.equal(st.listEndpointUntil, 0);
+  FL.recordListRedirect(st, 'three', true, T0 + 4 * MIN);
+  assert.equal(st.listEndpointUntil, T0 + 34 * MIN);
+  assert.equal(st.cool.list.until, 0); // no invented Instagram rate limit
+  assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['profile']);
+  assert.equal(FL.statusOf(st, {}, T0 + 4 * MIN).text.includes('List API unavailable'), true);
+  FL.recordListRedirect(st, 'four', true, T0 + 35 * MIN);
+  assert.equal(st.listEndpointUntil, T0 + 95 * MIN); // failed recovery probe: longer rest
+  FL.listPageSucceeded(st);
+  assert.equal(st.listEndpointUntil, 0);
+  assert.equal(st.listRedirects.length, 0);
+  assert.equal(st.listEndpointStrikes, 0);
+});
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
   for (let i = 0; i < 150; i++) FL.afterRequest(st, 'profile', T0);
