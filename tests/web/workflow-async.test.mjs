@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const appSource = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
 const helperSource = readFileSync(new URL('../../web/workflow.js', import.meta.url), 'utf8');
 const start = appSource.indexOf('// Date-only follow-ups');
-const end = appSource.indexOf('let exporting = false;', start);
+const end = appSource.indexOf('// ---------- keyboard ----------', start);
 assert.ok(start >= 0 && end > start, 'the actual UI workflow block must be present');
 const workflowSource = appSource.slice(start, end);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
