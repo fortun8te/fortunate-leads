@@ -218,7 +218,43 @@
   // ---- Pacing, budgets, cooldowns (state lives in chrome.storage.local) ----
   const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
   const nextMidnight = (t) => { const d = new Date(t); d.setHours(24, 0, 0, 0); return d.getTime(); };
-  const bucket = () => ({ until: 0, hits: [] });
+  const bucket = () => ({ until: 0, hits: [], retryUntil: 0 });
+  // The midnight-strike policy was replaced on 2026-09-27 at 00:20 UTC.
+  // Old state saved only the resulting deadline, so migrate only a midnight
+  // hold supported by strikes from before that change. Mark even a no-op so a
+  // later provider Retry-After ending at midnight is never reconsidered.
+  const MIDNIGHT_POLICY_END = Date.UTC(2026, 8, 27, 0, 20);
+  function migrateMidnightHolds(st, now) {
+    if (st.midnightHoldMigration === 1) return;
+    const events = KINDS.flatMap((kind) => (Array.isArray(st.cool[kind].hits) ? st.cool[kind].hits : [])
+      .filter((at) => Number.isFinite(at) && at > 0 && at < MIDNIGHT_POLICY_END)
+      .map((at) => ({ at, kind }))).sort((a, b) => a.at - b.at);
+    const replay = fresh();
+    let pending = false;
+    for (const { at, kind } of events) applyHit(replay, at, null, kind);
+    for (const kind of KINDS) {
+      const b = st.cool[kind], until = Number(b.until);
+      if (!Number.isFinite(until) || until <= now || !events.length ||
+          (Number(b.retryUntil) || 0) >= until) continue;
+      // Only an exact local-midnight deadline from a strike on that day is
+      // identifiable as the old policy. A single hit with a midnight
+      // Retry-After, or an unrelated hold, is left alone.
+      const sameDay = events.filter((e) => nextMidnight(e.at) === until);
+      // This migration permits one new probe only after a full six-hour rest.
+      // The old state cannot reveal whether Instagram sent Retry-After.
+      if (!sameDay.length) continue;
+      if (now < Math.max(...sameDay.map((e) => e.at)) + PACE.cooldownCap) {
+        pending = true;
+        continue;
+      }
+      const bucketStrike = sameDay.some((e) => e.kind === kind &&
+        events.filter((x) => x.kind === kind && x.at <= e.at && e.at - x.at < DAY).length >= PACE.strikes);
+      const laneStrike = sameDay.some((e) =>
+        events.filter((x) => x.at <= e.at && e.at - x.at < HOUR).length >= PACE.strikes);
+      if (bucketStrike || laneStrike) b.until = Math.min(until, replay.cool[kind].until);
+    }
+    if (!pending) st.midnightHoldMigration = 1;
+  }
 
   function fresh() {
     return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, listNextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
@@ -242,6 +278,7 @@
       st.cool.profile.until = Math.max(st.cool.profile.until, until); // an old global cooldown held bios too
       delete st.cooldownUntil; delete st.hits;
     }
+    migrateMidnightHolds(st, now);
     st.streak = { other: 0, net: 0, ...(st.streak || {}) };
     for (const k of ['log', 'plog', 'rlog']) if (!Array.isArray(st[k])) st[k] = [];
     if (!Array.isArray(st.listRedirects)) st.listRedirects = [];
@@ -309,7 +346,10 @@
     b.hits = (b.hits || []).filter((t) => now - t < DAY).concat(now);
     const n = b.hits.length;
     let until = now + Math.min(PACE.cooldownBase * 2 ** (n - 1), PACE.cooldownCap);
-    if (retryAt && retryAt > until) until = retryAt;
+    if (Number.isFinite(retryAt) && retryAt > now) {
+      b.retryUntil = Math.max(b.retryUntil || 0, retryAt);
+      if (retryAt > until) until = retryAt;
+    }
     if (n >= PACE.strikes) until = Math.max(until, now + PACE.strikePause);
     b.until = Math.max(b.until || 0, until);
     st.nextAt = Math.max(st.nextAt || 0, now + PACE.hitPause);

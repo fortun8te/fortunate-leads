@@ -104,6 +104,7 @@ test('cooldown: old hits expire after 24 h, cap 6 h, Retry-After wins when longe
   const s4 = FL.fresh(); s4.cool.profile.hits = [T0 - MIN, T0 - 2 * MIN];
   FL.applyHit(s4, T0, T0 + 9 * HOUR, 'profile');
   assert.equal(s4.cool.profile.until, T0 + 9 * HOUR);
+  assert.equal(s4.cool.profile.retryUntil, T0 + 9 * HOUR);
 });
 test('a third hit early in the day rests 2 h instead of nearly a full day', () => {
   const t = new Date(2026, 8, 27, 1, 43).getTime();
@@ -117,6 +118,48 @@ test('a third hit early in the day rests 2 h instead of nearly a full day', () =
   assert.deepEqual(FL.plan(st, { list: 0, profile: 1 }, t + 2 * HOUR).kinds, ['profile']);
   FL.applyHit(st, t + 2 * HOUR, null, 'profile');
   assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
+});
+test('normalize releases a pre-upgrade midnight strike hold after the new bounded rest', () => {
+  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const midnight = FL.nextMidnight(hit);
+  const st = FL.fresh();
+  st.cool.profile = { until: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
+  const early = FL.normalize(st, hit + 3 * HOUR);
+  assert.equal(early.cool.profile.until, midnight);
+  assert.notEqual(early.midnightHoldMigration, 1);
+  const normalized = FL.normalize(st, hit + 7 * HOUR);
+  assert.equal(normalized.cool.profile.until, hit + 2 * HOUR);
+  assert.equal(normalized.midnightHoldMigration, 1);
+  assert.deepEqual(FL.plan(normalized, { list: 0, profile: 1 }, hit + 7 * HOUR).kinds, ['profile']);
+});
+test('normalize migrates a cross-bucket midnight hold using retained strike history', () => {
+  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const midnight = FL.nextMidnight(hit);
+  const st = FL.fresh();
+  st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit] };
+  st.cool.profile = { until: midnight, hits: [hit - 10 * MIN] };
+  const normalized = FL.normalize(st, hit + 7 * HOUR);
+  assert.equal(normalized.cool.list.until, hit + 2 * HOUR);
+  assert.equal(normalized.cool.profile.until, hit + 2 * HOUR);
+});
+test('normalize preserves midnight Retry-After without strike evidence and a recorded retry deadline', () => {
+  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const midnight = FL.nextMidnight(hit);
+  const one = FL.fresh();
+  one.cool.list = { until: midnight, hits: [hit] };
+  assert.equal(FL.normalize(one, hit + HOUR).cool.list.until, midnight);
+  const explicit = FL.fresh();
+  explicit.cool.profile = { until: midnight, retryUntil: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
+  assert.equal(FL.normalize(explicit, hit + HOUR).cool.profile.until, midnight);
+});
+test('normalize runs the midnight migration once and leaves later provider deadlines intact', () => {
+  const hit = new Date(2026, 8, 27, 1, 43).getTime();
+  const midnight = FL.nextMidnight(hit);
+  const st = FL.fresh();
+  st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
+  const first = FL.normalize(st, hit + MIN);
+  first.cool.list.until = midnight;
+  assert.equal(FL.normalize(first, hit + 2 * MIN).cool.list.until, midnight);
 });
 test('three public follower redirects pause followers only and a follower page clears it', () => {
   const st = FL.fresh();
