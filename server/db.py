@@ -987,7 +987,7 @@ def complete_list_snapshot(conn, seed, direction, job_id, completed_at=None):
     return before ^ after
 
 
-def list_page_key(seed, direction, users, cursor, job_id=None):
+def list_page_key(seed, direction, users, cursor, job_id=None, requested_cursor=None):
     """Replay identity, not proof of a complete snapshot or Instagram event time.
 
     Unmanaged imports have no collection run identifier. Deduplicate the same member
@@ -995,7 +995,10 @@ def list_page_key(seed, direction, users, cursor, job_id=None):
     observation of an identical batch requires a new managed collection job.
     """
     if job_id is not None:
-        return f'job:{job_id}:{cursor or ""}'
+        # The output cursor may repeat when Instagram stalls. The request cursor
+        # still identifies the distinct page we saved before parking the run.
+        return (f'job:{job_id}:request:{requested_cursor}' if requested_cursor is not None
+                else f'job:{job_id}:next:{cursor or ""}')
     members = sorted({('id:' + ig_id) if (ig_id := normalize_ig_id(u.get('ig_id'))) is not None
                       else ('handle:' + norm_handle(u['handle'])) for u in users})
     payload = json.dumps([norm_handle(seed), direction, cursor or '', members], separators=(',', ':'))

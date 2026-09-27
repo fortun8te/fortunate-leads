@@ -252,7 +252,8 @@ def _ext_list_page(conn, q, b):
              and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])]
     page_key = db.list_page_key(seed, direction, [dict(u, ig_id=u['ig_id'] if isinstance(u.get('ig_id'), (str, int))
                                                         and not isinstance(u.get('ig_id'), bool) else None) for u in valid],
-                                b.get('next_cursor') or None, job['id'] if job else None)
+                                b.get('next_cursor') or None, job['id'] if job else None,
+                                request_key if job and 'requested_cursor' in b else None)
     if job and 'requested_cursor' not in b and not conn.execute(
             'INSERT OR IGNORE INTO pages(job_id,cursor,at,lane,users) VALUES(?,?,?,?,?)',
             (job['id'], 'next:' + (b.get('next_cursor') or ''), db.now(), accounts.lane_of(q, b),
