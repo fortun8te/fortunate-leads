@@ -95,13 +95,13 @@ def shared_collection_wait(conn, now):
     until = utc(raw)
     if until and until <= now:
         return None
-    why = 'Instagram requested a pause'
+    why = 'Protective pause after an Instagram response'
     if until is None:
         return {'state': 'waiting', 'wait': {'why': why, 'seconds': None, 'until': None, 'scope': 'workspace'},
                 'now': 'Instagram collection is on hold. Check collection settings before continuing.'}
     seconds = max(0, int((until - now).total_seconds()))
     return {'state': 'waiting', 'wait': {'why': why, 'seconds': seconds, 'until': iso(until), 'scope': 'workspace'},
-            'now': f'Paused after an Instagram warning until {until.astimezone():%H:%M}. Resumes automatically; progress is saved.'}
+            'now': f'Scraping is paused until {until.astimezone():%H:%M}. Progress is saved. Resumes automatically.'}
 
 
 def lane_wait(conn, row, kind, now):

@@ -14,7 +14,8 @@ import db
 RANK_POOL = 2000
 OWNER_POOL = 500
 MAX_RESULTS = 20
-MAX_AUTO_DAILY = 2
+# Bound outstanding discovery work, not how many fresh networks may finish in a day.
+MAX_AUTO_PENDING = 2
 ENABLED_KEY = 'auto_discover'
 
 
@@ -73,7 +74,7 @@ WHERE instr(p.handle,'~')=0 AND coalesce(p.is_private,0)=0 AND p.handle!='fortun
  AND ((can_followers AND coalesce(p.followers,1)>0) OR (can_following AND coalesce(p.following,1)>0))
  AND (:following_only=0 OR (can_following AND coalesce(p.following,1)>0))
 ORDER BY CASE owner_status WHEN 'client' THEN 0 WHEN 'talking' THEN 1 WHEN 'interested' THEN 2 ELSE 3 END,
- (relationships!='[]') DESC, manual_fit DESC, feedback_at DESC, v.content_fit DESC, observed_sources DESC,p.id
+ (relationships!='[]') DESC, manual_fit DESC, feedback_at DESC, v.content_fit DESC, observed_sources ASC,p.id
 LIMIT :limit
 """
 
@@ -115,6 +116,15 @@ def _added_today(conn, today):
                         (today, today + 'z')).fetchone()[0]
 
 
+def _pending_auto(conn):
+    """At most two automatic targets can be outstanding, including delayed retries."""
+    return len(conn.execute(
+        "SELECT h.handle FROM collection_discovery h LEFT JOIN people p ON p.id=h.person_id JOIN jobs j "
+        "ON j.kind='list' AND (j.seed=h.handle COLLATE NOCASE OR j.seed=p.handle COLLATE NOCASE) "
+        "WHERE h.state='queued' AND j.state IN ('queued','leased') "
+        "GROUP BY h.handle LIMIT ?", (MAX_AUTO_PENDING,)).fetchall())
+
+
 def enabled(conn):
     return db.get_setting(conn, ENABLED_KEY, True) is True
 
@@ -149,7 +159,7 @@ def queue_when_idle(conn, row, now=None):
             or control.lane_wait(conn, row, 'list', now)
             or 'list' not in accounts.kinds_for(conn, row, ['list'], now)):
         return None
-    if _added_today(conn, now.date().isoformat()) >= MAX_AUTO_DAILY:
+    if _pending_auto(conn) >= MAX_AUTO_PENDING:
         return None
     # A healthy lane finishes available work first. Future retries must not
     # block unrelated discovery, but an active list keeps the queue bounded.
@@ -162,13 +172,14 @@ def queue_when_idle(conn, row, now=None):
     all_accounts = conn.execute('SELECT * FROM accounts').fetchall()
     if not accounts.keeps_lists(conn, row, now, accounts.list_share(conn, all_accounts)):
         return None
-    route_wait = accounts.follower_route_wait(conn, row, now)
-    candidates = suggest(conn, 1, following_only=bool(route_wait))['suggestions']
+    # Explore a fresh following network first. Automatic discovery does not
+    # add another potentially enormous follower crawl or refresh old coverage.
+    # Explicit requested follower lists still win the pick_job check above.
+    candidates = suggest(conn, 1, following_only=True)['suggestions']
     if not candidates:
         return None
     candidate = candidates[0]
-    directions = [direction for direction in candidate['directions']
-                  if not (route_wait and direction == 'followers')]
+    directions = ['following']
     queued = [direction for direction in directions
               if db.queue_list(conn, candidate['handle'], direction, priority=-10)]
     if not queued:
