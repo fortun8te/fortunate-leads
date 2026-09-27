@@ -230,6 +230,7 @@
       .filter((at) => Number.isFinite(at) && at > 0 && at < MIDNIGHT_POLICY_END)
       .map((at) => ({ at, kind }))).sort((a, b) => a.at - b.at);
     const replay = fresh();
+    let pending = false;
     for (const { at, kind } of events) applyHit(replay, at, null, kind);
     for (const kind of KINDS) {
       const b = st.cool[kind], until = Number(b.until);
@@ -239,14 +240,20 @@
       // identifiable as the old policy. A single hit with a midnight
       // Retry-After, or an unrelated hold, is left alone.
       const sameDay = events.filter((e) => nextMidnight(e.at) === until);
+      // This migration permits one new probe only after a full six-hour rest.
+      // The old state cannot reveal whether Instagram sent Retry-After.
       if (!sameDay.length) continue;
+      if (now < Math.max(...sameDay.map((e) => e.at)) + PACE.cooldownCap) {
+        pending = true;
+        continue;
+      }
       const bucketStrike = sameDay.some((e) => e.kind === kind &&
         events.filter((x) => x.kind === kind && x.at <= e.at && e.at - x.at < DAY).length >= PACE.strikes);
       const laneStrike = sameDay.some((e) =>
         events.filter((x) => x.at <= e.at && e.at - x.at < HOUR).length >= PACE.strikes);
       if (bucketStrike || laneStrike) b.until = Math.min(until, replay.cool[kind].until);
     }
-    st.midnightHoldMigration = 1;
+    if (!pending) st.midnightHoldMigration = 1;
   }
 
   function fresh() {

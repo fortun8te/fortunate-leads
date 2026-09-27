@@ -124,10 +124,13 @@ test('normalize releases a pre-upgrade midnight strike hold after the new bounde
   const midnight = FL.nextMidnight(hit);
   const st = FL.fresh();
   st.cool.profile = { until: midnight, hits: [hit - 20 * MIN, hit - 10 * MIN, hit] };
-  const normalized = FL.normalize(st, hit + 3 * HOUR);
+  const early = FL.normalize(st, hit + 3 * HOUR);
+  assert.equal(early.cool.profile.until, midnight);
+  assert.notEqual(early.midnightHoldMigration, 1);
+  const normalized = FL.normalize(st, hit + 7 * HOUR);
   assert.equal(normalized.cool.profile.until, hit + 2 * HOUR);
   assert.equal(normalized.midnightHoldMigration, 1);
-  assert.deepEqual(FL.plan(normalized, { list: 0, profile: 1 }, hit + 3 * HOUR).kinds, ['profile']);
+  assert.deepEqual(FL.plan(normalized, { list: 0, profile: 1 }, hit + 7 * HOUR).kinds, ['profile']);
 });
 test('normalize migrates a cross-bucket midnight hold using retained strike history', () => {
   const hit = new Date(2026, 8, 27, 1, 43).getTime();
@@ -135,7 +138,7 @@ test('normalize migrates a cross-bucket midnight hold using retained strike hist
   const st = FL.fresh();
   st.cool.list = { until: midnight, hits: [hit - 20 * MIN, hit] };
   st.cool.profile = { until: midnight, hits: [hit - 10 * MIN] };
-  const normalized = FL.normalize(st, hit + 3 * HOUR);
+  const normalized = FL.normalize(st, hit + 7 * HOUR);
   assert.equal(normalized.cool.list.until, hit + 2 * HOUR);
   assert.equal(normalized.cool.profile.until, hit + 2 * HOUR);
 });
