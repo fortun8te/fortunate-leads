@@ -55,9 +55,10 @@ async function collectedSource({cached = null, prog = null, lookup = null, curso
 }
 
 test('cached counts cannot authorize current-run coverage', async () => {
-  const {result} = await collectedSource({cached: {ig_id: '12', followers: 100}, cursor: 'next'});
-  assert.equal(result.total, 100);
-  assert.equal(result.total_source, 'cached');
+  const {result} = await collectedSource({cached: {ig_id: '12', followers: 100}, cursor: 'next',
+    lookup: {ig_id: '12', handle: 'seed', followers: null}});
+  assert.equal(result.total, null);
+  assert.equal(result.total_source, 'unknown');
 });
 
 test('fresh lookup count provenance survives later pages of the same run only', async () => {
@@ -72,9 +73,10 @@ test('fresh lookup count provenance survives later pages of the same run only', 
   assert.equal(fresh.result.total_source, 'current_run');
 });
 
-test('legacy progress counts are cached, and missing fresh counts remain unknown', async () => {
-  const old = await collectedSource({cached: {ig_id: '12'}, prog: {jobId: 9, total: 100}, cursor: 'next'});
-  assert.equal(old.result.total_source, 'cached');
+test('legacy progress counts cannot replace a missing fresh count', async () => {
+  const old = await collectedSource({cached: {ig_id: '12'}, prog: {jobId: 9, total: 100}, cursor: 'next',
+    lookup: {ig_id: '12', handle: 'seed', followers: null}});
+  assert.equal(old.result.total_source, 'unknown');
   const unknown = await collectedSource({lookup: {ig_id: '12', handle: 'seed', followers: null}});
   assert.equal(unknown.result.total, null);
   assert.equal(unknown.result.total_source, 'unknown');

@@ -37,13 +37,21 @@ test('list: end detection (has_more false, empty tail, missing has_more)', () =>
   assert.equal(FL.parsePage({ users: [u(1)], next_max_id: 'c', has_more: false }).done, true);
   assert.equal(FL.parsePage({ users: [u(1)] }).done, true);
   assert.equal(FL.parsePage({ users: [u(1)], next_max_id: 'c' }).next_cursor, 'c'); // has_more missing mid-list: keep going
-  // empty tail after a cursor: genuine end
-  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 480 }), null);
+  // empty tail after a cursor: genuine end only when the saved count is close to the observed total
+  assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 }), null);
   assert.equal(FL.parsePage({ users: [], status: 'ok' }).done, true);
   // empty page that still promises more, but we already hold ~all of the list: tail, not a block
   assert.equal(FL.classify(res({ users: [], next_max_id: 'x', status: 'ok' }), 'list', T0, { cursor: 'c9', total: 500, received: 495 }), null);
   // a list that is really empty (total 0 / unknown) is fine
   assert.equal(FL.classify(res({ users: [], status: 'ok' }), 'list', T0, { total: 0 }), null);
+});
+test('empty terminal page far below the observed count gets a guarded retry', () => {
+  const terminal = res({ users: [], has_more: false, status: 'ok' });
+  const ctx = { cursor: 'after-first-page', total: 2535, received: 25 };
+  assert.deepEqual(FL.classify(terminal, 'list', T0, ctx),
+    { code: 'soft_block', retryAt: null, reason: 'empty_page_before_total' });
+  assert.deepEqual(FL.classify(terminal, 'list', T0, { ...ctx, emptyAt: ctx.cursor }),
+    { code: 'other', retryAt: null, reason: 'empty_page_before_total_again' });
 });
 test('list: contradictory or unusable pages cannot silently finish a crawl', () => {
   const noCursor = { users: [u(1)], has_more: true, status: 'ok' };
@@ -212,7 +220,7 @@ test('rememberId: pk cache keyed by handle, pruned oldest first', () => {
 test('statusOf: one bucket cooling keeps the other running and says so', () => {
   const st = FL.fresh(); st.cool.list.until = T0 + 30 * MIN;
   const s = FL.statusOf(st, { job: {} }, T0);
-  assert.equal(s.state, 'running'); assert.match(s.text, /^Lists cooling until \d\d:\d\d · Scraping$/); assert.equal(s.badge, '30m');
+  assert.equal(s.state, 'running'); assert.match(s.text, /^Instagram list limit until \d\d:\d\d · Scraping$/); assert.equal(s.badge, '30m');
   assert.equal(FL.statusOf(st, {}, T0).state, 'cooldown');
   const p = FL.fresh(); p.cool.profile.until = T0 + 30 * MIN; p.nextAt = T0 + 5e3;
   assert.match(FL.statusOf(p, {}, T0).text, /^Bios cooling until .* · Next request in 5s$/);

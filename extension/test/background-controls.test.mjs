@@ -54,6 +54,7 @@ function harness() {
   globalThis.stalledList = async () => {
     api = async () => ({status: 503, json: {}});
     igRequest = async () => ({res: {json: {users: [{pk: 71, username: 'saved'}], next_max_id: 'same', has_more: true, status: 'ok'}}, bad: null});
+    lookupViaPage = async () => ({p: {ig_id: '12', handle: 'seed', followers: 100}});
     await set({ids: {seed: {ig_id: '12', followers: 100}}, cur: {job: {id: 9}, at: Date.now()}});
     await runList(mem.gen, {id: 9, kind: 'list', seed: 'seed', direction: 'followers', cursor: 'same', lease_token: 'lease-a', received: 25}, {id: 1});
     return {box: await get('box'), cur: await get('cur'), note: (await loadSt()).note};

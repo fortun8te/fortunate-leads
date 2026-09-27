@@ -87,6 +87,10 @@
       if (ctx.cursor && total && Number(ctx.received) >= total * 0.98) return null; // empty tail of a list we already have
       return again ? out('other', 'empty_page_again') : out('soft_block', 'empty_page_with_more');
     }
+    // A terminal empty page after only a small fraction of the observed list is
+    // inconsistent with that count. Recheck this cursor once before ending the run.
+    if (ctx.cursor && total && Number(ctx.received) < total * 0.98)
+      return again ? out('other', 'empty_page_before_total_again') : out('soft_block', 'empty_page_before_total');
     if (!ctx.cursor && total > 0) return again ? out('other', 'empty_first_page_again') : out('soft_block', 'empty_first_page');
     return null; // genuine end: empty tail, or a list that really is empty
   }
