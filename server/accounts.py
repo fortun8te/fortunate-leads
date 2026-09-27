@@ -314,17 +314,20 @@ def pick_job(conn, lane, kinds, now):
     # redirects their list requests. Give the other direction one fair probe.
     # A failed following probe restores normal priority; a saved following page
     # keeps that direction eligible while follower redirects are fresh.
-    recent = iso(now - timedelta(hours=1))
-    follower_redirects = conn.execute(
-        "SELECT count(*) FROM lists WHERE direction='followers' AND updated_at>=? "
-        "AND error LIKE '%list_html_home_redirect%'", (recent,)).fetchone()[0]
-    following_errors = conn.execute(
-        "SELECT 1 FROM lists WHERE direction='following' AND updated_at>=? "
-        "AND error IS NOT NULL LIMIT 1", (recent,)).fetchone()
-    following_pages = conn.execute(
-        "SELECT 1 FROM pages p JOIN jobs j ON j.id=p.job_id WHERE j.direction='following' "
-        "AND p.at>=? LIMIT 1", (recent,)).fetchone()
-    prefer_following = 'list' in kinds and follower_redirects >= 3 and (following_pages or not following_errors)
+    prefer_following = False
+    if 'list' in kinds:
+        recent = iso(now - timedelta(hours=1))
+        follower_redirects = conn.execute(
+            "SELECT count(*) FROM lists WHERE direction='followers' AND updated_at>=? "
+            "AND error LIKE '%list_html_home_redirect%'", (recent,)).fetchone()[0]
+        if follower_redirects >= 3:
+            following_errors = conn.execute(
+                "SELECT 1 FROM lists WHERE direction='following' AND updated_at>=? "
+                "AND error IS NOT NULL LIMIT 1", (recent,)).fetchone()
+            following_pages = conn.execute(
+                "SELECT 1 FROM pages p JOIN jobs j ON j.id=p.job_id WHERE j.direction='following' "
+                "AND p.at>=? LIMIT 1", (recent,)).fetchone()
+            prefer_following = bool(following_pages or not following_errors)
     if row['is_main'] and not regular_main:
         # Drive this exceptional lookup from the small set of denied lists,
         # rather than scanning every ordinary queued list on each poll.
@@ -363,7 +366,7 @@ def pick_job(conn, lane, kinds, now):
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
           coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1""",
-        (*kinds, ts, ts, lane, *ok, *viewer_args, bool(prefer_following), lane)).fetchone()
+        (*kinds, ts, ts, lane, *ok, *viewer_args, prefer_following, lane)).fetchone()
 
 
 def took(conn, lane, job):
