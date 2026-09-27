@@ -2759,6 +2759,7 @@ def plan_profiles(conn):
     active = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
     need = room - active
     if need <= 0:
+        conn.commit()
         return 0
     # The map's transactionally maintained degree has the same distinct-current-seed
     # meaning as LISTS. Keep the exact read-through query if its backfill was interrupted.
