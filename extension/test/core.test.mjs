@@ -118,14 +118,16 @@ test('a third hit early in the day rests 2 h instead of nearly a full day', () =
   FL.applyHit(st, t + 2 * HOUR, null, 'profile');
   assert.equal(st.cool.profile.until, t + 4 * HOUR); // another hit restores the full rest
 });
-test('three distinct confirmed public list redirects rest only the list endpoint', () => {
+test('one failing list direction stays open for the other; both failing rest lists', () => {
   const st = FL.fresh();
-  FL.recordListRedirect(st, 'one', true, T0);
-  FL.recordListRedirect(st, 'one', true, T0 + MIN);
-  FL.recordListRedirect(st, 'private', false, T0 + 2 * MIN);
-  FL.recordListRedirect(st, 'two', true, T0 + 3 * MIN);
+  FL.recordListRedirect(st, 'one', 'followers', true, T0);
+  FL.recordListRedirect(st, 'one', 'followers', true, T0 + MIN);
+  FL.recordListRedirect(st, 'private', 'followers', false, T0 + 2 * MIN);
+  FL.recordListRedirect(st, 'two', 'followers', true, T0 + 3 * MIN);
   assert.equal(st.listEndpointUntil, 0);
-  FL.recordListRedirect(st, 'three', true, T0 + 4 * MIN);
+  FL.recordListRedirect(st, 'three', 'followers', true, T0 + 4 * MIN);
+  assert.equal(st.listEndpointUntil, 0);
+  for (const seed of ['four', 'five', 'six']) FL.recordListRedirect(st, seed, 'following', true, T0 + 4 * MIN);
   assert.equal(st.listEndpointUntil, T0 + 34 * MIN);
   assert.equal(st.cool.list.until, 0); // no invented Instagram rate limit
   assert.deepEqual(FL.plan(st, {list: 1, profile: 1}, T0 + 4 * MIN).kinds, ['profile']);
@@ -135,12 +137,23 @@ test('three distinct confirmed public list redirects rest only the list endpoint
   assert.match(shown.text, /Instagram list limit until/);
   assert.equal(shown.badge, '2h'); // later real limit is the effective list wait
   st.cool.list.until = 0;
-  FL.recordListRedirect(st, 'four', true, T0 + 35 * MIN);
+  FL.recordListRedirect(st, 'seven', 'following', true, T0 + 35 * MIN);
   assert.equal(st.listEndpointUntil, T0 + 95 * MIN); // failed recovery probe: longer rest
   FL.listPageSucceeded(st);
   assert.equal(st.listEndpointUntil, 0);
   assert.equal(st.listRedirects.length, 0);
   assert.equal(st.listEndpointStrikes, 0);
+});
+test('legacy follower-only circuit clears without clearing a real 429', () => {
+  const st = FL.fresh();
+  st.listRedirects = ['a', 'b', 'c'].map((handle) => ({handle, at: T0}));
+  st.listEndpointUntil = T0 + HOUR;
+  st.listEndpointStrikes = 1;
+  st.cool.list.until = T0 + 2 * HOUR;
+  const normalized = FL.normalize(st, T0 + MIN);
+  assert.equal(normalized.listEndpointUntil, 0);
+  assert.equal(normalized.listRedirects.length, 0);
+  assert.equal(normalized.cool.list.until, T0 + 2 * HOUR);
 });
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();

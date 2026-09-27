@@ -159,7 +159,7 @@ test('HTML list redirect without wall quarantines only the target and keeps othe
   assert.equal(lookups, 2);
 });
 
-test('three public home redirects open this account list circuit without claiming a rate limit', async () => {
+test('follower-only public home redirects leave following available without claiming a rate limit', async () => {
   const data = {laneId: 'fixture-lane'};
   const ctx = worker(data, {
     page: async () => ({bad: {code: 'other', reason: 'list_html_home_redirect'}, res: {
@@ -171,10 +171,10 @@ test('three public home redirects open this account list circuit without claimin
     await ctx.run({...job(), id: 20 + i, seed});
   }
   assert.equal(data.st.listRedirects.length, 3);
-  assert.ok(data.st.listEndpointUntil > Date.now());
+  assert.equal(data.st.listEndpointUntil, 0);
   assert.equal(data.st.cool.list.until, 0);
   assert.ok(data.box.every(x => x.body.reason === 'list_html_home_redirect'));
-  assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['profile']);
+  assert.deepEqual(FL.plan(data.st, {list: 1, profile: 1}, Date.now()).kinds, ['list', 'profile']);
 });
 
 test('missing privacy and a failed fresh recheck never count as public redirects', async () => {

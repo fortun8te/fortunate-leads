@@ -240,16 +240,28 @@
     if (!Array.isArray(st.listRedirects)) st.listRedirects = [];
     st.listEndpointUntil = Number(st.listEndpointUntil) || 0;
     st.listEndpointStrikes = Number(st.listEndpointStrikes) || 0;
+    // 3.9.5 held both list directions after follower-only redirects. Its
+    // entries had no direction, so that hold is not evidence against following.
+    if (st.listEndpointUntil && st.listRedirects.length && st.listRedirects.every((x) => !x.direction)) {
+      st.listRedirects = [];
+      st.listEndpointUntil = 0;
+      st.listEndpointStrikes = 0;
+    }
     return rollDay(st, now);
   }
   // A home redirect on one target may be an access issue. Three different, freshly
   // confirmed public targets point to this viewer's list endpoint instead.
-  function recordListRedirect(st, handle, publicProfile, now) {
+  function recordListRedirect(st, handle, direction, publicProfile, now) {
     st.listRedirects = (st.listRedirects || []).filter((x) => x && now - x.at < HOUR);
-    if (!publicProfile || !handle) return st;
+    if (!publicProfile || !handle || !['followers', 'following'].includes(direction)) return st;
     const h = String(handle).toLowerCase();
-    st.listRedirects = st.listRedirects.filter((x) => x.handle !== h).concat({ handle: h, at: now });
-    if (st.listRedirects.length >= 3 || st.listEndpointStrikes > 0) {
+    st.listRedirects = st.listRedirects.filter((x) => x.handle !== h || x.direction !== direction)
+      .concat({ handle: h, direction, at: now });
+    // One direction can fail on target access while the other still works.
+    // Do not hold both directions until each independently fails on several
+    // freshly confirmed public targets.
+    const blocked = (dir) => st.listRedirects.filter((x) => x.direction === dir).length >= 3;
+    if (blocked('followers') && blocked('following')) {
       st.listEndpointStrikes = Math.min(st.listEndpointStrikes + 1, 4);
       st.listEndpointUntil = now + Math.min(30 * MIN * 2 ** (st.listEndpointStrikes - 1), 2 * HOUR);
     }
