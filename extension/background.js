@@ -589,6 +589,9 @@ async function runProfile(gen, job, tab) {
 async function flushBenchmark() {
   let pending = await get('benchmarkPending');
   if (!pending) return true;
+  // A permit may have committed even if its reply never reached this worker.
+  // Without its token there is no safe result upload or permit retry.
+  if (pending.phase === 'permit_requested' && !pending.body?.token) return false;
   if (!pending.result) {
     pending = { ...pending, result: { ...pending.body, rows: [], next_cursor: null, has_more: null,
       status: 'error', terminal_warning: 'transport_ambiguous', actual_http_requests: null,
@@ -621,6 +624,7 @@ async function benchmarkFingerprint(viewerId) {
   } catch { return null; }
 }
 async function benchmarkStep(gen) {
+  if (await get('benchmarkPending')) return 15000;
   await heartbeat(true);
   if (gen !== mem.gen || mem.offline) return 15e3;
   const st = await loadSt(), now = Date.now(), local = benchmarkWait(st, now);
@@ -660,13 +664,31 @@ async function benchmarkStep(gen) {
   }
   const body = { lane_id: id.lane_id, account: id.account, transport: 'chrome', task_id: task.task_id, request_id: saved.request_id, fingerprints: { session: fingerprint } };
   if (recipe) body.capture_shape_hash = recipe.shape_hash;
+  const pending = { phase: 'permit_requested', body };
+  await set({ benchmarkPending: pending });
   let grant;
-  try { grant = await api('/api/benchmark/permit', body); } catch { return 15000; }
-  if (grant.status !== 200 || grant.json?.granted !== true || !grant.json.token || grant.json.request_id !== saved.request_id)
+  try { grant = await api('/api/benchmark/permit', body); }
+  catch {
+    await set({ benchmarkPending: { ...pending, permit_error: 'permit_response_lost' } });
+    return 15000;
+  }
+  if (grant.status !== 200 || grant.json?.granted !== true || !grant.json.token || grant.json.request_id !== saved.request_id) {
+    // These server denials run only after checking for an outstanding benchmark.
+    // Unknown denials, inflight, and an already recorded request remain parked.
+    const noOutstandingReasons = ['task_changed', 'warmup_complete', 'session_or_device_changed',
+      'attention', 'paused', 'invalid_hold', 'cooldown', 'local_role', 'local_handoff',
+      'local_identity_owner', 'provider_cooldown', 'local_budget', 'budget_or_account',
+      'local_pacing', 'invalid_pacing', 'local_profile_drain', 'local_background_unverified',
+      'local_background_drain', 'permit'];
+    const denied = grant.status === 200 && grant.json?.granted === false && !grant.json.token &&
+      grant.json.outstanding !== true &&
+      (grant.json.outstanding === false || noOutstandingReasons.includes(grant.json.reason));
+    await set({ benchmarkPending: denied ? null : { ...pending, permit_error: 'permit_response_unconfirmed', permit_http_status: grant.status } });
     return Math.max(1000, Math.min(30000, grant.json?.wait_ms || 15000));
+  }
   body.token = grant.json.token;
   // Persist before MAIN dispatch. If MV3 dies at any point, report uncertainty instead of repeating GET.
-  await set({ benchmarkPending: { body } });
+  await set({ benchmarkPending: { phase: 'permit_granted', body } });
   let res;
   const fingerprintAfter = await benchmarkFingerprint(task.viewer_id);
   const fresh = await loadSt();

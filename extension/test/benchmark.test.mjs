@@ -50,7 +50,7 @@ function worker() {
   vm.runInContext(`heartbeat=async()=>{}; globalThis.run=()=>benchmarkStep(mem.gen); globalThis.flush=()=>flushBenchmark();
     globalThis.configure=(mode)=>{api=async(path,body)=>{calls.push({path,body});
       if(path.startsWith('/api/benchmark/next'))return {status:200,json:{enabled:true,task:testTask}};
-      if(path==='/api/benchmark/permit')return {status:200,json:{granted:mode!=='blocked',token:'token-1',request_id:body.request_id,expires_at:new Date(Date.now()+90000).toISOString()}};
+      if(path==='/api/benchmark/permit')return mode==='blocked'?{status:200,json:{granted:false,reason:'permit'}}:{status:200,json:{granted:true,token:'token-1',request_id:body.request_id,expires_at:new Date(Date.now()+90000).toISOString()}};
       if(path==='/api/benchmark/result')return mode==='offline'?{status:503,json:{}}:{status:200,json:{ok:true,acknowledged:mode!=='badack',request_id:body.request_id}};
       throw Error('unexpected API');};};`,context);
   return {context,data,calls};
@@ -58,6 +58,53 @@ function worker() {
 test('denied permit makes no GET and retains stable request ID',async()=>{
   const {context,data,calls}=worker();context.configure('blocked');await context.run();await context.run();
   assert.equal(calls.filter(x=>x==='GET').length,0);assert.equal(data.benchmarkTask.request_id,'request-1');
+  assert.equal(data.benchmarkPending,null);
+});
+test('lost permit reply retains a durable marker and blocks permit replay and upstream dispatch',async()=>{
+  const {context,data,calls}=worker();context.configure('ok');
+  vm.runInContext(`const originalApi=api;api=async(path,body)=>{
+    if(path==='/api/benchmark/permit'){
+      const pending=await get('benchmarkPending');
+      globalThis.markerSeen=pending?.phase==='permit_requested'&&pending.body.request_id===body.request_id;
+      calls.push({path,body});throw Error('reply lost after server grant');
+    }return originalApi(path,body);
+  };globalThis.fullStep=()=>step(mem.gen);`,context);
+  await context.run();
+  assert.equal(context.markerSeen,true);
+  assert.equal(data.benchmarkPending.phase,'permit_requested');
+  assert.equal(data.benchmarkPending.permit_error,'permit_response_lost');
+  assert.equal(data.benchmarkPending.body.request_id,'request-1');
+  assert.equal(data.benchmarkPending.body.token,undefined);
+  assert.equal(data.benchmarkPending.result,undefined);
+  const before=calls.length;
+  assert.equal(await context.flush(),false);await context.run();await context.fullStep();
+  assert.equal(calls.length,before);assert.equal(calls.filter(x=>x==='GET').length,0);
+});
+test('unconfirmed permit replies park without fabricated results or retry',async()=>{
+  for(const response of [
+    {status:503,json:{}}, {status:200,json:{granted:false,reason:'inflight'}},
+    {status:200,json:{granted:false,reason:'uncertain_transport'}},
+    {status:200,json:{granted:false,reason:'request_already_recorded'}},
+    {status:200,json:{granted:false}},
+    {status:200,json:{granted:true,token:'token-1',request_id:'wrong-id'}},
+  ]){
+    const {context,data,calls}=worker();context.configure('ok');context.permitResponse=response;
+    vm.runInContext(`const originalApi=api;api=async(path,body)=>path==='/api/benchmark/permit'?permitResponse:originalApi(path,body);`,context);
+    await context.run();assert.equal(data.benchmarkPending.phase,'permit_requested');
+    assert.equal(data.benchmarkPending.permit_error,'permit_response_unconfirmed');
+    assert.equal(await context.flush(),false);assert.equal(data.benchmarkPending.result,undefined);
+    assert.equal(calls.filter(x=>x==='GET').length,0);
+  }
+});
+test('granted token is saved before MAIN dispatch',async()=>{
+  const {context,data,calls}=worker();context.configure('offline');
+  const original=context.chrome.scripting.executeScript;
+  context.chrome.scripting.executeScript=async args=>{
+    assert.equal(data.benchmarkPending.phase,'permit_granted');
+    assert.equal(data.benchmarkPending.body.token,'token-1');return original(args);
+  };
+  await context.run();assert.equal(calls.filter(x=>x==='GET').length,1);
+  assert.equal(data.benchmarkPending.result.actual_http_requests,1);
 });
 test('persisted outcome replays identical bytes until explicit matching acknowledgement',async()=>{
   const {context,data,calls}=worker();context.configure('offline');await context.run();
