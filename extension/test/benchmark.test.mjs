@@ -203,3 +203,9 @@ test('unbounded search is saved as zero-send even when a valid query shape exist
   data.followerRequestTemplates=[await followerShape([['count','12'],['query','observed']])];await context.run();
   assert.equal(calls.filter(x=>x==='GET').length,0);assert.equal(data.benchmarkPending.result.terminal_warning,'invalid_search_bounds');
 });
+
+test('confirmed follower cap preserves raw count and stops target without soft block',()=>{
+ const json={status:'ok',users:[{pk:'8',username:'person'}],has_more:true,next_max_id:'cursor',should_limit_list_of_followers:true};
+ const result=B.result({...task,direction:'followers'},{status:200,text:JSON.stringify(json),actual_http_requests:1},FL);
+ assert.equal(result.status,'target_cap');assert.equal(result.target_limited,true);assert.equal(result.raw_returned_count,1);assert.equal(result.rows.length,1);assert.equal(result.next_cursor,null);
+});
