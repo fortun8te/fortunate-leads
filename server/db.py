@@ -63,7 +63,8 @@ CREATE INDEX IF NOT EXISTS followups_due ON followups(completed_at,due_on,person
 CREATE INDEX IF NOT EXISTS activity_person_time ON activity(person_id,happened_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, kind TEXT CHECK(kind IN('list','profile')), seed TEXT, direction TEXT,
   handle TEXT, priority INT DEFAULT 0, state TEXT DEFAULT 'queued', attempts INT DEFAULT 0, leased_until TEXT, created_at TEXT,
-  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0, page_size INT, experiment_viewer_ig_id TEXT);
+  retry_not_before TEXT, limit_hits INT NOT NULL DEFAULT 0, page_size INT, experiment_viewer_ig_id TEXT, collection_backend TEXT NOT NULL DEFAULT 'chrome',
+  backend_lane TEXT, backend_viewer_ig_id TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS network_dirty(person_id INTEGER PRIMARY KEY, change_id INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS network_dirty_change ON network_dirty(change_id, person_id);   -- the drain reads in change order
@@ -82,7 +83,7 @@ CREATE INDEX IF NOT EXISTS collector_events_lane_at ON collector_events(lane,at)
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
-  list_cool_until TEXT, profile_cool_until TEXT, list_endpoint_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT);
+  list_cool_until TEXT, profile_cool_until TEXT, list_endpoint_until TEXT, rate TEXT, today TEXT, last_error TEXT, activity TEXT, text TEXT, collection_backend TEXT NOT NULL DEFAULT 'chrome');
 -- A Chrome lane can switch Instagram identities and later switch back. Keep
 -- each identity's same-day usage and active waits outside the mutable lane row.
 CREATE TABLE IF NOT EXISTS account_identity_state(lane_id TEXT NOT NULL, ig_id TEXT NOT NULL,
@@ -269,6 +270,9 @@ def init(path):
                              ('jobs', 'retry_not_before', 'TEXT'), ('jobs', 'limit_hits', 'INT NOT NULL DEFAULT 0'),
                              ('jobs', 'page_size', 'INT'), ('jobs', 'target_ig_id', 'TEXT'),
                              ('jobs', 'experiment_viewer_ig_id', 'TEXT'),
+                             ('jobs', 'collection_backend', "TEXT NOT NULL DEFAULT 'chrome'"),
+                             ('jobs', 'backend_lane', 'TEXT'), ('jobs', 'backend_viewer_ig_id', 'TEXT'),
+                             ('accounts', 'collection_backend', "TEXT NOT NULL DEFAULT 'chrome'"),
                              ('collector_events', 'route', 'TEXT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
@@ -1215,6 +1219,8 @@ def start_list_run(conn, job_id, seed, direction):
 
 def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None, experiment_viewer_ig_id=None):
     seed = norm_handle(seed)
+    if conn.execute("SELECT 1 FROM jobs WHERE seed=? AND direction=? AND collection_backend='mobile'", (seed, direction)).fetchone():
+        raise ValueError('This list belongs to the mobile collector; its cursor cannot be reused by Chrome')
     if not seed or '~' in seed:
         raise ValueError('invalid Instagram seed handle')
     if direction not in ('followers', 'following'):
@@ -1292,7 +1298,7 @@ def repair_lists(conn, dry=False):
             conn.execute('INSERT INTO jobs(kind, handle, priority, created_at) VALUES(?,?,?,?)', ('profile', s, 10000, ts))
     todo = []
     partial_candidates = []
-    trial_seeds = {r[0].lower() for r in conn.execute('SELECT DISTINCT seed FROM jobs WHERE experiment_viewer_ig_id IS NOT NULL')}
+    trial_seeds = {r[0].lower() for r in conn.execute("SELECT DISTINCT seed FROM jobs WHERE experiment_viewer_ig_id IS NOT NULL OR collection_backend='mobile'")}
     for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0 AND NOT EXISTS "
                              "(SELECT 1 FROM collection_discovery d WHERE d.handle=seeds.handle AND d.state='queued')"):
         if s.lower() in trial_seeds:

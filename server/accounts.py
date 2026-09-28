@@ -358,7 +358,7 @@ def reopen_private_for_viewer(conn, row, now):
                             "JOIN lists l ON l.seed=seen.seed AND l.direction=seen.direction WHERE "
                             "(l.state='private' OR (l.state='partial' AND l.released_why='private')) "
                             "AND NOT EXISTS(SELECT 1 FROM jobs trial WHERE trial.seed=l.seed "
-                            "AND trial.experiment_viewer_ig_id IS NOT NULL) "
+                            "AND (trial.experiment_viewer_ig_id IS NOT NULL OR trial.collection_backend='mobile')) "
                             "AND NOT EXISTS(SELECT 1 FROM list_private_denials d WHERE d.seed=l.seed AND d.direction=l.direction AND d.viewer_ig_id=?)",
                             (row['ig_id'],)).fetchall():
         if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
@@ -641,10 +641,20 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     parts = str(row['version'] or '').split('.')
     experiment_capable = (not row['is_main'] and len(parts) == 3
                           and all(part.isdigit() for part in parts)
-                          and tuple(map(int, parts)) >= (3, 9, 20))
+                          and tuple(map(int, parts)) >= (3, 9, 21))
     page_size_filter += (' AND (j.experiment_viewer_ig_id IS NULL OR j.experiment_viewer_ig_id=?)'
                          if experiment_capable else ' AND j.experiment_viewer_ig_id IS NULL')
     experiment_args = (row['ig_id'],) if experiment_capable else ()
+    backend = row['collection_backend']
+    if backend == 'mobile':
+        if row['is_main'] or db.get_setting(conn, 'mobile_backend_enabled', False) is not True:
+            return None
+        page_size_filter += " AND j.collection_backend='mobile' AND j.backend_lane=? AND j.backend_viewer_ig_id=?"
+        experiment_args += (row['lane_id'], row['ig_id'])
+    elif backend == 'chrome':
+        page_size_filter += " AND j.collection_backend='chrome'"
+    else:
+        return None
     # The same recovered route wait must govern eligibility and sticky ownership.
     # Heartbeats can omit list_endpoint_until while recorded redirects still block it.
     owner_filter = (" OR (j.direction='followers' AND l.lane IN ("
@@ -965,7 +975,7 @@ REQUEST_LEASE_SECONDS = 90
 REQUEST_QUEUE_MAX = 64
 
 
-def request_permit(conn, lane, kind=None, token=None, now=None):
+def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
     """FIFO, persisted single-request lease; caller checks workspace controls first."""
     now = now or datetime.now(timezone.utc)
     stamp = now.timestamp()
@@ -1048,7 +1058,8 @@ def request_permit(conn, lane, kind=None, token=None, now=None):
                     wait = REQUEST_SPACING_SECONDS if active else next_at - stamp
                     result = {'granted': False, 'wait_ms': max(1000, min(15000, int(wait * 1000)))}
         db.set_setting(conn, 'instagram_request_gate', {'active': active, 'queue': queue, 'next_at': next_at})
-        conn.commit()
+        if commit:
+            conn.commit()
         return result
     except Exception:
         conn.rollback()

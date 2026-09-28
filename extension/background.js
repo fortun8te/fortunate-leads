@@ -420,11 +420,12 @@ async function igRequest(gen, tab, url, kind, ctx) {
 
 const HOLD_MSG = { challenge: 'Instagram security check: complete it in the Instagram tab, then Resume',
   login: 'Log in to Instagram, then Resume' };
-// Records a failed job step. Local codes (network, unsupported, busy) keep the job for a retry and tell the server nothing.
+// Ordinary transient failures may retry. Trial failures are reported and parked.
 async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem.gen, route = null) {
   if (gen !== mem.gen) throw new Superseded();
   const now = Date.now(), sample = res ? FL.sampleOf(res, 1500) : '';
-  const local = bad.code === 'network' || bad.code === 'unsupported' || bad.code === 'busy';
+  const local = bad.code === 'busy' || (!job.experiment_viewer_ig_id &&
+    (bad.code === 'network' || bad.code === 'unsupported'));
   const homeRedirect = bad.reason === 'list_html_home_redirect';
   const line = bad.code + (bad.reason ? ' (' + bad.reason + ')' : '') + ' on ' + what +
     (homeRedirect ? ': Instagram returned its home page for the list API; target will retry later.' : '');
@@ -524,13 +525,13 @@ async function runList(gen, job, tab) {
     // Report the warning before any further Instagram request, including privacy checks.
     if (bad.reason === 'list_html_home_redirect')
       return fail(job, bad, mem.label, res, 'list', false, gen);
-    if (bad.reason === 'empty_page_before_total') {
+    if (bad.reason === 'empty_page_before_total' && !job.experiment_viewer_ig_id) {
       // Keep this lease and cursor. The request already advanced the normal list
       // clock; a second empty terminal page is sent to the server as partial.
       await editProg(key, () => ({ ...prog, jobId: job.id, next: cursor, emptyAt: cursor }), gen);
       return;
     }
-    if (bad.code === 'private') {
+    if (bad.code === 'private' && !job.experiment_viewer_ig_id) {
       if (!(await waitUntil(gen, FL.readyAt(await loadSt(), 'list')))) return;
       const proof = await lookupViaPage(gen, job.seed, 'list', tab);
       if (FL.privateWall(proof.info, job.seed, proof.p))

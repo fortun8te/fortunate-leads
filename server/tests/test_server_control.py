@@ -107,7 +107,8 @@ class ControlTest(LaneTest):
         self.assertFalse(out['all_paused'])
 
     def test_ai_rates_count_saved_scores_not_profile_revisions(self):
-        now = datetime.now(timezone.utc)
+        # Exercise the midnight boundary without depending on the test run time.
+        now = datetime(2026, 9, 28, 0, 2, tzinfo=timezone.utc)
         recent = (now - timedelta(seconds=20)).isoformat()
         hour_old = (now - timedelta(minutes=5)).isoformat()
         day_old = (now - timedelta(hours=2)).isoformat()
@@ -121,12 +122,17 @@ class ControlTest(LaneTest):
                                  (recent,)).fetchall()
         self.assertTrue(any('ai_scoring_events_at' in row['detail'] for row in plan))
         self.conn.commit()
-        ai = self.stage(self.ctl(), 'ai')
+        with patch.object(control, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = now
+            ai = self.stage(self.ctl(), 'ai')
         self.assertEqual((ai['minute'], ai['hour'], ai['today']),
-                         (1, 2, 2 + int(day_old[:10] == now.date().isoformat())))
+                         (1, 2, sum(stamp[:10] == now.date().isoformat()
+                                    for stamp in (recent, hour_old, day_old))))
         self.conn.execute("UPDATE verdicts SET updated_at=? WHERE person_id=?", (now.isoformat(), pid))
         self.conn.commit()
-        ai = self.stage(self.ctl(), 'ai')
+        with patch.object(control, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = now
+            ai = self.stage(self.ctl(), 'ai')
         self.assertEqual((ai['minute'], ai['hour']), (1, 2))
 
     def test_lists_and_bios_pause_separately(self):
