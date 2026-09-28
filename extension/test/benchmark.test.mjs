@@ -5,10 +5,11 @@ import fs from 'node:fs';
 import {webcrypto} from 'node:crypto';
 import FL from '../lib/core.js';
 import B from '../lib/benchmark.js';
+import C from '../lib/follower-capture.js';
 const task = {task_id:'task-1', route:'web_rest', transport:'chrome', target_id:'42', viewer_id:'12', direction:'following', page_size:100, cursor:null};
 function injected({viewer='12', response, fail=false}={}) {
   const calls=[];
-  const context=vm.createContext({performance, AbortController, setTimeout, clearTimeout,
+  const context=vm.createContext({performance, URLSearchParams, AbortController, setTimeout, clearTimeout,
     document:{cookie:`ds_user_id=${viewer}; csrftoken=csrf`, readyState:'complete'},
     location:{hostname:'www.instagram.com',pathname:'/'}, sessionStorage:{getItem:()=>null,setItem(){}},
     window:{__flFetch:async (...args)=>{calls.push(args); if(fail)throw Error('network'); return response || {status:200,type:'basic',url:B.url(task,'12'),headers:{get:()=>null},text:async()=>JSON.stringify({status:'ok',users:[{pk:'8',username:'person'}],next_max_id:'next'})};}}});
@@ -39,8 +40,8 @@ test('manual redirect and transport errors stop without fallback',async()=>{
 });
 function worker() {
   const data={account:{ig_id:'12',handle:'viewer'},laneId:'lane-1',st:FL.fresh()}; const calls=[];
-  const context=vm.createContext({FL, FLBenchmark:B, Date, Set, URLSearchParams, AbortController,TextEncoder,Uint8Array,crypto:{randomUUID:()=> 'request-1',subtle:webcrypto.subtle},importScripts(){},setTimeout:()=>0,clearTimeout(){},
-    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.24'}),onMessage:{addListener(){}}},
+  const context=vm.createContext({FL, FLBenchmark:B, FLFollowerCapture:C, Date, Set, URLSearchParams, AbortController,TextEncoder,Uint8Array,crypto:{randomUUID:()=> 'request-1',subtle:webcrypto.subtle},importScripts(){},setTimeout:()=>0,clearTimeout(){},
+    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.25'}),onMessage:{addListener(){}}},
       storage:{local:{get:async k=> typeof k==='string'?{[k]:data[k]}:Object.fromEntries(k.map(key=>[key,data[key]])),set:async x=>Object.assign(data,x)}},
       tabs:{query:async()=>[{id:3,status:'complete',url:'https://www.instagram.com/'}]},
       scripting:{executeScript:async()=>{calls.push('GET');return [{result:{status:200,text:JSON.stringify({status:'ok',users:[{pk:'8',username:'person'}]}),actual_http_requests:1,duration_ms:8,observed_viewer_id:'12'}}];}}}});
@@ -161,4 +162,44 @@ test('MAIN rejects wrong-direction parameters, unknown sizes and extra parameter
     const {context,calls}=injected();const res=await context.run(prefix+tail,'12',30000);
     assert.equal(calls.length,0);assert.equal(res.error,'invalid_url');
   }
+});
+async function followerShape(params=[['count','12'],['search_surface','follow_list_page']]) {
+  const p={method:'GET',direction:'followers',viewer_id:'12',target_id:'42',path:'/api/v1/friendships/42/followers/',params,at:Date.now()};
+  return {...p,shape_hash:await C.hash(p,webcrypto)};
+}
+test('missing or wrong-target modal capture produces zero-send saved result without guessing a route',async()=>{
+  for(const captures of [[],[{...(await followerShape()),target_id:'99'}]]){
+    const {context,data,calls}=worker();context.configure('offline');context.testTask={...task,route:'web_modal',direction:'followers',page_size:null};
+    data.followerRequestTemplates=captures;await context.run();
+    assert.equal(calls.filter(x=>x==='GET').length,0);assert.equal(data.benchmarkPending.result.actual_http_requests,0);
+    assert.equal(data.benchmarkPending.result.terminal_warning,'missing_verified_followers_capture');
+  }
+});
+test('captured modal and explicitly bounded search use one MAIN request with their verified shape hash',async()=>{
+  for(const route of ['web_modal','web_search']){
+    const {context,data,calls}=worker();context.configure('offline');
+    context.testTask={...task,route,direction:'followers',page_size:null,capped_list_fallback:true,query:'test query',request_limit:7,request_index:0};
+    data.followerRequestTemplates=[await followerShape(route==='web_search'?[['count','12'],['query','observed']]:undefined)];
+    await context.run();assert.equal(calls.filter(x=>x==='GET').length,1);
+    assert.equal(data.benchmarkPending.result.capture_shape_hash,data.followerRequestTemplates[0].shape_hash);
+  }
+});
+test('MAIN captured-shape replay accepts observed nonstandard counts and search only with the exact recipe',async()=>{
+  for(const route of ['web_modal','web_search']){
+    const t={...task,route,direction:'followers',page_size:null,capped_list_fallback:true,query:'test query',request_limit:7,request_index:0};
+    const capture=await followerShape(route==='web_search'?[['count','12'],['query','observed']]:undefined);
+    const {url,recipe}=await C.prepare(t,'12',[capture],webcrypto);
+    const good=injected();const result=await good.context.run(url,'12',30000,recipe);
+    assert.equal(result.actual_http_requests,1);assert.equal(good.calls.length,1);assert.equal(good.calls[0][1].redirect,'manual');
+    for(const altered of [null,{...recipe,viewer_id:'99'},{...recipe,target_id:'99'},{...recipe,params:[...recipe.params,['authorization','secret']]}]){
+      const bad=injected();const rejected=await bad.context.run(url,'12',30000,altered);
+      assert.equal(bad.calls.length,0);assert.equal(rejected.actual_http_requests,0);
+    }
+  }
+});
+test('unbounded search is saved as zero-send even when a valid query shape exists',async()=>{
+  const {context,data,calls}=worker();context.configure('offline');
+  context.testTask={...task,route:'web_search',direction:'followers',page_size:null,query:'q'};
+  data.followerRequestTemplates=[await followerShape([['count','12'],['query','observed']])];await context.run();
+  assert.equal(calls.filter(x=>x==='GET').length,0);assert.equal(data.benchmarkPending.result.terminal_warning,'invalid_search_bounds');
 });

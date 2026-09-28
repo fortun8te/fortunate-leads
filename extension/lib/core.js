@@ -551,7 +551,7 @@
     return !state.offline && !state.serverPaused && (!state.stages || state.stages[kind] !== false);
   }
 
-  // Larger following pages are an explicit fresh-run experiment, bound to one viewer.
+  // Ordinary following uses the measured 200-row winner; pinned experiments keep their explicit size.
   function listPageSize(job, viewerId) {
     if (job.experiment_viewer_ig_id != null) {
       if (job.direction !== 'following' || ![50, 100, 200].includes(job.page_size) ||
@@ -561,7 +561,7 @@
     }
     if (job.direction === 'following') {
       if (job.page_size != null) throw new Error('following experiment requires a pinned viewer');
-      return 50;
+      return 200;
     }
     if (job.page_size != null && ![25, 50].includes(job.page_size)) throw new Error('invalid follower page size');
     return job.page_size === 50 ? 50 : 25;

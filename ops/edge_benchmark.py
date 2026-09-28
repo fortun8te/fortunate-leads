@@ -66,15 +66,16 @@ def advance(live_db):
         if not row or row['hold'] or row['is_main'] or row['ig_id']!=cfg['viewer_id']:
             raise ValueError('Pinned alternate is unavailable or held')
         with ledger._connect(cfg['path']) as bench:
-            tasks=list(bench.execute('SELECT * FROM tasks WHERE warmup=1'))
-            if not tasks or any(t['state']!='done' for t in tasks):
+            tasks=list(bench.execute("SELECT * FROM tasks WHERE warmup=1 AND state!='deferred'"))
+            protocol=ledger._meta(bench).get('preset')=='followers-protocol'
+            if not tasks or any(t['state'] not in (('done','stopped') if protocol else ('done',)) for t in tasks):
                 raise ValueError('Every warmup must finish successfully')
             requests=list(bench.execute('SELECT r.* FROM requests r JOIN tasks t USING(task_id) WHERE t.warmup=1'))
             if len(requests)!=len(tasks):
                 raise ValueError('Warmup request coverage mismatch')
             for req in requests:
                 result=json.loads(req['result']) if req['result'] else {}
-                if (req['finished_at'] is None or result.get('status')!='ok' or result.get('terminal_warning')
+                if (req['finished_at'] is None or (result.get('status')!='ok' or result.get('terminal_warning')) and not (protocol and result.get('stop_scope')=='target')
                         or result.get('actual_http_requests')!=1 or result.get('transport_completed') is not True):
                     raise ValueError('Every warmup must have one confirmed successful transport')
         ledger.advance_phase(cfg['path'])
@@ -103,6 +104,20 @@ def deactivate(live_db):
         return cfg
 
 
+def enable_search_fallback(live_db,reason,query):
+    with _connection(live_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        cfg=db.get_setting(conn,KEY) or {}
+        if not cfg.get('enabled'):
+            raise ValueError('An armed follower protocol is required')
+        _drained(conn,cfg)
+        if db.get_setting(conn,'instagram_request_attention'):
+            raise ValueError('Attention hold requires review')
+        result=ledger.enable_fallback(cfg['path'],reason,query=query)
+        conn.commit()
+        return result
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest='command',required=True)
@@ -117,7 +132,9 @@ def main():
     create.add_argument('--direction',choices=('following','followers','both'),help='Defaults to the preset direction')
     create.add_argument('--arms',help='Comma-separated arm names, e.g. web_rest200,web_rest300,web_rest500,web_rest1500')
     create.add_argument('--target-ids',help='One to three comma-separated public numeric IDs already present in the live snapshot')
-    create.add_argument('--target-count',type=int,help='One to three feasibility targets; default two')
+    create.add_argument('--target-count',type=int,help='1-3 feasibility targets; followers-protocol requires 3-6, defaults three')
+    create.add_argument('--arm-request-budgets',type=json.loads,help='JSON object of per-arm attempt caps, including warmups')
+    create.add_argument('--cohort-index',type=int,choices=(1,2,3),default=1)
     create.add_argument('--pages-per-run',type=int,default=2)
     show=sub.add_parser('report')
     show.add_argument('--bench-db',required=True)
@@ -127,6 +144,10 @@ def main():
     arm.add_argument('--lane-id',required=True)
     for command in ('advance','deactivate'):
         sub.add_parser(command).add_argument('--live-db',required=True)
+    fallback=sub.add_parser('enable-fallback')
+    fallback.add_argument('--live-db',required=True)
+    fallback.add_argument('--reason',required=True)
+    fallback.add_argument('--query',required=True)
     a=p.parse_args()
     try:
         if a.command=='create':
@@ -134,11 +155,13 @@ def main():
                 preset=a.preset,directions=('following','followers') if a.direction=='both' else (a.direction,) if a.direction else None,
                 arms=[part.strip() for part in a.arms.split(',')] if a.arms is not None else None,
                 target_ids=[part.strip() for part in a.target_ids.split(',')] if a.target_ids is not None else None,
-                target_count=a.target_count,pages_per_run=a.pages_per_run)
+                target_count=a.target_count,pages_per_run=a.pages_per_run,arm_request_budgets=a.arm_request_budgets,cohort_index=a.cohort_index)
         elif a.command=='report':
             result=ledger.report(a.bench_db)
         elif a.command=='activate':
             result=activate(a.live_db,a.bench_db,a.lane_id)
+        elif a.command=='enable-fallback':
+            result=enable_search_fallback(a.live_db,a.reason,a.query)
         elif a.command=='advance':
             result=advance(a.live_db)
         else:

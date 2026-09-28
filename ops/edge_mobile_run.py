@@ -50,9 +50,11 @@ def run_once(api, client, outbox):
             if ack.get('ack') is not True:
                 raise mobile.Stopped('Benchmark result was not acknowledged; outbox retained')
             path.unlink()
-            return {'state': 'stopped' if body['terminal_warning'] or ack.get('stopped') else 'saved', 'replayed': True,
+            return {'state': 'stopped' if ack.get('stopped') or (body['terminal_warning'] and ack.get('stop_scope') not in ('target', 'arm')) else 'saved', 'replayed': True,
                     'upstream_requests': 0, 'status': body['status'], 'returned_count': body['returned_count'],
-                    'duration_ms': body['duration_ms']}
+                    'duration_ms': body['duration_ms'], 'raw_returned_count': body.get('raw_returned_count'),
+                    'failure_reason': body.get('failure_reason'), 'reason_flags': body.get('reason_flags', []),
+                    'stop_scope': ack.get('stop_scope')}
         if pending.get('phase') != 'reserved':
             raise mobile.Stopped('Invalid benchmark outbox')
         task = pending['task']

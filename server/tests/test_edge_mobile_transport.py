@@ -125,6 +125,49 @@ class TransportTests(unittest.TestCase):
             mobile.parse_page({'errors': [{'message': 'feedback_required'}]}, task())
         self.assertEqual(caught.exception.code, 'soft_block')
 
+    def test_failed_page_keeps_raw_count_and_sanitized_reason(self):
+        users = [{'pk': str(100+i), 'username': 'user'+str(i)} for i in range(25)]
+        payload = {'status': 'fail', 'users': users, 'message': 'feedback_required: private diagnostic text'}
+        with patch.object(requests.Session, 'send', return_value=response(payload)):
+            value = mobile.one_request(client(), task(), '99')
+        self.assertEqual(value['raw_returned_count'], 25)
+        self.assertEqual(value['returned_count'], 25)
+        self.assertEqual(value['status'], 'soft_block')
+        self.assertEqual(value['failure_reason'], 'feedback_required')
+        self.assertEqual(value['reason_flags'], ['feedback_required'])
+        self.assertNotIn('private diagnostic text', json.dumps(value))
+        self.assertEqual(value['rows'], [])
+
+    def test_confirmed_cap_is_target_stop_with_valid_rows(self):
+        payload = {'status':'ok', 'users':[{'pk':str(i+1),'username':'user'+str(i)} for i in range(25)],
+                   'should_limit_list_of_followers':True}
+        with patch.object(requests.Session, 'send', return_value=response(payload)):
+            value = mobile.one_request(client(), task(direction='followers'), '99')
+        self.assertEqual(value['status'], 'target_cap')
+        self.assertEqual(value['failure_reason'], 'list_cap_flag')
+        self.assertEqual(value['raw_returned_count'], 25)
+        self.assertEqual(len(value['rows']), 25)
+        self.assertTrue(value['target_limited'])
+        self.assertEqual(value['reason_flags'], ['list_cap_flag'])
+
+    def test_provider_warning_takes_precedence_over_cap_and_user_names_are_ignored(self):
+        payload = {'status':'ok', 'users':[{'pk':'1','username':'feedback_required'}],
+                   'next_max_id': None, 'should_limit_list_of_followers':False}
+        self.assertEqual(mobile.parse_page(payload, task())['status'], 'ok')
+        payload.update(should_limit_list_of_followers=True, message='sentry_block')
+        with self.assertRaises(mobile.PageWarning) as raised:
+            mobile.parse_page(payload, task())
+        self.assertEqual(raised.exception.code, 'soft_block')
+        self.assertEqual(raised.exception.diagnostics['raw_returned_count'], 1)
+
+    def test_http_429_keeps_returned_rows_count(self):
+        payload = {'users':[{'pk':'1','username':'alice'}]}
+        with patch.object(requests.Session, 'send', return_value=response(payload, 429)):
+            value = mobile.one_request(client(), task(), '99')
+        self.assertEqual(value['raw_returned_count'], 1)
+        self.assertEqual(value['failure_reason'], 'http_429')
+        self.assertEqual(value['status'], 'rate_limit')
+
     def test_origin_header(self):
         api = LocalAPI('alt', '99')
         class Opener:

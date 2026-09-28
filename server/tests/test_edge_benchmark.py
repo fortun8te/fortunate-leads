@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import subprocess
+from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -184,6 +185,101 @@ class BenchmarkTests(unittest.TestCase):
         before=self.bench.read_bytes()
         self.assertEqual(set(b.report(self.bench)['arms']),{a[0] for a in b.ARMS})
         self.assertEqual(self.bench.read_bytes(),before)
+
+    def protocol(self):
+        self.bench=Path(self.tmp.name)/'protocol.db'
+        return b.create_plan(self.live,self.bench,'999',preset='followers-protocol',target_ids=['108','109','110'])
+
+    def test_protocol_fixed_arms_conditional_search_and_incomplete_comparison(self):
+        rep=self.protocol()
+        self.assertEqual(set(rep['arms']),{'web_rest50','web_modal','mobile_rest50','mobile_graphql','web_search50'})
+        self.assertEqual(rep['plan']['directions'],['followers'])
+        self.assertEqual(rep['plan']['arm_request_budgets']['web_search50'],7)
+        with b._connect(self.bench) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM tasks WHERE arm='web_search50' AND state='deferred'").fetchone()[0],4)
+        self.assertTrue(all(v['status']=='inconclusive' for v in rep['protocol_comparison']['arms'].values()))
+        with self.assertRaisesRegex(ValueError,'evidence'):
+            b.enable_fallback(self.bench,'try search',query='a')
+        with self.assertRaises(ValueError):
+            b.create_plan(self.live,Path(self.tmp.name)/'fourth.db','999',preset='followers-protocol',cohort_index=4)
+
+    def test_protocol_target_cap_preserves_rows_and_does_not_hold_viewer(self):
+        self.protocol()
+        t=self.next()
+        b.begin_request(self.bench,'cap',t['task_id'],'999',started_at=2)
+        r=b.finish_request(self.bench,'cap',rows=['800'],status='target_cap',target_limited=True,raw_returned_count=5,finished_at=3)
+        self.assertEqual((r['stop_scope'],r['observed_pairs'],r['returned_rows']),('target',1,5))
+        self.assertFalse(r['viewer_safety_hold'])
+        self.assertEqual(b.state(self.bench)['state'],'running')
+        self.assertIsNotNone(self.next(now=4))
+        b.enable_fallback(self.bench,'recorded target limit',query='a')
+        self.assertEqual(b.state(self.bench)['enabled_conditional_arms'],['web_search50'])
+
+    def test_protocol_429_stops_arm_and_holds_all_requests(self):
+        self.protocol()
+        t=self.next()
+        b.begin_request(self.bench,'rate',t['task_id'],'999',started_at=2)
+        r=b.finish_request(self.bench,'rate',status='rate_limit',http_status=429,finished_at=3)
+        self.assertEqual(r['stop_scope'],'arm')
+        self.assertTrue(r['viewer_safety_hold'])
+        self.assertIsNone(self.next(now=4))
+        self.assertEqual(b.state(self.bench)['stopped_arms'][t['arm']]['request_index'],1)
+        b.resolve_safety_hold(self.bench,'provider hold independently reviewed')
+        following=self.next(now=5)
+        self.assertIsNotNone(following)
+        self.assertNotEqual(following['arm'],t['arm'])
+
+    def test_protocol_auth_is_global_and_not_resumable(self):
+        self.protocol()
+        t=self.next()
+        b.begin_request(self.bench,'auth',t['task_id'],'999',started_at=2)
+        r=b.finish_request(self.bench,'auth',status='challenge',finished_at=3)
+        self.assertEqual(r['stop_scope'],'cohort')
+        self.assertEqual(b.state(self.bench)['state'],'stopped')
+        with self.assertRaises(ValueError):
+            b.resolve_safety_hold(self.bench,'cannot bypass challenge')
+
+    def test_protocol_comparison_waits_for_full_corpus_and_both_twenty_percent_gains(self):
+        self.protocol()
+        with b._connect(self.bench) as db:
+            meta=b._meta(db)
+            arms={name:{'unique_edges_per_http_request':12,'observed_unique_edges_per_allocated_hour':120} for name,_,_ in meta['arms']}
+            arms['web_rest50']={'unique_edges_per_http_request':10,'observed_unique_edges_per_allocated_hour':100}
+            db.execute("UPDATE tasks SET state='done',pages=1 WHERE warmup=0 AND arm IN ('web_rest50','mobile_rest50')")
+            result=b._protocol_comparison(db,meta,arms)
+            self.assertEqual(result['arms']['mobile_rest50']['status'],'bounded_improvement')
+            self.assertEqual(result['arms']['web_modal']['status'],'inconclusive')
+            arms['mobile_rest50']['observed_unique_edges_per_allocated_hour']=110
+            self.assertEqual(b._protocol_comparison(db,meta,arms)['arms']['mobile_rest50']['status'],'threshold_not_met')
+
+    def test_protocol_dispatch_enforces_complete_threshold_verdict_only(self):
+        self.protocol()
+        t=b.state(self.bench)['current_task']
+        failed=t['arm']
+        verdict={'protocol_comparison':{'arms':{failed:{'status':'threshold_not_met','full_corpus':True}}}}
+        with mock.patch.object(b,'report',return_value=verdict):
+            next_row=self.next()
+        meta=b.state(self.bench)
+        self.assertEqual(meta['stopped_arms'][failed]['reason'],'full_corpus_threshold_not_met')
+        if next_row:
+            self.assertNotEqual(next_row['arm'],failed)
+        next_arm=meta['current_task']['arm']
+        with mock.patch.object(b,'report',return_value={'protocol_comparison':{'arms':{next_arm:{'status':'inconclusive'}}}}):
+            self.next(now=2)
+        self.assertNotIn(next_arm,b.state(self.bench)['stopped_arms'])
+
+    def test_protocol_per_arm_budget_prevents_additional_send(self):
+        self.bench=Path(self.tmp.name)/'budget.db'
+        names=b.PRESETS['followers-protocol']['arms']
+        b.create_plan(self.live,self.bench,'999',preset='followers-protocol',arm_request_budgets={name:1 for name in names})
+        for i in range(4):
+            task=self.next()
+            b.begin_request(self.bench,'warm-'+str(i),task['task_id'],'999',started_at=2)
+            b.finish_request(self.bench,'warm-'+str(i),finished_at=3)
+        b.advance_phase(self.bench,now=4)
+        self.assertIsNone(self.next(now=5))
+        self.assertTrue(any(x['reason']=='arm_request_budget' for x in b.state(self.bench)['stopped_arms'].values()))
+        self.assertEqual(b.report(self.bench,now=5)['transport_totals']['registered_attempts'],4)
 
 if __name__=='__main__':
     unittest.main()

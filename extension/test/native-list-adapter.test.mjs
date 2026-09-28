@@ -72,8 +72,8 @@ test('empty list needs a fresh zero count and explicit end', () => {
 });
 
 import FL from '../lib/core.js';
-test('following defaults remain 50 and only the pinned experiment can request 100 or 200', () => {
-  assert.equal(FL.listPageSize({direction:'following'},'1'),50);
+test('following defaults to 200 and pinned experiments retain explicit sizes', () => {
+  assert.equal(FL.listPageSize({direction:'following'},'1'),200);
   for(const n of [50,100,200]) {
     const job={direction:'following',page_size:n,experiment_viewer_ig_id:'1'};
     assert.equal(FL.listPageSize(job,'1'),n);

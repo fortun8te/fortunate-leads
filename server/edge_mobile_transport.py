@@ -68,66 +68,116 @@ def construct_request(client, task, viewer_id):
 
 
 class PageWarning(Exception):
-    def __init__(self, code):
+    def __init__(self, code, reason=None, diagnostics=None):
         self.code = code
+        self.reason = reason or code
+        self.diagnostics = diagnostics or {}
+
+
+def _page_payload(payload, task):
+    if not isinstance(payload, dict):
+        return None
+    if task['route'] != 'mobile_graphql':
+        return payload
+    data = payload.get('data') or payload
+    if not isinstance(data, dict):
+        return None
+    root = 'xdt_api__v1__friendships__' + task['direction']
+    matches = [value for key, value in data.items() if root in str(key) and isinstance(value, dict)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def page_diagnostics(payload, task):
+    """Only counts and fixed reason labels escape; no upstream messages or user text."""
+    page = _page_payload(payload, task)
+    raw_count = len(page['users']) if isinstance(page, dict) and isinstance(page.get('users'), list) else None
+    flags = set()
+    # Traverse error metadata, excluding user/profile content to avoid false positives.
+    def inspect(value):
+        if isinstance(value, list):
+            for item in value:
+                inspect(item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'users':
+                    continue
+                if key in ('challenge', 'checkpoint_url', 'two_factor_required') and item:
+                    flags.add('challenge_required')
+                if key in ('require_login', 'login_required') and item is True:
+                    flags.add('login_required')
+                if key == 'spam' and item is True:
+                    flags.add('spam_flag')
+                if key in ('message', 'error_type', 'error', 'errors'):
+                    text = json.dumps(item).lower()
+                    for token, flag in (('challenge', 'challenge_required'), ('checkpoint', 'challenge_required'),
+                            ('two_factor', 'challenge_required'), ('login_required', 'login_required'),
+                            ('feedback_required', 'feedback_required'), ('please wait', 'please_wait'),
+                            ('sentry_block', 'sentry_block'), ('rate_limit', 'rate_limit_message'),
+                            ('temporarily blocked', 'temporarily_blocked')):
+                        if token in text:
+                            flags.add(flag)
+                if isinstance(item, (dict, list)):
+                    inspect(item)
+    inspect(payload)
+    limited = isinstance(page, dict) and page.get('should_limit_list_of_followers') is True
+    if limited:
+        flags.add('list_cap_flag')
+    return {'raw_returned_count': raw_count, 'returned_count': raw_count,
+            'reason_flags': sorted(flags), 'target_limited': limited}
 
 
 def parse_page(payload, task):
-    """Strict validated form of instagrapi's _private_graphql_root/users parser."""
+    diagnostics = page_diagnostics(payload, task)
+    def fail(code, reason):
+        raise PageWarning(code, reason, diagnostics)
     if not isinstance(payload, dict):
-        raise PageWarning('invalid_page')
-    # Scan nested GraphQL errors too. Never return server strings or credentials.
-    warning_text = json.dumps(payload).lower()
-    if any(word in warning_text for word in ('challenge_required', 'checkpoint_required', 'two_factor_required')) or payload.get('challenge'):
-        raise PageWarning('challenge')
-    if any(word in warning_text for word in ('login_required', 'require_login')):
-        raise PageWarning('login')
-    if payload.get('spam') is True or any(word in warning_text for word in ('feedback_required', 'please wait', 'sentry_block', 'rate_limit', 'temporarily blocked')):
-        raise PageWarning('soft_block')
+        fail('invalid_page', 'non_object_json')
+    flags = set(diagnostics['reason_flags'])
+    if 'challenge_required' in flags:
+        fail('challenge', 'challenge_required')
+    if 'login_required' in flags:
+        fail('login', 'login_required')
+    provider = flags & {'spam_flag', 'feedback_required', 'please_wait', 'sentry_block', 'rate_limit_message', 'temporarily_blocked'}
+    if provider:
+        fail('soft_block', sorted(provider)[0])
     if payload.get('errors') or payload.get('status') == 'fail':
-        raise PageWarning('invalid_page')
-    if task['route'] == 'mobile_graphql':
-        root_name = 'xdt_api__v1__friendships__' + task['direction']
-        data = payload.get('data') or payload
-        if not isinstance(data, dict):
-            raise PageWarning('invalid_page')
-        matches = [value for key, value in data.items() if root_name in str(key) and isinstance(value, dict)]
-        if len(matches) != 1:
-            raise PageWarning('invalid_page')
-        payload = matches[0]
-    elif payload.get('status') != 'ok':
-        raise PageWarning('invalid_page')
-    if payload.get('user_id') is not None and str(payload['user_id']) != str(task['target_id']):
-        raise PageWarning('invalid_page')
-    if not isinstance(payload.get('users'), list):
-        raise PageWarning('invalid_page')
+        fail('invalid_page', 'upstream_error')
+    page = _page_payload(payload, task)
+    if page is None:
+        fail('invalid_page', 'missing_or_ambiguous_graphql_root')
+    if task['route'] != 'mobile_graphql' and page.get('status') != 'ok':
+        fail('invalid_page', 'unexpected_status')
+    if page.get('user_id') is not None and str(page['user_id']) != str(task['target_id']):
+        fail('invalid_page', 'target_id_mismatch')
+    if not isinstance(page.get('users'), list):
+        fail('invalid_page', 'missing_users_array')
     rows = []
-    for user in payload['users']:
+    for user in page['users']:
         if not isinstance(user, dict) or not ID.fullmatch(str(user.get('pk') or user.get('id') or '')) or not re.fullmatch(r'[a-zA-Z0-9._]{1,30}', str(user.get('username') or '')):
-            raise PageWarning('invalid_page')
+            fail('invalid_page', 'malformed_user')
         if user.get('pk') is not None and user.get('id') is not None and str(user['pk']) != str(user['id']):
-            raise PageWarning('invalid_page')
-        row = {'ig_id': str(user.get('pk') or user['id']), 'handle': user['username']}
-        rows.append(row)
-    if 'next_max_id' not in payload and payload.get('has_more') is not False:
-        raise PageWarning('pagination')
-    cursor = payload.get('next_max_id')
+            fail('invalid_page', 'user_id_mismatch')
+        rows.append({'ig_id': str(user.get('pk') or user['id']), 'handle': user['username']})
+    if 'should_limit_list_of_followers' in page and type(page['should_limit_list_of_followers']) is not bool:
+        fail('pagination', 'invalid_list_cap_flag')
+    limited = diagnostics['target_limited']
+    if not limited and 'next_max_id' not in page and page.get('has_more') is not False:
+        fail('pagination', 'missing_cursor')
+    cursor = page.get('next_max_id')
     if cursor == '':
         cursor = None
-    if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 4096 or cursor == task.get('cursor')):
-        raise PageWarning('pagination')
-    more = payload.get('has_more')
+    if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 4096):
+        fail('pagination', 'invalid_cursor')
+    if cursor is not None and cursor == task.get('cursor'):
+        fail('pagination', 'repeated_cursor')
+    more = page.get('has_more')
     if more is not None and type(more) is not bool:
-        raise PageWarning('pagination')
+        fail('pagination', 'invalid_has_more')
     if more is True and not cursor or more is False and cursor or cursor and not rows:
-        raise PageWarning('pagination')
-    if payload.get('should_limit_list_of_followers') is True:
-        raise PageWarning('soft_block')
-    if 'should_limit_list_of_followers' in payload and type(payload['should_limit_list_of_followers']) is not bool:
-        raise PageWarning('pagination')
-    # Maintained private GQL uses next_max_id as its continuation criterion.
-    return {'rows': rows, 'next_cursor': cursor, 'has_more': bool(cursor) if more is None else more,
-            'returned_count': len(rows)}
+        fail('pagination', 'contradictory_pagination')
+    return dict(diagnostics, rows=rows, next_cursor=cursor, has_more=bool(cursor) if more is None else more,
+                reported_has_more=more, status='target_cap' if limited else 'ok',
+                terminal_warning='target_cap' if limited else None, failure_reason='list_cap_flag' if limited else None)
 
 
 def one_request(client, task, viewer_id):
@@ -148,7 +198,8 @@ def one_request(client, task, viewer_id):
     result = {'rows': [], 'next_cursor': None, 'has_more': None, 'status': 'transport_uncertain',
               'terminal_warning': True, 'actual_http_requests': 0, 'http_status': 0,
               'transport_completed': False, 'requested_count': task.get('page_size'),
-              'returned_count': 0, 'device_fingerprint': fingerprint}
+              'returned_count': None, 'raw_returned_count': None, 'reason_flags': [],
+              'failure_reason': None, 'device_fingerprint': fingerprint}
     response = None
     started = time.monotonic()
     try:
@@ -171,21 +222,28 @@ def one_request(client, task, viewer_id):
             if len(raw) > MAX_BYTES:
                 raise PageWarning('response_too_large')
         result['transport_completed'] = True
-        if response.status_code == 429:
-            raise PageWarning('rate_limit')
-        if response.status_code in (401, 403):
-            raise PageWarning('login')
-        if 300 <= response.status_code < 400:
-            raise PageWarning('soft_block')
-        if response.status_code != 200:
-            raise PageWarning('http_error')
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeError):
-            raise PageWarning('soft_block') from None
-        result.update(parse_page(payload, task), status='ok', terminal_warning=False)
+            payload = None
+        result.update(page_diagnostics(payload, task))
+        if response.status_code == 429:
+            raise PageWarning('rate_limit', 'http_429')
+        if response.status_code in (401, 403):
+            raise PageWarning('login', 'http_auth')
+        if 300 <= response.status_code < 400:
+            raise PageWarning('soft_block', 'http_redirect')
+        if response.status_code != 200:
+            raise PageWarning('http_error', 'http_non_200')
+        if payload is None:
+            raise PageWarning('soft_block', 'non_json_response')
+        result.update(parse_page(payload, task))
     except PageWarning as exc:
+        result.update(exc.diagnostics)
         result['status'] = exc.code
+        result['failure_reason'] = exc.reason
+        result['terminal_warning'] = exc.reason
+        result['reason_flags'] = sorted(set(result.get('reason_flags', [])) | {exc.reason})
     except Exception:
         # Read/connection failures retain the shared permit; no retry or fallback.
         if response is None:
@@ -193,6 +251,8 @@ def one_request(client, task, viewer_id):
         if result['status'] not in ('rate_limit', 'login', 'soft_block'):
             result['status'] = 'transport_uncertain'
         result['transport_completed'] = False
+        result['failure_reason'] = 'connection_failure' if response is None else 'response_read_failure'
+        result['reason_flags'] = sorted(set(result['reason_flags']) | {result['failure_reason']})
     finally:
         result['duration_ms'] = round((time.monotonic() - started) * 1000, 3)
         if response is not None:
