@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
+import mobile_collector  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
@@ -146,12 +147,46 @@ def permit_capable(version):
     return len(parts) == 3 and all(p.isdigit() for p in parts) and tuple(map(int, parts)) >= (3, 9, 17)
 
 
+def collector_request(conn, q, b, job=None, allow_disabled=False):
+    """Check a client's assigned backend before it may touch identity or results."""
+    supplied = q.get('backend', ['chrome'])[0]
+    backend = b.get('backend', supplied)
+    if 'backend' in b and 'backend' in q and backend != supplied:
+        raise Bad('conflicting collector backends')
+    lane = accounts.lane_of(q, b)
+    viewer = (accounts.account_from(q, b) or {}).get('ig_id')
+    try:
+        mobile_collector.validate_client(conn, lane, backend, viewer, allow_disabled=allow_disabled)
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+    if job is None and b.get('job_id') is not None:
+        job = conn.execute('SELECT * FROM jobs WHERE id=?', (b['job_id'],)).fetchone()
+    if job is not None:
+        if job['collection_backend'] != backend:
+            raise Bad('job belongs to a different collector backend')
+        if backend == 'mobile' and (job['kind'] != 'list' or job['backend_lane'] != lane
+                                    or job['backend_viewer_ig_id'] != viewer):
+            raise Bad('mobile job belongs to a different lane or viewer')
+    if (backend == 'mobile' and allow_disabled and b.get('action') != 'release'
+            and db.get_setting(conn, 'mobile_backend_enabled', False) is not True
+            and (job is None or stale_lease(conn, job, q, b))):
+        raise Bad('disabled mobile backend accepts only its outstanding matching result')
+    return backend
+
+
+def collector_capable(row):
+    return bool(row and (row['collection_backend'] == 'mobile' or permit_capable(row['version'])))
+
+
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
     cooling = workspace_cooldown(conn, datetime.now(timezone.utc))
-    upgrade = row is None or not permit_capable(row['version'])
+    mobile = row is not None and row['collection_backend'] == 'mobile'
+    upgrade = not collector_capable(row)
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
-            'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn) for k in ('list', 'profile')},
+            'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn)
+                       and (not mobile or (k == 'list' and not row['hold'])) for k in ('list', 'profile')},
+            **({'backend': 'mobile', 'backend_cursor_isolated': True} if mobile else {}),
             **({'upgrade_required': True, 'minimum_version': '3.9.17', 'message': 'Reload the extension in this Chrome profile before collecting.'} if upgrade else {}),
             **({'cooldown_until': cooling} if cooling else {})}
 
@@ -161,6 +196,7 @@ def ext_request(conn, q, b):
     lane = accounts.lane_of(q, b)
     now = datetime.now(timezone.utc)
     if b.get('action') == 'release':
+        collector_request(conn, q, b, allow_disabled=True)
         token = b.get('token')
         if not isinstance(token, str) or not token:
             raise Bad('request token required')
@@ -168,8 +204,9 @@ def ext_request(conn, q, b):
     if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
         raise Bad('request action and kind required')
     conn.execute('BEGIN IMMEDIATE')
+    backend = collector_request(conn, q, b)
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
-    if row is None or not permit_capable(row['version']) or accounts.paused_for(conn, row) or workspace_cooldown(conn, now) or b['kind'] in control.paused_kinds(conn):
+    if not collector_capable(row) or accounts.paused_for(conn, row) or workspace_cooldown(conn, now) or b['kind'] in control.paused_kinds(conn):
         conn.rollback()
         return {'granted': False, 'wait_ms': 15000}
     job = conn.execute('SELECT * FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
@@ -189,13 +226,36 @@ def ext_request(conn, q, b):
         if (row['is_main'] or row['ig_id'] != job['experiment_viewer_ig_id']
                 or viewer.get('ig_id') != job['experiment_viewer_ig_id']
                 or len(version) != 3 or not all(p.isdigit() for p in version)
-                or tuple(map(int, version)) < (3, 9, 20)):
+                or tuple(map(int, version)) < (3, 9, 21)):
             conn.rollback()
             return {'granted': False, 'stale': True, 'wait_ms': 15000}
     # Keep a valid job alive while its account waits fairly for the shared request slot.
     conn.execute('UPDATE jobs SET leased_until=? WHERE id=?',
                  (iso(now + timedelta(minutes=LEASE_MIN)), job['id']))
-    return dict(accounts.request_permit(conn, lane, kind=b['kind'], now=now), lease_renewed=True)
+    mobile_clock = 'mobile_request_after:' + str(row['ig_id'])
+    if backend == 'mobile':
+        deadline = db.get_setting(conn, mobile_clock)
+        if deadline:
+            parsed = clean_iso(deadline)
+            if parsed is None:
+                raise Bad('Mobile request timing is invalid; collection remains stopped')
+            remaining = (utc(parsed) - now).total_seconds()
+            if remaining > 0:
+                conn.commit()
+                return {'granted': False, 'wait_ms': max(1000, int(remaining * 1000)), 'lease_renewed': True}
+    permit = accounts.request_permit(conn, lane, kind=b['kind'], now=now, commit=backend != 'mobile')
+    if backend == 'mobile':
+        # Charge a granted mobile attempt conservatively in the same transaction
+        # as its permit. Native clients cannot reset this via stale heartbeats.
+        if permit.get('granted'):
+            db.set_setting(conn, mobile_clock, iso(now + timedelta(seconds=12)))
+            today = accounts.jload(row['today'], {}) or {}
+            if not row['last_seen'] or accounts.local_day(utc(row['last_seen'])) != accounts.local_day(now):
+                today = {}
+            today[b['kind']] = today.get(b['kind'], 0) + 1
+            accounts.touch(conn, lane, today=json.dumps(today))
+        conn.commit()
+    return dict(permit, lease_renewed=True)
 
 
 def ext_next(conn, q, b):
@@ -203,8 +263,12 @@ def ext_next(conn, q, b):
     lane, ts, now = accounts.lane_of(q, b), db.now(), datetime.now(timezone.utc)
     kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
     conn.execute('BEGIN IMMEDIATE')
+    backend = collector_request(conn, q, b)
+    if backend == 'mobile':
+        kinds = [kind for kind in kinds if kind == 'list']
     # asking for work means no login wall holds it any more
-    row = accounts.touch(conn, lane, accounts.account_from(q, b), hold=None,
+    row = accounts.touch(conn, lane, accounts.account_from(q, b),
+                         **({'hold': None} if backend == 'chrome' else {}),
                          **({'version': b.get('version') or q['version'][0]} if b.get('version') or q.get('version') else {}))
     # An expired tab lease is a transient failure. Handle it before account
     # handoff, which otherwise clears an offline lane's expired lease and loses
@@ -218,25 +282,26 @@ def ext_next(conn, q, b):
         conn.execute("UPDATE jobs SET state=?,leased_until=NULL,lane=NULL,lease_token=NULL,retry_not_before=? WHERE id=?",
                      ('error' if final else 'queued', retry, stuck['id']))
     accounts.release(conn, now)
-    accounts.reopen_private_for_viewer(conn, row, now)
+    if backend == 'chrome':
+        accounts.reopen_private_for_viewer(conn, row, now)
     st = ext_state(conn, row)
     if st.get('upgrade_required'):
         conn.commit()
         return dict(st, job=None)
 
-    if st['paused']:
+    if st['paused'] or (backend == 'mobile' and row['hold']):
         conn.commit()
         return dict(st, job=None, cooldown_until=st.get('cooldown_until'))
     if st.get('cooldown_until'):
         conn.commit()
         return dict(st, job=None)
     stopped = control.paused_kinds(conn)   # a stage paused on the control strip hands out none of its jobs
-    st['stages'] = {'list': 'list' not in stopped, 'profile': 'profile' not in stopped}
+    st['stages'] = {'list': 'list' not in stopped, 'profile': backend == 'chrome' and 'profile' not in stopped}
     kinds = [k for k in accounts.kinds_for(conn, row, kinds, now) if k not in stopped]
     if not kinds:
         conn.commit()
         return dict(st, job=None)
-    if 'list' in kinds:
+    if 'list' in kinds and backend == 'chrome':
         collection_suggestions.queue_when_idle(conn, row, now)
     job = accounts.pick_job(conn, lane, kinds, now, allow_page_size=True)
     if not job:
@@ -261,6 +326,9 @@ def ext_next(conn, q, b):
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
     conn.commit()
     out['lease_token'] = token
+    if backend == 'mobile':
+        out.update(collection_backend='mobile', viewer_ig_id=row['ig_id'],
+                   backend_lane=job['backend_lane'], backend_viewer_ig_id=job['backend_viewer_ig_id'])
     return dict(st, job=out)
 
 
@@ -285,6 +353,49 @@ def stale_lease(conn, job, q, b):
     return bool(job['lease_token'] and b.get('lease_token') != job['lease_token'])
 
 
+FOLLOWING_TRIAL_PAGE_LIMIT = 4
+
+
+def trial_event_identity_matches(conn, job, q, b):
+    """Read before accounts.touch: mismatched identities cannot stop a cohort."""
+    viewer = (accounts.account_from(q, b) or {}).get('ig_id')
+    registered = conn.execute('SELECT ig_id FROM accounts WHERE lane_id=?',
+                              (accounts.lane_of(q, b),)).fetchone()
+    return bool(viewer and registered and registered['ig_id'] == viewer
+                and (not job or not job['viewer_ig_id'] or job['viewer_ig_id'] == viewer))
+
+
+def stop_following_trial(conn, reason, ts, job_ids=None):
+    """Park the latest pinned cohort, preserving all saved pages and real holds."""
+    if job_ids is None:
+        trial = db.get_setting(conn, 'page_experiment_latest') or {}
+        if not isinstance(trial, dict) or trial.get('direction') != 'following':
+            return []
+        job_ids = trial.get('job_ids') or []
+    if not isinstance(job_ids, (list, tuple)):
+        return []
+    stopped = []
+    for job_id in dict.fromkeys(i for i in job_ids if type(i) is int and i > 0):
+        job = conn.execute("SELECT * FROM jobs WHERE id=? AND kind='list' AND direction='following' "
+                           "AND experiment_viewer_ig_id IS NOT NULL", (job_id,)).fetchone()
+        if not job:
+            continue
+        lst = conn.execute('SELECT * FROM lists WHERE seed=? AND direction=?',
+                           (job['seed'], job['direction'])).fetchone()
+        if not lst or (job['state'] == 'done' and db.list_run_complete(conn, job_id)):
+            continue
+        if lst['released_why'] == 'trial_stopped' and job['state'] == 'error':
+            continue
+        conn.execute("UPDATE jobs SET state='error',leased_until=NULL,lane=NULL,lease_token=NULL,"
+                     "retry_not_before=NULL WHERE id=?", (job_id,))
+        conn.execute("UPDATE lists SET state=?,error=?,prev_lane=coalesce(lane,prev_lane),lane=NULL,"
+                     "released_at=?,released_why='trial_stopped',updated_at=? WHERE seed=? AND direction=?",
+                     ('partial' if lst['received'] else 'paused',
+                      'Following page trial stopped: ' + str(reason)[:400], ts, ts, job['seed'], job['direction']))
+        stopped.append(job_id)
+    return stopped
+
+
 def ext_list_page(conn, q, b):
     """Import one list page atomically: any rejection or failure leaves no partial writes behind."""
     try:
@@ -307,6 +418,9 @@ def _ext_list_page(conn, q, b):
         seed_ig_id = str(seed_ig_id)
     conn.execute('BEGIN IMMEDIATE')
     job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+    backend = collector_request(conn, q, b, job=job, allow_disabled=True)
+    if backend == 'mobile' and job is None:
+        raise Bad('mobile list result requires a bound job')
     seed = db.norm_handle(b.get('seed') or (job and job['seed']))
     direction = b.get('direction') or (job and job['direction'])
     if not seed or direction not in ('followers', 'following'):
@@ -499,8 +613,21 @@ def _ext_list_page(conn, q, b):
                      (ts, lane, job['id'], 'list', direction, 'page',
                       metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 200),
                       len(users), new_links))
+    trial_stopped = False
+    if job and error and trial_event_identity_matches(conn, job, q, b):
+        trial_stopped = bool(stop_following_trial(conn, error, ts))
+    elif job and job['experiment_viewer_ig_id'] and not done and conn.execute(
+            "SELECT count(*) FROM collector_events WHERE job_id=? AND outcome='page'",
+            (job['id'],)).fetchone()[0] >= FOLLOWING_TRIAL_PAGE_LIMIT:
+        trial_stopped = bool(stop_following_trial(
+            conn, 'saved page limit reached; coverage remains partial.', ts, [job['id']]))
     conn.commit()
-    return {'received': received, 'stalled': True, 'partial': True} if stalled else {'received': received}
+    result = {'received': received}
+    if stalled:
+        result.update(stalled=True, partial=True)
+    if trial_stopped:
+        result.update(trial_stopped=True, partial=True)
+    return result
 
 
 def count_or_none(v):
@@ -520,6 +647,8 @@ def metric_int(value, low, high):
 def ext_profile(conn, q, b):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
+    if collector_request(conn, q, b) == 'mobile':
+        raise Bad('mobile backend currently supports explicit list jobs only')
     job = conn.execute('SELECT * FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
     if b.get('job_id') and stale_lease(conn, job, q, b):
         conn.commit()
@@ -633,6 +762,7 @@ def scoped_follower_redirect(conn, job, b, now):
 def ext_error(conn, q, b):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
+    collector_request(conn, q, b, allow_disabled=True)
     code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
     event_id = b.get('event_id') if isinstance(b.get('event_id'), str) and 0 < len(b['event_id']) <= 100 else None
     if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
@@ -641,6 +771,9 @@ def ext_error(conn, q, b):
     # Security and login warnings also stop other accounts sharing this workspace.
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
+    # Check the registered identity before accounts.touch can update it. A stale
+    # lease or a different viewer cannot stop a newly running trial cohort.
+    trial_warning = not stale and trial_event_identity_matches(conn, job, q, b)
     was_list = bool(job and job['kind'] == 'list')
     reported_job = job or conn.execute('SELECT kind FROM jobs WHERE id=?', (b.get('job_id'),)).fetchone()
     if code == 'private' and was_list and not stale:
@@ -789,6 +922,8 @@ def ext_error(conn, q, b):
         accounts.release(conn, datetime.now(timezone.utc), only=lane)
     if profile_siblings:
         accounts.coalesce_profile_jobs(conn, job)
+    if trial_warning:
+        stop_following_trial(conn, b.get('reason') or b.get('message') or code or 'collection error', ts)
     conn.commit()
     return {'stale': True} if stale else {}
 
@@ -816,6 +951,9 @@ def clean_rate(r):
 
 
 def ext_heartbeat(conn, q, b):
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    backend = collector_request(conn, q, b)
     b = dict(b, rate=clean_rate(b.get('rate')), cooldown_until=clean_iso(b.get('cooldown_until')))
     lane = accounts.lane_of(q, b)
     db.set_setting(conn, 'ext', dict(b, last_seen=db.now(), lane_id=lane))   # last beat of any lane (older readers)
@@ -833,7 +971,7 @@ def ext_heartbeat(conn, q, b):
         fields['profile_cool_until'] = clean_iso(b['cool'].get('profile'))
     if 'list_endpoint_until' in b:
         fields['list_endpoint_until'] = clean_iso(b.get('list_endpoint_until'))
-    if 'hold' in b:   # 3.4+ report a login wall / security check here too; older builds only via /api/ext/error
+    if 'hold' in b and (backend == 'chrome' or b['hold'] in accounts.HOLDS):
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     if isinstance(b.get('ready'), dict):   # 3.7+: when each clock allows the next request (the control strip shows breaks)
@@ -2545,6 +2683,30 @@ def api_account_remove(conn, q, b, lane):
     return {'removed': n}
 
 
+def api_mobile_state(conn, q, b):
+    if collector_request(conn, q, b) != 'mobile':
+        raise Bad('mobile backend must be explicitly selected')
+    row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (accounts.lane_of(q, b),)).fetchone()
+    return dict(ext_state(conn, row), account={key: row[key] for key in
+                ('lane_id', 'ig_id', 'collection_backend', 'paused', 'hold')})
+
+
+def api_mobile_queue(conn, q, b):
+    conn.execute('BEGIN IMMEDIATE')
+    if collector_request(conn, q, b) != 'mobile':
+        raise Bad('mobile backend must be explicitly selected')
+    lane = accounts.lane_of(q, b)
+    viewer = (accounts.account_from(q, b) or {}).get('ig_id')
+    try:
+        queued = mobile_collector.queue_mobile_list(conn, lane, viewer, b.get('seed'),
+                                                    b.get('direction'), count=b.get('count', 200))
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+    conn.commit()
+    return {'backend': 'mobile', 'backend_cursor_isolated': True,
+            'job': dict(queued) if hasattr(queued, 'keys') else {'id': queued}}
+
+
 def api_setup(conn, q, b):
     """What the add-account wizard shows: where the unpacked extension lives and which id Chrome gives it."""
     manifest = json.loads((ROOT / 'extension' / 'manifest.json').read_text())
@@ -2556,6 +2718,7 @@ def api_setup(conn, q, b):
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
 KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
+    ('GET', r'/api/mobile/state', api_mobile_state), ('POST', r'/api/mobile/queue', api_mobile_queue),
     ('GET', r'/api/processing-mode', api_processing_mode), ('POST', r'/api/processing-mode', api_processing_mode),
     ('GET', r'/api/engines', api_engines),
     ('POST', r'/api/engines', api_engines),

@@ -19,7 +19,7 @@ days; it no longer gets exclusive precedence over other ready work.
   explicit retry deadlines keep their shared handling. Default: shared policy.
 - `ops/assign_page_experiment.py --direction following --targets a,b,c
   --viewer-ig-id ID --db PATH` previews fresh 50/100/200-row arms. Applying needs
-  `--apply`, a known alternate running extension 3.9.20, known public targets
+  `--apply`, a known alternate running extension 3.9.21, known public targets
   and no previous collection history for those targets. All arms stay pinned
   to that viewer; no cross-account cursor handoff. Default following size: 50.
   Three different targets are a feasibility check, not a matched causal test.
@@ -46,3 +46,6 @@ At 400 requests it completed 20 rather than 11 lists and found 244 rather than
 189 new people. Current saved counts influenced the ordering; this is not a
 prospective daily forecast. No sustained 40,000-profiles-per-hour result has
 been demonstrated.
+
+Following page trials stop each arm after four saved pages. An Instagram warning
+or reported transport failure stops the cohort. Saved data remains partial.

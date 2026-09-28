@@ -94,9 +94,10 @@ class ExperimentEligibilityTest(unittest.TestCase):
         self.conn.execute("UPDATE jobs SET experiment_viewer_ig_id='101',page_size=100 WHERE id=?",(self.large,))
         for version, identity, main, expected in (
                 ('3.9.17','101',0,self.small),
-                ('3.9.20','999',0,self.small),
-                ('3.9.20','101',1,self.small),
-                ('3.9.20','101',0,self.large)):
+                ('3.9.21','999',0,self.small),
+                ('3.9.21','101',1,self.small),
+                ('3.9.20','101',0,self.small),
+                ('3.9.21','101',0,self.large)):
             with self.subTest(version=version,identity=identity,main=main):
                 self.conn.execute('UPDATE accounts SET version=?,ig_id=?,is_main=? WHERE lane_id=?',
                                   (version,identity,main,'lane'))

@@ -59,9 +59,9 @@ def following_trial(conn, targets, viewer_id, priority=280, apply=False):
     for row in viewers:
         parts = str(row['version'] or '').split('.')
         compatible |= bool(len(parts) == 3 and all(p.isdigit() for p in parts) and
-                           tuple(map(int, parts)) >= (3, 9, 20) and (row['last_seen'] or '') >= cutoff)
+                           tuple(map(int, parts)) >= (3, 9, 21) and (row['last_seen'] or '') >= cutoff)
     if apply and not compatible:
-        raise ValueError('pinned alternate needs extension 3.9.20 online before creating trial jobs')
+        raise ValueError('pinned alternate needs extension 3.9.21 online before creating trial jobs')
     plan = []
     for target, size in zip(targets, (50, 100, 200)):
         person = conn.execute('SELECT ig_id,is_private,following FROM people WHERE handle=?', (target,)).fetchone()

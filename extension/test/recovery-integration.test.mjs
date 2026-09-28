@@ -258,3 +258,21 @@ test('pause after the fresh seed lookup resumes the same lease without repeating
   assert.equal(data.box[0].body.total, 1);
   assert.equal(data.box[0].body.total_source, 'current_run');
 });
+
+test('following trial reports transport failures and clears the cached job without retrying', async () => {
+  for (const code of ['network', 'unsupported', 'private', 'other']) {
+    const data = {laneId: 'fixture-lane', account: {ig_id: '101', handle: 'alt'}};
+    let calls = 0, lookups = 0;
+    const ctx = worker(data, {
+      lookup: async () => { lookups++; return {p: {ig_id: '12', handle: 'seed', following: 1000}}; },
+      page: async () => { calls++; return {bad: {code, reason: code === 'other' ? 'empty_page_before_total' : 'fixture'}, res: {status: 0}}; },
+    });
+    await ctx.run({...job(), direction: 'following', page_size: 200, experiment_viewer_ig_id: '101'});
+    assert.equal(calls, 1);
+    assert.equal(lookups, 1, 'no secondary privacy lookup');
+    assert.equal(data.cur, null);
+    assert.equal(data.box.length, 1);
+    assert.equal(data.box[0].path, '/api/ext/error');
+    assert.equal(data.box[0].body.code, code);
+  }
+});
