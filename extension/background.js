@@ -602,9 +602,9 @@ async function flushBenchmark() {
     return true;
   } catch { return false; }
 }
-function benchmarkWait(st, now) {
+function benchmarkWait(st, now, direction = 'following') {
   const options = [[FL.readyAt(st, 'list'), 'local_pacing'], [FL.windowOf(st, now).until, 'local_window'],
-    [st.cool.list.until, 'local_cooldown'], [st.listEndpointUntil, 'local_endpoint_hold']];
+    [st.cool.list.until, 'local_cooldown'], [direction === 'followers' ? st.listEndpointUntil : 0, 'local_endpoint_hold']];
   const [until, reason] = options.sort((a, b) => (b[0] || 0) - (a[0] || 0))[0];
   return { wait_ms: Math.max(0, (until || 0) - now), reason };
 }
@@ -667,7 +667,7 @@ async function benchmarkStep(gen) {
     res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'session_fingerprint_changed' };
   } else if (!permitValid) {
     res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'permit_expired' };
-  } else if (gen !== mem.gen || fresh.hold || await get('localPaused') || benchmarkWait(fresh, Date.now()).wait_ms || FL.laneBusy(await get('lane'), Date.now())) {
+  } else if (gen !== mem.gen || fresh.hold || await get('localPaused') || benchmarkWait(fresh, Date.now(), task.direction).wait_ms || FL.laneBusy(await get('lane'), Date.now())) {
     res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'local_control_blocked' };
   } else {
     await set({ lane: { until: Date.now() + 90000, url, benchmark: true, request_id: body.request_id } });

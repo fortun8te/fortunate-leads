@@ -40,7 +40,7 @@ test('manual redirect and transport errors stop without fallback',async()=>{
 function worker() {
   const data={account:{ig_id:'12',handle:'viewer'},laneId:'lane-1',st:FL.fresh()}; const calls=[];
   const context=vm.createContext({FL, FLBenchmark:B, Date, Set, URLSearchParams, AbortController,TextEncoder,Uint8Array,crypto:{randomUUID:()=> 'request-1',subtle:webcrypto.subtle},importScripts(){},setTimeout:()=>0,clearTimeout(){},
-    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.22'}),onMessage:{addListener(){}}},
+    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.23'}),onMessage:{addListener(){}}},
       storage:{local:{get:async k=> typeof k==='string'?{[k]:data[k]}:Object.fromEntries(k.map(key=>[key,data[key]])),set:async x=>Object.assign(data,x)}},
       tabs:{query:async()=>[{id:3,status:'complete',url:'https://www.instagram.com/'}]},
       scripting:{executeScript:async()=>{calls.push('GET');return [{result:{status:200,text:JSON.stringify({status:'ok',users:[{pk:'8',username:'person'}]}),actual_http_requests:1,duration_ms:8,observed_viewer_id:'12'}}];}}}});
@@ -129,5 +129,19 @@ test('missing or mismatched session cookies block before permit',async()=>{
   for(const cookie of [null,{value:'wrong-viewer'}]){
     const {context,calls}=worker();context.configure('ok');context.chrome.cookies.get=async()=>cookie;await context.run();
     assert.equal(calls.filter(x=>x.path==='/api/benchmark/permit').length,0);assert.equal(calls.filter(x=>x==='GET').length,0);
+  }
+});
+
+test('follower endpoint hold allows following but blocks followers and generic cooldown blocks both',async()=>{
+  const following=worker();following.context.configure('offline');following.data.st.listEndpointUntil=Date.now()+60000;
+  await following.context.run();assert.equal(following.calls.filter(x=>x==='GET').length,1);
+  const followers=worker();followers.context.configure('offline');followers.context.testTask={...task,direction:'followers'};
+  followers.data.st.listEndpointUntil=Date.now()+60000;await followers.context.run();
+  assert.equal(followers.calls.filter(x=>x==='GET').length,0);
+  assert.equal(followers.data.benchmarkPending.result.actual_http_requests,0);
+  for(const direction of ['following','followers']){
+    const held=worker();held.context.configure('ok');held.context.testTask={...task,direction};held.data.st.cool.list.until=Date.now()+60000;
+    await held.context.run();assert.equal(held.calls.filter(x=>x==='GET').length,0);
+    assert.equal(held.calls.filter(x=>x.path==='/api/benchmark/permit').length,0);
   }
 });
