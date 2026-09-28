@@ -11,7 +11,7 @@
       (task.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   }
   // Serialized by executeScript into MAIN. Keep this function self-contained.
-  async function fetchOnce(u, expectedViewer, ms) {
+  async function fetchOnce(u, expectedViewer, ms, recipe = null) {
     let actual_http_requests = 0, fetch_dispatches = 0, receivedResponse = false;
     const start = performance.now();
     const ck = document.cookie, viewer = (ck.match(/(?:^|;\s*)ds_user_id=(\d+)/) || [])[1];
@@ -20,8 +20,27 @@
         viewer !== String(expectedViewer) || /^\/(?:accounts\/login|challenge|checkpoint)/.test(location.pathname))
       return { ...base(), status: 0, error: 'identity_or_tab_blocked', text: '' };
     const endpoint = u.match(/^https:\/\/www\.instagram\.com\/api\/v1\/friendships\/\d+\/(following|followers)\/\?count=(?:50|100|200|300|500|1500)(?:&max_id=[^&]*)?(&search_surface=follow_list_page)?$/);
-    if (!endpoint || (endpoint[1] === 'followers') !== !!endpoint[2])
+    if (recipe) {
+      let valid = false;
+      try {
+        const keys = new Set();
+        valid = ['web_modal','web_search'].includes(recipe.route) && recipe.method === 'GET' &&
+          recipe.viewer_id === String(expectedViewer) && /^\d+$/.test(recipe.target_id) &&
+          recipe.path === '/api/v1/friendships/'+recipe.target_id+'/followers/' && /^[0-9a-f]{64}$/.test(recipe.shape_hash) &&
+          Array.isArray(recipe.params) && recipe.params.length <= 4 && recipe.params.every(pair => {
+            if (!Array.isArray(pair) || pair.length !== 2) return false;
+            const [key,value] = pair;
+            if (!['count','max_id','search_surface','query'].includes(key) || keys.has(key) || typeof value !== 'string') return false;
+            keys.add(key);
+            return key === 'count' ? /^[1-9]\d{0,3}$/.test(value) : key === 'search_surface' ? /^[a-z_]{1,80}$/.test(value) :
+              value.length <= (key === 'query' ? 80 : 4096) && !/[\x00-\x1f]/.test(value);
+          }) && keys.has('count') && keys.has('query') === (recipe.route === 'web_search') &&
+          u === 'https://www.instagram.com'+recipe.path+'?'+new URLSearchParams(recipe.params);
+      } catch {}
+      if (!valid) return { ...base(), status: 0, error: 'invalid_capture_recipe', text: '' };
+    } else if (!endpoint || (endpoint[1] === 'followers') !== !!endpoint[2]) {
       return { ...base(), status: 0, error: 'invalid_url', text: '' };
+    }
     const csrf = decodeURIComponent((ck.match(/(?:^|;\s*)csrftoken=([^;]+)/) || [])[1] || '');
     if (!csrf || typeof window.__flFetch !== 'function') return { ...base(), status: 0, error: 'missing_original_fetch_or_csrf', text: '' };
     let claim = '0'; try { claim = sessionStorage.getItem('www-claim-v2') || '0'; } catch {}

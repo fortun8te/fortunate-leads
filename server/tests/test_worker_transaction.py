@@ -44,9 +44,19 @@ class WorkerTransactionTest(unittest.TestCase):
                 observed.append(db_conn.execute('SELECT count(*) FROM items').fetchone()[0])
                 return False
 
-            with patch.dict(server.CFG, {'db': path}), patch.object(server.traceback, 'print_exc'):
+            with patch.dict(server.CFG, {'db': path}), patch.object(server.traceback, 'print_exc'), \
+                    patch.object(server.edge_benchmark_api, 'active', return_value=False):
                 server.worker(StopAfterTwoSteps(), step, 0, 0)
             self.assertEqual(observed, [0])
+
+    def test_benchmark_excludes_background_work_then_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'worker.sqlite')
+            calls = []
+            with patch.dict(server.CFG, {'db': path}), \
+                    patch.object(server.edge_benchmark_api, 'active', side_effect=[True, False]):
+                server.worker(StopAfterTwoSteps(), lambda conn: calls.append('work'), 0, 0)
+            self.assertEqual(calls, ['work'])
 
     def test_rule_batch_releases_writer_for_extension_heartbeat(self):
         with tempfile.TemporaryDirectory() as directory:

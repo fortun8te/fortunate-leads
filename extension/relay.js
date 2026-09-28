@@ -36,3 +36,20 @@ window.addEventListener('message', (e) => {
     await chrome.storage.local.set({ nativeListDiagnostics: previous.concat(sample).slice(-30) });
   }).catch(() => {});
 });
+
+// Revalidate and hash the small allowlisted template before persisting it.
+let followerTemplateWrite = Promise.resolve();
+window.addEventListener('message', e => {
+  if (e.source !== window || e.origin !== location.origin || e.data?.__fl !== 'followers-request-template' ||
+      typeof FLFollowerCapture === 'undefined') return;
+  const template = FLFollowerCapture.sanitize(e.data.template);
+  const viewer = (document.cookie.match(/(?:^|;\s*)ds_user_id=(\d+)/) || [])[1];
+  if (!template || template.viewer_id !== viewer || Date.now()-template.at>30000 || template.at>Date.now()+1000) return;
+  followerTemplateWrite = followerTemplateWrite.then(async () => {
+    const shape_hash = await FLFollowerCapture.hash(template);
+    const stored = await chrome.storage.local.get('followerRequestTemplates');
+    const prior = Array.isArray(stored.followerRequestTemplates) ? stored.followerRequestTemplates : [];
+    await chrome.storage.local.set({followerRequestTemplates:prior.filter(p=>p.shape_hash!==shape_hash || p.viewer_id!==viewer)
+      .concat({...template,shape_hash}).slice(-30)});
+  }).catch(()=>{});
+});

@@ -17,6 +17,9 @@ import edge_benchmark_api as api
 
 class BenchmarkAPITests(unittest.TestCase):
     def setUp(self):
+        probe = patch.object(api, 'BACKGROUND_PROBE', return_value=[])
+        probe.start()
+        self.addCleanup(probe.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'live.db'
         self.bench = Path(self.tmp.name) / 'bench.db'
@@ -86,7 +89,7 @@ class BenchmarkAPITests(unittest.TestCase):
         with ledger._connect(self.bench) as bench:
             waits = dict(bench.execute('SELECT reason,seconds FROM waits'))
         self.assertEqual(waits['pacing'], 2)
-        self.assertEqual(waits['cooldown'], 3)
+        self.assertEqual(waits['local_policy'], 3)
         self.assertEqual(waits['permit'], 4)
 
     def test_chrome_deadline_blocks_mobile_and_common_next_pacing(self):
@@ -103,6 +106,58 @@ class BenchmarkAPITests(unittest.TestCase):
         self.assertFalse(denied['granted'])
         self.assertEqual(denied['reason'], 'local_window')
         self.assertEqual(ledger.state(self.bench)['inflight'], None)
+
+    def protocol(self):
+        with ledger._connect(self.bench) as bench:
+            meta = ledger._meta(bench)
+            meta['preset'] = 'followers-protocol'
+            ledger._save(bench, meta)
+
+    def test_target_cap_preserves_rows_without_global_hold_and_replays_scope(self):
+        self.protocol()
+        body = self.grant()
+        reply = self.finish(body, status='target_cap', terminal_warning='target_cap', target_limited=True,
+                            raw_returned_count=25, reason_flags=['list_cap_flag'], failure_reason='list_cap_flag')
+        self.assertFalse(reply['stopped'])
+        self.assertEqual(reply['stop_scope'], 'target')
+        self.assertEqual(reply['result']['returned_rows'], 25)
+        self.assertEqual(reply['result']['observed_pairs'], 1)
+        self.assertIsNone(db.get_setting(self.conn, 'instagram_request_attention'))
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        duplicate = self.finish(body)
+        self.assertFalse(duplicate['stopped'])
+        self.assertEqual(duplicate['stop_scope'], 'target')
+
+    def test_rate_limit_arm_stop_still_holds_viewer(self):
+        self.protocol()
+        reply = self.finish(self.grant(), status='rate_limit', terminal_warning='http_429', http_status=429,
+                            raw_returned_count=25, reason_flags=['http_429'])
+        self.assertTrue(reply['stopped'])
+        self.assertEqual(reply['stop_scope'], 'arm')
+        self.assertTrue(reply['viewer_safety_hold'])
+        self.assertEqual(reply['result']['returned_rows'], 25)
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertIsNotNone(db.get_setting(self.conn, 'instagram_request_attention'))
+        self.assertEqual(api.next_task(self.conn, {}, self.identity())['reason'], 'viewer_safety_hold')
+
+    def test_local_waits_are_separate_from_provider_waits(self):
+        cfg = {}
+        api._wait(cfg, 'local_budget', 0)
+        api._wait(cfg, 'cooldown', 5)
+        api._wait(cfg, 'permit', 12)
+        api._wait(cfg, None, 15)
+        self.assertEqual(cfg['waits'], {'local_policy':5, 'provider':7, 'permit':3})
+
+    def test_background_preflight_must_confirm_idle_before_permit(self):
+        task = api.next_task(self.conn, {}, self.identity())['task']
+        body = self.identity(task_id=task['task_id'], request_id='preflight-123', fingerprints={'device':'a'*64})
+        for probe, reason in ((None, 'local_background_unverified'), (lambda:['k2'], 'local_background_drain')):
+            with patch.object(api, 'BACKGROUND_PROBE', probe):
+                reply = api.permit(self.conn, {}, body)
+            self.assertFalse(reply['granted'])
+            self.assertEqual(reply['reason'], reason)
+            self.assertIsNone(ledger.state(self.bench)['inflight'])
+            self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate'))
 
     def test_common_pace_is_reported_before_task_handoff(self):
         cfg = db.get_setting(self.conn, api.KEY)

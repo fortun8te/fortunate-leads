@@ -102,25 +102,53 @@
     }
     if (meta.direction && !emitted) emit(meta.direction, null);
   }
+  function followerTemplate(input, method) {
+    try {
+      if (typeof FLFollowerCapture === 'undefined' || location.hostname !== 'www.instagram.com') return null;
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog || !dialog.getClientRects().length) return null;
+      const u = new URL(typeof input === 'string' ? input : input.url, location.href);
+      if (u.origin !== location.origin) return null;
+      const viewer = (document.cookie.match(/(?:^|;\s*)ds_user_id=(\d+)/) || [])[1];
+      return FLFollowerCapture.sanitize({method:String(method || input?.method || 'GET').toUpperCase(),
+        direction:'followers',viewer_id:viewer,target_id:u.pathname.split('/')[4],path:u.pathname,
+        params:Array.from(u.searchParams),at:Date.now()});
+    } catch { return null; }
+  }
+  function followerCaptured(template, status, finalUrl, text) {
+    if (!template || status !== 200) return;
+    try {
+      const final = new URL(finalUrl, location.href);
+      if (final.origin !== location.origin || final.pathname !== template.path ||
+          final.searchParams.toString() !== new URLSearchParams(template.params).toString()) return;
+      const payload = JSON.parse(text);
+      if (payload.status !== 'ok' || !Array.isArray(payload.users) ||
+          payload.users.some(user=>!/^\d+$/.test(String(user?.pk || user?.pk_id || user?.id || '')))) return;
+      window.postMessage({__fl:'followers-request-template',template},location.origin);
+    } catch {}
+  }
   const relevant = (u) => { try { const p = new URL(u, location.href); return p.origin === location.origin && /^\/(api\/graphql|graphql\/query|api\/v1\/users\/)/.test(p.pathname); } catch { return false; } };
   window.fetch = function (...args) {
     const meta = nativeMeta(args[0], args[1]?.method);
+    const template = followerTemplate(args[0], args[1]?.method);
     try { nativeOperation(meta, args[1]?.body); } catch {}
     return origFetch.apply(this, args).then((res) => {
-      if (meta || (res.ok && relevant(res.url))) res.clone().text().then((text) => {
+      if (template || meta || (res.ok && relevant(res.url))) res.clone().text().then((text) => {
         if (res.ok && (relevant(res.url) || meta?.direction)) scan(text);
         nativeSample(meta, res.status, res.url, text);
+        if (!res.redirected) followerCaptured(template,res.status,res.url,text);
       }).catch(() => {});
       return res;
     });
   };
-  const open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send, want = new WeakSet(), native = new WeakMap();
-  XMLHttpRequest.prototype.open = function (m, u, ...rest) { want.delete(this); native.delete(this); if (relevant(u)) want.add(this); const meta = nativeMeta(u, m); if (meta) native.set(this, meta); return open.call(this, m, u, ...rest); };
+  const open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send, want = new WeakSet(), native = new WeakMap(), followerTemplates = new WeakMap();
+  XMLHttpRequest.prototype.open = function (m, u, ...rest) { want.delete(this); native.delete(this); followerTemplates.delete(this); const template=followerTemplate(u,m); if(template)followerTemplates.set(this,template); if (relevant(u)) want.add(this); const meta = nativeMeta(u, m); if (meta) native.set(this, meta); return open.call(this, m, u, ...rest); };
   XMLHttpRequest.prototype.send = function (...args) {
     nativeOperation(native.get(this), args[0]);
-    if (want.has(this) || native.has(this)) this.addEventListener('load', () => { try {
+    if (want.has(this) || native.has(this) || followerTemplates.has(this)) this.addEventListener('load', () => { try {
       if ((want.has(this) || native.get(this)?.direction) && this.status === 200) scan(this.responseText);
       nativeSample(native.get(this), this.status, this.responseURL, this.responseText);
+      followerCaptured(followerTemplates.get(this),this.status,this.responseURL,this.responseText);
     } catch {} }, { once: true });
     return send.apply(this, args);
   };

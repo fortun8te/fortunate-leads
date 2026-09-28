@@ -4107,6 +4107,10 @@ class WorkerDelay:
         self.seconds = max(1, min(60, float(seconds)))
 
 
+_worker_activity_lock = threading.Lock()
+_worker_activity = set()
+
+
 def worker(stop, step, busy_wait, idle_wait):
     conn = None
     try:
@@ -4114,7 +4118,22 @@ def worker(stop, step, busy_wait, idle_wait):
             try:
                 if conn is None:
                     conn = db.connect(CFG['db'])
-                busy = step(conn)
+                # Benchmark requests own the collection lane. Background models,
+                # profile downloads and maintenance would contaminate timings.
+                token = None
+                with edge_benchmark_api.LOCK:
+                    if not edge_benchmark_api.active(conn):
+                        token = object()
+                        with _worker_activity_lock:
+                            _worker_activity.add(token)
+                if token is None:
+                    busy = False
+                else:
+                    try:
+                        busy = step(conn)
+                    finally:
+                        with _worker_activity_lock:
+                            _worker_activity.discard(token)
             except Exception:
                 traceback.print_exc()
                 busy = False
@@ -4176,6 +4195,16 @@ def background_qualify(conn):
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
     scouts = deepscout.ScoutPool(CFG['db'])
+    def benchmark_background_busy():
+        with _worker_activity_lock:
+            busy = ['background_worker'] if _worker_activity else []
+        if not pool.idle():
+            busy.append('external_ai')
+        with scouts.lock:
+            if scouts.inflight:
+                busy.append('research')
+        return busy
+    edge_benchmark_api.BACKGROUND_PROBE = benchmark_background_busy
     loops = [(repair_step, 900, 900), (local_services_step, 30, 30), (background_qualify, 0.2, 5),
              (processing_maintenance, 0.1, 5), (pool.step, 1, 5), (laya_step, 0.2, 30),
              (local_processing_step, 0.1, 5), (plan_profiles, 15, 15), (pfp_step, 0.4, 10),

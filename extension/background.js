@@ -3,7 +3,7 @@
 // (st, box, cur, prog, lane, ids, seen, trail, debug). The in-memory loop is single-flight with a staleness expiry;
 // the 30 s alarm restarts it after the worker was stopped or if it stalls. Instagram requests are serialised by the
 // stored `lane` marker, so a restarted worker never fires while an earlier request may still be in flight.
-importScripts('lib/core.js', 'lib/benchmark.js');
+importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js');
 const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
@@ -635,8 +635,15 @@ async function benchmarkStep(gen) {
   if (!next.enabled || next.stopped || !next.task || local.wait_ms || st.hold || await get('localPaused'))
     return Math.max(1000, Math.min(30000, local.wait_ms || next.wait_ms || 15000));
   const task = next.task, id = await ident();
-  let url;
-  try { url = FLBenchmark.url(task, id.account?.ig_id); } catch { return 15000; }
+  let url, recipe = null, preflightError = null;
+  if (['web_modal','web_search'].includes(task.route)) {
+    if (task.transport !== 'chrome' || task.direction !== 'followers' || !task.task_id ||
+        !/^\d+$/.test(String(task.target_id || '')) || String(task.viewer_id) !== String(id.account?.ig_id)) return 15000;
+    try { ({url,recipe} = await FLFollowerCapture.prepare(task,id.account.ig_id,await get('followerRequestTemplates'))); }
+    catch (error) { preflightError = String(error.message || 'missing_verified_followers_capture'); }
+  } else {
+    try { url = FLBenchmark.url(task, id.account?.ig_id); } catch { return 15000; }
+  }
   // Never create, reload or navigate a tab for a benchmark.
   const tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter(t => t.status === 'complete' && !t.discarded && !t.incognito &&
     !mem.lookups.has(t.id) && FL.pageKind(t.url) === 'ok');
@@ -652,6 +659,7 @@ async function benchmarkStep(gen) {
     return 15000;
   }
   const body = { lane_id: id.lane_id, account: id.account, transport: 'chrome', task_id: task.task_id, request_id: saved.request_id, fingerprints: { session: fingerprint } };
+  if (recipe) body.capture_shape_hash = recipe.shape_hash;
   let grant;
   try { grant = await api('/api/benchmark/permit', body); } catch { return 15000; }
   if (grant.status !== 200 || grant.json?.granted !== true || !grant.json.token || grant.json.request_id !== saved.request_id)
@@ -663,7 +671,9 @@ async function benchmarkStep(gen) {
   const fingerprintAfter = await benchmarkFingerprint(task.viewer_id);
   const fresh = await loadSt();
   const permitValid = Number.isFinite(Date.parse(grant.json.expires_at)) && Date.parse(grant.json.expires_at) - Date.now() >= 45000;
-  if (fingerprintAfter !== fingerprint) {
+  if (preflightError) {
+    res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: preflightError };
+  } else if (fingerprintAfter !== fingerprint) {
     res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'session_fingerprint_changed' };
   } else if (!permitValid) {
     res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'permit_expired' };
@@ -673,7 +683,7 @@ async function benchmarkStep(gen) {
     await set({ lane: { until: Date.now() + 90000, url, benchmark: true, request_id: body.request_id } });
     try {
       const [r] = await withTimeout(45000, chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'MAIN',
-        func: FLBenchmark.fetchOnce, args: [url, String(task.viewer_id), 30000] }));
+        func: FLBenchmark.fetchOnce, args: [url, String(task.viewer_id), 30000, recipe] }));
       res = r?.result || { status: 0, error: 'transport_ambiguous', uncertain: true };
     } catch { res = { status: 0, error: 'transport_ambiguous', uncertain: true }; }
   }

@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 
 ARMS = [(f'{route}{size}', route, size) for route in ('web_rest', 'mobile_rest') for size in (50, 100, 200)] + [('mobile_graphql', 'mobile_graphql', None)]
-CUSTOM_ARMS = ARMS + [(f'web_rest{size}', 'web_rest', size) for size in (300, 500, 1500)]
+CUSTOM_ARMS = [('web_modal','web_modal',None),('web_search50','web_search',50)] + ARMS + [(f'web_rest{size}', 'web_rest', size) for size in (300, 500, 1500)]
 PRESETS = {
+    'followers-protocol': {'arms': ['web_rest50','web_modal','mobile_rest50','mobile_graphql','web_search50'], 'direction': 'followers'},
     'standard': {'arms': [a[0] for a in ARMS], 'direction': 'following'},
     'chrome-large-following': {'arms': ['web_rest200','web_rest300','web_rest500','web_rest1500'], 'direction': 'following'},
     'followers-feasibility': {'arms': [a[0] for a in ARMS], 'direction': 'followers'},
@@ -47,7 +48,7 @@ def _stratum(row):
 
 def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=None,
                 max_requests=None, window_seconds=None, pages_per_run=2, fingerprints=None, directions=None,
-                preset='standard', arms=None, target_ids=None, target_count=None):
+                preset='standard', arms=None, target_ids=None, target_count=None, arm_request_budgets=None, cohort_index=1):
     viewer_id = _id(viewer_id)
     if not viewer_id:
         raise ValueError('numeric viewer_id required')
@@ -57,6 +58,11 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
         raise ValueError('benchmark already exists; immutable plans cannot be replaced')
     if preset not in PRESETS:
         raise ValueError('unknown benchmark preset')
+    protocol = preset == 'followers-protocol'
+    if protocol and (type(cohort_index) is not int or not 1 <= cohort_index <= 3):
+        raise ValueError('followers protocol allows at most three declared cohorts')
+    if protocol and arms is not None and list(arms) != PRESETS[preset]['arms']:
+        raise ValueError('followers protocol arms are fixed')
     custom_selection = preset != 'standard' or arms is not None or target_ids is not None or target_count is not None
     selected_names = list(PRESETS[preset]['arms'] if arms is None else arms)
     known_arms = {a[0]: a for a in CUSTOM_ARMS}
@@ -79,11 +85,19 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
             raise ValueError('target IDs must be distinct numeric Instagram IDs')
         if target_count is not None and target_count != len(requested_ids):
             raise ValueError('target count does not match explicit IDs')
-    target_count = len(requested_ids) if requested_ids is not None else (target_count if target_count is not None else 2)
-    if custom_selection and not 1 <= target_count <= 3:
+    target_count = len(requested_ids) if requested_ids is not None else (target_count if target_count is not None else (3 if protocol else 2))
+    if protocol and not 3 <= target_count <= 6:
+        raise ValueError('followers protocol requires three to six public targets')
+    if custom_selection and not protocol and not 1 <= target_count <= 3:
         raise ValueError('feasibility corpus must contain one to three targets')
     expected_targets = target_count if custom_selection else 12
-    planned_requests = len(selected_arms)*len(directions)*(1+expected_targets*pages_per_run)
+    default_arm_budget = len(directions)*(1+expected_targets*pages_per_run)
+    budgets = {name: min(default_arm_budget,7) if protocol and name=='web_search50' else default_arm_budget for name in selected_names}
+    if arm_request_budgets is not None:
+        if not isinstance(arm_request_budgets,dict) or any(name not in budgets or type(value) is not int or value < 1 or value > budgets[name] for name,value in arm_request_budgets.items()):
+            raise ValueError('arm budgets must be positive counts within declared bounds')
+        budgets.update(arm_request_budgets)
+    planned_requests = sum(budgets.values())
     max_requests = planned_requests if max_requests is None else max_requests
     window_seconds = (900 if custom_selection else 3600) if window_seconds is None else window_seconds
     if max_requests < 1 or window_seconds <= 0:
@@ -162,8 +176,10 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
                 if (index + seed) % 2:
                     run_directions.reverse()
                 for direction in run_directions:
-                    tasks.append((arm,route,size,target['ig_id'],target['handle'],direction,int(warmup),'chrome' if route=='web_rest' else 'mobile'))
-    meta = dict(version=2,preset=preset,arms=[list(a) for a in selected_arms],planned_requests=planned_requests,
+                    tasks.append((arm,route,size,target['ig_id'],target['handle'],direction,int(warmup),'chrome' if route.startswith('web_') else 'mobile'))
+    meta = dict(version=3,cohort_index=cohort_index,cohort_limit=3 if protocol else None,arm_request_budgets=budgets,
+                conditional_arms=['web_search50'] if protocol else [],enabled_conditional_arms=[],stopped_arms={},target_stops={},viewer_safety_hold=None,
+                preset=preset,arms=[list(a) for a in selected_arms],planned_requests=planned_requests,
                 corpus_mode='explicit_ids' if requested_ids is not None else 'largest_following_feasibility' if custom_selection else 'stratified_12',
                 feasibility_only=custom_selection,seed=seed,viewer_id=viewer_id,state='ready',phase='warmup',created_at=time.time(),started_at=None,ended_at=None,
                 max_requests=max_requests,window_seconds=window_seconds,pages_per_run=pages_per_run,corpus=chosen,
@@ -185,6 +201,8 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
         db.execute('INSERT INTO metadata VALUES(?)',(json.dumps(meta,sort_keys=True),))
         db.executemany('INSERT INTO baseline VALUES(?,?)',sorted(baseline))
         db.executemany('INSERT INTO tasks(arm,route,page_size,target_id,target_handle,direction,warmup,transport) VALUES(?,?,?,?,?,?,?,?)',tasks)
+        if protocol:
+            db.execute("UPDATE tasks SET state='deferred' WHERE arm='web_search50'")
     return report(bench_path)
 
 
@@ -195,7 +213,7 @@ def next_task(bench_path, lane, viewer, transport='chrome', now=None):
         m = _meta(db)
         if _id(viewer) != m['viewer_id']:
             raise ValueError('viewer mismatch')
-        if m['state'] in ('stopped','complete'):
+        if m['state'] in ('stopped','complete') or m.get('viewer_safety_hold'):
             return None
         if m['started_at'] is None:
             m.update(started_at=now,state='running')
@@ -205,9 +223,23 @@ def next_task(bench_path, lane, viewer, transport='chrome', now=None):
             return None
         if db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
             return None
-        row=db.execute("SELECT * FROM tasks WHERE state!='done' ORDER BY task_id LIMIT 1").fetchone()
+        if m.get('preset')=='followers-protocol':
+            comparison=report(bench_path,now=now)['protocol_comparison']
+            for arm,verdict in comparison['arms'].items():
+                if verdict['status']=='threshold_not_met' and arm not in m.get('stopped_arms',{}):
+                    m.setdefault('stopped_arms',{})[arm]={'reason':'full_corpus_threshold_not_met','comparison':verdict}
+                    db.execute("UPDATE tasks SET state='stopped' WHERE arm=? AND state IN ('pending','deferred')",(arm,))
+            _save(db,m)
+        row=db.execute("SELECT * FROM tasks WHERE state='pending' ORDER BY task_id LIMIT 1").fetchone()
         if row is None:
             m.update(state='complete',ended_at=now)
+            _save(db,m)
+            return None
+        budget=m.get('arm_request_budgets',{}).get(row['arm'])
+        used=db.execute('SELECT count(*) FROM requests r JOIN tasks t USING(task_id) WHERE t.arm=?',(row['arm'],)).fetchone()[0]
+        if budget is not None and used>=budget:
+            m.setdefault('stopped_arms',{})[row['arm']]={'reason':'arm_request_budget','request_index':used}
+            db.execute("UPDATE tasks SET state='stopped' WHERE arm=? AND state='pending'",(row['arm'],))
             _save(db,m)
             return None
         if not row['warmup'] and m.get('phase') != 'measured':
@@ -215,7 +247,10 @@ def next_task(bench_path, lane, viewer, transport='chrome', now=None):
         if row['transport'] != transport or (row['lane'] and row['lane'] != lane):
             return None
         db.execute('UPDATE tasks SET lane=? WHERE task_id=?',(lane,row['task_id']))
-        return dict(row, lane=lane,viewer_id=m['viewer_id'])
+        result=dict(row,lane=lane,viewer_id=m['viewer_id'])
+        if row['arm']=='web_search50':
+            result.update(capped_list_fallback=True,query=m.get('fallback_query'),request_limit=m['arm_request_budgets']['web_search50'],request_index=used)
+        return result
 
 
 def begin_request(bench_path, request_id, task_id, viewer_id, *, role='page', started_at=None, fingerprints=None):
@@ -227,14 +262,18 @@ def begin_request(bench_path, request_id, task_id, viewer_id, *, role='page', st
         if old:
             return dict(old,send_allowed=False)
         task=db.execute('SELECT * FROM tasks WHERE task_id=?',(task_id,)).fetchone()
-        first=db.execute("SELECT task_id FROM tasks WHERE state!='done' ORDER BY task_id LIMIT 1").fetchone()
-        if _id(viewer_id)!=m['viewer_id'] or m['state']!='running' or not task or task['state']=='done' or not first or first[0]!=task_id:
+        first=db.execute("SELECT task_id FROM tasks WHERE state='pending' ORDER BY task_id LIMIT 1").fetchone()
+        if m.get('viewer_safety_hold') or _id(viewer_id)!=m['viewer_id'] or m['state']!='running' or not task or task['state']=='done' or not first or first[0]!=task_id:
             raise ValueError('inactive plan, task, or viewer mismatch')
         if db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
             raise ValueError('request outstanding; never replay uncertain sends')
         if now-m['started_at'] >= m['window_seconds'] or db.execute('SELECT count(*) FROM requests').fetchone()[0]>=m['max_requests']:
             _stop(db,m,'window_or_request_bound',now)
             return {'send_allowed':False,'status':'stopped'}
+        budget=m.get('arm_request_budgets',{}).get(task['arm'])
+        used=db.execute('SELECT count(*) FROM requests r JOIN tasks t USING(task_id) WHERE t.arm=?',(task['arm'],)).fetchone()[0]
+        if budget is not None and used>=budget:
+            return {'send_allowed':False,'status':'arm_request_budget'}
         if not task['warmup'] and m.get('phase') != 'measured':
             raise ValueError('measured phase not opened')
         if role not in ('page','auxiliary'):
@@ -269,6 +308,8 @@ def finish_request(bench_path, request_id, *, rows=None, next_cursor=None, has_m
             warning=warning or 'transport_uncertain'
         if status!='ok':
             warning=warning or 'transport_'+str(status)
+        if metrics.get('target_limited'):
+            warning=warning or 'target_cap'
         if req['role']=='page' and status=='ok' and actual_http_requests == 1:
             if bool(has_more)!=bool(cursor):
                 warning=warning or 'contradictory_or_missing_cursor'
@@ -276,7 +317,7 @@ def finish_request(bench_path, request_id, *, rows=None, next_cursor=None, has_m
                 warning=warning or 'repeated_cursor'
         count=0
         unique_before=db.execute('SELECT count(*) FROM observations WHERE request_id=?',(request_id,)).fetchone()[0]
-        for row in rows if req['role']=='page' and status=='ok' and actual_http_requests == 1 else []:
+        for row in rows if req['role']=='page' and status in ('ok','target_cap','server_cap') and actual_http_requests == 1 and transport_completed else []:
             pid=_id(row.get('ig_id',row.get('pk',row.get('id'))) if isinstance(row,dict) else row)
             if not pid:
                 warning=warning or 'malformed_numeric_id'
@@ -286,22 +327,46 @@ def finish_request(bench_path, request_id, *, rows=None, next_cursor=None, has_m
             if not t['warmup'] and not db.execute('SELECT 1 FROM baseline WHERE src=? AND dst=?',(a,b)).fetchone():
                 count += db.execute('INSERT OR IGNORE INTO novel VALUES(?,?,?)',(t['arm'],a,b)).rowcount
         for reason,seconds in (waits or {}).items():
-            if reason not in ('pacing','permit','cooldown','db') or float(seconds)<0:
+            if reason not in ('pacing','permit','cooldown','db','local_policy','local_permit','local_db','provider') or float(seconds)<0:
                 raise ValueError('invalid wait')
             db.execute('INSERT INTO waits VALUES(?,?,?)',(request_id,reason,float(seconds)))
         observed_pairs=db.execute('SELECT count(*) FROM observations WHERE request_id=?',(request_id,)).fetchone()[0]-unique_before
-        result=dict(request_id=request_id,status=status,returned_rows=len(rows),observed_pairs=observed_pairs,novel_pairs=count,warmup=bool(t['warmup']),latency_seconds=now-req['started_at'],terminal_warning=warning,actual_http_requests=actual_http_requests,http_status=http_status,duration_ms=duration_ms,transport_completed=transport_completed,metrics=metrics)
+        raw_count=metrics.get('raw_returned_count',metrics.get('returned_count',len(rows)))
+        if type(raw_count) is not int or raw_count < len(rows):
+            raw_count=len(rows)
+        result=dict(request_id=request_id,status=status,returned_rows=raw_count,observed_pairs=observed_pairs,novel_pairs=count,warmup=bool(t['warmup']),latency_seconds=now-req['started_at'],terminal_warning=warning,actual_http_requests=actual_http_requests,http_status=http_status,duration_ms=duration_ms,transport_completed=transport_completed,metrics=metrics)
         db.execute('UPDATE requests SET finished_at=?,status=?,result=? WHERE request_id=?',(now,status,json.dumps(result),request_id))
+        stop_scope=None
         if warning:
-            _stop(db,m,str(warning),now)
+            request_index=db.execute('SELECT count(*) FROM requests r JOIN tasks t USING(task_id) WHERE t.arm=?',(t['arm'],)).fetchone()[0]
+            protocol=m.get('preset')=='followers-protocol'
+            target_warning=str(warning) in ('contradictory_or_missing_cursor','repeated_cursor','server_cap','target_missing','missing_cursor') or status in ('server_cap','target_missing','target_cap') or metrics.get('target_limited') is True
+            arm_warning=http_status==429 or status in ('rate_limit','soft_block') or str(warning) in ('http_429','rate_limit','soft_block')
+            global_warning=status in ('auth','login','challenge') or metrics.get('uncertain') or actual_http_requests is None or not transport_completed
+            if protocol and arm_warning and not global_warning:
+                stop_scope='arm'
+                m.setdefault('stopped_arms',{})[t['arm']]={'reason':str(warning),'request_index':request_index}
+                m['viewer_safety_hold']={'reason':str(warning),'arm':t['arm'],'request_index':request_index,'at':now}
+                db.execute("UPDATE tasks SET state='stopped' WHERE arm=? AND state IN ('pending','deferred')",(t['arm'],))
+                _save(db,m)
+            elif protocol and target_warning and not global_warning:
+                stop_scope='target'
+                m.setdefault('target_stops',{})[str(t['task_id'])]={'reason':str(warning),'arm':t['arm'],'target_id':t['target_id'],'request_index':request_index,'confirmed_cap':status in ('target_cap','server_cap') or str(warning) in ('target_cap','server_cap') or metrics.get('target_limited') is True}
+                db.execute("UPDATE tasks SET state='stopped' WHERE arm=? AND target_id=? AND state='pending'",(t['arm'],t['target_id']))
+                _save(db,m)
+            else:
+                stop_scope='cohort'
+                _stop(db,m,str(warning),now)
         elif req['role']=='page':
             if cursor:
                 db.execute('INSERT INTO cursors VALUES(?,?)',(t['task_id'],cursor))
             done=not has_more or t['pages']+1>=(1 if t['warmup'] else m['pages_per_run'])
             db.execute('UPDATE tasks SET pages=pages+1,cursor=?,state=? WHERE task_id=?',(cursor,'done' if done else 'pending',t['task_id']))
-            if not db.execute("SELECT 1 FROM tasks WHERE state!='done'").fetchone():
+            if not db.execute("SELECT 1 FROM tasks WHERE state='pending'").fetchone():
                 m.update(state='complete',ended_at=now)
                 _save(db,m)
+        result.update(stop_scope=stop_scope,stopped=bool(stop_scope),viewer_safety_hold=bool(m.get('viewer_safety_hold')))
+        db.execute('UPDATE requests SET result=? WHERE request_id=?',(json.dumps(result),request_id))
         return result
 
 
@@ -386,7 +451,7 @@ def report(bench_path,now=None):
             elif actual==1:
                 a['successful_requests']+=1
         # Assign still-unfinished waiting to the next scheduled measured arm.
-        pending=db.execute("SELECT arm,warmup FROM tasks WHERE state!='done' ORDER BY task_id LIMIT 1").fetchone()
+        pending=db.execute("SELECT arm,warmup FROM tasks WHERE state='pending' ORDER BY task_id LIMIT 1").fetchone()
         if measured_start is not None and pending and not pending['warmup']:
             arms[pending['arm']]['allocated_wall_seconds']+=max(0,end-(previous_end if previous_end is not None else measured_start))
         for r in db.execute('SELECT arm,count(*) n FROM novel GROUP BY arm'):
@@ -407,7 +472,7 @@ def report(bench_path,now=None):
             a['error_rates']={key:value/a['requests'] for key,value in a['errors'].items()} if a['requests'] else {}
             a['latency_p50_seconds']=percentile(a['latencies'],.5)
             a['latency_p95_seconds']=percentile(a.pop('latencies'),.95)
-        return dict(plan=m,arms=arms,transport_totals=totals,warmup_results=warmup_results,
+        return dict(plan=m,arms=arms,protocol_comparison=_protocol_comparison(db,m,arms),transport_totals=totals,warmup_results=warmup_results,
                     wall_seconds_including_all_waits=elapsed,measured_wall_seconds=measured_wall,
                     denominator='Warmups excluded from arm metrics. Allocated wall time assigns inter-request waits to the next scheduled arm; rates describe this bounded cohort, not sustained independent runs.',
                     pending_tasks=db.execute("SELECT count(*) FROM tasks WHERE state!='done'").fetchone()[0],
@@ -420,7 +485,7 @@ def state(bench_path):
     """Cheap control-plane state; no report aggregation."""
     with _connect(bench_path) as db:
         m = _meta(db)
-        task = db.execute("SELECT * FROM tasks WHERE state!='done' ORDER BY task_id LIMIT 1").fetchone()
+        task = db.execute("SELECT * FROM tasks WHERE state='pending' ORDER BY task_id LIMIT 1").fetchone()
         inflight = db.execute('SELECT * FROM requests WHERE finished_at IS NULL').fetchone()
         return dict(m, current_task=dict(task) if task else None, inflight=dict(inflight) if inflight else None)
 
@@ -430,8 +495,71 @@ def advance_phase(bench_path, now=None):
     with _connect(bench_path) as db:
         db.execute('BEGIN IMMEDIATE')
         m = _meta(db)
-        if m['state'] in ('stopped','complete') or db.execute("SELECT 1 FROM tasks WHERE warmup=1 AND state!='done'").fetchone() or db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
+        if m['state'] in ('stopped','complete') or db.execute("SELECT 1 FROM tasks WHERE warmup=1 AND state NOT IN ('done','deferred','stopped')").fetchone() or db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
             raise ValueError('warmup incomplete or plan stopped')
         m.update(phase='measured',measured_started_at=time.time() if now is None else now)
+        _save(db,m)
+    return state(bench_path)
+
+
+def _protocol_comparison(db, meta, arms):
+    if meta.get('preset') != 'followers-protocol':
+        return None
+    baseline=arms['web_rest50']
+    def full(arm):
+        rows=list(db.execute('SELECT state,pages FROM tasks WHERE arm=? AND warmup=0',(arm,)))
+        return len(rows)==len(meta['corpus']) and all(r['state']=='done' and r['pages']>0 for r in rows)
+    result={}
+    for arm,data in arms.items():
+        if arm=='web_rest50':
+            continue
+        comparable=full('web_rest50') and full(arm)
+        per_request=baseline['unique_edges_per_http_request']
+        per_hour=baseline['observed_unique_edges_per_allocated_hour']
+        candidate_request=data['unique_edges_per_http_request']
+        candidate_hour=data['observed_unique_edges_per_allocated_hour']
+        if not comparable or not per_request or not per_hour or candidate_request is None or candidate_hour is None:
+            result[arm]={'status':'inconclusive','reason':'full corpus and nonzero baseline required'}
+            continue
+        request_gain=candidate_request/per_request-1
+        hour_gain=candidate_hour/per_hour-1
+        result[arm]={'status':'bounded_improvement' if candidate_request>=per_request*1.2 and candidate_hour>=per_hour*1.2 else 'threshold_not_met',
+                     'unique_per_request_gain':request_gain,'unique_per_hour_gain':hour_gain,'full_corpus':True}
+    return {'baseline':'web_rest50','required_gain':.20,'cohort_index':meta['cohort_index'],'cohort_limit':3,'arms':result,
+            'interpretation':'Each verdict applies only to this complete bounded cohort; incomplete arms remain inconclusive.'}
+
+
+def enable_fallback(bench_path, reason, query=None):
+    if not isinstance(reason,str) or not reason.strip():
+        raise ValueError('explicit fallback reason required')
+    if not isinstance(query,str) or not 1 <= len(query.strip()) <= 80:
+        raise ValueError('explicit captured-search query of 1 to 80 characters required')
+    with _connect(bench_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        m=_meta(db)
+        if m.get('preset')!='followers-protocol' or m['state']=='stopped' or m.get('viewer_safety_hold'):
+            raise ValueError('fallback unavailable while stopped or held')
+        capped={entry['target_id'] for entry in m.get('target_stops',{}).values() if entry.get('confirmed_cap')}
+        if not capped:
+            raise ValueError('fallback requires recorded confirmed target cap evidence')
+        if db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
+            raise ValueError('request outstanding')
+        for target in capped:
+            db.execute("UPDATE tasks SET state='pending' WHERE arm='web_search50' AND target_id=? AND state='deferred'",(target,))
+        m.update(enabled_conditional_arms=['web_search50'],fallback_query=query.strip(),fallback_reason=reason,state='running',ended_at=None)
+        _save(db,m)
+    return state(bench_path)
+
+
+def resolve_safety_hold(bench_path, reason):
+    if not isinstance(reason,str) or not reason.strip():
+        raise ValueError('explicit hold resolution reason required')
+    with _connect(bench_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        m=_meta(db)
+        if m['state']=='stopped' or not m.get('viewer_safety_hold') or db.execute('SELECT 1 FROM requests WHERE finished_at IS NULL').fetchone():
+            raise ValueError('no resolvable viewer hold or request outstanding')
+        m.setdefault('resolved_holds',[]).append(dict(m['viewer_safety_hold'],resolution=reason,resolved_at=time.time()))
+        m['viewer_safety_hold']=None
         _save(db,m)
     return state(bench_path)

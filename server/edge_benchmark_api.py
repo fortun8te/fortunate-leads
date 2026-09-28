@@ -17,6 +17,7 @@ LOCK = threading.RLock()
 PACE_SECONDS = 12
 BREAK_EVERY = 40
 BREAK_SECONDS = 180
+BACKGROUND_PROBE = None  # Server installs a read-only in-process activity callback.
 
 
 def config(conn):
@@ -58,6 +59,16 @@ def _blocked(conn, row, now, direction='following'):
                 return 'cooldown', max(1000, int(wait * 1000))
     if direction == 'followers' and accounts.follower_route_wait(conn, row, now):
         return 'cooldown', 15000
+    if not accounts.role_allows(row, 'list'):
+        return 'local_role', 15000
+    if accounts.identity_handoff_pending(conn, row, now):
+        return 'local_handoff', 15000
+    if not accounts.identity_owner(conn, row, now):
+        return 'local_identity_owner', 15000
+    if accounts.identity_cooling(conn, row, 'list', now):
+        return 'provider_cooldown', 15000
+    if not accounts.request_budget_left(conn, row, 'list', now):
+        return 'local_budget', 15000
     if 'list' not in accounts.kinds_for(conn, row, ['list'], now):
         return 'budget_or_account', 15000
     ready = (db.get_setting(conn, 'ext_ready') or {}).get(row['lane_id'], {}).get('list')
@@ -74,9 +85,11 @@ def _blocked(conn, row, now, direction='following'):
 def _wait_bucket(reason):
     if reason in ('pacing', 'local_pacing', 'local_window'):
         return 'pacing'
-    if reason in ('db', 'permit'):
+    if reason in ('db', 'permit', 'local_policy', 'provider'):
         return reason
-    return 'cooldown'
+    if reason in ('cooldown', 'provider_cooldown', 'local_cooldown', 'local_endpoint_hold'):
+        return 'provider'
+    return 'local_policy'
 
 
 def _wait(cfg, reason, now):
@@ -142,6 +155,23 @@ def _pace(cfg, now):
     return None, 0
 
 
+def _background_wait(conn, now):
+    if conn.execute("SELECT 1 FROM jobs WHERE kind='profile' AND state='leased' AND leased_until>? LIMIT 1",
+                    (accounts.iso(now),)).fetchone():
+        return 'local_profile_drain', 1000
+    if not callable(BACKGROUND_PROBE):
+        return 'local_background_unverified', 1000
+    try:
+        busy = BACKGROUND_PROBE()
+    except Exception:
+        return 'local_background_unverified', 1000
+    if not isinstance(busy, (list, tuple, set)):
+        return 'local_background_unverified', 1000
+    if busy:
+        return 'local_background_drain', 1000
+    return None, 0
+
+
 def next_task(conn, q, body):
     with LOCK:
         cfg = config(conn)
@@ -154,6 +184,8 @@ def next_task(conn, q, body):
         row, transport = _identity(conn, q, body, cfg)
         now = datetime.now(timezone.utc)
         meta = _meta(cfg['path'])
+        if meta.get('viewer_safety_hold'):
+            return _stopped(cfg, 'viewer_safety_hold')
         if meta['state'] in ('stopped', 'complete', 'completed'):
             return _stopped(cfg, meta.get('stop_reason') or meta['state'])
         _client_wait(conn, cfg, q, body, transport)
@@ -174,6 +206,8 @@ def next_task(conn, q, body):
         reason, wait = _blocked(conn, row, now, task['direction'])
         if not reason:
             reason, wait = _pace(cfg, now.timestamp())
+        if not reason:
+            reason, wait = _background_wait(conn, now)
         if reason:
             _wait(cfg, reason, time.time())
             _save(conn, cfg)
@@ -218,6 +252,8 @@ def permit(conn, q, body):
         reason, wait = _blocked(conn, row, now, task['direction'])
         if not reason:
             reason, wait = _pace(cfg, now.timestamp())
+        if not reason:
+            reason, wait = _background_wait(conn, now)
         if reason:
             _wait(cfg, reason, now.timestamp())
             _save(conn, cfg)
@@ -269,7 +305,8 @@ def result(conn, q, body):
         if not active_request:
             last = cfg.get('last_ack') or {}
             if last.get('request_id') == body.get('request_id') and last.get('transport') == transport and last.get('token') == body.get('token'):
-                return _ack(body['request_id'], duplicate=True, stopped=bool(last.get('stopped')))
+                return _ack(body['request_id'], duplicate=True, stopped=bool(last.get('stopped')),
+                            stop_scope=last.get('stop_scope'), viewer_safety_hold=bool(last.get('viewer_safety_hold')))
             raise ValueError('No matching outstanding benchmark request')
         if (active_request['request_id'] != body.get('request_id') or active_request['task_id'] != body.get('task_id')
                 or active_request['token'] != body.get('token') or active_request['transport'] != transport):
@@ -285,16 +322,30 @@ def result(conn, q, body):
         uncertain = body.get('uncertain') is True or body.get('actual_http_requests') is None or completed is not True
         if status != 'ok' or uncertain:
             warning = warning or ('uncertain_transport' if uncertain else status)
+        reasons = body.get('reason_flags') or []
+        if not isinstance(reasons, list) or len(reasons) > 32 or any(not isinstance(v, str) or not re.fullmatch(r'[a-z0-9_]{1,80}', v) for v in reasons):
+            raise ValueError('Only sanitized reason labels are accepted')
+        failure_reason = body.get('failure_reason')
+        if failure_reason is not None and (not isinstance(failure_reason, str) or not re.fullmatch(r'[a-z0-9_]{1,80}', failure_reason)):
+            raise ValueError('Only a sanitized failure reason is accepted')
         started = time.monotonic()
         recorded = ledger.finish_request(cfg['path'], body['request_id'], rows=body.get('rows') or [],
             next_cursor=body.get('next_cursor'), has_more=body.get('has_more'), status=status,
-            terminal_warning=warning, waits={key: sum(value for reason, value in active_request.get('waits', {}).items() if _wait_bucket(reason) == key) for key in ('pacing', 'permit', 'cooldown', 'db')},
+            terminal_warning=warning, waits={key: sum(value for reason, value in active_request.get('waits', {}).items() if _wait_bucket(reason) == key) for key in ('pacing', 'permit', 'provider', 'local_policy', 'db')},
             actual_http_requests=body.get('actual_http_requests'), http_status=body.get('http_status'),
             duration_ms=body.get('duration_ms'), uncertain=uncertain, transport_completed=completed is True,
             requested_count=body.get('requested_count'), returned_count=body.get('returned_count'),
-            device_fingerprint=body.get('device_fingerprint'))
+            device_fingerprint=body.get('device_fingerprint'),
+            raw_returned_count=body.get('raw_returned_count', body.get('returned_count')),
+            reason_flags=reasons, failure_reason=failure_reason,
+            target_limited=body.get('target_limited') is True, reported_has_more=body.get('reported_has_more'))
         warning = recorded.get('terminal_warning') or warning
-        if warning:
+        scope = recorded.get('stop_scope')
+        viewer_hold = recorded.get('viewer_safety_hold') is True
+        # Provider/auth warnings always preserve identity-level safety, even if an arm stopped.
+        safety_status = status in ('rate_limit', 'soft_block', 'challenge', 'auth', 'login')
+        stopped = bool(uncertain or viewer_hold or safety_status or scope == 'cohort' or (warning and scope is None))
+        if stopped:
             db.set_setting(conn, 'paused_lists', True)
             db.set_setting(conn, 'paused_bios', True)
             db.set_setting(conn, 'instagram_request_attention', {'lane': row['lane_id'], 'at': db.now(),
@@ -321,9 +372,10 @@ def result(conn, q, body):
                     pass  # Attention hold still requires explicit inspection.
         if not uncertain:
             accounts.request_permit(conn, row['lane_id'], token=active_request['token'], commit=False)
-        cfg['last_ack'] = {'request_id': body['request_id'], 'transport': transport, 'token': body['token'], 'stopped': bool(warning)}
+        cfg['last_ack'] = {'request_id': body['request_id'], 'transport': transport, 'token': body['token'], 'stopped': stopped, 'stop_scope': scope, 'viewer_safety_hold': viewer_hold or safety_status}
         cfg['inflight'] = None
         cfg['db_seconds'] = cfg.get('db_seconds', 0) + time.monotonic() - started
         db.set_setting(conn, KEY, cfg)
         conn.commit()
-        return _ack(body['request_id'], result=recorded, stopped=bool(warning))
+        return _ack(body['request_id'], result=recorded, stopped=stopped, stop_scope=scope,
+                    viewer_safety_hold=viewer_hold or safety_status)
