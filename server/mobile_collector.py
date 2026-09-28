@@ -267,7 +267,7 @@ class LocalAPI:
         else:
             body = dict(body, **identity)
         request = urllib.request.Request(self.url + path, data=None if body is None else json.dumps(body).encode(),
-                                         headers={'X-FL': '1', 'Content-Type': 'application/json'})
+                                         headers={'X-FL': '1', 'Content-Type': 'application/json', 'Origin': self.url})
         with self.opener.open(request, timeout=15) as response:
             data = json.loads(response.read(8_000_001))
         if not isinstance(data, dict):
