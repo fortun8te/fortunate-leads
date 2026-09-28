@@ -35,3 +35,11 @@ Results are persisted locally before upload. Replayed acknowledgements cannot du
 ## Reading results
 
 Reports include actual HTTP calls, returned rows, independently new directed edges, duplicates, successful calls, transport p50/p95, pagination outcomes, errors and classified waits. Arm wall time includes the waiting before its request; the report also supplies the full measured-cohort denominator. Warmups are excluded from arm throughput. Allocated rates from this short experiment are observations, not sustainable-capacity claims. Repeat independent windows with the same controls before naming a winner.
+
+## Optional ceiling and follower tests
+
+Use `--preset chrome-large-following` for a separate 200/300/500/1500 Chrome comparison. Its excluded warmup progresses from 200 upward; measured arm order still rotates. Default: two public targets, 20 total requests, 15 minutes.
+
+Use `--preset followers-feasibility` for a separate follower comparison of Chrome and mobile REST at 50/100/200 plus native private GraphQL. Default: two public targets, 35 total requests, 15 minutes. An explicit `--target-ids ID,ID` fixes the public target corpus without substitutions. These small feasibility runs do not establish sustained throughput.
+
+Existing plan files remain immutable. Each plan stores its own arms, direction, bounds and target set. New runs on the same viewer preserve the previous benchmark's pacing deadline and break counter. A local daily budget can stop a test even without an Instagram warning; reports must distinguish this from provider restrictions.
