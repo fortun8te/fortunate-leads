@@ -44,6 +44,10 @@ def activate(live_db,bench_db,lane_id):
             raise ValueError('Existing attention or account hold requires review')
         cfg=dict(enabled=True,path=str(Path(bench_db).resolve()),viewer_id=meta['viewer_id'],lane_id=lane_id,
                  phase='warmup',activated_at=time.time(),inflight=None,attempts=0)
+        if current.get('viewer_id') == meta['viewer_id']:
+            # A new experiment does not reset this viewer's common pacing.
+            cfg['attempts'] = current.get('attempts', 0)
+            cfg['next_at'] = current.get('next_at', 0)
         db.set_setting(conn,KEY,cfg)
         conn.commit()
         return cfg
@@ -107,8 +111,14 @@ def main():
     create.add_argument('--bench-db',required=True)
     create.add_argument('--viewer-id',required=True)
     create.add_argument('--seed',type=int,default=20260928)
-    create.add_argument('--max-requests',type=int,default=175)
-    create.add_argument('--window-seconds',type=float,default=3600)
+    create.add_argument('--max-requests',type=int,help='Defaults to the exact declared request bound')
+    create.add_argument('--window-seconds',type=float,help='Default 900 for feasibility presets, 3600 for standard')
+    create.add_argument('--preset',choices=sorted(ledger.PRESETS),default='standard')
+    create.add_argument('--direction',choices=('following','followers','both'),help='Defaults to the preset direction')
+    create.add_argument('--arms',help='Comma-separated arm names, e.g. web_rest200,web_rest300,web_rest500,web_rest1500')
+    create.add_argument('--target-ids',help='One to three comma-separated public numeric IDs already present in the live snapshot')
+    create.add_argument('--target-count',type=int,help='One to three feasibility targets; default two')
+    create.add_argument('--pages-per-run',type=int,default=2)
     show=sub.add_parser('report')
     show.add_argument('--bench-db',required=True)
     arm=sub.add_parser('activate')
@@ -120,7 +130,11 @@ def main():
     a=p.parse_args()
     try:
         if a.command=='create':
-            result=ledger.create_plan(a.live_db,a.bench_db,a.viewer_id,seed=a.seed,max_requests=a.max_requests,window_seconds=a.window_seconds)
+            result=ledger.create_plan(a.live_db,a.bench_db,a.viewer_id,seed=a.seed,max_requests=a.max_requests,window_seconds=a.window_seconds,
+                preset=a.preset,directions=('following','followers') if a.direction=='both' else (a.direction,) if a.direction else None,
+                arms=[part.strip() for part in a.arms.split(',')] if a.arms is not None else None,
+                target_ids=[part.strip() for part in a.target_ids.split(',')] if a.target_ids is not None else None,
+                target_count=a.target_count,pages_per_run=a.pages_per_run)
         elif a.command=='report':
             result=ledger.report(a.bench_db)
         elif a.command=='activate':

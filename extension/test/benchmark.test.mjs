@@ -40,7 +40,7 @@ test('manual redirect and transport errors stop without fallback',async()=>{
 function worker() {
   const data={account:{ig_id:'12',handle:'viewer'},laneId:'lane-1',st:FL.fresh()}; const calls=[];
   const context=vm.createContext({FL, FLBenchmark:B, Date, Set, URLSearchParams, AbortController,TextEncoder,Uint8Array,crypto:{randomUUID:()=> 'request-1',subtle:webcrypto.subtle},importScripts(){},setTimeout:()=>0,clearTimeout(){},
-    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.23'}),onMessage:{addListener(){}}},
+    chrome:{cookies:{get:async ({name})=>({value:name==='sessionid'?'test-session-secret':'12'})},runtime:{getManifest:()=>({version:'3.9.24'}),onMessage:{addListener(){}}},
       storage:{local:{get:async k=> typeof k==='string'?{[k]:data[k]}:Object.fromEntries(k.map(key=>[key,data[key]])),set:async x=>Object.assign(data,x)}},
       tabs:{query:async()=>[{id:3,status:'complete',url:'https://www.instagram.com/'}]},
       scripting:{executeScript:async()=>{calls.push('GET');return [{result:{status:200,text:JSON.stringify({status:'ok',users:[{pk:'8',username:'person'}]}),actual_http_requests:1,duration_ms:8,observed_viewer_id:'12'}}];}}}});
@@ -143,5 +143,22 @@ test('follower endpoint hold allows following but blocks followers and generic c
     const held=worker();held.context.configure('ok');held.context.testTask={...task,direction};held.data.st.cool.list.until=Date.now()+60000;
     await held.context.run();assert.equal(held.calls.filter(x=>x==='GET').length,0);
     assert.equal(held.calls.filter(x=>x.path==='/api/benchmark/permit').length,0);
+  }
+});
+
+test('benchmark allows exactly the requested sizes for both strict directions',async()=>{
+  for(const direction of ['following','followers'])for(const page_size of [50,100,200,300,500,1500]){
+    const url=B.url({...task,direction,page_size,cursor:'cursor&value'},'12');
+    assert.equal(url,'https://www.instagram.com/api/v1/friendships/42/'+direction+'/?count='+page_size+'&max_id=cursor%26value'+(direction==='followers'?'&search_surface=follow_list_page':''));
+    const {context,calls}=injected();const res=await context.run(url,'12',30000);
+    assert.equal(calls.length,1);assert.equal(res.actual_http_requests,1);
+  }
+  for(const page_size of [0,25,250,1000,1501,'300'])assert.throws(()=>B.url({...task,page_size},'12'));
+});
+test('MAIN rejects wrong-direction parameters, unknown sizes and extra parameters before dispatch',async()=>{
+  const prefix='https://www.instagram.com/api/v1/friendships/42/';
+  for(const tail of ['followers/?count=300','following/?count=300&search_surface=follow_list_page','following/?count=301','following/?count=1500&extra=1','profile/?count=500']){
+    const {context,calls}=injected();const res=await context.run(prefix+tail,'12',30000);
+    assert.equal(calls.length,0);assert.equal(res.error,'invalid_url');
   }
 });

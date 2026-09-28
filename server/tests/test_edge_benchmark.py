@@ -1,4 +1,6 @@
 import sqlite3
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,6 +119,71 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(r['latency_p95_seconds'],.25)
         self.assertEqual(r['pagination_completed'],1)
         self.assertEqual(r['waits']['pacing'],6)
+
+    def test_large_chrome_preset_is_bounded_and_frozen(self):
+        before=self.bench.read_bytes()
+        other=Path(self.tmp.name)/'large.db'
+        rep=b.create_plan(self.live,other,'999',preset='chrome-large-following',target_ids=['108','109'])
+        self.assertEqual(set(rep['arms']),{'web_rest200','web_rest300','web_rest500','web_rest1500'})
+        self.assertEqual(rep['plan']['max_requests'],20)
+        self.assertEqual(rep['plan']['window_seconds'],900)
+        self.assertEqual(rep['plan']['corpus_mode'],'explicit_ids')
+        with b._connect(other) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM tasks').fetchone()[0],12)
+            self.assertEqual({r[0] for r in db.execute('SELECT DISTINCT direction FROM tasks')},{'following'})
+            self.assertEqual({r[0] for r in db.execute('SELECT DISTINCT transport FROM tasks')},{'chrome'})
+        self.assertEqual(self.bench.read_bytes(),before)
+        with self.assertRaisesRegex(ValueError,'already exists'):
+            b.create_plan(self.live,other,'999',preset='followers-feasibility')
+
+    def test_follower_preset_and_custom_arms(self):
+        other=Path(self.tmp.name)/'followers.db'
+        rep=b.create_plan(self.live,other,'999',preset='followers-feasibility')
+        self.assertEqual(rep['plan']['max_requests'],35)
+        self.assertEqual(rep['plan']['directions'],['followers'])
+        self.assertEqual(len(rep['plan']['corpus']),2)
+        native=next(arm for arm in rep['plan']['arms'] if arm[0]=='mobile_graphql')
+        self.assertIsNone(native[2])
+        custom=Path(self.tmp.name)/'custom.db'
+        rep=b.create_plan(self.live,custom,'999',arms=['web_rest200','web_rest500'],target_ids=['108'])
+        self.assertEqual(rep['plan']['max_requests'],6)
+        self.assertEqual(set(rep['arms']),{'web_rest200','web_rest500'})
+
+    def test_feasibility_rejects_ineligible_targets_and_unapproved_sizes(self):
+        for kwargs in [dict(target_ids=['999']),dict(target_ids=['123456']),dict(arms=['mobile_rest500']),
+                       dict(arms=['web_rest1500'],directions=('followers',)),dict(target_count=4),
+                       dict(preset='chrome-large-following',max_requests=100)]:
+            with self.assertRaises(ValueError):
+                b.create_plan(self.live,Path(self.tmp.name)/'bad.db','999',**kwargs)
+        with sqlite3.connect(self.live) as db:
+            db.execute("UPDATE people SET is_private=1 WHERE ig_id='108'")
+        with self.assertRaisesRegex(ValueError,'ineligible'):
+            b.create_plan(self.live,Path(self.tmp.name)/'private.db','999',target_ids=['108'])
+
+    def test_cli_creates_ready_opt_in_plan_without_live_writes(self):
+        live_before=self.live.read_bytes()
+        destination=Path(self.tmp.name)/'cli.db'
+        script=Path(__file__).resolve().parents[2]/'ops'/'edge_benchmark.py'
+        result=subprocess.run([sys.executable,str(script),'create','--live-db',str(self.live),
+                               '--bench-db',str(destination),'--viewer-id','999',
+                               '--arms','web_rest200,web_rest300,web_rest500,web_rest1500',
+                               '--direction','following','--target-ids','108,109'],
+                              check=True,text=True,capture_output=True)
+        plan=json.loads(result.stdout)['plan']
+        self.assertEqual(plan['state'],'ready')
+        self.assertEqual(plan['max_requests'],20)
+        self.assertEqual(plan['directions'],['following'])
+        self.assertEqual(self.live.read_bytes(),live_before)
+
+    def test_report_backwards_compatible_with_frozen_legacy_metadata(self):
+        with b._connect(self.bench) as db:
+            meta=b._meta(db)
+            meta.pop('arms')
+            meta['version']=1
+            b._save(db,meta)
+        before=self.bench.read_bytes()
+        self.assertEqual(set(b.report(self.bench)['arms']),{a[0] for a in b.ARMS})
+        self.assertEqual(self.bench.read_bytes(),before)
 
 if __name__=='__main__':
     unittest.main()

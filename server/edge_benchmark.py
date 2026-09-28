@@ -7,6 +7,12 @@ import time
 from pathlib import Path
 
 ARMS = [(f'{route}{size}', route, size) for route in ('web_rest', 'mobile_rest') for size in (50, 100, 200)] + [('mobile_graphql', 'mobile_graphql', None)]
+CUSTOM_ARMS = ARMS + [(f'web_rest{size}', 'web_rest', size) for size in (300, 500, 1500)]
+PRESETS = {
+    'standard': {'arms': [a[0] for a in ARMS], 'direction': 'following'},
+    'chrome-large-following': {'arms': ['web_rest200','web_rest300','web_rest500','web_rest1500'], 'direction': 'following'},
+    'followers-feasibility': {'arms': [a[0] for a in ARMS], 'direction': 'followers'},
+}
 EXCLUSIONS = ['private or unknown privacy', 'missing numeric Instagram ID', 'missing following or verification', 'viewer itself', 'duplicate numeric ID']
 
 
@@ -40,7 +46,8 @@ def _stratum(row):
 
 
 def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=None,
-                max_requests=175, window_seconds=3600, pages_per_run=2, fingerprints=None, directions=('following',)):
+                max_requests=None, window_seconds=None, pages_per_run=2, fingerprints=None, directions=None,
+                preset='standard', arms=None, target_ids=None, target_count=None):
     viewer_id = _id(viewer_id)
     if not viewer_id:
         raise ValueError('numeric viewer_id required')
@@ -48,10 +55,41 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
         raise ValueError('benchmark must be separate from live database')
     if Path(bench_path).exists():
         raise ValueError('benchmark already exists; immutable plans cannot be replaced')
-    if max_requests < 1 or window_seconds <= 0 or pages_per_run < 1:
-        raise ValueError('positive bounds required')
-    if not directions or any(d not in ('following','followers') for d in directions):
+    if preset not in PRESETS:
+        raise ValueError('unknown benchmark preset')
+    custom_selection = preset != 'standard' or arms is not None or target_ids is not None or target_count is not None
+    selected_names = list(PRESETS[preset]['arms'] if arms is None else arms)
+    known_arms = {a[0]: a for a in CUSTOM_ARMS}
+    if not selected_names or len(set(selected_names)) != len(selected_names) or any(a not in known_arms for a in selected_names):
+        raise ValueError('arms must be distinct supported arm names')
+    selected_arms = [known_arms[a] for a in selected_names]
+    directions = tuple(directions) if directions is not None else (PRESETS[preset]['direction'],)
+    if not directions or len(set(directions)) != len(directions) or any(d not in ('following','followers') for d in directions):
         raise ValueError('invalid directions')
+    if any(size and size > 200 for _,_,size in selected_arms) and directions != ('following',):
+        raise ValueError('larger Chrome pages are authorized for following only')
+    if preset != 'standard' and directions != (PRESETS[preset]['direction'],):
+        raise ValueError('preset direction cannot be changed; use custom arms instead')
+    if pages_per_run < 1 or (custom_selection and pages_per_run > 2):
+        raise ValueError('feasibility plans require one or two pages per run')
+    requested_ids = None
+    if target_ids is not None:
+        requested_ids = [_id(value) for value in target_ids]
+        if not requested_ids or None in requested_ids or len(set(requested_ids)) != len(requested_ids):
+            raise ValueError('target IDs must be distinct numeric Instagram IDs')
+        if target_count is not None and target_count != len(requested_ids):
+            raise ValueError('target count does not match explicit IDs')
+    target_count = len(requested_ids) if requested_ids is not None else (target_count if target_count is not None else 2)
+    if custom_selection and not 1 <= target_count <= 3:
+        raise ValueError('feasibility corpus must contain one to three targets')
+    expected_targets = target_count if custom_selection else 12
+    planned_requests = len(selected_arms)*len(directions)*(1+expected_targets*pages_per_run)
+    max_requests = planned_requests if max_requests is None else max_requests
+    window_seconds = (900 if custom_selection else 3600) if window_seconds is None else window_seconds
+    if max_requests < 1 or window_seconds <= 0:
+        raise ValueError('positive bounds required')
+    if custom_selection and max_requests > planned_requests:
+        raise ValueError('feasibility request cap cannot exceed its declared plan')
     rng = random.Random(seed)
     live = sqlite3.connect(Path(live_db_path).resolve().as_uri() + '?mode=ro', uri=True)
     live.row_factory = sqlite3.Row
@@ -67,24 +105,41 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
             seen.add(pid)
             r = dict(r, ig_id=pid)
             buckets[_stratum(r)].append(r)
-        chosen = []
         fills = []
-        for size in ('small','medium','large'):
-            selected = []
-            for verified in ('verified','unverified'):
-                key = size+'_'+verified
-                bucket = buckets[key]
-                rng.shuffle(bucket)
-                selected.extend(dict(r,stratum=key) for r in bucket[:2])
-            if len(selected) < 4:
-                used = {r['ig_id'] for r in selected}
-                pool = [dict(r,stratum=key) for key,bucket in buckets.items() if key.startswith(size+'_') for r in bucket if r['ig_id'] not in used]
+        if custom_selection:
+            eligible = {r['ig_id']: dict(r,stratum=key) for key,bucket in buckets.items() for r in bucket}
+            if requested_ids is not None:
+                missing = [pid for pid in requested_ids if pid not in eligible]
+                if missing:
+                    raise ValueError('explicit targets missing or ineligible: '+','.join(missing))
+                chosen = [eligible[pid] for pid in requested_ids]
+            else:
+                # Feasibility favors targets that can expose page-size truncation.
+                pool = list(eligible.values())
                 rng.shuffle(pool)
-                fills.append({'size':size,'same_size_verification_fill':4-len(selected)})
-                selected.extend(pool[:4-len(selected)])
-            if len(selected) != 4:
-                raise ValueError('corpus shortage: '+size+' requires four eligible targets')
-            chosen.extend(selected)
+                pool.sort(key=lambda r: int(r['following']), reverse=True)
+                if len(pool) < target_count:
+                    raise ValueError('not enough eligible public feasibility targets')
+                chosen = pool[:target_count]
+        else:
+            chosen = []
+            fills = []
+            for size in ('small','medium','large'):
+                selected = []
+                for verified in ('verified','unverified'):
+                    key = size+'_'+verified
+                    bucket = buckets[key]
+                    rng.shuffle(bucket)
+                    selected.extend(dict(r,stratum=key) for r in bucket[:2])
+                if len(selected) < 4:
+                    used = {r['ig_id'] for r in selected}
+                    pool = [dict(r,stratum=key) for key,bucket in buckets.items() if key.startswith(size+'_') for r in bucket if r['ig_id'] not in used]
+                    rng.shuffle(pool)
+                    fills.append({'size':size,'same_size_verification_fill':4-len(selected)})
+                    selected.extend(pool[:4-len(selected)])
+                if len(selected) != 4:
+                    raise ValueError('corpus shortage: '+size+' requires four eligible targets')
+                chosen.extend(selected)
         baseline = set()
         # Snapshot identity resolution is explicit; historic handle-only rows cannot prove capture-time identity.
         for r in live.execute('SELECT s.ig_id seed_id,p.ig_id person_id,e.direction FROM edges e JOIN people p ON p.id=e.person_id LEFT JOIN seeds s ON s.handle=e.seed'):
@@ -94,21 +149,25 @@ def create_plan(live_db_path, bench_path, viewer_id, seed=20260928, *, corpus=No
     finally:
         live.close()
     rng.shuffle(chosen)
-    arm_order = list(ARMS)
+    arm_order = list(selected_arms)
     rng.shuffle(arm_order)
     tasks = []
     for warmup, targets in ((True, chosen[:1]), (False, chosen)):
         for index,target in enumerate(targets):
             order = arm_order[index % len(arm_order):] + arm_order[:index % len(arm_order)]
+            if warmup and preset == 'chrome-large-following':
+                order = sorted(selected_arms, key=lambda arm: arm[2])
             for arm,route,size in order:
                 run_directions = list(directions)
                 if (index + seed) % 2:
                     run_directions.reverse()
                 for direction in run_directions:
                     tasks.append((arm,route,size,target['ig_id'],target['handle'],direction,int(warmup),'chrome' if route=='web_rest' else 'mobile'))
-    meta = dict(version=1,seed=seed,viewer_id=viewer_id,state='ready',phase='warmup',created_at=time.time(),started_at=None,ended_at=None,
+    meta = dict(version=2,preset=preset,arms=[list(a) for a in selected_arms],planned_requests=planned_requests,
+                corpus_mode='explicit_ids' if requested_ids is not None else 'largest_following_feasibility' if custom_selection else 'stratified_12',
+                feasibility_only=custom_selection,seed=seed,viewer_id=viewer_id,state='ready',phase='warmup',created_at=time.time(),started_at=None,ended_at=None,
                 max_requests=max_requests,window_seconds=window_seconds,pages_per_run=pages_per_run,corpus=chosen,
-                exclusions=EXCLUSIONS,corpus_fills=fills,fill_policy='aim two verified and two unverified per size; fill missing slots within same size',directions=list(directions),fingerprints=fingerprints or {},baseline_count=len(baseline),
+                exclusions=EXCLUSIONS,corpus_fills=fills,fill_policy='explicit eligible target IDs, no substitutions' if requested_ids is not None else 'largest following counts among eligible public targets; feasibility only' if custom_selection else 'aim two verified and two unverified per size; fill missing slots within same size',directions=list(directions),fingerprints=fingerprints or {},baseline_count=len(baseline),
                 baseline_identity='numeric IDs resolved from seeds and people at snapshot; historical identity not proven',
                 baseline_sha256=hashlib.sha256(json.dumps(sorted(baseline)).encode()).hexdigest())
     Path(bench_path).parent.mkdir(parents=True,exist_ok=True)
@@ -283,7 +342,7 @@ def report(bench_path,now=None):
                       latency_seconds=0,waits={},confirmed_http_requests=0,uncertain_requests=0,
                       successful_requests=0,errors={},allocated_wall_seconds=0,
                       pagination_completed=0,page_bound_reached=0,cursor_failures=0,
-                      duplicate_rows=0,latencies=[]) for arm,_,_ in ARMS}
+                      duplicate_rows=0,latencies=[]) for arm,_,_ in m.get('arms',ARMS)}
         totals=dict(registered_attempts=0,confirmed_http_requests=0,uncertain_attempts=0,
                     local_no_send=0,warmup_confirmed_http_requests=0)
         previous_end=measured_start

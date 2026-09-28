@@ -4,10 +4,11 @@
     if (!task || task.route !== 'web_rest' || task.transport !== 'chrome' ||
         !task.task_id || !/^\d+$/.test(String(task.target_id || '')) ||
         !/^\d+$/.test(String(task.viewer_id || '')) || String(task.viewer_id) !== String(viewerId) ||
-        !['followers', 'following'].includes(task.direction) || ![50, 100, 200].includes(task.page_size) ||
+        !['followers', 'following'].includes(task.direction) || ![50, 100, 200, 300, 500, 1500].includes(task.page_size) ||
         (task.cursor != null && typeof task.cursor !== 'string')) throw new Error('Invalid benchmark task');
     return 'https://www.instagram.com/api/v1/friendships/' + task.target_id + '/' + task.direction + '/?count=' + task.page_size +
-      (task.cursor ? '&max_id=' + encodeURIComponent(task.cursor) : '');
+      (task.cursor ? '&max_id=' + encodeURIComponent(task.cursor) : '') +
+      (task.direction === 'followers' ? '&search_surface=follow_list_page' : '');
   }
   // Serialized by executeScript into MAIN. Keep this function self-contained.
   async function fetchOnce(u, expectedViewer, ms) {
@@ -18,7 +19,8 @@
     if (location.hostname !== 'www.instagram.com' || document.readyState !== 'complete' ||
         viewer !== String(expectedViewer) || /^\/(?:accounts\/login|challenge|checkpoint)/.test(location.pathname))
       return { ...base(), status: 0, error: 'identity_or_tab_blocked', text: '' };
-    if (!/^https:\/\/www\.instagram\.com\/api\/v1\/friendships\/\d+\/(?:following|followers)\/\?count=(?:50|100|200)(?:&max_id=[^&]*)?$/.test(u))
+    const endpoint = u.match(/^https:\/\/www\.instagram\.com\/api\/v1\/friendships\/\d+\/(following|followers)\/\?count=(?:50|100|200|300|500|1500)(?:&max_id=[^&]*)?(&search_surface=follow_list_page)?$/);
+    if (!endpoint || (endpoint[1] === 'followers') !== !!endpoint[2])
       return { ...base(), status: 0, error: 'invalid_url', text: '' };
     const csrf = decodeURIComponent((ck.match(/(?:^|;\s*)csrftoken=([^;]+)/) || [])[1] || '');
     if (!csrf || typeof window.__flFetch !== 'function') return { ...base(), status: 0, error: 'missing_original_fetch_or_csrf', text: '' };
