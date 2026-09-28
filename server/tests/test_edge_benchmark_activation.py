@@ -17,6 +17,12 @@ spec.loader.exec_module(ops)
 
 
 class ActivationTests(Base):
+    def test_benchmark_accepts_extension_and_local_origin_only(self):
+        for origin in (server.EXT_ORIGIN, f"http://127.0.0.1:{server.CFG['port']}"):
+            self.assertEqual(self.call('/api/benchmark/next', origin=origin)[0],200)
+            self.assertEqual(self.call('/api/benchmark/permit', {}, origin=origin)[0],200)
+        self.assertEqual(self.call('/api/benchmark/next', origin='https://untrusted.example')[0],403)
+
     def test_normal_next_and_acquire_park_before_side_effects(self):
         db.set_setting(self.conn,'raw_edge_benchmark',{'enabled':True})
         self.conn.commit()

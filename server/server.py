@@ -2859,7 +2859,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get('Origin')
         if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
             return self.send(403, {'ok': False, 'error': 'host'})
-        if url.path.startswith('/api/ext/'):
+        if url.path.startswith('/api/ext/') or (url.path.startswith('/api/benchmark/') and origin == EXT_ORIGIN):
             # Extension GETs carry no Origin; a custom header can't be sent cross-site without a (refused) preflight.
             if origin != EXT_ORIGIN and not (origin is None and self.headers.get('X-FL') == '1'):
                 return self.send(403, {'ok': False, 'error': 'origin'})
