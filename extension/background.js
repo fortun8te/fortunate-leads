@@ -3,7 +3,7 @@
 // (st, box, cur, prog, lane, ids, seen, trail, debug). The in-memory loop is single-flight with a staleness expiry;
 // the 30 s alarm restarts it after the worker was stopped or if it stalls. Instagram requests are serialised by the
 // stored `lane` marker, so a restarted worker never fires while an earlier request may still be in flight.
-importScripts('lib/core.js');
+importScripts('lib/core.js', 'lib/benchmark.js');
 const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
@@ -585,6 +585,116 @@ async function runProfile(gen, job, tab) {
     event_id: Date.now().toString(36) + Math.random().toString(36).slice(2) }, true, gen);
 }
 
+// Benchmark has its own durable outbox: even a rejection cannot discard an unacknowledged attempt.
+async function flushBenchmark() {
+  let pending = await get('benchmarkPending');
+  if (!pending) return true;
+  if (!pending.result) {
+    pending = { ...pending, result: { ...pending.body, rows: [], next_cursor: null, has_more: null,
+      status: 'error', terminal_warning: 'transport_ambiguous', actual_http_requests: null,
+      http_status: 0, duration_ms: null, uncertain: true } };
+    await set({ benchmarkPending: pending });
+  }
+  try {
+    const r = await api('/api/benchmark/result', pending.result);
+    if (r.status !== 200 || r.json?.ok !== true || r.json?.acknowledged !== true || r.json?.request_id !== pending.body.request_id) return false;
+    await set({ benchmarkPending: null, benchmarkTask: null });
+    return true;
+  } catch { return false; }
+}
+function benchmarkWait(st, now) {
+  const options = [[FL.readyAt(st, 'list'), 'local_pacing'], [FL.windowOf(st, now).until, 'local_window'],
+    [st.cool.list.until, 'local_cooldown'], [st.listEndpointUntil, 'local_endpoint_hold']];
+  const [until, reason] = options.sort((a, b) => (b[0] || 0) - (a[0] || 0))[0];
+  return { wait_ms: Math.max(0, (until || 0) - now), reason };
+}
+// Cookie values stay in memory; only a SHA256 fingerprint leaves this function.
+async function benchmarkFingerprint(viewerId) {
+  try {
+    const [session, viewer] = await Promise.all([
+      chrome.cookies.get({ url: IG + '/', name: 'sessionid' }),
+      chrome.cookies.get({ url: IG + '/', name: 'ds_user_id' })
+    ]);
+    if (!session?.value || !viewer?.value || viewer.value !== String(viewerId)) return null;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([session.value, viewer.value])));
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
+}
+async function benchmarkStep(gen) {
+  await heartbeat(true);
+  if (gen !== mem.gen || mem.offline) return 15e3;
+  const st = await loadSt(), now = Date.now(), local = benchmarkWait(st, now);
+  const q = new URLSearchParams({ transport: 'chrome', version: VERSION, client_wait_ms: String(local.wait_ms), client_wait_reason: local.reason });
+  let next;
+  try {
+    const r = await api('/api/benchmark/next?' + q);
+    if (r.status !== 200 || typeof r.json?.enabled !== 'boolean') return 15e3;
+    next = r.json;
+  } catch { return 15e3; }
+  if (!next.enabled && !next.reserved) { await set({ benchmarkTask: null }); return null; }
+  if (!next.enabled || next.stopped || !next.task || local.wait_ms || st.hold || await get('localPaused'))
+    return Math.max(1000, Math.min(30000, local.wait_ms || next.wait_ms || 15000));
+  const task = next.task, id = await ident();
+  let url;
+  try { url = FLBenchmark.url(task, id.account?.ig_id); } catch { return 15000; }
+  // Never create, reload or navigate a tab for a benchmark.
+  const tabs = (await chrome.tabs.query({ url: IG + '/*' })).filter(t => t.status === 'complete' && !t.discarded && !t.incognito &&
+    !mem.lookups.has(t.id) && FL.pageKind(t.url) === 'ok');
+  if (!tabs.length) return 15000;
+  let saved = await get('benchmarkTask');
+  if (!saved || saved.task_id !== task.task_id) {
+    saved = { task_id: task.task_id, request_id: crypto.randomUUID() };
+    await set({ benchmarkTask: saved });
+  }
+  const fingerprint = await benchmarkFingerprint(task.viewer_id);
+  if (!fingerprint) {
+    await editSt(s => { s.lastError = 'Benchmark needs matching Instagram session cookies and extension cookie permission.'; });
+    return 15000;
+  }
+  const body = { lane_id: id.lane_id, account: id.account, transport: 'chrome', task_id: task.task_id, request_id: saved.request_id, fingerprints: { session: fingerprint } };
+  let grant;
+  try { grant = await api('/api/benchmark/permit', body); } catch { return 15000; }
+  if (grant.status !== 200 || grant.json?.granted !== true || !grant.json.token || grant.json.request_id !== saved.request_id)
+    return Math.max(1000, Math.min(30000, grant.json?.wait_ms || 15000));
+  body.token = grant.json.token;
+  // Persist before MAIN dispatch. If MV3 dies at any point, report uncertainty instead of repeating GET.
+  await set({ benchmarkPending: { body } });
+  let res;
+  const fingerprintAfter = await benchmarkFingerprint(task.viewer_id);
+  const fresh = await loadSt();
+  const permitValid = Number.isFinite(Date.parse(grant.json.expires_at)) && Date.parse(grant.json.expires_at) - Date.now() >= 45000;
+  if (fingerprintAfter !== fingerprint) {
+    res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'session_fingerprint_changed' };
+  } else if (!permitValid) {
+    res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'permit_expired' };
+  } else if (gen !== mem.gen || fresh.hold || await get('localPaused') || benchmarkWait(fresh, Date.now()).wait_ms || FL.laneBusy(await get('lane'), Date.now())) {
+    res = { actual_http_requests: 0, duration_ms: 0, status: 0, error: 'local_control_blocked' };
+  } else {
+    await set({ lane: { until: Date.now() + 90000, url, benchmark: true, request_id: body.request_id } });
+    try {
+      const [r] = await withTimeout(45000, chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'MAIN',
+        func: FLBenchmark.fetchOnce, args: [url, String(task.viewer_id), 30000] }));
+      res = r?.result || { status: 0, error: 'transport_ambiguous', uncertain: true };
+    } catch { res = { status: 0, error: 'transport_ambiguous', uncertain: true }; }
+  }
+  const result = { ...body, ...FLBenchmark.result(task, res, FL) };
+  await locked(async () => {
+    const values = { benchmarkPending: { body, result } }, s = await loadSt(), lane = await get('lane');
+    if (!res.uncertain && lane?.benchmark && lane.request_id === body.request_id) values.lane = null;
+    if (res.actual_http_requests === 1 && gen === mem.gen &&
+        String(s.accountIgId || body.account?.ig_id) === String(body.account?.ig_id)) {
+      FL.rollDay(s, Date.now());
+      s.today.list = (s.today.list || 0) + 1;
+      s.rlog = (s.rlog || []).filter(e => Date.now() - e[0] < FL.HOUR).concat([[Date.now(), 'list']]);
+      values.st = s;
+    }
+    // Outcome and counters survive together; outbox replay never increments them again.
+    await set(values);
+  });
+  await flushBenchmark();
+  return 1000;
+}
+
 // ---- the loop ----------------------------------------------------------------
 async function nextJob(kinds) {
   await heartbeat(true);
@@ -616,11 +726,14 @@ async function step(gen) {
   const now = Date.now();
   const st = await loadSt();
   mem.budgetDone = false; mem.laneWait = false;
+  if (!(await flushBenchmark())) return 15000;
   if (!(await flushBox())) return (mem.backoff = Math.min(mem.backoff * 2, 60e3));
   if (st.hold || (await get('localPaused'))) return 15e3;
   const lane = await get('lane');
   mem.laneWait = FL.laneBusy(lane, now);
   if (mem.laneWait) return lane.until - now;
+  const benchmarkWaitMs = await benchmarkStep(gen);
+  if (benchmarkWaitMs !== null) return benchmarkWaitMs;
   const pl = FL.plan(st, FL.budgetLeft(st, await get('budget'), now), now);
   if (!pl.kinds.length) { mem.budgetDone = pl.why === 'budget'; return pl.wait; }
   const { job, wait } = await nextJob(pl.kinds);

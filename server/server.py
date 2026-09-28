@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
+import edge_benchmark_api  # noqa: E402
 import mobile_collector  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
@@ -191,6 +192,27 @@ def ext_state(conn, row=None):
             **({'cooldown_until': cooling} if cooling else {})}
 
 
+def benchmark_next(conn, q, b):
+    try:
+        return edge_benchmark_api.next_task(conn, q, b)
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+
+
+def benchmark_permit(conn, q, b):
+    try:
+        return edge_benchmark_api.permit(conn, q, b)
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+
+
+def benchmark_result(conn, q, b):
+    try:
+        return edge_benchmark_api.result(conn, q, b)
+    except ValueError as exc:
+        raise Bad(str(exc)) from None
+
+
 def ext_request(conn, q, b):
     """One workspace-wide request permit; release only accepts its original lane/token."""
     lane = accounts.lane_of(q, b)
@@ -204,6 +226,9 @@ def ext_request(conn, q, b):
     if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
         raise Bad('request action and kind required')
     conn.execute('BEGIN IMMEDIATE')
+    if edge_benchmark_api.active(conn):
+        conn.rollback()
+        return {'granted': False, 'job': None, 'paused': True, 'stages': {'list': False, 'profile': False}, 'wait_ms': 15000, 'reason': 'benchmark_exclusive'}
     backend = collector_request(conn, q, b)
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
     if not collector_capable(row) or accounts.paused_for(conn, row) or workspace_cooldown(conn, now) or b['kind'] in control.paused_kinds(conn):
@@ -263,6 +288,9 @@ def ext_next(conn, q, b):
     lane, ts, now = accounts.lane_of(q, b), db.now(), datetime.now(timezone.utc)
     kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
     conn.execute('BEGIN IMMEDIATE')
+    if edge_benchmark_api.active(conn):
+        conn.rollback()
+        return {'granted': False, 'job': None, 'paused': True, 'stages': {'list': False, 'profile': False}, 'wait_ms': 15000, 'reason': 'benchmark_exclusive'}
     backend = collector_request(conn, q, b)
     if backend == 'mobile':
         kinds = [kind for kind in kinds if kind == 'list']
@@ -2731,6 +2759,9 @@ ROUTES = [
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
     ('POST', r'/api/settings/accounts', api_account_settings),
+    ('GET', r'/api/benchmark/next', benchmark_next),
+    ('POST', r'/api/benchmark/permit', benchmark_permit),
+    ('POST', r'/api/benchmark/result', benchmark_result),
     ('GET', r'/api/ext/next', ext_next), ('POST', r'/api/ext/list-page', ext_list_page),
     ('POST', r'/api/ext/profile', ext_profile), ('POST', r'/api/ext/error', ext_error),
     ('POST', r'/api/ext/request', ext_request), ('POST', r'/api/ext/heartbeat', ext_heartbeat),
