@@ -2649,7 +2649,7 @@ function localProcessingSummary() {
 function renderCheckingMode() {
   const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${code} selected · ${PROCESSING_LABELS[code]}` : 'Current mode unavailable. Refresh to try again.';
+  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Refresh to try again.';
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === code);
     button.setAttribute('aria-pressed', String(button.dataset.mode === code));

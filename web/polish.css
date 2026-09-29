@@ -1,0 +1,39 @@
+/* Apple-grade polish pass. Loaded last; only refines what app.css defines.
+   Rules: flat surfaces, one blue accent, amber only for "needs a look", 4/8 spacing. */
+
+/* Flat tags: no gradients, no glow. */
+.tag[data-importance="exceptional"], .tchip[data-importance="exceptional"],
+.tag[data-importance="priority"], .tchip[data-importance="priority"] { box-shadow: none; }
+.tag[data-importance="exceptional"], .tchip[data-importance="exceptional"] { --tag-fill: var(--tag-exceptional-bottom); }
+.tag[data-importance="priority"], .tchip[data-importance="priority"] { --tag-fill: var(--tag-priority-bottom); }
+
+/* Positive signals read as quiet neutral chips; colour is kept for the one thing that matters. */
+.tag[data-tone="positive"], .tchip[data-tone="positive"] {
+  --tag-fill: var(--bg2); --tag-border: var(--line3); --tag-text: var(--fg);
+}
+
+/* Fit score: a soft tint, not a second solid blue pill next to "Strong fit". */
+.lpane .row-fit.f-strong { background: var(--t-possible); color: var(--t-possible-ink); }
+.lpane .row-fit.f-good { background: none; box-shadow: inset 0 0 0 1px var(--line2); color: var(--fg2); }
+
+/* Bigger hit area for the small open-on-Instagram icon without moving anything. */
+.ig { position: relative; }
+.ig::after { content: ""; position: absolute; inset: -8px; }
+
+/* Bottom bar labels were 9px. */
+@media (max-width: 760px) {
+  .tabs a > span:not(.num) { font-size: 10px; letter-spacing: 0; }
+}
+
+/* One page width: Review, Accounts and Settings share the same left edge. */
+.ql, .scr.settings-page { max-width: 1100px; margin-inline: auto; }
+.ql-list { margin-inline: 0; }
+
+/* Touch and pointer targets: small text controls get a 44px-tall hit area. */
+.lead-open, .ql-profile a, .account-collection-link, #view-accounts summary { position: relative; }
+.lead-open::after, .ql-profile a::after, .account-collection-link::after, #view-accounts summary::after {
+  content: ""; position: absolute; inset: -12px -4px;
+}
+
+/* Light theme: muted tag-page text was 4.4:1. */
+:root[data-theme="light"] { --tag-muted: #666666; }
