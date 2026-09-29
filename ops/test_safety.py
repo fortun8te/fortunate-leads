@@ -148,8 +148,8 @@ class SafetyTests(unittest.TestCase):
                 path.write_bytes(b'old snapshot')
                 prior.append(path)
             same_day = []
-            for hour in range(5):
-                path = dest / f'leads-{today:%Y%m%d}-{hour:02d}0000-1-1.sqlite'
+            for second in range(5):  # stamped at the very end of today so the fresh backup sorts below them at any hour
+                path = dest / f'leads-{today:%Y%m%d}-2359{55 + second}-1-1.sqlite'
                 path.write_bytes(b'manual snapshot')
                 same_day.append(path)
             run = subprocess.run(['bash', str(OPS / 'backup.sh'), '--db', str(db),
@@ -160,7 +160,8 @@ class SafetyTests(unittest.TestCase):
             self.assertTrue(prior[1].exists())
             self.assertFalse(same_day[0].exists())
             self.assertTrue(same_day[-1].exists())
-            self.assertEqual(len(list(dest.glob('leads-*.sqlite'))), 3)
+            # newest two snapshots (--keep 2), yesterday's daily point, and the backup this run just made
+            self.assertEqual(len(list(dest.glob('leads-*.sqlite'))), 4)
 
     def test_zero_retention_is_rejected_without_pruning(self):
         with tempfile.TemporaryDirectory() as directory:
