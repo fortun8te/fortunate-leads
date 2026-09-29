@@ -277,7 +277,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings', 'start'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -317,6 +317,7 @@ function setView(v) {
   const work = v === 'leads' || v === 'map';
   if ($('#work-count')) $('#work-count').hidden = v !== 'leads';
   $('#view-work').classList.toggle('on', work);
+  $('#view-start').classList.toggle('on', v === 'start');
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-qual').classList.toggle('on', v === 'qual');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
@@ -334,6 +335,7 @@ function setView(v) {
   if (v === 'accounts') renderAccounts();
   if (v !== 'accounts' && A.wiz) closeWizard();
   if (v === 'settings') loadSettings();
+  if (v === 'start') window.Start?.show();
   if (v === 'tags') T.show();
   if (v === 'qual') Q.show();
   if (prev !== v && SCRAPER_FULL_VIEWS.has(v) && !document.hidden) loadScraper();
@@ -953,7 +955,7 @@ function renderRows() {
       box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
+      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/start">Get started</a>'}</div>`;
     }
     return;
   }
