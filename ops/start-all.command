@@ -10,6 +10,10 @@ case "${1:-}" in
   *) echo 'Usage: start-all.command [--from-app]' >&2; exit 2 ;;
 esac
 
+if [ "$OPEN_DASHBOARD" -eq 1 ] && [ -t 0 ]; then
+  trap 'st=$?; [ "$st" -eq 0 ] || { echo; read -r -p "Something went wrong (see above). Press Return to close. " _; }' EXIT
+fi
+
 is_macos || { echo 'This one-click launcher is for macOS.' >&2; exit 1; }
 agent_checkout_owned "$FL_LABEL" server/server.py || {
   echo 'The installed server belongs to another checkout; no service was started.' >&2; exit 1;
@@ -25,7 +29,9 @@ else
     echo 'An unverified server holds the Fortunate Leads port; no stages were started.' >&2; exit 1;
   }
   [ -f "$FL_AGENTS/$FL_LABEL.plist" ] || {
-    echo 'Install the server once with ops/install-launchagent.sh --with-backup.' >&2; exit 1;
+    # First run on this Mac: the installer sets up the server, the backup and the health check.
+    [ "$OPEN_DASHBOARD" -eq 1 ] || { echo 'Install the server once with ops/install.sh.' >&2; exit 1; }
+    exec "$FL_OPS/install.sh"
   }
   if agent_loaded "$FL_LABEL"; then
     launchctl kickstart -k "$FL_DOMAIN/$FL_LABEL"
@@ -48,7 +54,9 @@ with sqlite3.connect('file:' + sys.argv[2] + '?mode=ro', uri=True) as conn:
 PYENGINES
 
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then
-  open "http://127.0.0.1:$FL_PORT/#/accounts"
-  echo 'Local services ready. Open Accounts to connect an account when needed; collection settings were not changed.'
+  "$FL_OPS/doctor.sh" --quick 2>&1 | grep -E '^(WARN|FAIL|==)' || true
+  # The web app shows Get started by itself while anything is missing, and Leads once everything is ready.
+  open "http://127.0.0.1:$FL_PORT/"
+  echo 'Local services ready. Collection settings were not changed.'
 fi
 printf 'ENGINE_STARTED:0\n'
