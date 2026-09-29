@@ -64,8 +64,8 @@ test('K2 action waits for backend confirmation and leaves mode unchanged', async
   const reply=engines({engines:{...engines().engines,k2:{enabled:true,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true}}});
   post.resolve({ok:true,status:200,json:async()=>reply});await settle();
   assert.match(h.el.innerHTML,/Off in R mode/);
-  assert.match(h.el.innerHTML,/Excluded from AI modes|Included when RLAI/);
-  assert.match(h.el.innerHTML,/R · Rules/);
+  assert.match(h.el.innerHTML,/Excluded from AI modes|Included when a local or external AI/);
+  assert.match(h.el.innerHTML,/Rules/);
   assert.equal(button.dataset.engine,'k2');
 });
 
