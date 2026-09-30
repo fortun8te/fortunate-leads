@@ -113,6 +113,37 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(result['ready'])
         self.assertFalse(ML.map_dir(path).exists())
 
+    def test_bulk_follower_hydration_preserves_unknown_zero_and_cached_portraits(self):
+        path = Path(self.temp.name) / 'followers.sqlite'
+        conn = db.init(str(path)); self.addCleanup(conn.close)
+        conn.execute("INSERT INTO seeds(handle,is_me) VALUES('owner',1)")
+        for pid, handle, followers, pic in ((1,'owner',None,'owner.jpg'),(2,'zero',0,None),
+                                           (3,'unknown',None,None),(4,'large',123456,'large.jpg')):
+            conn.execute("INSERT INTO people(id,handle,name,followers,pic_file,first_seen,updated_at) VALUES(?,?,?,?,?,'now','now')",
+                         (pid,handle,handle.title(),followers,pic))
+        conn.commit(); ML.build(path)
+        expected = {1:None,2:0,3:None,4:123456}
+        for mode in ML.MODES:
+            result = json.loads(MV.view(conn,path,{'scope':['all'],'mode':[mode]},cache=False).body)
+            self.assertEqual({node['id']:node['followers'] for node in result['nodes']}, expected)
+            self.assertEqual(result['world']['me']['pic'], '/img/1')
+            self.assertIsNone(result['world']['me']['followers'])
+        for handle, value in (('zero',0),('unknown',None),('large',123456)):
+            found = MV.search(conn,path,{'q':[handle]})['results'][0]
+            self.assertEqual(found['followers'], value)
+            self.assertEqual(found['name'], handle.title())
+            self.assertEqual(found['pic'], '/img/4' if handle == 'large' else None)
+        queries=[]
+        conn.set_trace_callback(queries.append)
+        try:
+            hydrated = MV._people(conn, list(range(1,1802)))
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(len(hydrated),4)
+        # 900-ID chunks: follower/name/photo/count hydration never queries per row.
+        self.assertEqual(len(queries),3)
+        self.assertTrue(all('p.followers' in query and 'WHERE p.id IN' in query for query in queries))
+
     def test_old_layout_is_unprepared_and_old_build_plan_is_not_resumed(self):
         path = Path(self.temp.name) / 'old-schema.sqlite'
         make(path, people=50)

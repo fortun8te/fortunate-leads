@@ -433,8 +433,8 @@ def _people(conn, ids):
     out = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0) FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
-            out[r[0]] = (r[1], r[2], f'/img/{r[0]}' if r[3] else None, r[4])
+        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0),p.followers FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+            out[r[0]] = (r[1], r[2], f'/img/{r[0]}' if r[3] else None, r[4], r[5])
     return out
 
 
@@ -480,12 +480,13 @@ def _bubbles(groups, shown, pool, label_of, depth, per_cell):
 
 def _node(row, people, mode):
     pid, mx, my, rk, cluster, cls, fit, cl, src = row
-    handle, name, pic, source_count = people.get(pid, ('', None, None, 0))
+    handle, name, pic, source_count, followers = people.get(pid, ('', None, None, 0, None))
     status = ML.CODE_STATUS.get((cls % 64) >> 3)
     follow = cls // 64
     node = {'id': pid, 'handle': handle, 'name': name, 'x': round(ML.coord(mx), 7), 'y': round(ML.coord(my), 7),
             'rank': round(rk, 6), 'fit': fit, 'status': status, 'cluster': cluster, 'closeness': cl / 1000.0,
-            'lead': ML.is_lead(cls), 'pic': pic, 'source_count': source_count, 'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
+            'lead': ML.is_lead(cls), 'pic': pic, 'source_count': source_count, 'followers': followers,
+            'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
             'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown'}
     if src:
         node['source'] = True
@@ -781,7 +782,7 @@ def search(conn, db_path, q):
     people = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0) FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0),p.followers FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
             people[r[0]] = r
     results = []
     with reader(db_path, 'closeness') as store:
@@ -794,6 +795,7 @@ def search(conn, db_path, q):
         follow = cls // 64
         results.append({'id': pid, 'handle': people[pid][1], 'name': people[pid][2],
                         'pic': f'/img/{pid}' if people[pid][3] else None, 'source_count': people[pid][4],
+                        'followers': people[pid][5],
                         'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
                         'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown',
                         'fit': d[6] if d else None, 'status': ML.CODE_STATUS.get((cls % 64) >> 3),
