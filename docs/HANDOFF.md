@@ -14,7 +14,7 @@ The Instagram Inbox shortcut opens the verified main account through the extensi
 
 ## Local operation
 
-The canonical checkout is `/Users/michael/Projects/Fortunate-Leads/app`, with the real workspace on port 8777. Port 8880 is an isolated saved-data preview with no collectors; changes there do not update live leads. Always open 8777 for normal use and feedback on live collection.
+The canonical checkout is `/Users/michael/Projects/Fortunate-Leads/app`, with the real workspace on port 8777. Port 8880 was an isolated saved-data preview with no collectors and has been stopped after visual checks. Its saved data remains separate. Always open 8777 for normal use and feedback on live collection.
 
 Private `data/browser-startup.json` binds the three saved Chrome profiles to their verified lanes and Instagram identities. Server startup and explicit collection Resume reopen those profiles in the background. Stopped collection and paused accounts remain stopped. No repeated watchdog reopens Chrome after a manual close. See [configuration](../ops/README.md).
 
@@ -28,6 +28,6 @@ Validation for this update is recorded in the release evidence. The latest backe
 
 The earlier connection-error diagnosis for @dihfluencer was incomplete: an explicit Instagram scraping-warning URL was recorded at 00:37 Amsterdam on 1 October. All collection was then stopped with no outstanding request. Leave it stopped until Michael reviews the affected account. Do not clear cookies, dismiss warnings automatically or switch accounts to continue. AI remains paused in Rules mode. This rollout sets daily defaults to the existing main-account allowance of 200 list requests and 100 bio requests per account; these are ceilings, not a guarantee against restriction. Confirm live settings and warning state before operating.
 
-The exact current map still needs a physical ten-million-person run, broad rare-filter measurements and a long collection soak at that size. Earlier ten-million measurements belong to the spatial API, not this new page renderer. A cold Chrome launch after logout/reboot has not been physically tested; startup behavior is covered by tests and Chromium's documented startup path. Do not present those as completed checks.
+The current stable-page API passed a physical ten-million-person reduced-fixture walk: all 9,999,999 non-owner IDs across 10,000 pages, with median 13.78 ms, p95 15.11 ms and maximum 60.17 ms per uncached API call. Peak process RSS was 346 MiB. See the reproducible cohort benchmark and limitations in MAP_VIEW_PERFORMANCE.md. This measures the read path with generated people, not full graph ingestion, image storage, cold-disk behavior or browser rendering at that database size. Broad rare-filter measurements and a long collection soak remain unverified. A cold Chrome launch after logout/reboot has not been physically tested; startup behavior is covered by tests and Chromium's documented startup path. Do not present those as completed checks.
 
 For ongoing work, start with [PRODUCT](PRODUCT.md), [CONTRACT](CONTRACT.md), [SETUP](SETUP.md), [LEAD_SCALE](LEAD_SCALE.md) and [OPEN_ITEMS](OPEN_ITEMS.md). Keep the existing compact workflow and use actual saved data for visual review. Do not add dashboards or alternate layouts without user feedback.

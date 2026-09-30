@@ -1,0 +1,63 @@
+{
+  "population": 10000000,
+  "fixture": "Reduced current-read schema; real rows, eight facet classes, million-row rank ties. No edges, photos, ingestion, spatial pyramid build or other view modes.",
+  "measurement": "Uncached map_view.view API function and JSON encoding; no HTTP, browser or cold-disk guarantee.",
+  "source_sha256": "5447f56995bc5580edd4704cf1752cf03bec3e289e9446245efb3a3a23ca6d59",
+  "requests": {
+    "physical_people": 10000000,
+    "owner_excluded": 1,
+    "verified_people": 9999999,
+    "pages": 10000,
+    "every_id_and_order_verified": true,
+    "page_id_sha256": "86de384b92f104ae1b297fe60bf5d47fb1985528ddb8754fa0907ef479ec42fe",
+    "api_ms": {
+      "first": 15.083790989592671,
+      "middle": 13.782333000563085,
+      "last": 6.2151660094968975,
+      "median": 13.778146007098258,
+      "p95": 15.10791596956551,
+      "maximum": 60.172124998643994
+    },
+    "maximum_json_bytes": 316955,
+    "checks": {
+      "late_tie": {
+        "milliseconds": 6.483,
+        "returned": 1000
+      },
+      "client": {
+        "milliseconds": 9.268,
+        "returned": 1000
+      },
+      "mutual": {
+        "milliseconds": 6.471,
+        "returned": 1000
+      },
+      "empty_fit": {
+        "milliseconds": 0.2,
+        "returned": 0
+      },
+      "revision_reset": {
+        "milliseconds": 13.623,
+        "verified": true
+      },
+      "rank_outlier_and_actual_revision_change": {
+        "milliseconds": 15.913,
+        "next_page_ms": 12.657,
+        "verified": true
+      }
+    }
+  },
+  "elapsed_seconds": 180.2351529590087,
+  "peak_rss_bytes": 362856448,
+  "disk_bytes": 1014165504,
+  "free_disk_bytes": 35802222592,
+  "stage": "requests",
+  "date": "2026-10-01",
+  "reproduce": "python tests/bench_map_cohort.py --directory /path/to/new/isolated-directory --people 10000000",
+  "notes": [
+    "Fixture construction completed in a separate run; elapsed time and peak RSS describe the full requests/oracle phase only.",
+    "Disk bytes describe only this reduced synthetic read-path fixture, not a full production database.",
+    "Generated main/layout SQLite files were removed after verification; result JSON, logs and the layout pointer remain. Every page had zero aggregate clusters; the owner was excluded from the paginated people."
+  ],
+  "cleanup_bytes": 1014165504
+}
