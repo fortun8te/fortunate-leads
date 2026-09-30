@@ -6,7 +6,7 @@ question about a person or audience. It should not become another inbox.
 
 ## Map workflow
 
-Start with an overview of communities. Zoom into a community to reveal people. Search for a handle
+Start with the owner in the centre and surrounding evidence spheres. Open a sphere to reveal people, with a limited zoom range and a return to the overview. Search for a handle
 to go directly to that person. Select a person to read their profile and recorded connections;
 compare two profiles when the question is who follows whom or which accounts appear on both sides.
 Keep the evidence, capture time, and collection limits available beside the drawing.
