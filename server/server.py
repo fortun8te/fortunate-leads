@@ -298,9 +298,12 @@ def ext_next(conn, q, b):
     backend = collector_request(conn, q, b)
     if backend == 'mobile':
         kinds = [kind for kind in kinds if kind == 'list']
-    # asking for work means no login wall holds it any more
+    # A queue poll cannot clear an observed login/security page. A later
+    # heartbeat must confirm the tab is usable before this lane takes work.
+    previous = conn.execute('SELECT state,hold FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    tab_hold = previous['hold'] if previous and previous['state'] in ('tab_login', 'tab_challenge') else None
     row = accounts.touch(conn, lane, accounts.account_from(q, b),
-                         **({'hold': None} if backend == 'chrome' else {}),
+                         **({'hold': tab_hold} if backend == 'chrome' else {}),
                          **({'version': b.get('version') or q['version'][0]} if b.get('version') or q.get('version') else {}))
     # An expired tab lease is a transient failure. Handle it before account
     # handoff, which otherwise clears an offline lane's expired lease and loses
@@ -321,7 +324,7 @@ def ext_next(conn, q, b):
         conn.commit()
         return dict(st, job=None)
 
-    if st['paused'] or (backend == 'mobile' and row['hold']):
+    if st['paused'] or row['hold']:
         conn.commit()
         return dict(st, job=None, cooldown_until=st.get('cooldown_until'))
     if st.get('cooldown_until'):
@@ -1005,6 +1008,15 @@ def ext_heartbeat(conn, q, b):
         fields['list_endpoint_until'] = clean_iso(b.get('list_endpoint_until'))
     if 'hold' in b and (backend == 'chrome' or b['hold'] in accounts.HOLDS):
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
+    if backend == 'chrome':
+        # Older extensions send this precise status text but no tab field.
+        tab = b.get('tab') if 'tab' in b else {
+            'Instagram tab is on the login page': 'tab_login',
+            'Instagram tab shows a security check': 'tab_challenge',
+        }.get(text(b.get('text'), 200))
+        if tab in ('tab_login', 'tab_challenge'):
+            fields['hold'] = 'challenge' if tab == 'tab_challenge' or fields.get('hold') == 'challenge' else 'login'
+            fields['state'] = tab
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
     if isinstance(b.get('ready'), dict):   # 3.7+: when each clock allows the next request (the control strip shows breaks)
         ready = db.get_setting(conn, 'ext_ready') or {}

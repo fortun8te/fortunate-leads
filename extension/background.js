@@ -227,10 +227,16 @@ async function heartbeat(force) {
   mem.lastBeat = Date.now();
   if (await selfUpdate()) return;
   await whoami(true).catch(() => {});
+  // Inspect existing tabs only: a retained lease is not proof that Instagram is usable.
+  try {
+    const choice = FL.chooseTab(await chrome.tabs.query({ url: IG + '/*' }));
+    if (['tab_login', 'tab_challenge'].includes(choice.why)) mem.noTab = choice.why;
+    else if (['tab_login', 'tab_challenge'].includes(mem.noTab)) mem.noTab = null;
+  } catch {}
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
   const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
   try {
-    const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, cooldown_until: cd ? iso(cd) : null, cool,
+    const r = await api('/api/ext/heartbeat', { version: VERSION, state: s.state, tab: mem.noTab || 'ok', cooldown_until: cd ? iso(cd) : null, cool,
       hold: st.hold ? st.hold.code : null, list_endpoint_until: st.listEndpointUntil > now ? iso(st.listEndpointUntil) : null,
       day: FL.dayKey(now), today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,

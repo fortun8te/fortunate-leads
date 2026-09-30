@@ -162,7 +162,7 @@ def touch(conn, lane, acct=None, **fields):
                 incoming_today = sets.get('today') if 'today' in fields else None
                 sets.update(handle=None, is_main=0,
                             today=merged_counts(prior_today, incoming_today) if prior_today or incoming_today else None,
-                            rate=None, last_error=None, activity=None, hold=None)
+                            rate=None, last_error=None, activity=None, hold=fields.get('hold'))
                 sets.update({key: active_wait(saved[key] if saved else None, fields.get(key), now)
                              for key in IDENTITY_WAITS})
             sets['ig_id'] = acct['ig_id']
