@@ -960,8 +960,8 @@ function renderRows() {
       const filtered = filterCount();
       const st = S.f.status && STATUSES.includes(S.f.status) ? S.f.status : '';
       const only = filtered === 1 && S.f.status;
-      const head = st ? `Nobody is ${esc(slabel(st).toLowerCase())} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
-      const body = st && only ? 'Select a lead and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
+      const head = st ? `No leads marked ${esc(slabel(st))} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
+      const body = st && only ? 'Open all leads, pick one and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
       box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/start">Get started</a>'}</div>`;
     }
     return;

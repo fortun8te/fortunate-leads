@@ -1,0 +1,17 @@
+[
+ {
+  "check": "Mobile detail has next/previous",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Next lead opens the following person",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Detail closes when navigating on phone",
+  "passed": true,
+  "actual": true
+ }
+]

@@ -32,8 +32,8 @@ if W > 500:
     check('Detail closes when leaving Leads', '!S.open && !S.person')
     js('location.hash = "#/leads"'); time.sleep(.6)
     check('Detail stays closed on return', '!S.open && document.querySelector("#detail").hidden')
-    js('S.f.status = "talking"; S.f.q = "zzzz-nobody"; filtersChanged()'); time.sleep(.8)
-    js('S.f.q = ""; filtersChanged()'); time.sleep(.8)
+    js('S.f.status = "spoke_before"; filtersChanged()'); time.sleep(1)
+    if js('S.rows.length'): js('S.f.q = "zzzz-nobody"; filtersChanged()'); time.sleep(1)
     shot('empty' + tag)
 else:
     js('document.querySelector(".lead-open").click()'); time.sleep(1)
