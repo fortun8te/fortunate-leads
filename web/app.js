@@ -3059,15 +3059,20 @@ function qualificationConnections(r) {
   return `<ul class="ql-connections">${lines.map(row).join('')}</ul>`;
 }
 const Q = {
-  view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0,
+  view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0, loadError: null, failedMore: false,
   async show() { await this.load(); },
   async load(more) {
     const g = ++this.gen;
     const p = new URLSearchParams({ view: this.view, sort: this.sort, limit: 30, offset: more ? this.rows.length : 0 });
     if (this.q) p.set('q', this.q);
     let d;
-    try { d = await api.get('/api/qual?' + p); } catch (e) { if (!this.rows.length) $('#ql-list').innerHTML = `<div class="muted ql-empty">${e.status === 404 ? 'The server needs a restart to show this page.' : 'Could not load'}</div>`; return; }
+    try { d = await api.get('/api/qual?' + p); } catch (e) {
+      if (g !== this.gen) return;
+      this.loadError = e.status === 404 ? 'Review is unavailable in this server version.' : 'Could not update review results.';
+      this.failedMore = !!more; this.render(); return;
+    }
     if (g !== this.gen) return;
+    this.loadError = null;
     this.rows = more ? [...this.rows, ...d.rows] : d.rows; this.total = d.total; this.sum = d.summary;
     // With no AI verdicts yet, show keyword verdicts instead of an empty page.
     if (!more && this.view === 'ai' && !d.total && !this.q && !this.fellBack) { this.fellBack = true; this.view = 'all'; this.syncSeg(); return this.load(); }
@@ -3107,6 +3112,11 @@ const Q = {
     </article>`;
   },
   render() {
+    if (this.loadError) {
+      $('#ql-n').textContent = 'Results unavailable';
+      $('#ql-list').innerHTML = `<div class="muted ql-empty" role="alert">${esc(this.loadError)} <button type="button" class="btn" data-ql-retry>Retry</button></div>`;
+      $('#ql-more').hidden = true; return;
+    }
     $('#ql-n').textContent = `${int(this.total)} ${this.total === 1 ? 'person' : 'people'}`;
     const focused = $('#ql-list').contains(document.activeElement) ? document.activeElement : null;
     const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
@@ -3148,6 +3158,7 @@ $('#ql-toggle').onclick = () => {
   picker?.querySelector('button[aria-pressed="true"]')?.focus({ preventScroll: true });
 };
 $('#ql-list').addEventListener('click', (e) => {
+  if (e.target.closest('[data-ql-retry]')) return Q.load(Q.failedMore);
   const d = e.target.closest('[data-deep]'); if (d) return Q.deeper(+d.dataset.deep);
   const o = e.target.closest('[data-open]');
   if (o) { const r = Q.rows.find((x) => x.id === +o.dataset.open); S.f = emptyFilter(); S.f.q = r ? r.handle : ''; $('#q').value = S.f.q; S.view = 'leads'; filtersChanged(); setView('leads'); openDetail(+o.dataset.open); }

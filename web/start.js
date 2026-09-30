@@ -45,11 +45,12 @@
     if (!d) { root.querySelector('#st-body').innerHTML = `<p class="muted">${St.error ? 'The server is not running. Open ops/start-all.command to start it.' : 'Checking…'}</p>`; return; }
     const paused = d.flow.state === 'paused', going = ['running', 'wait'].includes(d.flow.state);
     root.querySelector('#st-body').innerHTML = `
+      ${St.error ? '<p class="st-err" role="alert">Cannot update collection status. Showing the last saved details. <button type="button" class="btn" data-st-retry>Retry</button></p>' : ''}
       <section class="panel st-flow"><div class="p-body">
         <div><h2>Find leads from an account</h2>
         <p class="muted">Paste a brand or competitor your customers follow. We read who follows it and who it follows, at Instagram's safe pace.</p></div>
         <form class="st-form" id="st-form"><input class="input" id="st-in" value="${E(St.input)}" aria-label="Instagram handle or link" placeholder="@handle or instagram.com/handle" autocomplete="off" spellcheck="false">
-          <button class="btn solid" id="st-go" ${St.busy || St.changing ? 'disabled' : ''}>${St.busy ? 'Starting…' : 'Start collection'}</button>
+          <button class="btn solid" id="st-go" ${St.error || St.busy || St.error || St.changing ? 'disabled' : ''}>${St.busy ? 'Starting…' : 'Start collection'}</button>
           ${going || paused ? `<button type="button" class="btn" id="st-pause" ${St.changing ? 'disabled' : ''}>${St.changing ? paused ? 'Starting…' : 'Stopping…' : paused ? 'Continue collecting' : 'Stop collecting'}</button>` : ''}</form>
         ${going || paused ? '<p class="st-control-help muted">Stop keeps your progress. Continue picks up where you left off.</p>' : ''}
         <p class="st-err muted" id="st-err" role="alert" hidden></p>
@@ -73,6 +74,7 @@
     try { await St.pending; } finally { St.pending = null; }
   }
   async function readStatus() {
+    const wasError = St.error;
     try {
       const r = await fetch('/api/onboarding', { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
@@ -83,7 +85,7 @@
       }
     } catch (e) { St.error = true; }
     badge();
-    if (root.classList.contains('on') && !St.busy && document.activeElement?.id !== 'st-in') render();
+    if (root.classList.contains('on') && !St.busy && (wasError !== St.error || document.activeElement?.id !== 'st-in')) render();
     else if (root.classList.contains('on') && St.data && !document.querySelector('#st-form')) render();
     // First visit with a broken setup and no leads: land here once.
     if (!St.landed && St.data) {
@@ -104,7 +106,7 @@
   }
   root.addEventListener('submit', async (e) => {
     if (e.target.id !== 'st-form') return;
-    if (St.busy || St.changing) { e.preventDefault(); return; }
+    if (St.error || St.busy || St.changing) { e.preventDefault(); return; }
     e.preventDefault();
     St.input = root.querySelector('#st-in').value;
     const handles = window.parseHandles ? parseHandles(St.input) : [];
@@ -120,8 +122,9 @@
   });
   root.addEventListener('click', async (e) => {
     const t = e.target;
+    if (t.closest('[data-st-retry]')) return refresh();
     if (t.closest('#st-pause')) {
-      if (St.changing || St.busy) return;
+      if (St.error || St.changing || St.busy) return;
       St.changing = true; render();
       const paused = St.data?.flow.state === 'paused';
       try { await post('/api/control', { stage: 'collection', action: paused ? 'resume' : 'pause' }); window.dispatchEvent(new Event('fl:control-changed')); } catch (x) { if (window.toast) toast(paused ? "Couldn't continue collecting. Try again." : "Couldn't stop collecting. Try again."); }

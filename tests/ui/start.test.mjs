@@ -64,7 +64,7 @@ test('mock backend answers the onboarding and start routes with the real shape',
 });
 
 function liveStart() {
-  const listeners = {}, messages = []; let reads = 0;
+  const listeners = {}, messages = []; let reads = 0, offline = false;
   const body = { innerHTML: '' }, input = { value: '@glowbrand.co' }, error = { textContent: '', hidden: true };
   const root = { classList: { contains: () => true }, querySelector: selector => ({ '#st-body': body, '#st-in': input, '#st-err': error, '#st-form': {} })[selector],
     addEventListener: (name, handler) => { listeners[name] = handler; } };
@@ -74,9 +74,9 @@ function liveStart() {
   const window = { parseHandles: () => ['glowbrand.co'], toast: msg => messages.push(msg), addEventListener() {}, dispatchEvent() {} };
   const context = vm.createContext({ window, document, location: { hash: '#/start' }, parseHandles: window.parseHandles, toast: window.toast,
     setTimeout() {}, clearTimeout() {}, Event,
-    fetch: async (_url, options) => { if (!options?.method) ++reads; return options?.method === 'POST' ? { ok: false, json: async () => ({ error: 'lease_429_internal' }) } : { ok: true, json: async () => data }; } });
+    fetch: async (_url, options) => { if (!options?.method) { ++reads; if (offline) throw Error('offline'); } return options?.method === 'POST' ? { ok: false, json: async () => ({ error: 'lease_429_internal' }) } : { ok: true, json: async () => data }; } });
   vm.runInContext(read('start.js'), context);
-  return { window, listeners, messages, body, input, error, get reads() { return reads; } };
+  return { window, listeners, messages, body, input, error, setOffline(value) { offline = value; }, get reads() { return reads; } };
 }
 
 test('failed start keeps the entered handle and gives actionable feedback without raw diagnostics', async () => {
@@ -108,4 +108,20 @@ test('stopped setup explains how to continue without adding the handle again', (
   const html = V.flowHTML({ state: 'paused', headline: 'Collection is paused. Press Start to continue.', people: 12, bios: 3, ranked: 2, lists: [] });
   assert.match(html, /Collection is stopped. Continue collecting where you left off./);
   assert.doesNotMatch(html, /Press Start/);
+});
+
+
+test('saved setup becomes visibly unavailable after disconnect and recovers on retry', async () => {
+  const h = liveStart();
+  await h.window.Start.refresh();
+  h.setOffline(true);
+  await h.window.Start.refresh();
+  assert.match(h.body.innerHTML, /Cannot update collection status/);
+  assert.match(h.body.innerHTML, /id="st-go" disabled/);
+  const before = h.reads;
+  await h.listeners.submit({target:{id:'st-form'},preventDefault(){}});
+  assert.equal(h.reads, before);
+  h.setOffline(false);
+  await h.listeners.click({target:{closest: selector => selector === '[data-st-retry]' ? {} : null}});
+  assert.doesNotMatch(h.body.innerHTML, /Cannot update collection status|id="st-go" disabled/);
 });

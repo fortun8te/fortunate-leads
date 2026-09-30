@@ -28,3 +28,33 @@ test('late response from old filter cannot overwrite current results',async()=>{
 test('website evidence escapes tags and suppresses stale claims',()=>{
   const c=base();vm.runInContext(section('function websiteEvidence(', 'const evidenceOf ='),c);const site={url:'https://example.org',tags:['<unsafe>','Has shop'],summary:'Current shop',at:'2026-09-26',stale:false};assert.match(c.websiteEvidence(site),/Website evidence/);assert.match(c.websiteEvidence(site),/&lt;unsafe>/);site.stale=true;const out=c.websiteEvidence(site);assert.doesNotMatch(out,/Has shop|Current shop|&lt;unsafe>/);assert.match(out,/Older website evidence/);
 });
+
+
+function reviewLoader(api) {
+  const c = base({api});
+  const begin = source.indexOf('const Q = {');
+  const end = source.indexOf('  syncSeg() {', begin);
+  vm.runInContext(source.slice(begin,end) + 'syncSeg(){}, renderProg(){}, render(){this.renders=(this.renders||0)+1;} }; globalThis.review=Q;',c);
+  return c.review;
+}
+test('failed review filter keeps an explicit unavailable state until successful retry', async () => {
+  let fail = true;
+  const q = reviewLoader({get:async()=>{ if(fail) throw Error('offline'); return {rows:[{id:2}],total:1,summary:{}}; }});
+  q.rows=[{id:1}]; q.view='all'; q.q='new search';
+  await q.load();
+  assert.equal(q.loadError, 'Could not update review results.');
+  assert.equal(q.renders,1);
+  fail=false; await q.load();
+  assert.equal(q.loadError,null);
+  assert.equal(q.rows[0].id,2);
+});
+test('outdated review failure cannot hide a newer successful result', async () => {
+  let rejectOld;
+  let n=0;
+  const q=reviewLoader({get:()=> ++n===1 ? new Promise((_,reject)=>{rejectOld=reject;}) : Promise.resolve({rows:[{id:8}],total:1,summary:{}})});
+  q.view='all';
+  const old=q.load(); await q.load(); rejectOld(Error('offline')); await old;
+  assert.equal(q.loadError,null);
+  assert.equal(q.rows[0].id,8);
+  assert.equal(q.renders,1);
+});
