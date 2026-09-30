@@ -150,3 +150,19 @@ x, y and rank, a per-person table, and a cell/cluster count pyramid). Requests o
 background worker applies changed people in small batches (`layout.pending` counts what is waiting) and
 `python3 server/map_layout.py --db <db> build` rebuilds everything, resumable, outside the request
 path. Measurements: `docs/MAP_SCALE.md`.
+
+## Preparing the layout
+
+A fresh installation has no viewport layout. The interface offers the existing map while it is
+unprepared. Requests never start a build. On a chosen database, prepare the four layouts explicitly:
+
+```sh
+python3 server/map_layout.py --db /absolute/path/to/leads.sqlite build --workers 1
+python3 server/map_layout.py --db /absolute/path/to/leads.sqlite status
+```
+
+Use a temporary copy for validation. Do not run this against the live database as part of a code
+review. Once the server starts with prepared layouts, its maintenance worker applies queued changes.
+Missing layouts report `ready:false, layout.building:false`; the UI should call this unprepared.
+The edge response also includes `nodes` for positioned endpoints and accepts `mode`.
+The view includes `world.me` only when the owner has an existing, positioned person record.

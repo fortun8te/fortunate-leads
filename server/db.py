@@ -378,6 +378,7 @@ def init(path):
         conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_legacy_v1','true')")
     init_map_person_degree(conn)
     init_map_membership_revision(conn)
+    ensure_map_layout_dirty(conn)
     # Revisions catch edits that counts/timestamps cannot distinguish, including
     # out-of-process imports. Settings is excluded to avoid recursive updates.
     conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('lead_data_rev','0')")
@@ -395,6 +396,40 @@ def init(path):
     processing_progress.ensure(conn)
     conn.commit()
     return conn
+
+
+def ensure_map_layout_dirty(conn):
+    """Queue the people whose map layout inputs changed (server/map_layout.py drains it).
+
+    Nothing is backfilled: a layout build reads current data, and only changes made after
+    that need a queue. `claimed` lets the worker tell a change that landed while it was
+    applying a batch (claimed back to 0 by the trigger) from one it already handled.
+    """
+    conn.execute('CREATE TABLE IF NOT EXISTS map_layout_dirty('
+                 'person_id INTEGER PRIMARY KEY, claimed INTEGER NOT NULL DEFAULT 0)')
+    verdict_columns = {r[1] for r in conn.execute('PRAGMA table_info(verdicts)')}
+    specs = [('map_person_degree', 'degree', None), ('marks', 'marks', 'status'),
+             ('verdicts', 'verdicts', 'content_fit,score' if 'content_fit' in verdict_columns else None),
+             ('owner_context', 'owner', 'relationships,familiarity'), ('people', 'people', None)]
+    for table, label, update_of in specs:
+        for operation in ('INSERT', 'UPDATE', 'DELETE'):
+            if table == 'verdicts' and update_of is None and operation == 'UPDATE':
+                continue
+            name = f'map_layout_dirty_{label}_{operation.lower()}'
+            if table == 'people' and operation == 'UPDATE':
+                when = ' OF name,handle'
+            elif operation == 'UPDATE' and update_of:
+                when = f' OF {update_of}'
+            else:
+                when = ''
+            ref = 'OLD' if operation == 'DELETE' else 'NEW'
+            column = 'id' if table == 'people' else 'person_id'
+            body = (f'INSERT INTO map_layout_dirty(person_id,claimed) VALUES({ref}.{column},0) '
+                    'ON CONFLICT(person_id) DO UPDATE SET claimed=0;')
+            if operation == 'UPDATE' and table != 'people':
+                body += (f' INSERT INTO map_layout_dirty(person_id,claimed) VALUES(OLD.{column},0) '
+                         'ON CONFLICT(person_id) DO UPDATE SET claimed=0;')
+            conn.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {operation}{when} ON {table} BEGIN {body} END')
 
 
 def init_map_membership_revision(conn):
