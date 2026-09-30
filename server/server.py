@@ -32,6 +32,8 @@ import control  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
 import map_scale  # noqa: E402
+import map_layout  # noqa: E402
+import map_view  # noqa: E402
 import note_mentions  # noqa: E402
 import dm_import  # noqa: E402
 import processing_progress  # noqa: E402
@@ -1703,6 +1705,25 @@ def api_map(conn, q, b):
     return cached(conn, 'map', q, lambda: dict(map_graph(conn, q), seed_links=seed_links(conn, cacheable=committed)))
 
 
+def _map_database(conn):
+    return conn.execute('PRAGMA database_list').fetchone()[2]
+
+
+def api_map_view(conn, q, b):
+    with read_snapshot(conn):
+        return map_view.view(conn, _map_database(conn), q)
+
+
+def api_map_search(conn, q, b):
+    with read_snapshot(conn):
+        return map_view.search(conn, _map_database(conn), q)
+
+
+def api_map_edges(conn, q, b):
+    with read_snapshot(conn):
+        return map_view.edges(conn, q, _map_database(conn))
+
+
 def api_map_overview(conn, q, b):
     where, args = lead_filter({k: v for k, v in q.items() if k != 'seed'})
     for seed in dict.fromkeys(map(db.norm_handle, csv(q, 'seed'))):
@@ -2808,7 +2829,8 @@ ROUTES = [
     ('POST', r'/api/tag-rules/(\d+)/delete', api_rule_delete),
     ('GET', r'/api/person/(\d+)', api_person), ('POST', r'/api/person/(\d+)/mark', api_mark),
     ('POST', r'/api/person/(\d+)/tags', api_tag_edit), ('POST', r'/api/person/(\d+)/read', api_read),
-    ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
+    ('GET', r'/api/map/view', api_map_view), ('GET', r'/api/map/search', api_map_search),
+    ('GET', r'/api/map/edges', api_map_edges), ('GET', r'/api/map', api_map), ('GET', r'/api/connections', api_connections),
     ('GET', r'/api/map-overview', api_map_overview),
     ('GET', r'/api/note-mentions', lambda conn, q, b: note_mentions.search(conn, q.get('q', [''])[0])),
     ('GET', r'/api/scraper/status', api_scraper_status), ('GET', r'/api/scraper', api_scraper),
@@ -2938,6 +2960,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             return self.send(500, {'ok': False, 'error': 'Internal server error'})
+        if isinstance(out, map_view.Raw):
+            # View queries support conditional reads without changing other APIs.
+            if out.etag and out.etag in [v.strip() for v in self.headers.get('If-None-Match', '').split(',')]:
+                return self.send(304, b'', headers=out.headers)
+            return self.send(out.status, out.body, headers=out.headers)
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):
@@ -4226,6 +4253,12 @@ def background_qualify(conn):
     return qualify_batch(conn) or bool(refreshed)
 
 
+def map_layout_step(conn):
+    # Full builds are explicitly requested with the CLI; request handling never builds.
+    out = map_layout.step(_map_database(conn), conn)
+    return bool(out.get('apply', {}).get('applied'))
+
+
 def start_workers(stop):
     pool = POOL[0] = LLMPool()
     scouts = deepscout.ScoutPool(CFG['db'])
@@ -4242,7 +4275,7 @@ def start_workers(stop):
     loops = [(repair_step, 900, 900), (local_services_step, 30, 30), (background_qualify, 0.2, 5),
              (processing_maintenance, 0.1, 5), (pool.step, 1, 5), (laya_step, 0.2, 30),
              (local_processing_step, 0.1, 5), (plan_profiles, 15, 15), (pfp_step, 0.4, 10),
-             (biofetch.step, 0.5, 10), (scouts.step, 2, 10)]
+             (biofetch.step, 0.5, 10), (scouts.step, 2, 10), (map_layout_step, 1, 10)]
     for args in loops:
         threading.Thread(target=worker, args=(stop, *args), daemon=True).start()
 
