@@ -275,9 +275,54 @@ def snapshot(conn, ai_left=None):
             'at': iso(now)}
 
 
+def stop_benchmark(conn, body):
+    """Operator review of an expired experiment. Unknown outcomes stay unknown."""
+    if body.get('checked_account_tab') is not True:
+        raise ValueError('Check the benchmark account tab first, then confirm it has stopped.')
+    now = datetime.now(timezone.utc)
+    stamp = now.timestamp()
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        cfg = db.get_setting(conn, 'raw_edge_benchmark') or {}
+        if cfg.get('enabled') is not True:
+            raise ValueError('No active benchmark to stop.')
+        inflight = cfg.get('inflight') or {}
+        gate = db.get_setting(conn, 'instagram_request_gate') or {}
+        request = gate.get('active') or {}
+        attention = db.get_setting(conn, 'instagram_request_attention')
+        def expired(value):
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= stamp
+        if inflight and (not expired(inflight.get('at')) or
+                         not expired(inflight['at'] + accounts.REQUEST_LEASE_SECONDS)):
+            raise ValueError('Wait for the benchmark request to finish or expire before reviewing it.')
+        if request and (not expired(request.get('until')) or request.get('lane') != cfg.get('lane_id') or
+                        request.get('token') != inflight.get('token')):
+            raise ValueError('A current or unrelated Instagram request remains. Collection stays stopped.')
+        if attention and (not isinstance(attention, dict) or attention.get('lane') != cfg.get('lane_id')):
+            raise ValueError('Another account needs attention. Review that account separately.')
+        review = {'at': iso(now), 'lane': cfg.get('lane_id'), 'outcome': 'abandoned_unconfirmed',
+                  'checked_account_tab': True, 'request': request or None, 'inflight': inflight or None,
+                  'attention': attention}
+        cfg.update(enabled=False, operator_stop=review)
+        db.set_setting(conn, 'raw_edge_benchmark', cfg)
+        if request:
+            db.set_setting(conn, 'instagram_request_gate', dict(gate, active=None, queue=[],
+                           next_at=max(gate.get('next_at') or 0, stamp + accounts.REQUEST_SPACING_SECONDS)))
+        db.set_setting(conn, 'instagram_request_attention', None)
+        for stage in ('lists', 'bios'):
+            db.set_setting(conn, 'paused_' + stage, True)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def apply(conn, b):
     """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
+    if action == 'stop_benchmark':
+        return stop_benchmark(conn, b)
     if action == 'start_all':
         if b.get('stage') is not None or isinstance(b.get('account'), str):
             raise ValueError('start_all applies to the whole workspace')

@@ -2703,7 +2703,11 @@ def api_control_set(conn, q, b):
                                           b.get('stage') is None and isinstance(b.get('account'), str))):
         require_collection_resume(conn)
     try:
-        control.apply(conn, b)
+        if b.get('action') == 'stop_benchmark':
+            with edge_benchmark_api.LOCK:
+                control.apply(conn, b)
+        else:
+            control.apply(conn, b)
     except LookupError:
         conn.rollback()
         raise NotFound('no such account') from None
@@ -2807,7 +2811,17 @@ def api_mobile_queue(conn, q, b):
 def api_setup(conn, q, b):
     """What the add-account wizard shows: where the unpacked extension lives and which id Chrome gives it."""
     manifest = json.loads((ROOT / 'extension' / 'manifest.json').read_text())
-    return {'repo': str(ROOT), 'extension_path': str(ROOT / 'extension'), 'extension_id': EXT_ORIGIN.split('//')[1],
+    accts = accounts.listing(conn, datetime.now(timezone.utc), include_lists=False)
+    main = next((a for a in accts if a.get('is_main')), None)
+    instagram = onboarding.instagram_setup(main, me_handle(conn))
+    benchmark = edge_benchmark_api.config(conn)
+    instagram['collection_blocker'] = ('Review and stop the unfinished benchmark before continuing collection.'
+                                       if benchmark else None)
+    if benchmark:
+        lane = next((a for a in accts if a['lane_id'] == benchmark.get('lane_id')), {})
+        instagram['benchmark'] = {'lane_id': benchmark.get('lane_id'), 'handle': lane.get('handle'),
+                                  'requires_account_tab_check': True}
+    return {'instagram': instagram, 'repo': str(ROOT), 'extension_path': str(ROOT / 'extension'), 'extension_id': EXT_ORIGIN.split('//')[1],
             'extension_version': manifest.get('version'), 'server': f"http://127.0.0.1:{CFG['port']}",
             'lanes': conn.execute('SELECT count(*) FROM accounts').fetchone()[0]}
 

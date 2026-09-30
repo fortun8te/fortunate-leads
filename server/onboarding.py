@@ -165,3 +165,16 @@ def flow(conn, hold, controls=None):
         headline, state = 'Collection is ready. Your saved people are available in Leads.', 'done'
     return {'state': state, 'headline': headline, 'lists': lists, 'people': people, 'bios': bios, 'ranked': ranked,
             'jobs_left': jobs, 'stop_acknowledged': controls.get('stop_acknowledged', False), 'totals_scope': 'workspace'}
+
+
+def instagram_setup(account, owner):
+    """Observed main-account connection, separate from collection readiness."""
+    account = account or {}
+    hold = account.get('hold')
+    state = ('missing' if not account else 'offline' if not account.get('online') else
+             'security_check' if hold == 'challenge' else 'signed_out' if hold == 'login' or not account.get('ig_id') else 'connected')
+    return {'handle': account.get('handle') or owner, 'lane_id': account.get('lane_id'),
+            'ig_id': account.get('ig_id'), 'state': state, 'connected': state == 'connected',
+            'paused': bool(account.get('paused')), 'home_url': 'https://www.instagram.com/',
+            'inbox_url': 'https://www.instagram.com/direct/inbox/',
+            'messages': {'mode': 'instagram', 'imported': False}}

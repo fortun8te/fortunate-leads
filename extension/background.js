@@ -3,7 +3,7 @@
 // (st, box, cur, prog, lane, ids, seen, trail, debug). The in-memory loop is single-flight with a staleness expiry;
 // the 30 s alarm restarts it after the worker was stopped or if it stalls. Instagram requests are serialised by the
 // stored `lane` marker, so a restarted worker never fires while an earlier request may still be in flight.
-importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js');
+importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js', 'lib/workspace.js');
 const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
@@ -950,7 +950,12 @@ booted.then(loop);
 
 // The workspace can reload the extension after an update (loopback origin only).
 chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {
-  if (sender.origin !== SERVER || msg?.type !== 'RELOAD') return false;
+  if (sender.origin !== SERVER) return false;
+  if (msg?.type === 'OPEN_INSTAGRAM') {
+    openWorkspaceInstagram(chrome, msg).then(respond, error => respond({ok: false, error: error.message}));
+    return true;
+  }
+  if (msg?.type !== 'RELOAD') return false;
   respond({ ok: true, version: VERSION });
   // clearCooldown: only for hits that weren't account limits (e.g. the retired web_profile_info lookup).
   const clear = msg.clearCooldown ? editSt((st) => { for (const k of FL.KINDS) st.cool[k] = { until: 0, hits: [] }; st.lastError = null; }) : Promise.resolve();
