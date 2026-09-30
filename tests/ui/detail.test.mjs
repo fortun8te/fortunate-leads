@@ -31,7 +31,7 @@ test('saving a relationship waits for full detail readback before finishing', as
 });
 test('failed relationship save restores prior status without starting a detail read', async () => {
   const calls=[];
-  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},slabel:x=>x,mark:()=>{},toast:(m)=>m==='Could not save'&&calls.push('error')});
+  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},slabel:x=>x,mark:()=>{},toast:(m)=>m==="Couldn't save. Try again."&&calls.push('error')});
   vm.runInContext(marking,ctx);
   await ctx.markNow(7,'no');
   assert.deepEqual(calls,['no','talking','error']);
