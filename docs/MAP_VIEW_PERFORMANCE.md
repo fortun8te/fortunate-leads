@@ -94,3 +94,7 @@ Each stage writes its JSON results beside the synthetic database. Request valida
 whole-world, zoom, pan, maximum budget, fit/client filters, search and two lead pages. Remove the
 synthetic directory explicitly when the evidence is no longer needed; the benchmark never deletes
 an existing database. Rendering still needs separate browser measurement on bounded responses.
+
+### Lead-page follow-up
+
+A thin-ID sort followed by hydration of only the selected page preserves all lead sort/filter semantics. On the same million-person disposable database, first-page time was 2,371 ms and offset-50 time was 816 ms (baseline 2,725 / 1,013 ms); total remained 998,333. This is a modest improvement, not a smooth-at-ten-million claim. Exact fit ordering still needs a matching maintained index before end-to-end scale can be claimed. Oracle tests compare every sort, six filter variants and three offsets against the original query.
