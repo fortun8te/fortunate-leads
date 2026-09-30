@@ -1195,7 +1195,7 @@ function renderDetail() {
     <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
-      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
+      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
     </section>
 
     ${workflowSummaryHTML(p)}
@@ -1967,7 +1967,7 @@ $('#rule-form').addEventListener('submit', async (e) => {
     const r = await api.post('/api/tag-rules', { tag, field, match });
     toast(`Rule added${r.hits != null ? ', ' + plural(r.hits, 'hit') : ''}`);
     $('#rl-match').value = ''; $('#rl-prev').textContent = ''; $('#rl-add').disabled = true;
-  } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add rule'); return; }
+  } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't add the rule. Try again."); return; }
   T.after();
 });
 async function deleteRule(id) {
@@ -2338,7 +2338,7 @@ async function addSuggestedTarget(handle) {
     toast(result.queued === 0 ? 'Already queued' : `@${handle} added to the collection queue`);
     loadScraper();
     await loadCollectionSuggestions(true);
-  } catch { state.error = `Could not add @${handle}. Try again.`; }
+  } catch { state.error = `Couldn't add @${handle}. Try again.`; }
   finally { state.busy.delete(handle); renderCollectionSuggestions(); }
 }
 
