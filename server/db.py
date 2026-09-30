@@ -210,7 +210,9 @@ def connect(path):
     conn.execute('PRAGMA busy_timeout=15000')
     conn.execute('PRAGMA synchronous=NORMAL')
     conn.execute('PRAGMA mmap_size=268435456')
-    conn.execute('PRAGMA temp_store=MEMORY')
+    # Large filtered sorts and facets must spill to disk rather than grow RAM.
+    conn.execute('PRAGMA temp_store=FILE')
+    conn.execute('PRAGMA cache_size=-32768')
     return conn
 
 
