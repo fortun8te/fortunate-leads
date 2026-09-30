@@ -87,10 +87,13 @@
       const priorSheet = cam.inset.bottom;
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
       if (priorSheet !== sheet && this.model.selected) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
-      const legend = this.r.hud.getBoundingClientRect(), stage = box.getBoundingClientRect();
-      this.hud = { x0: legend.left - stage.left - 8, y0: legend.top - stage.top - 8, x1: legend.right - stage.left + 8, y1: legend.bottom - stage.top + 8 };
+      this.measureHud();
       if (this.model.needsLoad() && this.shown && !this.comparing) this.model.schedule();
       this.invalidate();
+    }
+    measureHud() {
+      const legend = this.r.hud.getBoundingClientRect(), stage = this.r.canvasBox.getBoundingClientRect();
+      this.hud = { x0: legend.left - stage.left - 8, y0: legend.top - stage.top - 8, x1: legend.right - stage.left + 8, y1: legend.bottom - stage.top + 8 };
     }
     readPalette() {
       const cs = root.getComputedStyle(doc.documentElement), v = (n, f) => cs.getPropertyValue(n).trim() || f, ctx = this.ctx;
@@ -98,7 +101,7 @@
       const tone = (t) => mix(fg, bg, t);
       this.palette = {
         fg: v('--fg', '#ededed'), fg2: v('--fg2', '#b5b5b5'), fg3: v('--fg3', '#969696'), fg4: v('--fg4', '#8d8d8d'), bg: v('--bg', '#0d0d0d'), bg1: v('--bg1', '#141414'), bg2: v('--bg2', '#1c1c1c'),
-        line: v('--line', '#202020'), line2: v('--line2', '#303030'), line3: v('--line3', '#454545'), accent: v('--t-map-strong', '#3977ff'), sans: v('--sans', 'system-ui, sans-serif'),
+        line: v('--line', '#202020'), line2: v('--line2', '#303030'), line3: v('--line3', '#454545'), accent: v('--accent', '#ededed'), sans: v('--sans', 'system-ui, sans-serif'),
         tones: { t0: tone(0.12), t1: tone(0.26), t2: tone(0.38), t3: tone(0.5), t4: tone(0.6), t5: tone(0.68) }
       };
       this.palette.tones.a = this.palette.accent;
@@ -141,11 +144,11 @@
       const dim = edges && edges.state === 'ready' ? 0.5 : 1;
 
       const hovered = this.hover;
-      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.mode === 'closeness' ? m.world.me?.id : null);
+      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode);
       const bubbles = plan.groups;
       for (const mark of plan.nodes) lab.block([mark.x-mark.r-2, mark.y-mark.r-2, mark.x+mark.r+2, mark.y+mark.r+2]);
-      const disk = m.mode === 'closeness' && m.world.layout === 'network_disk';
-      const network = m.mode === 'closeness' && (disk || (m.world.guides || []).some(g => g.label === 'Direct connections'));
+      const disk = m.world.layout === 'network_disk';
+      const network = disk || m.mode === 'closeness' && (m.world.guides || []).some(g => g.label === 'Direct connections');
       const spheres = network && !disk && cam.k < 2.5;
       if (disk && cam.k < 2.5) {
         const center = m.world.center || { x: .5, y: .5 };
@@ -174,7 +177,7 @@
 
       // A bounded set of saved profile portraits; missing photos use their initials.
       const k = cam.k, mode = m.mode;
-      const me = m.world && m.world.me && mode === 'closeness' ? m.world.me : null;
+      const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       if (me) this.portraits.get(me.pic);
       let photoBudget = 140;
       for (const mark of plan.nodes) {
@@ -187,9 +190,9 @@
       if (me) {
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(x, y, 46, 0, TAU); ctx.stroke();
-        this.paintPortrait(ctx, P, me, x, y, 38, true, true);
-        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: 46, w: 600, prefer: 'bottom', strong: true });
+        ctx.beginPath(); ctx.arc(x, y, 35, 0, TAU); ctx.stroke();
+        this.paintPortrait(ctx, P, me, x, y, 30, true, true);
+        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: 35, w: 600, prefer: 'bottom', strong: true });
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
@@ -199,7 +202,7 @@
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
-        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 38 : radiusFor(sel, k);
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 30 : radiusFor(sel, k, mode);
         ctx.strokeStyle = P.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke();
         this.paintPortrait(ctx, P, sel, x, y, r, true);
         if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
@@ -248,6 +251,7 @@
     }
 
     paintGuides(ctx, P, m, cam, S, sx, sy, want) {
+      if (m.world.layout === 'network_disk') return;
       const guides = (m.world && m.world.guides) || [];
       const W = cam.w, H = cam.h;
       ctx.lineWidth = 1; ctx.strokeStyle = P.line2; ctx.fillStyle = P.line2;
@@ -539,7 +543,7 @@
       for (const b of this.r.modes.children) { const on = b.dataset.mode === this.model.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
       this.r.modes.hidden = this.model.fallback;
       if (this.r.filters.follow) { this.r.filters.follow.disabled = !!this.model.fallback; this.r.filters.follow.title = this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
-      this.r.me.hidden = this.model.mode !== 'closeness' || !this.model.world.me;
+      this.r.me.hidden = !this.model.world.me;
     }
     renderFilters() {
       const m = this.model, f = this.r.filters;
@@ -565,7 +569,8 @@
           default: return svg('');
         }
       };
-      box.replaceChildren(...rows.map((row) => h('li', {}, glyph(row.g), h('span', { class: 'l-long', text: row.t }), h('span', { class: 'l-short', text: row.s || row.t }))));
+      box.replaceChildren(...rows.map((row) => h('li', {}, h('button', { type: 'button', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
+      this.measureHud(); this.invalidate();
     }
     renderCount(announce = true) {
       const m = this.model, el = this.r.count;

@@ -1,4 +1,4 @@
-/* Connections map. Warm neutral surfaces, one accent (--t-map-strong), flat: no gradients, no glow.
+/* Connections map. Warm neutral surfaces, a neutral contrast accent, flat: no gradients, no glow.
    Everything is namespaced mv- so it cannot collide with the leads, review or settings pages. */
 
 /* ---------- Toolbar ---------- */
@@ -64,13 +64,14 @@
 @keyframes mv-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* ---------- Key and count ---------- */
-.mv-hud { position: absolute; left: var(--s3); bottom: var(--s3); z-index: 2; display: grid; gap: 6px; width: 232px; max-width: calc(100% - 72px); pointer-events: none; }
-.mv-legend { display: grid; gap: 8px; margin: 0; padding: 10px 12px; list-style: none; background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
+.mv-hud { position: absolute; left: var(--s3); bottom: var(--s3); z-index: 2; display: grid; gap: 6px; width: max-content; max-width: min(340px, calc(100% - 72px)); pointer-events: none; }
+.mv-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 0; padding: 5px 7px; list-style: none; background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
 .mv-legend li { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--fs-xs); line-height: 1.4; color: var(--fg2); }
 .mv-legend svg { flex: none; margin-top: 1px; fill: none; stroke: none; }
-.mv-legend .l-short { display: none; }
+.mv-key { display: flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--fg2); font: inherit; font-size: 10px; line-height: 18px; cursor: help; pointer-events: auto; }
+.mv-key:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
 .mv-legend .k-f { fill: var(--fg2); }
-.mv-legend .k-a { fill: var(--t-map-strong); }
+.mv-legend .k-a { fill: var(--accent); }
 .mv-legend .k-s { fill: none; stroke: var(--fg2); stroke-width: 1.4; }
 .mv-legend .k-b { fill: var(--bg2); stroke: var(--line3); stroke-width: 1; }
 .mv-legend .k-r { fill: none; stroke: var(--line3); stroke-width: 1; }
@@ -107,7 +108,7 @@
 .mv-status { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .mv-s { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); height: 34px; padding: 0 10px; border: 1px solid var(--line2); border-radius: var(--r2); background: var(--bg); color: var(--fg2); }
 .mv-s:hover { background: var(--bg2); color: var(--fg); }
-.mv-s.on { border-color: var(--t-map-strong); color: var(--fg); }
+.mv-s.on { border-color: var(--accent); color: var(--fg); }
 .mv-note { display: grid; gap: var(--s2); }
 .mv-note label { color: var(--fg3); font-size: var(--fs-sm); }
 .mv-note textarea { height: 96px; }
@@ -134,8 +135,6 @@
   .mv-zoom button { width: 40px; height: 40px; }
   .mv-hud { width: auto; max-width: calc(100% - 72px); }
   .mv-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; }
-  .mv-legend .l-long { display: none; }
-  .mv-legend .l-short { display: inline; }
   .mv-legend li { align-items: center; }
   .mv-card { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; width: auto; max-height: 56%; padding: var(--s3) var(--s4) var(--s4); border-left: 0; border-top: 1px solid var(--line2); border-radius: var(--r) var(--r) 0 0; animation-name: mv-up; }
   @keyframes mv-up { from { opacity: 0; transform: translateY(16px); } }

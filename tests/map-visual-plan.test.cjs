@@ -59,7 +59,7 @@ test('portrait overview samples distinct communities and preserves real position
   assert.ok(plan.nodes.length > 70);
   assert.ok(new Set(plan.nodes.map(n=>n.it.d.cluster)).size >= 6);
   assert.ok(plan.nodes.length <= 140);
-  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,38);
+  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,30);
   for(const mark of plan.nodes) assert.deepEqual([mark.it.x,mark.it.y],[nodes[mark.it.d.id].x,nodes[mark.it.d.id].y]);
 });
 test('overview count chips include loaded people hidden by portrait collisions', () => {
@@ -70,4 +70,27 @@ test('overview count chips include loaded people hidden by portrait collisions',
   scene.apply({nodes,clusters},0,{instant:true});
   const plan=displayPlan(scene,cam,guides);
   assert.equal(plan.nodes.length+plan.groups.reduce((s,g)=>s+g.it.d.count,0),720);
+});
+
+test('mode encodings preserve circle geometry and use truthful sizes', () => {
+  const {radiusFor,LEGENDS}=require('../web/map-core.js');
+  const strong={fit:'strong',source_count:1},weak={fit:'weak',source_count:8};
+  assert.ok(radiusFor(strong,1,'fit')>radiusFor(weak,1,'fit'));
+  assert.ok(radiusFor(weak,1,'seeds')>radiusFor(strong,1,'seeds'));
+  assert.equal(radiusFor(strong,1,'status'),radiusFor(weak,1,'status'));
+  for(const mode of ['closeness','fit','seeds','status']) {
+    const {cam,scene,guides}=fixture();const before=scene.nodes.map(n=>[n.x,n.y]);
+    const plan=displayPlan(scene,cam,guides,null,null,0,mode);
+    assert.deepEqual(scene.nodes.map(n=>[n.x,n.y]),before);
+    assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,30);
+    assert.equal(LEGENDS[mode][0].s,'Distance: evidence');
+    assert.equal(LEGENDS[mode].length,3);
+  }
+});
+test('Fit and Sources preserve mode priority instead of forcing pipeline people first', () => {
+  const cam=new Camera();cam.resize(1000,700);const scene=new Scene();
+  scene.apply({nodes:[{id:1,x:.5,y:.5,status:'client',fit:'weak',rank:.1},{id:2,x:.5,y:.5,fit:'strong',rank:.9}],clusters:[]},0,{instant:true});
+  assert.equal(displayPlan(scene,cam,[],null,null,null,'fit').nodes[0].it.d.id,2);
+  assert.equal(displayPlan(scene,cam,[],null,null,null,'seeds').nodes[0].it.d.id,2);
+  assert.equal(displayPlan(scene,cam,[],null,null,null,'closeness').nodes[0].it.d.id,1);
 });

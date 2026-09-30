@@ -206,35 +206,18 @@
     if (n.status && n.status !== 'no') return 'a';
     return n.fit === 'strong' ? 't1' : n.fit === 'good' ? 't2' : n.fit === 'weak' ? 't3' : 't4';
   }
-  const radiusFor = (n, k) => (RADIUS[n.fit] || RADIUS.unread) * clamp(0.92 + 0.11 * Math.log2(k + 1), 0.92, 2.1);
+  const radiusFor = (n, k, mode = 'closeness') => {
+    const base = mode === 'status' ? 16 : mode === 'seeds' ? clamp(10 + 2.5 * Math.log1p(Math.max(0, +n.source_count || 0)), 10, 19) : RADIUS[n.fit] || RADIUS.unread;
+    return base * clamp(0.92 + 0.11 * Math.log2(k + 1), 0.92, 2.1);
+  };
   // Plain-words key per mode. Each row has a glyph the view draws and a sentence.
+  const distanceKey = { g: 'centre', t: 'Distance bands show recorded connection evidence in every mode. Positions within each band spread people for readability; a follow is not a personal relationship.', s: 'Distance: evidence' };
+  const fitSizeKey = { g: 'size', t: 'Larger portraits mean a stronger saved fit assessment. Numbered chips represent grouped people; click one to explore.', s: 'Size: fit' };
   const LEGENDS = {
-    closeness: [
-      { g: 'centre', t: 'You are in the middle. Distance bands reflect recorded connection evidence; positions within each band spread people for readability.', s: 'Distance: evidence band' },
-      { g: 'accent', t: 'Blue rims mark people in your pipeline.', s: 'Blue: pipeline' },
-      { g: 'bubble', t: 'Counts group people. Bigger portraits have a stronger fit.', s: 'Count: people · portrait size: fit' }
-    ],
-    fit: [
-      { g: 'axis', t: 'Groups show strong, good, weak or unread fit.', s: 'Groups: fit' },
-      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
-      { g: 'accent', t: 'Blue is a strong fit.', s: 'Blue: strong fit' },
-      { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
-      { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
-    ],
-    seeds: [
-      { g: 'island', t: 'Groups show the collected source audiences.', s: 'Groups: source audiences' },
-      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
-      { g: 'accent', t: 'Blue is someone in your pipeline.', s: 'Blue: pipeline' },
-      { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
-      { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
-    ],
-    status: [
-      { g: 'lanes', t: 'Groups show where people are in your pipeline.', s: 'Groups: pipeline' },
-      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
-      { g: 'accent', t: 'Blue is talking or a client.', s: 'Blue: talking, client' },
-      { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
-      { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
-    ]
+    closeness: [distanceKey, fitSizeKey, { g: 'accent', t: 'Bright rims mark people in your pipeline. Group numbers count people.', s: 'Rim: pipeline' }],
+    fit: [distanceKey, fitSizeKey, { g: 'accent', t: 'Bright rims highlight strong fit. Position stays the same as Network.', s: 'Rim: strong fit' }],
+    seeds: [distanceKey, { g: 'size', t: 'Larger portraits appear in more distinct collected source audiences. Size does not indicate friendship or an introduction.', s: 'Size: sources' }, { g: 'accent', t: 'Bright rims mark people in your pipeline. Source audiences determine community labels.', s: 'Rim: pipeline' }],
+    status: [distanceKey, { g: 'size', t: 'Portraits have equal size, with status highlighted through color and priority. Numbered chips count grouped people.', s: 'Size: equal' }, { g: 'accent', t: 'Bright rims highlight people marked Talking or Client. Position stays the same as Network.', s: 'Rim: talking / client' }]
   };
   const closenessWords = (c) => c >= 0.75 ? 'strong network evidence' : c >= 0.5 ? 'some network evidence' : c >= 0.25 ? 'limited network evidence' : 'little network evidence';
   // One line on why this person is on your map, from what the map knows.
@@ -249,7 +232,7 @@
   }
 
   // Select what can be read at this scale. Screen collisions never alter world coordinates.
-  function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null) {
+  function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null, mode = 'closeness') {
     const inside = (x, y, pad = 20) => x >= pad && y >= pad && x <= cam.w - pad && y <= cam.h - cam.inset.bottom - pad;
     const occupied = [], summaries = new Map(), nodeMarks = [];
     const guideByLabel = new Map(guides.map(g => [g.label, g]));
@@ -270,7 +253,7 @@
     const network = ownerId != null || guides.some(g => g.label === 'Direct connections');
     const limit = Math.round(clamp(cam.w * cam.h / 5500 * Math.min(8, cam.k), 40, network && overview ? 140 : 240));
     let candidates = scene.nodes.filter(it => it.a >= .3 && it.ta !== 0).slice().sort((a, b) => {
-      const score = it => (((selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId)) ? 1e6 : 0) + (it.d.source ? 40 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) + (it.d.rank || 0);
+      const score = it => (((selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId)) ? 1e6 : 0) + (mode === 'closeness' ? (it.d.source ? 40 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) : 0) + (it.d.rank || 0);
       return score(b) - score(a) || String(a.d.id).localeCompare(String(b.d.id));
     });
     if (network && overview) {
@@ -303,7 +286,7 @@
       groupMarks.push(mark); occupied.push(mark);
     }
     for (const it of candidates) {
-      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 38 : radiusFor(it.d, cam.k);
+      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 30 : radiusFor(it.d, cam.k, mode);
       if (!inside(x, y, 8)) continue;
       const pinned = (selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId);
       if (!pinned && (nodeMarks.length >= limit || overlaps(x, y, r))) {
@@ -314,7 +297,7 @@
         if (grouped) grouped.it.d.count++;
         continue;
       }
-      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 68 } : mark);
+      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 55 } : mark);
     }
     return { nodes: nodeMarks, groups: groupMarks };
   }
