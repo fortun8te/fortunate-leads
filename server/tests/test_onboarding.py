@@ -107,7 +107,7 @@ class OnboardingApiTest(Base):
         self.assertFalse(self.call('/api/scraper/status')[1]['paused'])
         flow = self.call('/api/onboarding')[1]['flow']
         self.assertEqual(flow['state'], 'wait')   # no Chrome profile connected yet
-        self.assertIn('Chrome profile', flow['headline'])
+        self.assertIn('Chrome', flow['headline'])
         self.assertEqual(self.call('/api/start', {'handle': 'some.brand'})[1]['queued'], 0)   # idempotent
 
     def test_start_rejects_a_bad_handle_and_keeps_pacing_hold(self):

@@ -124,8 +124,8 @@ def summarize(steps):
     return {'ready': not blocking, 'healthy': not open_, 'blocking': len(blocking), 'open': len(open_)}
 
 
-def flow(conn, paused, hold, accts):
-    """What the one-handle flow shows: lists, bios, ranked leads so far, all in numbers a person can read."""
+def flow(conn, hold, controls=None):
+    """Recent list activity and workspace totals, with actual collector state."""
     lists = [dict(r) for r in conn.execute(
         "SELECT l.seed, l.direction, l.received, l.total, l.state, l.error FROM lists l "
         "WHERE l.seed IN (SELECT handle FROM seeds) ORDER BY l.updated_at DESC LIMIT 12")]
@@ -135,24 +135,33 @@ def flow(conn, paused, hold, accts):
     bios = conn.execute('SELECT count(*) FROM people WHERE bio_at IS NOT NULL').fetchone()[0]
     ranked = conn.execute('SELECT count(*) FROM verdicts').fetchone()[0]
     jobs = conn.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','leased')").fetchone()[0]
-    online = any(a.get('online') and not a.get('hold') for a in accts)
-    active = [l for l in lists if l['state'] in ('running', 'queued', 'paused')] or [dict(r) for r in queued]
-    if not lists and not queued:
+    if controls is None:
+        import control
+        controls = control.snapshot(conn)
+    stages = {stage['id']: stage for stage in controls['stages']}
+    collection = [stages[name] for name in ('lists', 'bios')]
+    stopped = all(stage['paused'] for stage in collection)
+    in_flight = controls.get('active', False)
+    attention = controls.get('instagram_request_attention') or {}
+    running = next((stage for stage in collection if stage['state'] == 'running'), None)
+    waiting = next((stage for stage in collection if stage['state'] == 'waiting'), None)
+    if not lists and not queued and not jobs:
         headline, state = 'Paste an Instagram account to begin.', 'idle'
+    elif stopped and attention.get('message'):
+        headline, state = attention['message'], 'wait'
+    elif stopped and in_flight:
+        headline, state = 'Stopping collection. Waiting for the current request to finish.', 'stopping'
     elif hold:
         headline, state = 'Instagram asked us to wait. Collection resumes on its own.', 'wait'
-    elif paused:
-        headline, state = 'Collection is paused. Press Start to continue.', 'paused'
-    elif not online:
-        headline, state = 'Waiting for a connected Chrome profile.', 'wait'
-    elif jobs or active:
-        first = active[0]
-        seed = first.get('seed')
-        total = first.get('total')
-        got = first.get('received') or 0
-        of = f' of about {total:,}' if total else ''
-        headline, state = f"Collecting @{seed}'s {first.get('direction', 'lists')}: {got:,}{of} people so far.", 'running'
+    elif stopped:
+        headline, state = 'Collection is stopped. Continue where you left off.', 'paused'
+    elif running:
+        headline, state = running['now'], 'running'
+    elif waiting:
+        headline, state = waiting['now'], 'wait'
+    elif queued or jobs:
+        headline, state = 'Work is saved in the queue. Waiting for an account to pick it up.', 'wait'
     else:
-        headline, state = f'All lists collected. {ranked:,} people ranked.', 'done'
+        headline, state = 'Collection is ready. Your saved people are available in Leads.', 'done'
     return {'state': state, 'headline': headline, 'lists': lists, 'people': people, 'bios': bios, 'ranked': ranked,
-            'jobs_left': jobs}
+            'jobs_left': jobs, 'stop_acknowledged': controls.get('stop_acknowledged', False), 'totals_scope': 'workspace'}

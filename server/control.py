@@ -243,10 +243,35 @@ def snapshot(conn, ai_left=None):
               stage_out(conn, 'bios', accts, rows, c['bios'], now, queue['profile']),
               stage_out(conn, 'ai', accts, rows, c['ai'], now, ai_left or 0)]
     both = all(s['paused'] for s in stages[:2])
+    gate = db.get_setting(conn, 'instagram_request_gate') or {}
+    request = gate.get('active') or {}
+    until = request.get('until')
+    active = bool(request and isinstance(until, (int, float)) and not isinstance(until, bool)
+                  and until > now.timestamp())
+    attention = db.get_setting(conn, 'instagram_request_attention')
+    unconfirmed = bool(request and not active) or bool(isinstance(attention, dict) and attention.get('message'))
+    if request and not active and not attention:
+        # Expiry does not prove that a browser request stopped. GET reports the
+        # uncertainty; only the existing request gate changes collection policy.
+        attention = {'lane': request.get('lane'), 'message':
+                     'An Instagram request did not confirm completion. Check the account tab before continuing.'}
+    for stage in stages[:2]:
+        stage['active'] = active and request.get('kind') == KIND[stage['id']]
+        stage['stop_acknowledged'] = stage['paused'] and not stage['active'] and not unconfirmed
+        if stage['paused'] and stage['active']:
+            stage.update(state='stopping', now='Finishing the current Instagram request. Your progress is saved.')
+        elif stage['paused'] and unconfirmed:
+            stage.update(attention=attention, now=attention.get('message') if isinstance(attention, dict) else
+                         'Waiting for the account to confirm collection has stopped.')
+    stopping = both and active
+    acknowledged = both and not (active or unconfirmed)
     return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
             'all_paused': all(s['paused'] for s in stages) and not processing_modes.allows(conn, 'laya'),
             'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
-            'instagram_request_attention': db.get_setting(conn, 'instagram_request_attention'),
+            'instagram_request_attention': attention, 'active': active, 'stopping': stopping,
+            'stop_acknowledged': acknowledged,
+            'collection': {'paused': both, 'active': active, 'stopping': stopping,
+                           'stop_acknowledged': acknowledged, 'unconfirmed': unconfirmed},
             'at': iso(now)}
 
 

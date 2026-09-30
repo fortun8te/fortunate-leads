@@ -2664,7 +2664,8 @@ def api_local_processing(conn, q, b):
                  e['state'] == 'stopping' for e in engines['engines'].values()) else
              'off' if not enabled else 'paused' if paused else 'waiting_for_mac' if waiting else
              'starting' if _service_start_state['state'] == 'starting' else 'unavailable' if not runtime.get('ready') else
-             'working' if summary.get('pending') or pending or summary.get('seeding') else 'ready')
+             'working' if engines['engines']['k2']['active'] and not engines['engines']['k2'].get('activity_unknown') else
+             'waiting' if summary.get('pending') or pending or summary.get('seeding') else 'ready')
     return dict(summary, queue=summary['pending'],
                 reviewed=counts.get('complete', 0) + counts.get('needs_research', 0),
                 unverified=counts.get('unverified', 0) + counts.get('insufficient_evidence', 0),
@@ -2822,20 +2823,24 @@ def api_onboarding(conn, q, b):
                               onboarding.backup_agent_loaded(), set(db.get_setting(conn, 'onboarding_skipped') or []),
                               {'extension_version': json.loads((ROOT / 'extension' / 'manifest.json').read_text()).get('version')})
     hold = workspace_cooldown(conn, now)
-    return {**onboarding.summarize(steps), 'steps': steps,
-            'flow': onboarding.flow(conn, bool(db.get_setting(conn, 'paused')), hold, accts)}
+    controls = api_control(conn, {}, {})
+    return {**onboarding.summarize(steps), 'steps': steps, 'control': controls,
+            'flow': onboarding.flow(conn, hold, controls)}
 
 
 def api_start(conn, q, b):
-    """The one button: queue both lists of an Instagram account and switch collection on at the normal pace."""
+    """Queue the chosen lists and resume collection at the normal safe pace."""
     handles = b.get('handles') if isinstance(b.get('handles'), list) else [b.get('handle')]
-    queued = api_seeds(conn, q, {'handles': handles, 'directions': ['followers', 'following']})['queued']
-    started, note = True, None
+    directions = b.get('directions', ['followers', 'following'])
+    queued = api_seeds(conn, q, {'handles': handles, 'directions': directions})['queued']
+    started, note, controls = True, None, None
     try:
-        api_control_set(conn, q, {'stage': 'collection', 'action': 'resume'})
+        controls = api_control_set(conn, q, {'stage': 'collection', 'action': 'resume'})
     except Bad as exc:
         started, note = False, str(exc)
-    return {'queued': queued, 'started': started, 'note': note}
+    return {'queued': queued, 'started': started, 'note': note,
+            'directions': list(dict.fromkeys(directions)),
+            'control': controls if controls is not None else api_control(conn, {}, {})}
 
 
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
