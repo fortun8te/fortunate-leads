@@ -1,0 +1,52 @@
+[
+ {
+  "check": "First lead is the cursor on load",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "s opens the status menu",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Choosing a status closes the menu and shows Undo",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Undo restores the previous status",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "j moves the cursor",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Enter opens detail",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "n focuses the note",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Esc closes detail",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Detail closes when leaving Leads",
+  "passed": true,
+  "actual": true
+ },
+ {
+  "check": "Detail stays closed on return",
+  "passed": true,
+  "actual": true
+ }
+]
