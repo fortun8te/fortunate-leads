@@ -39,7 +39,7 @@ SEED_CLUSTERS = 160                           # seeds: one cluster per source, b
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -103,12 +103,12 @@ def snap_min_fit(value):
     return edge
 
 
-def cls_of(status_code, fit):
-    return status_code * 8 + fit_band(fit)
+def cls_of(status_code, fit, follow=0):
+    return follow * 64 + status_code * 8 + fit_band(fit)
 
 
 def is_lead(cls):
-    status_code, band = divmod(cls, 8)
+    status_code, band = divmod(cls % 64, 8)
     return status_code != 6 and (band == 0 or band >= 3)
 
 
@@ -229,13 +229,14 @@ NETWORK_LABELS = ('Direct connections', 'Known sources', 'Shared audiences', 'Ot
 NETWORK_CENTRES = ((0.57, 0.378756, 0.068), (0.375, 0.716506, 0.095),
                    (0.208558, 0.32473, 0.115), (0.839119, 0.586591, 0.115),
                    (0.5, 0.5, 0.035))
+NETWORK_RADII = ((.075, .21), (.16, .32), (.22, .405), (.255, .47))
 
 
 def network_group(F, ctx):
     pid, deg, score, fit, code, me, seeds, src, fam, rel = F
     if pid == ctx.owner_id:
         return 4
-    if me or fam or rel or code in (3, 4, 5):
+    if me & 3 or fam or rel or code in (3, 4, 5):
         return 0
     others = [s for s in seeds if s != ctx.owner]
     if any(s in ctx.known_sources for s in others):
@@ -268,6 +269,15 @@ def make_plan(conn):
     classes = source_classes(conn, [h for h, _ in sources])
     total = conn.execute('SELECT count(*) FROM people').fetchone()[0]
     comm = [h for h, _ in sources[:COMMUNITIES]]
+    # Allocate angular space by collected audience size, softened so a large
+    # audience has room without swallowing every smaller neighborhood.
+    counts = [n for _, n in sources[:COMMUNITIES]]
+    counts.append(max(1, sum(n for _, n in sources[COMMUNITIES:])))
+    weights = [max(1, n) ** .65 for n in counts]
+    angle, sectors = -math.pi / 2, []
+    for weight in weights:
+        width = TWO_PI * weight / sum(weights)
+        sectors.append([angle, width]); angle += width
     seed_list = sources[:SEED_CLUSTERS]
     known_sources = known_source_handles(conn, [h for h, _ in sources])
     # seeds mode: a sunflower of source centres, biggest in the middle
@@ -289,7 +299,7 @@ def make_plan(conn):
     owner_id = row[0] if row else 0
     plan = {'id': hashlib.sha1(f'{time.time()}-{os.getpid()}'.encode()).hexdigest()[:10],
             'made_at': db.now(), 'owner': owner, 'owner_id': owner_id, 'people': total, 'src': src,
-            'comm': comm, 'network_centres': NETWORK_CENTRES, 'known_sources': known_sources,
+            'comm': comm, 'network_disk': True, 'network_sectors': sectors, 'known_sources': known_sources,
             'seed_list': [h for h, _ in seed_list], 'centres': centres, 'source_ids': source_ids}
     return plan
 
@@ -305,6 +315,8 @@ class Ctx:
         self.k_other = len(plan['comm'])
         self.k_me = self.k_other + 1
         self.network_centres = plan.get('network_centres')
+        self.network_disk = plan.get('network_disk', False)
+        self.network_sectors = plan.get('network_sectors', [])
         self.known_sources = set(plan.get('known_sources', []))
         self.audience_centres = plan.get('audience_centres')
         # Keep an older active layout consistent until an explicit rebuild replaces it.
@@ -316,6 +328,19 @@ class Ctx:
         """Label anchors for the renderer: [{id,label,x,y,r}]."""
         out = []
         if mode == 'closeness':
+            if self.network_disk:
+                for audience in range(self.k_other + 1):
+                    label = ('Audience of @' + self.plan['comm'][audience] if audience < self.k_other else 'Other collected audiences')
+                    start, width = self.network_sectors[audience]
+                    theta = start + .5 * width
+                    for category, (low, high) in enumerate(NETWORK_RADII):
+                        radius = math.sqrt((low * low + high * high) / 2)
+                        out.append({'id': audience * 4 + category, 'label': label,
+                                    'category': NETWORK_LABELS[category],
+                                    'x': .5 + radius * math.cos(theta), 'y': .5 + radius * math.sin(theta),
+                                    'r': min(.045, radius * width * .22)})
+                out.append({'id': (self.k_other + 1) * 4, 'label': 'You', 'x': .5, 'y': .5, 'r': .035})
+                return out
             if self.network_centres:
                 return [{'id': k, 'label': NETWORK_LABELS[k], 'x': p[0], 'y': p[1], 'r': p[2]}
                         for k, p in enumerate(self.network_centres)]
@@ -404,6 +429,14 @@ def load_features(conn, ctx, ids=None, lo=None, hi=None):
     for pid, direction in conn.execute(f'SELECT person_id,direction FROM current_edges WHERE seed=? AND {where}',
                                        [owner, *args]):
         me[pid] = me.get(pid, 0) | (2 if direction == 'followers' else 1)
+    # Absence is recorded only when a complete tracked following check disproves
+    # a previously observed edge. No edge/partial coverage remains unknown.
+    for (pid,) in conn.execute(f"SELECT person_id FROM edge_evidence WHERE seed=? AND direction='following' "
+                              f'AND active=0 AND {where} AND EXISTS(SELECT 1 FROM edges e '
+                              'WHERE e.seed=edge_evidence.seed AND e.person_id=edge_evidence.person_id '
+                              'AND e.direction=edge_evidence.direction)', [owner, *args]):
+        if not me.get(pid, 0) & 1:
+            me[pid] = me.get(pid, 0) | 4
     out = {}
     for pid in present:
         rel, fam = own.get(pid, (None, None))
@@ -446,7 +479,7 @@ def closeness(F, ctx):
     c = 0.03
     if n:
         c = 0.06 + 0.30 * (1 - 0.55 ** (n - 1))
-    c += ME_TERM[me]
+    c += ME_TERM[me & 3]
     if n:
         srcs = ctx.src
         client = known = 0
@@ -497,7 +530,21 @@ def layout_row(mode, F, ctx, c=None):
     others = [s for s in seeds if s != owner]
     u1, u2, u3 = uniforms(pid, MODES.index(mode))
     if mode == 'closeness':
-        if ctx.network_centres:
+        if ctx.network_disk:
+            if pid == ctx.owner_id:
+                k, x, y = (ctx.k_other + 1) * 4, .5, .5
+            else:
+                category = network_group(F, ctx)
+                recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
+                chosen = min(recorded, key=lambda s: (ctx.plan['src'][s][0], s)) if recorded else None
+                audience = ctx.src[chosen][1] if chosen else ctx.k_other
+                start, width = ctx.network_sectors[audience]
+                theta = start + (.035 + .93 * u1) * width
+                low, high = NETWORK_RADII[category]
+                radius = math.sqrt(low * low + u2 * (high * high - low * low))
+                x, y = .5 + radius * math.cos(theta), .5 + radius * math.sin(theta)
+                k = audience * 4 + category
+        elif ctx.network_centres:
             k = network_group(F, ctx)
             cx, cy, radius = ctx.network_centres[k]
             if pid == ctx.owner_id:
@@ -565,7 +612,7 @@ def layout_row(mode, F, ctx, c=None):
         theta = TWO_PI * u1
         x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
     rk = f32(min(1.0, max(0.0, raw)) * 0.9999 + 1e-4 * u3)
-    return (pid, to_micro(x), to_micro(y), rk, cluster, cls_of(code, fit), fit, int(round(c * 1000)), src)
+    return (pid, to_micro(x), to_micro(y), rk, cluster, cls_of(code, fit, me), fit, int(round(c * 1000)), src)
 
 
 def rows_for(mode, F, ctx):
@@ -782,14 +829,14 @@ def build(db_path, modes=MODES, chunk=100_000, workers=1, fresh=False, log=None)
         src = db.connect(db_path)
         try:
             state = _read_json(directory / 'plan.json')
-            if fresh or not state or state.get('state') != 'building' or state.get('modes') != list(modes):
+            if fresh or not state or state.get('state') != 'building' or state.get('modes') != list(modes) or state.get('schema') != SCHEMA_VERSION:
                 plan = make_plan(src)
                 for mode in modes:
                     for suffix in ('', '-wal', '-shm'):
                         (directory / f'{mode}.building.sqlite{suffix}').unlink(missing_ok=True)
                 # Retain queued edits: partial-mode builds and resumed builds must
                 # not discard updates owed to other active layouts.
-                _write_json(directory / 'plan.json', {'state': 'building', 'modes': list(modes), 'plan': plan,
+                _write_json(directory / 'plan.json', {'state': 'building', 'schema': SCHEMA_VERSION, 'modes': list(modes), 'plan': plan,
                                                       'started': time.time()})
             else:
                 plan = state['plan']
@@ -803,7 +850,7 @@ def build(db_path, modes=MODES, chunk=100_000, workers=1, fresh=False, log=None)
                 results = pool.map(_build_worker, jobs, chunksize=1)
         else:
             results = [_build_worker(job) for job in jobs]
-        _write_json(directory / 'plan.json', {'state': 'done', 'modes': list(modes), 'plan': plan,
+        _write_json(directory / 'plan.json', {'state': 'done', 'schema': SCHEMA_VERSION, 'modes': list(modes), 'plan': plan,
                                               'started': started, 'finished': time.time()})
         for mode in modes:
             (directory / f'progress_{mode}.json').unlink(missing_ok=True)
@@ -889,6 +936,8 @@ def apply_ids(db_path, ids, main=None):
                 continue
             store = open_store(mode_path(db_path, mode))
             try:
+                if meta_get(store, 'schema') != SCHEMA_VERSION:
+                    continue
                 ctx = load_ctx(store)
                 if ctx is None:
                     continue
@@ -1008,6 +1057,8 @@ def status(db_path, main=None):
                 info.update(rev=meta_get(store, 'rev'), built_at=meta_get(store, 'built_at'),
                             build_id=meta_get(store, 'build_id'), counts=meta_get(store, 'counts'),
                             bytes=path.stat().st_size)
+                info['schema'] = meta_get(store, 'schema')
+                info['ready'] = info['schema'] == SCHEMA_VERSION
             finally:
                 store.close()
         progress = _read_json(directory / f'progress_{mode}.json')

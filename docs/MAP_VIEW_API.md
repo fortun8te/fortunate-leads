@@ -7,7 +7,8 @@ zooming in reveals the next-ranked people. The older `/api/map`, `/api/map-overv
 `/api/connections` endpoints are unchanged.
 
 All coordinates are normalized: x and y are in `[0,1]`, origin top-left, y grows downward.
-The world is always `{"w":1,"h":1}`.
+The world always includes `{"w":1,"h":1}`. Current default layouts also return
+`layout:"network_disk"`, `center:{"x":0.5,"y":0.5}` and `radius:0.47`.
 
 ## GET /api/map/view
 
@@ -19,6 +20,8 @@ The world is always `{"w":1,"h":1}`.
 | `scope` | `leads` or `all`. Default `leads` (`all` in `status` mode, so "not a fit" is visible). `leads` leaves out people marked "not a fit" and people with a known fit below 45. Unread people remain available until qualified. |
 | `min_fit` | 0..100. Only people with a qualification fit at or above it. Snapped **down** to 0, 25, 45, 60, 70 or 85; the value used comes back in `filters.min_fit`. Unread people have no fit and never pass. |
 | `status` | Comma list of `interested, contacted, talking, spoke_before, client, no, none`, or `all`. Absent means everything except `no` (in `status` mode: everything). |
+| `follow` | `all` (default), `following` (owner follows them), `followers` (they follow owner), `mutual`, `not_following` or `unknown`. Negative results require explicit outgoing absence recorded by a complete check; missing outgoing evidence stays unknown, even when an incoming follow is known. |
+| `overview` | `1` opts the whole-world default mode into spatial overview sampling: up to a quarter of the budget (maximum 120 people) comes from up to 12 occupied spatial sectors. Default `0` keeps exact rank ordering. Search/zoom and other modes retain ordinary ranked selection. |
 | `q` | Handle or name text. Restricts the population to matches (see Search limits). `total` counts matches, capped at 2,000 (`filters.q_capped`). |
 
 Response:
@@ -58,7 +61,8 @@ Fields:
   all describe exactly this rectangle. Nodes may therefore sit slightly outside the requested one.
   Nearby pans snap to the same rectangle, so they share one cached body.
 - `nodes`: up to `budget` people, sorted by `rank` descending (ties by `id`). They are exactly the
-  top-ranked matching people inside `viewport`.
+  top-ranked matching people inside `viewport`, except an explicit whole-world `overview=1`
+  balances priority people with bounded samples from occupied sectors. Counts remain exact.
   - `id` is the person id (`/api/person/<id>`), `handle` and `name` are current.
   - `rank` 0..1 is importance inside this mode (1 is most important). It only orders people.
   - `fit` 0..100 is the qualification fit, `null` when unread. `status` is the pipeline status
@@ -67,16 +71,22 @@ Fields:
     good and client accounts, seed overlap and pipeline status.
   - `cluster` is the semantic cluster id for colour (see Modes). `lead` follows `scope=leads`.
   - `source: true` appears only on source (seed) accounts that have a person row.
+  - `pic` is the local `/img/<id>` URL only when a cached portrait exists, otherwise `null`.
+  - `followed` and `follows_me` preserve the independent observed owner directions.
+    `following_evidence` is `observed`, `absent` or `unknown`; `absent` means the last complete
+    following check disproved a prior observation. It is not a claim about the live account now.
 - `clusters`: bubbles for everyone matching but not shown as a node. Each is one grid cell of the
   viewport crossed with one cluster. `count` is people hidden in it, `x,y` their centroid, `label` the
   cluster name, `top_ids` up to 3 of the highest-ranked hidden people (they appear first when zooming
   in; empty when none rank near the cut). `id` is stable for the same cell and cluster.
   **Invariant: the sum of all `clusters[].count` equals `hidden`.**
 - `groups`: the semantic clusters of the mode whose centre lies in `viewport` (label anchors for the
-  renderer, independent of `budget`). `r` is a drawing radius.
+  renderer, independent of `budget`). `r` is a small label-anchor radius; default network
+  groups are source/evidence neighborhoods, not circles enclosing every member. `category`
+  describes the broad evidence band. The whole disk boundary comes from `world.radius`.
 - `total`: people matching the filters inside `viewport`. `shown = len(nodes) <= budget`.
   `hidden = total - shown`. `world_total` is the same count for the whole world.
-- `ready:false`: the layout for this mode is not built yet. `nodes` and `clusters` are empty,
+- `ready:false`: the layout for this mode is not built yet or has an older incompatible schema. `nodes` and `clusters` are empty,
   `layout.building` and `layout.progress` say how far the build is; poll again. Never cached.
 
 Caching: every response carries `ETag` (`"<build>-<rev>-<query hash>"`) and `Cache-Control: no-cache`.
@@ -136,7 +146,7 @@ place until their own data changes.
 
 | Mode | Layout | `cluster` | Rank |
 | --- | --- | --- | --- |
-| `closeness` | Owner at the centre, with four separated spheres at increasing evidence distances. | Direct connections, Known sources, Shared audiences, Other collected; owner separate | closeness, then score |
+| `closeness` | One owner-centred disk, with source neighborhoods in broad evidence distance bands. | source audience crossed with direct, known-source, shared or other evidence; owner separate | closeness, then score |
 | `fit` | Four blobs: strong (70+), good (45-69), weak (under 45), not read. Higher fit sits nearer the blob centre. | 0 not read, 1 weak, 2 good, 3 strong | fit, then closeness |
 | `seeds` | One cluster per source account. People sit at the centre of the sources they appear in, so people in several lists sit between clusters. | source index by size; the last id is "other" | number of sources, then closeness |
 | `status` | Blobs by pipeline status. | 0 none, 1 interested, 2 contacted, 3 talking, 4 spoke before, 5 client, 6 not a fit | status, then score |
@@ -174,8 +184,21 @@ files from a different database snapshot, because their person IDs and revision 
 
 ## Default network arrangement
 
-The owner stays in the centre. Four surrounding spheres distinguish directly recorded owner follows or manual relationship context, links through recorded clients or known sources, shared source audiences, and other collected accounts. Their centre distances increase across those evidence categories. Position inside a sphere is a stable packing arrangement and is not a more precise measure of familiarity. Recorded follows and shared audiences are evidence, not proof of friendship or an introduction.
+The owner stays at the centre of one circular whole. Collected source audiences form stable angular
+neighborhoods, with smaller evidence groups inside them. Broad radial bands distinguish directly
+recorded owner follows or manual relationship context, links through recorded clients or known
+sources, shared audiences, and other collected accounts. Radial bands overlap for readable packing;
+positions within them do not express a precise friendship distance. Unknown evidence stays explicit.
+Recorded follows and shared audiences do not prove friendship or an introduction.
 
-Sphere size and count describe grouped people; individual dot size describes fit. Labels and a concise key explain these different meanings. Zoom is limited to six times the overview. Clicking a sphere reveals a bounded selection inside it; returning to the overview restores the owner-centred view. Search locates saved profiles directly. The other modes group by fit, source and workflow status.
+People use actual cached portraits when available. Group counts describe hidden people and individual
+size describes existing fit. The optional overview keeps priority people and adds bounded spatial
+samples so the outer neighborhoods remain visible. Zoom reveals further ranked people within the
+requested region; search locates saved profiles directly. Other modes group by fit, source and status.
+
+Layout schema 5 stores owner-direction facets alongside status and fit in the precomputed class.
+The API uses bounded integer class predicates rather than binding an oversized bitmask to SQLite.
+Older layouts report unprepared and remain untouched by incremental updates; an explicit build
+creates the current schema. Interrupted plans from an older schema are not resumed.
 
 The interface keeps the full filtered population separate from the count inside the current viewport. Layout preparation and browser rendering remain separate from collection and qualification.

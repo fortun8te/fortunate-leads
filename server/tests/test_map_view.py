@@ -77,6 +77,27 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(result['ready'])
         self.assertFalse(ML.map_dir(path).exists())
 
+    def test_old_layout_is_unprepared_and_old_build_plan_is_not_resumed(self):
+        path = Path(self.temp.name) / 'old-schema.sqlite'
+        make(path, people=50)
+        ML.build(path, modes=('closeness',))
+        conn = db.connect(path); self.addCleanup(conn.close)
+        store = ML.open_store(ML.mode_path(path, 'closeness'))
+        plan = ML.meta_get(store, 'plan')
+        ML.meta_set(store, 'schema', ML.SCHEMA_VERSION - 1)
+        store.close()
+        MV.close_pool()
+        self.assertFalse(json.loads(MV.view(conn,path,{},cache=False).body)['ready'])
+        self.assertFalse(ML.status(path)['modes']['closeness']['ready'])
+        self.assertEqual(ML.apply_ids(path,[self.fixture['first']],main=conn), {})
+        plan.pop('network_disk', None)
+        plan['network_centres'] = ML.NETWORK_CENTRES
+        ML._write_json(ML.map_dir(path) / 'plan.json', {'state':'building','schema':ML.SCHEMA_VERSION-1,
+                       'modes':['closeness'],'plan':plan})
+        ML.build(path,modes=('closeness',))
+        with MV.reader(path,'closeness') as current:
+            self.assertTrue(ML.load_ctx(current.conn).network_disk)
+
     def test_edges_have_correct_handles_and_positions(self):
         pid = self.fixture['source_ids']['src01']
         result = MV.edges(self.conn, {'ids':[str(pid)]}, self.path)
@@ -144,26 +165,74 @@ class MapViewTests(unittest.TestCase):
             with MV.reader(self.path,mode) as store:
                 self.assertIsNone(store.conn.execute('SELECT 1 FROM mp WHERE person_id=?',(pid,)).fetchone())
 
-    def test_network_centres_preserve_recorded_evidence_and_owner_origin(self):
+    def test_network_disk_preserves_recorded_evidence_and_owner_origin(self):
         with MV.reader(self.path, 'closeness') as store:
             ctx = ML.load_ctx(store.conn)
             groups = ctx.groups('closeness')
-        self.assertEqual(len(groups), 5)
-        distances = [((g['x']-.5)**2+(g['y']-.5)**2)**.5 for g in groups[:4]]
-        self.assertEqual(distances, sorted(distances))
-        for i, group in enumerate(groups):
-            for other in groups[i+1:]:
-                distance = ((group['x']-other['x'])**2+(group['y']-other['y'])**2)**.5
-                self.assertGreater(distance, group['r']+other['r'])
+        self.assertGreater(len(groups), 5)
+        self.assertTrue(ctx.network_disk)
+        self.assertTrue(all(((g['x']-.5)**2+(g['y']-.5)**2)**.5 < .47 for g in groups))
         owner = ML.features_for(self.conn, ctx, [ctx.owner_id])[ctx.owner_id]
         row = ML.layout_row('closeness', owner, ctx)
         self.assertAlmostEqual(ML.coord(row[1]), .5, places=6)
         self.assertAlmostEqual(ML.coord(row[2]), .5, places=6)
-        self.assertEqual(row[4], 4)
+        self.assertEqual(row[4], (ctx.k_other + 1) * 4)
         feature = ML.features_for(self.conn, ctx, [self.fixture['first']])[self.fixture['first']]
         row = ML.layout_row('closeness', feature, ctx)
-        self.assertEqual(row[4], ML.network_group(feature,ctx))
+        self.assertEqual(row[4] % 4, ML.network_group(feature,ctx))
         self.assertEqual(row[7], int(round(ML.closeness(feature,ctx)*1000)))
+        category = ML.network_group(feature, ctx)
+        radius = ((ML.coord(row[1])-.5)**2+(ML.coord(row[2])-.5)**2)**.5
+        low, high = ML.NETWORK_RADII[category]
+        self.assertGreaterEqual(radius, low-1e-6)
+        self.assertLessEqual(radius, high+1e-6)
+
+    def test_overview_keeps_exact_counts_with_bounded_spatial_sampling(self):
+        result = self.view({'scope': ['all'], 'budget': ['80'], 'overview': ['1']})
+        self.assertEqual(result['world']['layout'], 'network_disk')
+        self.assertLessEqual(len(result['nodes']), 80)
+        self.assertEqual(len({n['id'] for n in result['nodes']}), len(result['nodes']))
+        self.assertEqual(sum(b['count'] for b in result['clusters']), result['hidden'])
+        self.assertIn(result['world']['me']['id'], {n['id'] for n in result['nodes']})
+        self.assertTrue(all((n['x']-.5)**2+(n['y']-.5)**2 <= .47**2+1e-6 for n in result['nodes']))
+
+    def test_follow_direction_uses_observation_and_explicit_absence_only(self):
+        path = Path(self.temp.name) / 'directions.sqlite'
+        conn = db.init(str(path)); self.addCleanup(conn.close)
+        conn.execute("INSERT INTO seeds(handle,is_me) VALUES('owner',1)")
+        for pid in range(1, 9):
+            conn.execute("INSERT INTO people(id,handle,pic_file,first_seen,updated_at) VALUES(?,?,?,'now','now')",
+                         (pid, 'owner' if pid == 1 else f'person{pid}', 'saved.jpg' if pid in (1, 2) else None))
+        for pid, direction in ((2,'following'),(3,'followers'),(4,'following'),(4,'followers'),(5,'following'),(7,'following'),(7,'followers')):
+            db.add_edge(conn, 'owner', pid, direction)
+        # Explicit negative observations stand for the collector's proven complete
+        # snapshot; legacy edges and never-collected profiles remain unknown.
+        conn.execute("UPDATE edge_evidence SET active=0 WHERE seed='owner' AND direction='following' AND person_id IN(5,7)")
+        db.add_edge(conn, 'owner', 6, 'following', observed=False)
+        conn.commit(); ML.build(path, modes=('closeness',))
+        expected = {'following': {2,4}, 'followers': {3,4,7}, 'mutual': {4},
+                    'not_following': {5,7}, 'unknown': {1,3,6,8}, 'all': set(range(1,9))}
+        for follow, ids in expected.items():
+            result = json.loads(MV.view(conn,path,{'scope':['all'],'follow':[follow]},cache=False).body)
+            self.assertEqual({n['id'] for n in result['nodes']}, ids, follow)
+            self.assertEqual(result['total'], len(ids))
+            self.assertEqual(result['world']['me']['pic'], '/img/1')
+            for node in result['nodes']:
+                if node['id'] in (5,7): self.assertEqual(node['following_evidence'], 'absent')
+                if node['id'] in (1,3,6,8): self.assertEqual(node['following_evidence'], 'unknown')
+                if node['id'] == 2: self.assertEqual(node['pic'], '/img/2')
+        # A later positive observation wins over the dated negative. Source case
+        # differences and an inactive incoming direction cannot invert that fact.
+        db.add_edge(conn, 'OWNER', 5, 'following', ts='2099-01-01T00:00:00+00:00')
+        conn.execute("INSERT INTO edges VALUES('owner',2,'followers','now')")
+        conn.execute("INSERT INTO edge_evidence VALUES('owner',2,'followers',0,NULL,'now')")
+        conn.commit(); ML.apply_dirty(path, main=conn)
+        result = json.loads(MV.view(conn,path,{'scope':['all'],'follow':['following']},cache=False).body)
+        self.assertEqual({n['id'] for n in result['nodes']}, {2,4,5})
+        self.assertTrue(all(n['following_evidence'] == 'observed' for n in result['nodes']))
+        absent = json.loads(MV.view(conn,path,{'scope':['all'],'follow':['not_following']},cache=False).body)
+        self.assertEqual({n['id'] for n in absent['nodes']}, {7})
+        with self.assertRaises(ValueError): MV.Query({'follow':['unsupported']})
 
     def test_network_group_never_promotes_an_interested_source_to_a_known_relationship(self):
         plan = {'owner': 'owner', 'owner_id': 1, 'src': {'cold': [10,1,0,0]}, 'comm': ['cold'],

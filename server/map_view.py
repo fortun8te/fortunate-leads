@@ -144,7 +144,7 @@ def reader(db_path, mode):
     try:
         conn.execute('BEGIN')
         try:
-            yield Store(conn, path, mode)
+            yield Store(conn, path, mode) if ML.meta_get(conn, 'schema') == ML.SCHEMA_VERSION else None
         finally:
             conn.execute('ROLLBACK')
     except BaseException:
@@ -186,17 +186,22 @@ def parse_status(text, mode):
     return codes
 
 
-def class_mask(mode, scope, min_fit, codes):
+FOLLOW_FILTERS = {'all': (0, 1, 2, 3, 4, 6), 'following': (1, 3), 'followers': (2, 3, 6),
+                  'mutual': (3,), 'not_following': (4, 6), 'unknown': (0, 2)}
+
+
+def class_mask(mode, scope, min_fit, codes, follow='all'):
     if codes is None:
         codes = set(range(7)) if mode == 'status' else set(range(6))
     minband = 0 if min_fit is None else ML.BAND_EDGES.index(min_fit) + 1
     mask = 0
-    for code in codes:
-        for band in range(7):
-            cls = code * 8 + band
-            if band < minband or (scope == 'leads' and not ML.is_lead(cls)):
-                continue
-            mask |= 1 << cls
+    for direction in FOLLOW_FILTERS[follow]:
+        for code in codes:
+            for band in range(7):
+                cls = direction * 64 + code * 8 + band
+                if band < minband or (scope == 'leads' and not ML.is_lead(cls)):
+                    continue
+                mask |= 1 << cls
     return mask
 
 
@@ -238,11 +243,18 @@ class Query:
         self.text = q.get('q', [''])[0].strip()
         if self.text and len(self.text.lstrip('@')) < SEARCH_MIN:
             raise ValueError('q needs at least 2 characters')
-        self.mask = class_mask(self.mode, self.scope, self.min_fit, self.codes)
+        self.follow = q.get('follow', ['all'])[0].strip().lower() or 'all'
+        if self.follow not in FOLLOW_FILTERS:
+            raise ValueError('follow must be all, following, followers, mutual, not_following or unknown')
+        overview = q.get('overview', ['0'])[0].strip()
+        if overview not in ('0', '1', ''):
+            raise ValueError('overview must be 0 or 1')
+        self.overview = overview == '1'
+        self.mask = class_mask(self.mode, self.scope, self.min_fit, self.codes, self.follow)
 
     def key(self):
         return json.dumps([self.mode, list(self.rect), self.budget, self.scope, self.min_fit,
-                           self.status_text, self.text.lower()], separators=(',', ':'))
+                           self.status_text, self.text.lower(), self.follow, self.overview], separators=(',', ':'))
 
 
 def _etag(store, query):
@@ -297,10 +309,17 @@ def world_total(store, mask):
 _CNT_B = ('SELECT count(*) FROM (SELECT 1 FROM rtb WHERE maxx>=? AND minx<=? AND maxy>=? AND miny<=? '
           'AND minr>=? LIMIT ?)')
 _CNT_K = ('SELECT count(*) FROM (SELECT 1 FROM rtk WHERE maxx>=? AND minx<=? AND maxy>=? AND miny<=? '
-          'AND minr>=? AND ((?>>cls)&1) LIMIT ?)')
+          'AND minr>=? AND {classes} LIMIT ?)')
 _TOP_B = 'SELECT id,minr,0 FROM rtb WHERE maxx>=? AND minx<=? AND maxy>=? AND miny<=? AND minr>=?'
 _TOP_K = ('SELECT id,minr,cls FROM rtk WHERE maxx>=? AND minx<=? AND maxy>=? AND miny<=? AND minr>=? '
-          'AND ((?>>cls)&1)')
+          'AND {classes}')
+
+
+def _class_sql(mask):
+    # SQLite integers cannot hold the direction/status/fit bitset. The class
+    # universe is bounded, and every literal here comes from an integer bit index.
+    values = [str(cls) for cls in range(7 * 64) if (mask >> cls) & 1]
+    return 'cls IN (' + ','.join(values) + ')' if values else '0'
 
 
 def _quantile_cut(quantiles, want, fraction):
@@ -329,9 +348,10 @@ def top_ranked(store, rect, mask, want, fraction):
                                 (cls, want)) for cls in classes]
         return list(islice(heapq.merge(*cursors, key=lambda row: (-row[1], row[0])), want))
     bulk = mask & 1
+    class_sql = _class_sql(mask)
 
     def count(tau, cap):
-        n = conn.execute(_CNT_K, (x0, x1, y0, y1, tau, mask, cap)).fetchone()[0]
+        n = conn.execute(_CNT_K.format(classes=class_sql), (x0, x1, y0, y1, tau, cap)).fetchone()[0]
         if bulk and n < cap:
             n += conn.execute(_CNT_B, (x0, x1, y0, y1, tau, cap - n)).fetchone()[0]
         return n
@@ -357,8 +377,8 @@ def top_ranked(store, rect, mask, want, fraction):
                 hi = mid
         if tau is None:
             tau = lo                              # a huge tie: exact but heavy
-    sql = _TOP_K + (' UNION ALL ' + _TOP_B if bulk else '') + ' ORDER BY 2 DESC,1 LIMIT ?'
-    args = [x0, x1, y0, y1, tau, mask] + ([x0, x1, y0, y1, tau] if bulk else []) + [want]
+    sql = _TOP_K.format(classes=class_sql) + (' UNION ALL ' + _TOP_B if bulk else '') + ' ORDER BY 2 DESC,1 LIMIT ?'
+    args = [x0, x1, y0, y1, tau] + ([x0, x1, y0, y1, tau] if bulk else []) + [want]
     return [(r[0], r[1], r[2]) for r in conn.execute(sql, args)]
 
 
@@ -394,7 +414,9 @@ def not_ready(db_path, query, main=None):
 
 def _filters(query, capped):
     return {'scope': query.scope, 'min_fit': query.min_fit, 'status': query.status_text,
-            'q': query.text or None, 'q_capped': capped, 'budget': query.budget}
+            'q': query.text or None, 'q_capped': capped, 'budget': query.budget,
+            'follow': query.follow, 'overview': query.overview,
+            'follow_note': 'Not following requires explicit absence at the last complete check; missing evidence stays unknown.'}
 
 
 def _details(store, ids):
@@ -411,8 +433,8 @@ def _people(conn, ids):
     out = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT id,handle,name FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
-            out[r[0]] = (r[1], r[2])
+        for r in conn.execute('SELECT id,handle,name,pic_file FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+            out[r[0]] = (r[1], r[2], f'/img/{r[0]}' if r[3] else None)
     return out
 
 
@@ -458,11 +480,13 @@ def _bubbles(groups, shown, pool, label_of, depth, per_cell):
 
 def _node(row, people, mode):
     pid, mx, my, rk, cluster, cls, fit, cl, src = row
-    handle, name = people.get(pid, ('', None))
-    status = ML.CODE_STATUS.get(cls >> 3)
+    handle, name, pic = people.get(pid, ('', None, None))
+    status = ML.CODE_STATUS.get((cls % 64) >> 3)
+    follow = cls // 64
     node = {'id': pid, 'handle': handle, 'name': name, 'x': round(ML.coord(mx), 7), 'y': round(ML.coord(my), 7),
             'rank': round(rk, 6), 'fit': fit, 'status': status, 'cluster': cluster, 'closeness': cl / 1000.0,
-            'lead': ML.is_lead(cls)}
+            'lead': ML.is_lead(cls), 'pic': pic, 'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
+            'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown'}
     if src:
         node['source'] = True
     return node
@@ -527,6 +551,8 @@ def _view(conn, db_path, store, query):
     details = _details(store, [r[0] for r in ranked])
     rows = [details[r[0]] for r in ranked if r[0] in details]
     shown, pool = rows[:budget], rows[budget:]
+    if query.overview and mode == 'closeness' and query.rect == (0., 0., 1., 1.) and rows:
+        shown, pool = _overview_rows(store, rows, groups, depth, mask, budget)
     people = _people(conn, [r[0] for r in shown])
     nodes = [_node(r, people, mode) for r in shown]
     bubbles = _bubbles(groups, shown, pool, label_of, depth, per_cell)
@@ -535,10 +561,53 @@ def _view(conn, db_path, store, query):
     return _response(store, query, rect, nodes, bubbles, inside, total, wt, capped)
 
 
+def _overview_rows(store, ranked, groups, depth, mask, budget):
+    """Reserve a quarter of an explicit overview for occupied spatial sectors.
+
+    At most twelve existing count cells are probed, with the same bounded rank
+    fetch. All returned people remain actual layout rows and count subtraction
+    uses their exact cells. Ordinary ranked views keep their original ordering.
+    """
+    reserve = min(budget // 4, 120)
+    shown = list(ranked[:max(1, budget - reserve)])
+    ids = {r[0] for r in shown}
+    cells = {}
+    for (cy, cx, _), (n, sx, sy) in groups.items():
+        previous = cells.setdefault((cy, cx), [0, 0, 0])
+        previous[0] += n; previous[1] += sx; previous[2] += sy
+    sectors = {}
+    for (cy, cx), (n, sx, sy) in cells.items():
+        x, y = sx / n / ML.MICRO, sy / n / ML.MICRO
+        radius = math.hypot(x - .5, y - .5)
+        if radius < .18:
+            continue
+        sector = int(((math.atan2(y - .5, x - .5) + math.pi) / ML.TWO_PI) * 12) % 12
+        previous = sectors.get(sector)
+        if previous is None or n > previous[0]:
+            sectors[sector] = (n, cy, cx)
+    extra = []
+    per_cell = max(1, math.ceil(reserve / max(1, len(sectors))))
+    grid = 1 << depth
+    for _, cy, cx in sectors.values():
+        rect = (cx / grid, cy / grid, (cx + 1) / grid, (cy + 1) / grid)
+        candidates = top_ranked(store, rect, mask, per_cell + 2, 1 / (grid * grid))
+        found = _details(store, [r[0] for r in candidates])
+        extra.extend(found[r[0]] for r in candidates if r[0] in found)
+    for row in extra + ranked:
+        if row[0] not in ids and len(shown) < budget:
+            shown.append(row); ids.add(row[0])
+    pool = [r for r in ranked if r[0] not in ids]
+    return shown, pool
+
+
 def _response(store, query, rect, nodes, bubbles, groups, total, wt, capped):
     shown = len(nodes)
     counts = store.meta('counts', {})
-    return {'rev': store.rev, 'mode': store.mode, 'ready': True, 'world': {'w': 1, 'h': 1},
+    world = {'w': 1, 'h': 1}
+    if store.mode == 'closeness' and store.meta('plan', {}).get('network_disk'):
+        world.update(layout='network_disk', center={'x': .5, 'y': .5}, radius=.47,
+                     distance_note='Broad bands reflect recorded connection evidence; position within an audience spreads people for readability.')
+    return {'rev': store.rev, 'mode': store.mode, 'ready': True, 'world': world,
             'viewport': dict(zip(('x0', 'y0', 'x1', 'y1'), rect)), 'nodes': nodes, 'clusters': bubbles,
             'groups': groups, 'total': total, 'shown': shown, 'hidden': total - shown, 'world_total': wt,
             'filters': _filters(query, capped),
@@ -710,7 +779,7 @@ def search(conn, db_path, q):
     people = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT id,handle,name FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+        for r in conn.execute('SELECT id,handle,name,pic_file FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
             people[r[0]] = r
     results = []
     with reader(db_path, 'closeness') as store:
@@ -720,8 +789,12 @@ def search(conn, db_path, q):
             continue
         d = details.get(pid)
         cls = d[5] if d else 0
+        follow = cls // 64
         results.append({'id': pid, 'handle': people[pid][1], 'name': people[pid][2],
-                        'fit': d[6] if d else None, 'status': ML.CODE_STATUS.get(cls >> 3),
+                        'pic': f'/img/{pid}' if people[pid][3] else None,
+                        'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
+                        'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown',
+                        'fit': d[6] if d else None, 'status': ML.CODE_STATUS.get((cls % 64) >> 3),
                         'lead': ML.is_lead(cls), 'closeness': d[7] / 1000.0 if d else None,
                         'pending': pid not in positions, 'positions': positions.get(pid, {})})
         if len(results) == 20:
