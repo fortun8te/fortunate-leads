@@ -59,7 +59,11 @@
   const pathOf = (u) => { try { return new URL(u).pathname; } catch { return ''; } };
   // Which kind of Instagram page a tab (or a redirected request) is on.
   function pageKind(url) {
-    const p = pathOf(url);
+    let parsed;
+    try { parsed = new URL(url); } catch { return 'ok'; }
+    if (parsed.protocol !== 'https:' || !/^(www\.|i\.)?instagram\.com$/.test(parsed.hostname)) return 'ok';
+    const p = parsed.pathname;
+    if (/^\/accounts\/scraping_warning\/?$/.test(p)) return 'scraping_warning';
     if (/^\/challenge\//.test(p) || /^\/accounts\/(suspended|disabled)/.test(p)) return 'challenge';
     if (/^\/accounts\/login/.test(p)) return 'login';
     return 'ok';
@@ -110,6 +114,7 @@
     const retryAt = ra ? (Number.isFinite(n) ? now + n * 1000 : Date.parse(ra) || null) : null;
     const out = (code, reason) => ({ code, retryAt, reason });
     const page = res.url ? pageKind(res.url) : 'ok';
+    if (page === 'scraping_warning') return out('challenge', 'scraping_warning');
     if (page === 'challenge') return out('challenge', 'challenge_redirect');
     if (page === 'login') return out('login', 'login_redirect');
     if (/checkpoint_required|challenge_required|\/challenge\//.test(msg)) return out('challenge', 'checkpoint');
@@ -145,6 +150,7 @@
   function pageVerdict(info) {
     if (!info || !info.url) return { code: 'network', reason: 'lookup_tab_gone' };
     const k = pageKind(info.url);
+    if (k === 'scraping_warning') return {code: 'challenge', reason: 'scraping_warning'};
     if (k !== 'ok') return { code: k, reason: k + '_page' };
     const t = String(info.title || '') + ' ' + String(info.text || '');
     if (/page not found|isn.t available|may have been removed/i.test(t)) return { code: 'not_found', reason: 'page_not_found' };
@@ -429,6 +435,7 @@
   function chooseTab(tabs, opts = {}, now = Date.now()) {
     const avoid = opts.avoid && opts.avoid.until > now ? opts.avoid.id : null;
     const ig = (tabs || []).filter((t) => t && /^https:\/\/www\.instagram\.com\//.test(t.url || t.pendingUrl || ''));
+    if (ig.some((t) => pageKind(t.url || t.pendingUrl) === 'scraping_warning')) return { wait: 30e3, why: 'tab_scraping_warning' };
     const good = ig.filter((t) => pageKind(t.url || t.pendingUrl) === 'ok');
     const sleeping = (t) => t.discarded || t.frozen || t.status === 'unloaded';
     const usable = good.filter((t) => !sleeping(t) && t.status === 'complete' && t.id !== avoid);
@@ -485,7 +492,7 @@
   // ---- Status for popup, badge and heartbeat -----------------------------
   // key drives the popup square: run | wait | cool | stop | off.
   const TAB_TEXT = { no_tab: 'Open Instagram', tab_loading: 'Instagram tab loading', tab_busy: 'Instagram tab not responding',
-    tab_login: 'Instagram tab is on the login page', tab_challenge: 'Instagram tab shows a security check', tab_waking: 'Reloading Instagram tab' };
+    tab_scraping_warning: 'Instagram scraping warning needs review', tab_login: 'Instagram tab is on the login page', tab_challenge: 'Instagram tab shows a security check', tab_waking: 'Reloading Instagram tab' };
   function statusOf(st, ctx, now) {
     const t = (ms) => new Date(ms).toTimeString().slice(0, 5);
     const badgeFor = (until) => { const m = Math.ceil((until - now) / MIN); return m >= 60 ? Math.ceil(m / 60) + 'h' : m + 'm'; };

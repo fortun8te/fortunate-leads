@@ -74,3 +74,49 @@ class BrowserTabAttentionTests(Base):
         self.assertNotEqual(next(stage for stage in body['stages'] if stage['id'] == 'bios')['state'], 'running')
         self.beat(tab='ok', text='Ready')
         self.assertNotEqual(self.account()['status'], 'connection_error')
+
+    def test_scraping_warning_is_sticky_and_requires_separate_review(self):
+        self.beat(tab='tab_scraping_warning')
+        self.assertTrue(db.get_setting(self.conn, 'instagram_scraping_warning'))
+        self.beat(tab='ok')
+        self.assertEqual(self.account()['hold'], 'challenge')
+        self.assertEqual(self.call('/api/control', {'action': 'resume', 'stage': 'collection'})[0], 400)
+        acknowledgment = {'action': 'acknowledge_scraping_warning', 'account': 'checked-lane', 'reviewed': True}
+        self.assertEqual(self.call('/api/control', acknowledgment)[0], 400)
+        self.call('/api/ext/heartbeat', {'lane_id':'checked-lane', 'account':{'ig_id':'101'}, 'version':'3.9.30', 'tab':'ok', 'hold':None})
+        self.assertEqual(self.account()['hold'], 'challenge')
+        self.call('/api/ext/heartbeat', {'lane_id':'checked-lane', 'account':{'ig_id':'999'}, 'version':'3.9.30', 'tab':'ok', 'hold':None})
+        self.assertEqual(self.call('/api/control', acknowledgment)[0], 400)
+        self.call('/api/ext/heartbeat', {'lane_id':'checked-lane', 'account':{'ig_id':'101'}, 'version':'3.9.30', 'tab':'ok', 'hold':None})
+        self.assertEqual(self.call('/api/control', acknowledgment)[0], 200)
+        self.assertIsNone(db.get_setting(self.conn, 'instagram_scraping_warning'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_legacy_error_warning_url_sets_manual_hold_but_unrelated_host_does_not(self):
+        self.beat(tab='ok')
+        body = {'lane_id':'checked-lane', 'account':{'ig_id':'101'}, 'code':'other', 'reason':'no_profile_data', 'kind':'profile'}
+        self.call('/api/ext/error', dict(body, message='other https://example.com/accounts/scraping_warning/'))
+        self.assertFalse(db.get_setting(self.conn, 'instagram_scraping_warning'))
+        self.call('/api/ext/error', dict(body, message='other https://www.instagram.com/accounts/scraping_warning/?challenge_context=abc'))
+        self.assertTrue(db.get_setting(self.conn, 'instagram_scraping_warning'))
+        self.beat(tab='ok')
+        self.call('/api/ext/next?lane=checked-lane&ig_id=101&handle=checked.account')
+        self.assertEqual(self.account()['hold'], 'challenge')
+
+    def test_multiple_warning_accounts_require_separate_reviews_and_are_stopped(self):
+        self.beat(tab='tab_scraping_warning')
+        self.call('/api/ext/heartbeat', {'lane_id':'second-lane', 'account':{'ig_id':'202'}, 'version':'3.9.30', 'tab':'tab_scraping_warning'})
+        for lane, uid in [('checked-lane','101'),('second-lane','202')]:
+            self.call('/api/ext/heartbeat', {'lane_id':lane, 'account':{'ig_id':uid}, 'version':'3.9.30', 'tab':'ok', 'hold':None})
+        control = self.call('/api/control')[1]
+        self.assertTrue(control['collection']['stop_acknowledged'])
+        self.assertEqual(self.call('/api/control', {'action':'acknowledge_scraping_warning','account':'checked-lane','reviewed':True})[0],200)
+        self.assertEqual(db.get_setting(self.conn,'instagram_scraping_warning')['lane'],'second-lane')
+        self.assertEqual(self.call('/api/control', {'action':'resume','stage':'collection'})[0],400)
+        self.call('/api/ext/heartbeat', {'lane_id':'second-lane','account':{'ig_id':'202'},'version':'3.9.30','tab':'ok','hold':None})
+        self.assertEqual(self.conn.execute("SELECT hold FROM accounts WHERE lane_id='second-lane'").fetchone()[0],'challenge')
+        self.assertEqual(self.call('/api/control', {'action':'acknowledge_scraping_warning','account':'second-lane','reviewed':True})[0],200)
+        self.assertIsNone(db.get_setting(self.conn,'instagram_scraping_warning'))
+        self.assertEqual(set(db.get_setting(self.conn,'instagram_scraping_warning_reviewed')),{'checked-lane','second-lane'})
+        self.assertTrue(db.get_setting(self.conn,'paused_lists'))

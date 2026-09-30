@@ -1282,7 +1282,7 @@ function renderDetail() {
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
   const fitLabel = p.loading ? '' : ({ strong: 'Strong fit', good: 'Good fit', weak: 'Weak fit', unread: 'Not reviewed' })[fitOf(p)];
-  const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '') || (p.loading ? '' : 'No summary yet.');
+  const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '');
   const connectionLines = leadConnectionLines({...p, edges});
   const connection = you || connectionLines.slice(0, 2).join(' · ') + (connectionLines.length > 2 ? ' +' + (connectionLines.length - 2) : '');
   const readDate = p.bio_at ? new Date(p.bio_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
@@ -1301,10 +1301,10 @@ function renderDetail() {
       </div>
     </section>
     <section class="d-sec d-status-section" aria-labelledby="d-h-status"><h3 class="d-h" id="d-h-status">Status</h3>${statusChoicesHTML(p)}${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}</section>
-    <section class="d-sec d-note-section"><h3 class="d-h"><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h3><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what matters. Type @ to link a profile.">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
+    <section class="d-sec d-note-section"><h3 class="d-h"><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h3><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Add a note · @ to link">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     ${workflowSummaryHTML(p)}
     <section class="d-sec d-labels-section" aria-labelledby="d-h-tags"><h3 class="d-h" id="d-h-tags">Tags</h3>
-      ${overviewTags.length || manualTags.length ? `<div class="d-tags">${overviewTags.map((t) => tagChip(t)).join('')}${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">${icon('close', 10)}</button></span>`).join('')}</div>` : p.loading ? '' : '<p class="d-empty">No tags yet.</p>'}
+      ${overviewTags.length || manualTags.length ? `<div class="d-tags">${overviewTags.map((t) => tagChip(t)).join('')}${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">${icon('close', 10)}</button></span>`).join('')}</div>` : ''}
       <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add tag</button></form>
     </section>
     <section class="d-sec d-know-section" aria-labelledby="d-h-know"><h3 class="d-h" id="d-h-know">How you know them</h3>${knowThemHTML(p)}</section>
@@ -1443,7 +1443,7 @@ function knowThemHTML(p) {
   const selected = humanRelationships(p), disabled = p.loading || p.failed ? 'disabled' : '';
   return `<div class="marks relationship-choices" role="group" aria-label="How you know them">${Object.entries(HUMAN_RELATIONSHIPS).map(([key,label]) => `<button type="button" id="d-relationship-${key}" data-human-relationship="${key}" aria-label="${label} relationship" aria-pressed="${selected.includes(key)}" class="${selected.includes(key) ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div>
     <div class="relationship-familiarity"><span>How well? <em>Optional</em></span><div class="marks" role="group" aria-label="How well you know them (optional)">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
-    <p class="relationship-hint">Past or present. Add detail in your note.</p>`;
+  `;
 }
 function humanRelationshipHTML(p) { return statusChoicesHTML(p) + knowThemHTML(p); }
 function updateHumanRelationship(id, field, value) {
@@ -2524,7 +2524,7 @@ function renderCollectionSuggestions() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   const focusHandle = focused?.dataset.suggestedHandle || focused?.dataset.discoveryHide;
   const focusAction = focused?.matches('.suggested-accounts > summary') ? 'disclosure' : focused?.hasAttribute('data-discovery-toggle') ? 'toggle' : focused?.dataset.suggestedHandle ? 'add' : focused?.dataset.discoveryHide ? 'skip' : null;
-  box.innerHTML = `<details class="suggested-accounts" ${open ? 'open' : ''}><summary>Suggested accounts <span class="muted">${state.enabled === null ? '' : `Auto-discover ${state.enabled ? 'on' : 'off'}`}</span></summary><div class="collection-suggestion-heading"><p class="muted">Suggested from saved connections</p><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : `Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}`}</button></div>${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Checking saved profiles…' : 'No suggestions yet.'}</p>`}</details>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}`;
+  box.innerHTML = `<details class="suggested-accounts" ${open ? 'open' : ''}><summary>Suggested accounts</summary><div class="collection-suggestion-heading"><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : `Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}`}</button></div>${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Checking saved profiles…' : 'No suggestions yet.'}</p>`}</details>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}`;
   if (focusAction) {
     const selector = focusAction === 'disclosure' ? '.suggested-accounts > summary' : focusAction === 'toggle' ? '[data-discovery-toggle]' : focusAction === 'add' ? `[data-suggested-handle="${focusHandle}"]` : `[data-discovery-hide="${focusHandle}"]`;
     const action = box.querySelector(selector);
@@ -2762,14 +2762,14 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting local models and checking the notes model…';
+  status.textContent = 'Starting…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
     window.dispatchEvent(new Event('fl:control-changed'));
     status.dataset.state = 'success';
-    status.textContent = 'Laya is ready. The installed notes model was checked. Scraping and checking mode stay as selected.';
+    status.textContent = 'Local models ready.';
     toast('Local models started');
     await loadScraper();
   } catch (e) {
@@ -2918,14 +2918,14 @@ function renderCheckingMode() {
     const time = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
     const active = metrics?.active?.handle;
     const history = SET.localProcessing?.history || [];
-    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">Local models check saved bios and your notes for business fit and suggest a ranking. Your relationship tags stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
+    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} checks/min` : 'Measuring pace'}${eta ? ` · about ${time} for this queue` : ''}</span></div>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
   }
   const background = $('#background-ai'), local = SET.localProcessing;
   if (background) background.hidden = mode === 'rules';
   const state = $('#local-ai-state'), toggle = $('#local-ai-toggle'), help = $('#local-ai-help');
   if (state) state.textContent = SET.localBusy ? 'Saving…' : backgroundAIState(local);
   if (toggle) { const stopping = local?.paused && local.stop_acknowledged !== true; toggle.textContent = stopping ? 'Stopping…' : local?.paused ? 'Resume' : 'Pause'; toggle.disabled = SET.localBusy || SET.modeBusy || !local || !local.enabled || stopping; }
-  if (help) help.textContent = local?.paused ? local.stop_acknowledged === true ? 'Queue saved. Collection continues.' : 'Finishing the current check.' : 'Uses saved profiles on your selected computer.';
+  if (help) { help.textContent = local?.paused && local.stop_acknowledged !== true ? 'Finishing the current check.' : ''; help.hidden = !help.textContent; }
 }
 async function toggleBackgroundAI() {
   const current = SET.localProcessing;
@@ -3173,7 +3173,8 @@ function qualificationConnections(r) {
   }
   if (!lines.length) return r.owner_relationship ? '' : '<p class="muted">No observed follows yet</p>';
   const row = (line) => `<li>${esc(line)}</li>`;
-  return `<ul class="ql-connections">${lines.map(row).join('')}</ul>`;
+  const visible = `<ul class="ql-connections">${lines.slice(0, 2).map(row).join('')}</ul>`;
+  return visible + (lines.length > 2 ? `<details class="ql-more-connections"><summary>${plural(lines.length - 2, 'more connection')}</summary><ul class="ql-connections">${lines.slice(2).map(row).join('')}</ul></details>` : '');
 }
 function profileCheckSummary(result) {
   const bio = result.bio?.state;
@@ -3224,12 +3225,12 @@ const Q = {
       <div class="ql-top">${avatar(r.pic, r.name || r.handle, 'lg')}
         <div class="who"><b>${esc(r.name || r.handle)}</b><span>@${esc(r.handle)}${r.status ? ' · ' + esc(ucf(r.status)) : ''}</span></div>
         <div class="ql-score">${fitBadge(r, 'lg')}</div></div>
-      <div class="ql-why"><p>${esc(r.reason || 'No assessment yet.')}</p><p class="ql-by">${ai ? 'AI review' : 'Rule-based review'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
+      <div class="ql-why"><p>${esc(r.reason || 'No assessment yet.')}</p><p class="ql-by">${ai ? 'AI' : 'Rules'}${v.at ? ` · ${ago(v.at)} ago` : ''}</p></div>
       <div class="ql-profile">${facts ? `<p class="ql-factline">${facts}</p>` : ''}<p>${bio ? esc(bio.length > 140 ? bio.slice(0, 140) + '…' : bio) : r.is_private ? 'Private profile' : 'Bio not read yet'}</p>
         ${r.website && safeUrl(r.website) ? `<a href="${esc(safeUrl(r.website))}" target="_blank" rel="noopener">${esc(r.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>` : ''}</div>
       <div class="ql-network">${relationshipHTML(r)}${qualificationConnections(r)}</div>
-      ${ev.length || siteHTML ? `<div class="ql-evidence">${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</div>` : ''}
-      <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Open person</button>
+      ${ev.length || siteHTML ? `<details class="ql-evidence"><summary>Evidence</summary>${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</details>` : ''}
+      <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Profile</button>
         <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a>
         <span class="grow"></span><button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Check profile'}</button></div>
       ${r.deeper_result ? `<p class="ql-result ${r.deeper_result.state === 'error' ? 'bad' : 'muted'}" role="status">${esc(r.deeper_result.note)}</p>` : ''}

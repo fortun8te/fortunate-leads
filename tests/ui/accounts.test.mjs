@@ -95,13 +95,15 @@ test('navigation uses a settings gear and removes the keyboard help button while
   assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
 
-test('Accounts Start local models opens the configured startup path and reports its progress', () => {
+test('Local AI setup owns model startup and reports its progress', () => {
   assert.match(html, /id="acc-start">Start local models/);
   assert.match(html, /id="acc-start-status"[^>]*role="status"/);
 
   assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
   assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
-  assert.match(source, /Laya is ready\. The installed notes model was checked\. Scraping and checking mode stay as selected/);
+  assert.match(source, /Local models ready\./);
+  const accounts = html.slice(html.indexOf('id="view-accounts"'), html.indexOf('id="view-settings"'));
+  assert.doesNotMatch(accounts, /id="acc-start"/);
 });
 
 test('cooldowns, login holds and offline profiles have distinct access instructions', () => {

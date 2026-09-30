@@ -210,9 +210,17 @@ async function applyServer(j) {
   mem.serverPaused = j.paused;
   const st = await loadSt();
   if (!st.hold) return;
+  if (st.hold.manualReview && Number(j.scraping_warning_reviewed_at) >= st.hold.at) {
+    await editSt((s) => {
+      if (s.hold?.manualReview && Number(j.scraping_warning_reviewed_at) >= s.hold.at) { s.hold = null; s.lastError = null; }
+    });
+    return;
+  }
   // Workspace resume: the server flag went paused → not paused after the hold began.
   if (j.paused && !st.hold.sawPause) await editSt((s) => { if (s.hold) s.hold.sawPause = true; });
-  if (!j.paused && st.hold.sawPause) await editSt((s) => { s.hold = null; s.lastError = null; });
+  if (!j.paused && st.hold.sawPause && !st.hold.manualReview) await editSt((s) => {
+    if (s.hold?.sawPause && !s.hold.manualReview && s.hold.at === st.hold.at) { s.hold = null; s.lastError = null; }
+  });
 }
 // Auto-update: the extension is loaded unpacked from the repo, so a new version on disk (git pull) is picked up by reloading.
 async function selfUpdate() {
@@ -230,8 +238,8 @@ async function heartbeat(force) {
   // Inspect existing tabs only: a retained lease is not proof that Instagram is usable.
   try {
     const choice = FL.chooseTab(await chrome.tabs.query({ url: IG + '/*' }));
-    if (['tab_login', 'tab_challenge'].includes(choice.why)) mem.noTab = choice.why;
-    else if (['tab_login', 'tab_challenge'].includes(mem.noTab)) mem.noTab = null;
+    if (['tab_login', 'tab_challenge', 'tab_scraping_warning'].includes(choice.why)) mem.noTab = choice.why;
+    else if (['tab_login', 'tab_challenge', 'tab_scraping_warning'].includes(mem.noTab)) mem.noTab = null;
   } catch {}
   const st = await loadSt(), s = await status(st), now = Date.now(), cd = FL.cooldownUntil(st, now);
   const cool = { list: st.cool.list.until > now ? iso(st.cool.list.until) : null, profile: st.cool.profile.until > now ? iso(st.cool.profile.until) : null };
@@ -439,7 +447,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem
     if (gen !== mem.gen) throw new Superseded();
     if (homeRedirect) FL.recordListRedirect(st, job.seed, job.direction, publicTarget, now);
     if (bad.code === 'rate_limit' || bad.code === 'soft_block') FL.applyHit(st, now, bad.retryAt, bucket);
-    else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now };
+    else if (HOLD_MSG[bad.code]) st.hold = { code: bad.code, message: HOLD_MSG[bad.code], at: now, manualReview: bad.reason === 'scraping_warning' };
     else if (bad.code === 'other' && !homeRedirect) FL.backoff(st, now, 'other');
     else if (bad.code === 'network') FL.backoff(st, now, 'net');
     else if (bad.code === 'unsupported') st.infoOffUntil = now + 6 * FL.HOUR;

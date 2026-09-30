@@ -210,3 +210,35 @@ test('delayed outbox ACK cannot clear a newer redirect hold on the same account'
   assert.ok(st.listEndpointUntil > Date.now());
   assert.equal(st.listRedirects.length, 1);
 });
+
+test('scraping warning needs explicit current review, not Pause then Resume', async () => {
+  const {context} = harness();
+  const outcome = await vm.runInContext(`(async () => {
+    const at = Date.now();
+    await editSt(s => {s.hold = {code:'challenge', manualReview:true, at};});
+    await applyServer({paused:true});
+    await applyServer({paused:false});
+    const afterResume = !!(await loadSt()).hold;
+    await applyServer({paused:true,scraping_warning_reviewed_at:at-1});
+    const afterOldReview = !!(await loadSt()).hold;
+    await applyServer({paused:true,scraping_warning_reviewed_at:at+1});
+    return {afterResume,afterOldReview,afterReview:!!(await loadSt()).hold,paused:mem.serverPaused};
+  })()`, context);
+  assert.equal(outcome.afterResume,true);
+  assert.equal(outcome.afterOldReview,true);
+  assert.equal(outcome.afterReview,false);
+  assert.equal(outcome.paused,true);
+});
+
+test('review acknowledgment cannot clear a newer hold arriving during storage edit', async () => {
+  const {context,data} = harness();
+  const at=Date.now();
+  data.st={...FL.fresh(),hold:{code:'challenge',manualReview:true,at}};
+  let reads=0;
+  context.chrome.storage.local.get=async key=>{
+    if(key==='st' && ++reads===2) data.st={...data.st,hold:{code:'challenge',manualReview:true,at:at+100}};
+    return {[key]:data[key]};
+  };
+  await vm.runInContext(`applyServer({paused:true,scraping_warning_reviewed_at:${at+1}})`,context);
+  assert.equal(data.st.hold.at,at+100);
+});

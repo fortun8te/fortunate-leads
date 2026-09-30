@@ -179,3 +179,26 @@ test('map number shortcuts still set and clear status without the removed hidden
  for(const key of ['1','5','0']) MapView.prototype.key.call(view,{key,stopPropagation:()=>{}},true);
  assert.deepEqual(writes,[[1,'interested'],[1,'no'],[1,null]]);
 });
+
+test('compact tag editor focuses on reveal, preserves drafts on Escape, and keeps failed saves open', async()=>{
+ const {MapView}=require('../../web/map-view.js');
+ const focus=[];
+ const input={value:'Founder',disabled:false,focus:()=>focus.push('input')};
+ const button={disabled:false,setAttribute(name,value){this[name]=value;},focus:()=>focus.push('button')};
+ const form={hidden:true,querySelector:()=>input};
+ const feedback={textContent:''};
+ const box={isConnected:true,querySelector:selector=>({'.mv-tag-form':form,'.mv-tag-add':button,'.mv-tag-feedback':feedback,input}[selector]),querySelectorAll:()=>[input,button]};
+ let fail;
+ const view={r:{card:{querySelector:()=>box}},model:{selected:{id:1},patchStatus(){}},host:{editTags:()=>new Promise((_,reject)=>{fail=reject;})},paintTags(){}};
+ view.toggleTagForm=show=>MapView.prototype.toggleTagForm.call(view,show);
+ view.toggleTagForm(true);assert.equal(form.hidden,false);assert.equal(button['aria-expanded'],'true');assert.equal(focus.at(-1),'input');
+ view.toggleTagForm(false);assert.equal(form.hidden,true);assert.equal(input.value,'Founder');assert.equal(focus.at(-1),'button');
+ view.toggleTagForm(true);
+ const saving=MapView.prototype.editTag.call(view,{id:1},'Founder',false);
+ view.toggleTagForm(false);assert.equal(form.hidden,false);assert.equal(input.disabled,true);
+ fail(new Error('offline'));await saving;
+ assert.equal(form.hidden,false);assert.equal(input.value,'Founder');assert.equal(input.disabled,false);assert.equal(feedback.textContent,'Couldn’t save. Try again.');
+ view.host.editTags=async()=>({manual_tags:['Founder'],status:null});
+ await MapView.prototype.editTag.call(view,{id:1},'Founder',false);
+ assert.equal(form.hidden,true);assert.equal(input.value,'');assert.equal(feedback.textContent,'Saved');assert.equal(focus.at(-1),'button');
+});

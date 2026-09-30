@@ -187,9 +187,11 @@ def collector_capable(row):
 def ext_state(conn, row=None):
     """What one lane is told: paused = workspace pause or this account paused; budget = its own or the global one."""
     cooling = workspace_cooldown(conn, datetime.now(timezone.utc))
+    reviewed = db.get_setting(conn, 'instagram_scraping_warning_reviewed') or {}
     mobile = row is not None and row['collection_backend'] == 'mobile'
     upgrade = not collector_capable(row)
     return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
+            **({'scraping_warning_reviewed_at': reviewed[row['lane_id']]} if row is not None and row['lane_id'] in reviewed else {}),
             'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn)
                        and (not mobile or (k == 'list' and not row['hold'])) for k in ('list', 'profile')},
             **({'backend': 'mobile', 'backend_cursor_isolated': True} if mobile else {}),
@@ -796,11 +798,41 @@ def scoped_follower_redirect(conn, job, b, now):
     return True
 
 
+def record_scraping_warning(conn, lane, ig_id=None):
+    message = 'Collection stopped: Instagram showed a scraping warning. Review the affected account before collecting again.'
+    current = db.get_setting(conn, 'instagram_scraping_warning')
+    row = conn.execute('SELECT ig_id FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    warning = {'kind': 'scraping_warning', 'lane': lane, 'ig_id': ig_id or (row['ig_id'] if row else None),
+               'at': db.now(), 'message': message, 'review_ready': False}
+    if current and current['lane'] != lane:
+        current.setdefault('pending', {})[lane] = warning
+    else:
+        warning['pending'] = (current or {}).get('pending', {})
+        current = warning
+    db.set_setting(conn, 'instagram_scraping_warning', current)
+    db.set_setting(conn, 'paused_lists', True)
+    db.set_setting(conn, 'paused_bios', True)
+
+
+def scraping_warning_url(value):
+    try:
+        parsed = urlparse(value)
+        return (parsed.scheme == 'https' and parsed.hostname in ('instagram.com', 'www.instagram.com', 'i.instagram.com')
+                and parsed.path.rstrip('/') == '/accounts/scraping_warning')
+    except (ValueError, TypeError):
+        return False
+
+
 def ext_error(conn, q, b):
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     collector_request(conn, q, b, allow_disabled=True)
     code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
+    warning = b.get('reason') == 'scraping_warning' or scraping_warning_url(b.get('url')) or any(
+        scraping_warning_url(url) for url in re.findall(r'https://[^\s|]+', str(b.get('message') or '')))
+    if warning:
+        code = 'challenge'
+        record_scraping_warning(conn, lane, (accounts.account_from(q, b) or {}).get('ig_id'))
     event_id = b.get('event_id') if isinstance(b.get('event_id'), str) and 0 < len(b['event_id']) <= 100 else None
     if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
         conn.commit()
@@ -1016,6 +1048,14 @@ def ext_heartbeat(conn, q, b):
             'Instagram tab is on the login page': 'tab_login',
             'Instagram tab shows a security check': 'tab_challenge',
         }.get(text(b.get('text'), 200))
+        warning = db.get_setting(conn, 'instagram_scraping_warning')
+        affected = warning if isinstance(warning, dict) and warning.get('lane') == lane else (warning or {}).get('pending', {}).get(lane)
+        if affected:
+            affected['review_ready'] = bool(affected.get('ig_id')) and (accounts.account_from(q, b) or {}).get('ig_id') == affected['ig_id'] and tab == 'ok' and tuple(int(v) for v in str(b.get('version') or '0').split('.') if v.isdigit()) >= (3, 9, 30)
+            db.set_setting(conn, 'instagram_scraping_warning', warning)
+        if tab == 'tab_scraping_warning':
+            record_scraping_warning(conn, lane, (accounts.account_from(q, b) or {}).get('ig_id'))
+            tab = 'tab_challenge'
         if tab in ('tab_login', 'tab_challenge'):
             fields['hold'] = 'challenge' if tab == 'tab_challenge' or fields.get('hold') == 'challenge' else 'login'
             fields['state'] = tab

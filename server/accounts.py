@@ -179,6 +179,10 @@ def touch(conn, lane, acct=None, **fields):
             sets['today'] = sets.get('today') if 'today' in fields else None
         for key in IDENTITY_WAITS:
             sets[key] = active_wait(previous[key], sets.get(key, row[key]), now)
+    warning = db.get_setting(conn, 'instagram_scraping_warning')
+    if isinstance(warning, dict) and (warning.get('lane') == lane or lane in warning.get('pending', {})):
+        sets['hold'] = 'challenge'
+        sets['last_error'] = warning['message']
     conn.execute(f"UPDATE accounts SET {', '.join(k + '=?' for k in sets)} WHERE lane_id=?", (*sets.values(), lane))
     updated = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
     remember_identity(conn, updated, now, day)
@@ -1003,7 +1007,8 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
                 if not row['paused'] and not row['hold'] and row['last_seen']
                 and utc(row['last_seen']).timestamp() > stamp - REQUEST_LEASE_SECONDS}
         allowed = {kind for kind, stage in (('list', 'lists'), ('profile', 'bios'))
-                   if not db.get_setting(conn, 'paused') and not db.get_setting(conn, 'paused_' + stage)}
+                   if not db.get_setting(conn, 'instagram_scraping_warning')
+                   and not db.get_setting(conn, 'paused') and not db.get_setting(conn, 'paused_' + stage)}
         eligibility = {}
 
         def may_request(candidate, request_kind):

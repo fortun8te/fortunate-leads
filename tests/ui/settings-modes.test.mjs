@@ -56,7 +56,7 @@ test('background pause uses separate endpoint and preserves processing mode',asy
  assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0])),{url:'/api/local-processing',body:{paused:true}});
  assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.localProcessing.paused,true);
  assert.equal(h.$('#local-ai-state').textContent,'Paused');assert.equal(h.$('#local-ai-toggle').textContent,'Resume');
- assert.match(h.$('#local-ai-help').textContent,/Queue saved.*Collection continues/);
+ assert.equal(h.$('#local-ai-help').hidden,true);
 });
 test('unconfirmed background pause is shown as unknown, never still running',async()=>{
  const h=harness({failPost:true});h.SET.localProcessing={enabled:true,ready:true,state:'working'};

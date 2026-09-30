@@ -30,7 +30,7 @@ function harness() {
     fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
   const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
   const fail = index => requests[index].reject(new Error('offline'));
-  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
   return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
 async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
@@ -196,4 +196,29 @@ test('the main header has one collection control and keeps AI choices in details
   assert.match(top,/>Continue collecting<\/button>/);
   assert.doesNotMatch(top,/Qualification|Choose AI mode|Stop checks|Rules only/);
   assert.match(h.el.innerHTML,/Qualification <span class="fl-engine-state">Rules only/);
+});
+
+
+test('scraping warning replaces Resume with review and requires explicit acknowledgment', async () => {
+  const h=harness(), status=collection();
+  status.instagram_request_attention={kind:'scraping_warning',lane:'lane1',message:'Review Instagram warning',review_ready:false};
+  status.accounts=[{lane_id:'lane1',name:'dihfluencer'}];
+  h.respond(0,status);h.respond(1,engines());await settle();
+  assert.doesNotMatch(h.el.innerHTML,/data-stage="collection"/);
+  assert.match(h.el.innerHTML,/dihfluencer in its Chrome profile/);
+  h.click(b=>b.dataset.focus==='warning-review');
+  assert.match(h.el.innerHTML,/data-focus="warning-ack" disabled/);
+  assert.equal(h.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('warning acknowledgment is separate from starting collection', async () => {
+  const h=harness(),status=collection();
+  status.instagram_request_attention={kind:'scraping_warning',lane:'lane1',message:'Review Instagram warning',review_ready:true};
+  h.respond(0,status);h.respond(1,engines());await settle();
+  h.click(b=>b.dataset.focus==='warning-ack');
+  const post=h.requests.find(r=>r.options?.method==='POST');
+  assert.deepEqual(JSON.parse(post.options.body),{action:'acknowledge_scraping_warning',account:'lane1',reviewed:true});
+  post.resolve({ok:true,status:200,json:async()=>collection()});await settle();
+  assert.doesNotMatch(h.el.innerHTML,/Couldn't confirm|data-warning-review/);
+  assert.match(h.el.innerHTML,/Continue collecting/);
 });

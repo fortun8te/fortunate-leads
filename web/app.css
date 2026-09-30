@@ -1073,7 +1073,11 @@ button:disabled { cursor:default; opacity:.5; }
 .tg-context > h3 { margin-bottom: 24px; font-size: 18px; font-weight: 700; }
 .list-reason { display: block; max-width: 50ch; margin-top: 4px; color: var(--fg3); font-size: 12px; line-height: 1.5; }
 .ql-result { grid-column: 1 / -1; padding: 2px 0 10px; }
-.ql-evidence { grid-column: 1 / -1; display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ql-evidence { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid var(--line); }
+.ql-evidence > summary, .ql-more-connections > summary { cursor: pointer; color: var(--fg3); font-size: 12px; }
+.ql-evidence[open] > summary { margin-bottom: 12px; }
+.ql-more-connections { margin-top: 6px; }
+.ql-more-connections[open] > summary { margin-bottom: 6px; }
 
 .tok.exc .tok-label { text-decoration: line-through; }
 /* Fit summaries use the same hierarchy as their tags. Amber is reserved for review. */

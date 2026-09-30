@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('function qualificationConnections(');
 const end = source.indexOf('const Q =', start);
-const context = vm.createContext({ esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') });
+const context = vm.createContext({ esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;'), plural: (n, label) => `${n} ${label}${n === 1 ? '' : 's'}` });
 vm.runInContext(source.slice(start, end), context);
 const show = r => context.qualificationConnections(r);
 
@@ -29,8 +29,11 @@ test('qualification does not infer a follow from a source-only legacy list', () 
   assert.match(show({ connection_edges: [{ handle: '<bad&', direction: 'followers' }] }), /@&lt;bad&amp;/);
 });
 
-test('review keeps every observed connection visible without a disclosure', () => {
+test('review keeps two connections visible and preserves the rest in a disclosure', () => {
   const html = show({connection_edges:['a','b','c','d'].map(handle=>({handle,direction:'followers'}))});
+  assert.match(html.split('<details')[0], /They follow @a/);
+  assert.match(html.split('<details')[0], /They follow @b/);
+  assert.doesNotMatch(html.split('<details')[0], /They follow @c/);
   assert.match(html, /They follow @d/);
-  assert.doesNotMatch(html, /details|summary|Show.*more/);
+  assert.match(html, /<summary>2 more connections<\/summary>/);
 });

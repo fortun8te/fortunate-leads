@@ -244,7 +244,6 @@
           <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
           <div id="acc-list"></div>
         </div>
-        <details class="adv"><summary>AI tools</summary><button class="btn" id="acc-start">Start local models</button><p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite"></p></details>
       </div>
     </section>
 
@@ -272,8 +271,7 @@
               </button>
             </div>
             <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
-            <p class="checking-models" id="set-mode-models"></p>
-            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Uses saved profiles on your selected computer.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
+            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help" hidden></p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
             <p class="checking-models" id="set-local-progress" role="status"></p>
             <div id="set-local-activity" class="local-activity" aria-live="polite"></div>
           </div>
@@ -281,6 +279,9 @@
         <details class="settings-setup" id="local-setup">
           <summary><b>Local AI setup</b></summary>
           <div class="settings-setup-body">
+            <p class="checking-models" id="set-mode-models"></p>
+            <button class="btn" id="acc-start">Start local models</button>
+            <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite"></p>
         <section class="sg k2-connection-settings" aria-labelledby="k2-connection-heading">
           <div class="sg-h"><h2 id="k2-connection-heading">K2 computer</h2><p>Turn off bio checks in Activity before changing computers.</p></div>
           <div class="card">

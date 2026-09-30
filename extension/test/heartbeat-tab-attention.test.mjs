@@ -25,6 +25,9 @@ test('heartbeat reports blocked tabs without a job and clears them after the pag
     };`, context);
   assert.equal((await context.beat()).tab, 'tab_challenge');
   assert.match(data.view.text, /security check/);
+  url = 'https://www.instagram.com/accounts/scraping_warning/';
+  assert.equal((await context.beat()).tab, 'tab_scraping_warning');
+  assert.match(data.view.text, /scraping warning/);
   url = 'https://www.instagram.com/accounts/login/';
   assert.equal((await context.beat()).tab, 'tab_login');
   url = 'https://www.instagram.com/';

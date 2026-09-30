@@ -84,6 +84,9 @@
     const scroll = el.querySelector('.fl-ctl-panel')?.scrollTop || 0;
     const qualify = qualification(), scrape = scraping(), k2 = engineState('k2'), laya = engineState('laya');
     const overall = overallState(scrape);
+    const warning = control?.instagram_request_attention?.kind === 'scraping_warning' ? control.instagram_request_attention : null;
+    const warningAccount = warning && control.accounts?.find(account => account.lane_id === warning.lane);
+    const review = warning ? `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Review Instagram warning</strong><small>Review ${esc(warningAccount?.name || 'the affected account')} in its Chrome profile. Collection stays stopped.</small></div><button type="button" class="btn" data-warning-ack data-focus="warning-ack" ${!warning.review_ready || busy ? 'disabled' : ''}>I've reviewed it</button></div>` : '';
     const dot = state => `<span class="fl-state-dot" data-state="${esc(state)}" aria-hidden="true"></span>`;
     const engineRow = (id, state) => {
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
@@ -91,10 +94,10 @@
     };
     const action = busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Continue collecting' : 'Stop collecting';
     const wait = scrape.paused ? 'Continue collecting' : 'Stop collecting';
-    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button></div>`
+    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span>${warning ? `<button type="button" class="btn fl-ctl-direct" data-warning-review data-focus="warning-review">Review Instagram warning</button>` : `<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button>`}</div>`
       + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
 
-      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong><small>${esc(s.now || '')}</small><small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
+      + review + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     if (el.innerHTML === html) return;
     el.innerHTML = html;
@@ -122,7 +125,7 @@
       const result = await request(target === 'collection' ? '/api/control' : target === 'qualification' ? '/api/local-processing' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if (target === 'collection') {
         const stages = result.stages?.filter(stage => ['lists', 'bios'].includes(stage.id));
-        if (stages?.length !== 2 || stages.some(stage => stage.paused !== (body.action === 'pause'))) throw new Error('Unconfirmed');
+        if (stages?.length !== 2 || stages.some(stage => stage.paused !== (body.action === 'pause' || body.action === 'acknowledge_scraping_warning'))) throw new Error('Unconfirmed');
         control = result; controlError = false;
       }
       else if (target === 'qualification') { if (result.paused !== body.paused) throw new Error('Unconfirmed'); local = result; localError = false; }
@@ -138,6 +141,9 @@
     event.stopPropagation();
     const summary = event.target.closest('.fl-ctl-summary');
     if (summary) { open = !open; render(); if (open) poll(true); return; }
+    if (event.target.closest('[data-warning-review]')) { open = true; render(); return; }
+    const acknowledgment = event.target.closest('[data-warning-ack]');
+    if (acknowledgment && !acknowledgment.disabled) { act('collection', {action:'acknowledge_scraping_warning', account:control.instagram_request_attention.lane, reviewed:true}); return; }
     const qualifier = event.target.closest('[data-qualification]');
     if (qualifier && !qualifier.disabled) { act('qualification', {paused:!qualification().paused}); return; }
     const engine = event.target.closest('[data-engine]');

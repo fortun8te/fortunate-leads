@@ -22,7 +22,7 @@ personal accounts, brands outside the markets above (`Other market`).
 
 1. Michael picks seed accounts: people and brands whose audience overlaps with good leads.
 2. The Chrome extension, one per Instagram account, reads their follower and following lists and, more slowly,
-   individual bios, at a deliberately safe pace.
+   individual bios, at a conservative pace.
 3. The local server stores everything and ranks people: 60% network strength (how many seeds link to them,
    links to Michael and his clients), 40% profile evidence (rules first, then free AI models with web research,
    then the `leadscout` agent for the final verdict on the top few).
@@ -33,12 +33,12 @@ personal accounts, brands outside the markets above (`Other market`).
 - A new Mac goes from clone to collecting in three steps (`docs/SETUP.md`), and Accounts shows missing connection steps.
 - Paste a handle, press Start, leads appear ranked, nothing else to configure.
 - It looks and reads like software Apple would ship: short plain English, one accent, keyboard friendly, no jargon.
-- Collection never trips Instagram's limits. The account matters more than speed.
+- Collection stops when Instagram warns or limits an account. The account matters more than speed; no collection rate guarantees freedom from restrictions.
 
 ## Principles
 
 - **Safe pace over speed.** Never loosen pacing. Three 429s in an hour stop everything until midnight.
-  More throughput means more accounts, not faster requests.
+  A warning stops the workspace; switching accounts is not a way around it.
 - **No evasion.** No proxies, Tor or block dodging. The old Tor collector is archived and deliberately unmerged.
 - **Free by default.** No paid scraping services (Apify was rejected). AI uses `:free` OpenRouter models and local models.
 - **Plain, monochrome UI.** Short product language, neutral grey, no filler. See `docs/COPY.md`.

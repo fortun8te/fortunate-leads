@@ -335,3 +335,13 @@ test('network backoff is shown as connection trouble even while a job lease is r
   FL.succeeded(st);
   assert.equal(FL.statusOf(st, {job: {id: 1}}, T0 + 60000).state, 'running');
 });
+
+test('Instagram scraping warnings stop every route, even alongside a usable tab', () => {
+  const url = 'https://www.instagram.com/accounts/scraping_warning/?challenge_context=abc';
+  assert.deepEqual(FL.pageVerdict({url}), {code: 'challenge', reason: 'scraping_warning'});
+  assert.equal(FL.classify(res(null, 200, {url}), 'profile').reason, 'scraping_warning');
+  assert.equal(FL.chooseTab([{id:1,url:'https://www.instagram.com/',status:'complete'}, {id:2,url,status:'complete'}]).why, 'tab_scraping_warning');
+  for (const other of ['https://example.com/accounts/scraping_warning/', 'https://instagram.com.evil.test/accounts/scraping_warning/', 'https://www.instagram.com/accounts/scraping_warning_extra/']) {
+    assert.equal(FL.pageVerdict({url:other}).code, 'other');
+  }
+});

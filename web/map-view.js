@@ -678,8 +678,9 @@
       const same = this.cardId === n.id;
       this.cardId = n.id; this.note = null; this.noteRead = (this.noteRead || 0) + 1; this.r.pane.classList.add('has-card');
       card.hidden = false;
-      const facts = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Network', Core.closenessWords(n.closeness||0)]];
-      if (n.source_count != null) facts.push(['Collected audiences', int(n.source_count)]);
+      const summary = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown']];
+      const facts = [['Network', Core.closenessWords(n.closeness || 0)]];
+      if (n.source_count != null) facts.push(['Sources', int(n.source_count)]);
 
       if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
       if (n.follows_me) facts.push(['Follows you', 'Recorded']);
@@ -698,13 +699,17 @@
           h('select', { 'aria-label': 'Lead status' }, h('option', { value: '', text: 'No status' }),
             this.host.statuses.map(status => h('option', { value: status, text: SLABEL(status) })))),
         h('section', { class: 'mv-tags' },
-          h('h4', { text: 'Tags' }), h('div', { class: 'mv-tag-chips' }),
-          h('form', { class: 'mv-tag-form' },
+          h('div', { class: 'mv-tag-head' }, h('h4', { text: 'Tags' }),
+            h('button', { type: 'button', class: 'mv-tag-add', text: 'Add tag', 'aria-expanded': 'false', 'aria-controls': 'mv-tag-form' })),
+          h('div', { class: 'mv-tag-chips' }),
+          h('form', { class: 'mv-tag-form', id: 'mv-tag-form', hidden: true },
             h('input', { class: 'input', placeholder: 'Add a tag', list: 'mv-tag-options', 'aria-label': 'Add a tag', maxlength: 100 }),
             h('datalist', { id: 'mv-tag-options' }), h('button', { class: 'btn', type: 'submit', text: 'Add' })),
           h('p', { class: 'mv-tag-feedback', role: 'status' })),
-        h('dl', { class: 'mv-facts' }, facts.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
-        h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Recorded sources' }), h('ul', { class: 'mv-chips', id: 'mv-chips' })),
+        h('dl', { class: 'mv-facts mv-summary' }, summary.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
+        h('details', { class: 'mv-connections' }, h('summary', { text: 'Connections' }),
+          h('dl', { class: 'mv-facts' }, facts.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
+          h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Sources' }), h('ul', { class: 'mv-chips', id: 'mv-chips' }))),
         h('div', { class: 'mv-actions' },
           h('button', { type: 'button', class: 'btn', 'data-act': 'open', text: 'Full profile' }),
           h('button', { type: 'button', class: 'btn', 'data-act': 'note', 'aria-expanded': 'false', text: 'Note' })),
@@ -713,6 +718,12 @@
       statusSelect.value = n.status || '';
       statusSelect.addEventListener('change', () => this.setStatus(n, statusSelect.value || null));
       const tagForm = card.querySelector('.mv-tag-form');
+      card.querySelector('.mv-tag-add').addEventListener('click', () => this.toggleTagForm(tagForm.hidden));
+      tagForm.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault(); event.stopPropagation();
+        this.toggleTagForm(false);
+      });
       tagForm.addEventListener('submit', event => {
         event.preventDefault();
         const input = tagForm.querySelector('input');
@@ -772,12 +783,23 @@
         if (control?.isConnected) control.disabled = false;
       }
     }
+    toggleTagForm(show) {
+      if (this.tagSaving) return;
+      const box = this.r.card.querySelector('.mv-tags');
+      if (!box) return;
+      const form = box.querySelector('.mv-tag-form');
+      const button = box.querySelector('.mv-tag-add');
+      form.hidden = !show;
+      button.setAttribute('aria-expanded', String(show));
+      if (show) form.querySelector('input').focus();
+      else button.focus();
+    }
     async loadTags(n) {
       const box = this.r.card.querySelector('.mv-tags');
       if (!box) return;
       const version = box._readVersion = (box._readVersion || 0) + 1;
       const feedback = box.querySelector('.mv-tag-feedback');
-      feedback.textContent = 'Loading tags…';
+      feedback.textContent = 'Loading…';
       try {
         const person = await this.host.person(n.id);
         if (this.model.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
@@ -811,19 +833,22 @@
       for (const el of box.querySelectorAll('input,button')) el.disabled = true;
       const feedback = box.querySelector('.mv-tag-feedback');
       feedback.textContent = 'Saving…';
+      let saved = false;
       try {
         const person = await this.host.editTags(n.id, remove ? [] : [tag], remove ? [tag] : []);
         if (this.model.selected?.id === n.id && box.isConnected) {
           this.paintTags(n, person, box);
           if (person.status !== undefined) this.model.patchStatus(n.id, person.status);
-          box.querySelector('input').value = '';
+          if (!remove) box.querySelector('input').value = '';
           feedback.textContent = 'Saved';
+          saved = true;
         }
       } catch (_) {
         if (box.isConnected) feedback.textContent = 'Couldn’t save. Try again.';
       } finally {
         this.tagSaving = false;
         for (const el of box.querySelectorAll('input,button')) el.disabled = false;
+        if (saved && !remove && this.model.selected?.id === n.id && box.isConnected) this.toggleTagForm(false);
       }
     }
     async toggleNote(btn) {

@@ -31,6 +31,17 @@ class RequestPermitTest(unittest.TestCase):
         self.conn.commit()
         return accounts.request_permit(self.conn, f'lane{i}', kind=kind, now=now)
 
+    def test_scraping_warning_blocks_all_lanes_even_if_pause_settings_are_cleared(self):
+        db.set_setting(self.conn, 'instagram_scraping_warning', {'lane': 'lane0', 'message': 'Review Instagram warning'})
+        for setting in ('paused', 'paused_lists', 'paused_bios'):
+            db.set_setting(self.conn, setting, False)
+        self.conn.commit()
+        for lane in (0, 1, 24):
+            self.assertFalse(self.acquire(lane)['granted'])
+        with self.assertRaises(ValueError):
+            control.apply(self.conn, {'action': 'start_all'})
+        self.assertTrue(control.stage_paused(self.conn, 'lists'))
+
     def test_concurrent_requests_grant_only_one_persisted_permit(self):
         barrier = threading.Barrier(10)
         def work(i):

@@ -39,7 +39,7 @@ def iso(d):
 def stage_paused(conn, stage):
     if stage == 'ai':
         return not processing_modes.allows(conn, 'external')
-    return bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
+    return bool(db.get_setting(conn, 'instagram_scraping_warning')) or bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
 
 
 def paused_kinds(conn):
@@ -161,7 +161,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
         if stage == 'ai' and processing_modes.allows(conn, 'laya'):
             return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
-        attention = db.get_setting(conn, 'instagram_request_attention')
+        attention = db.get_setting(conn, 'instagram_scraping_warning') or db.get_setting(conn, 'instagram_request_attention')
         if stage != 'ai' and isinstance(attention, dict) and attention.get('message'):
             return dict(out, state='paused', now=attention['message'], attention=attention)
         return dict(out, state='paused', now=why)
@@ -252,8 +252,9 @@ def snapshot(conn, ai_left=None):
     until = request.get('until')
     active = bool(request and isinstance(until, (int, float)) and not isinstance(until, bool)
                   and until > now.timestamp())
-    attention = db.get_setting(conn, 'instagram_request_attention')
-    unconfirmed = bool(request and not active) or bool(isinstance(attention, dict) and attention.get('message'))
+    request_attention = db.get_setting(conn, 'instagram_request_attention')
+    attention = db.get_setting(conn, 'instagram_scraping_warning') or request_attention
+    unconfirmed = bool(request and not active) or bool(isinstance(request_attention, dict) and request_attention.get('message'))
     if request and not active and not attention:
         # Expiry does not prove that a browser request stopped. GET reports the
         # uncertainty; only the existing request gate changes collection policy.
@@ -332,6 +333,28 @@ def stop_benchmark(conn, body):
 def apply(conn, b):
     """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
+    if action == 'acknowledge_scraping_warning' and not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    warning = db.get_setting(conn, 'instagram_scraping_warning')
+    if action == 'acknowledge_scraping_warning':
+        if not warning or b.get('account') != warning.get('lane') or b.get('reviewed') is not True:
+            raise ValueError('Review the affected Instagram account before acknowledging its warning.')
+        row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (warning['lane'],)).fetchone()
+        if not warning.get('review_ready') or not row or not row['last_seen'] or datetime.now(timezone.utc) - utc(row['last_seen']) > accounts.RELEASE_AFTER:
+            raise ValueError('The updated extension must confirm the Instagram warning page is closed before acknowledgment.')
+        reviewed = db.get_setting(conn, 'instagram_scraping_warning_reviewed') or {}
+        reviewed[warning['lane']] = datetime.now(timezone.utc).timestamp() * 1000
+        db.set_setting(conn, 'instagram_scraping_warning_reviewed', reviewed)
+        pending = warning.get('pending', {})
+        remaining = pending.pop(next(iter(pending))) if pending else None
+        if remaining:
+            remaining['pending'] = pending
+        db.set_setting(conn, 'instagram_scraping_warning', remaining)
+        conn.execute('UPDATE accounts SET hold=NULL WHERE lane_id=?', (warning['lane'],))
+        conn.commit()
+        return
+    if warning and action in ('resume', 'start_all') and b.get('stage') != 'ai':
+        raise ValueError(warning['message'])
     if action == 'stop_benchmark':
         return stop_benchmark(conn, b)
     if action == 'start_all':
