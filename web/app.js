@@ -306,7 +306,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings', 'start'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: v === 'start' ? 'accounts' : ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -346,7 +346,6 @@ function setView(v) {
   const work = v === 'leads' || v === 'map';
   if ($('#work-count')) $('#work-count').hidden = v !== 'leads';
   $('#view-work').classList.toggle('on', work);
-  $('#view-start').classList.toggle('on', v === 'start');
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-qual').classList.toggle('on', v === 'qual');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
@@ -361,10 +360,9 @@ function setView(v) {
   // The detail panel belongs to Leads and Connections only; never carry it onto another page.
   if (prev !== v && S.open && (!work || narrow())) closeDetail();
   if (v === 'scraper') renderScraper();
-  if (v === 'accounts') renderAccounts();
+  if (v === 'accounts') { renderAccounts(); window.AccountSetup?.show(); }
   if (v !== 'accounts' && A.wiz) closeWizard();
   if (v === 'settings') loadSettings();
-  if (v === 'start') window.Start?.show();
   if (v === 'tags') T.show();
   if (v === 'qual') Q.show();
   if (prev !== v && SCRAPER_FULL_VIEWS.has(v) && !document.hidden) loadScraper();
@@ -1031,7 +1029,7 @@ function renderRows() {
       const only = filtered === 1 && S.f.status;
       const head = st ? `No leads marked ${esc(slabel(st))} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
       const body = st && only ? 'Open all leads, pick one and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
-      box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/start">Get started</a>'}</div>`;
+      box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/accounts">Add an account</a>'}</div>`;
     }
     return;
   }
@@ -2424,6 +2422,30 @@ function accountAccess(a) {
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
   return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }
+function accountInstagramHTML(a) {
+  if (!a.is_main) return '';
+  return location.port === '8777' && window.chrome?.runtime?.sendMessage
+    ? '<button class="btn" data-instagram="inbox">Instagram Inbox</button>'
+    : '<a class="btn" href="https://www.instagram.com/direct/inbox/" target="_blank" rel="noopener" title="Opens Instagram; check the signed-in account">Instagram Inbox</a>';
+}
+async function openInstagramAccount(lane, destination) {
+  try {
+    const setup = await api.get('/api/setup');
+    const instagram = setup.instagram;
+    if (!setup.extension_id || !instagram?.connected || instagram.lane_id !== lane || !instagram.ig_id) {
+      toast('Open the connected Chrome profile and sign in to Instagram.'); return;
+    }
+    const reply = await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(Error('Unavailable')), 5000);
+      window.chrome.runtime.sendMessage(setup.extension_id, {type:'OPEN_INSTAGRAM',destination,expected_lane_id:lane,expected_account_id:instagram.ig_id}, result => {
+        clearTimeout(deadline);
+        if (window.chrome.runtime.lastError || !result?.ok || !result.opened || !result.account_verified) reject(Error('Unconfirmed'));
+        else resolve(result);
+      });
+    });
+    if (reply.opened) toast('Instagram opened in your connected profile.');
+  } catch { toast("Couldn't open the connected profile. Open Instagram in that Chrome profile."); }
+}
 function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
@@ -2437,7 +2459,7 @@ function accountRow(a) {
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
     <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
-      <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
+      <span class="grow"></span>${accountInstagramHTML(a)}<button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
     <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
     <div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -2657,6 +2679,7 @@ $('#acc-list').addEventListener('click', async (e) => {
   const t = e.target.closest('button');
   if (!a || !t || t.type === 'submit' && t.closest('form')) return;
   if (!t.hasAttribute('data-remove') && A.confirm) { A.confirm = null; renderAccounts(); }
+  if (t.dataset.instagram) return openInstagramAccount(lane, t.dataset.instagram);
   if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${ROLES.find((x) => x[0] === t.dataset.role)[1].toLowerCase()}`);
   if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer the main account` : `${a.name} is the main account`);
   if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);

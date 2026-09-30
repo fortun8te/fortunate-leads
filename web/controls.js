@@ -45,7 +45,7 @@
   function qualification() {
     const mode = engines?.processing?.mode || control?.processing?.mode;
     if (engineError || !mode) return {label:'Status unavailable', disabled:true, detail:'Checking status…'};
-    if (mode === 'R') return {label:'Rules only', disabled:true, detail:'Rules rank saved profiles. Choose an AI mode in Settings for bio checks.'};
+    if (mode === 'R') return {label:'Rules only', disabled:true, detail:'Saved profiles are ranked with rules.'};
     const paused = local?.paused ?? engines?.paused;
     const acknowledged = local?.stop_acknowledged ?? engines?.stop_acknowledged;
     const stopping = paused && acknowledged !== true;
@@ -76,15 +76,14 @@
     if (/^Waiting/.test(scrape.state)) return 'waiting';
     return scrape.state === 'Running' ? 'collecting' : 'ready';
   }
-  const collectionWord = scrape => ({Running:'Running', On:'Ready', Off:'Stopped', 'Needs attention':'Needs you'})[scrape.state] || scrape.state;
   const SUMMARY_ICON = '<svg class="ic fl-ctl-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M4 6.5l4 4 4-4"/></svg>';
   function render() {
     mount();
+    const modelsOpen = el.querySelector('.fl-models')?.open || false;
     const focus = el.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
     const scroll = el.querySelector('.fl-ctl-panel')?.scrollTop || 0;
     const qualify = qualification(), scrape = scraping(), k2 = engineState('k2'), laya = engineState('laya');
     const overall = overallState(scrape);
-    const mode = ({R:'Rules only',RLAI:'Rules and local AI',RLEAI:'Rules, local and external AI'})[engines?.processing?.mode || control?.processing?.mode] || 'Mode unavailable';
     const dot = state => `<span class="fl-state-dot" data-state="${esc(state)}" aria-hidden="true"></span>`;
     const engineRow = (id, state) => {
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
@@ -92,10 +91,10 @@
     };
     const action = busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Continue collecting' : 'Stop collecting';
     const wait = scrape.paused ? 'Continue collecting' : 'Stop collecting';
-    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' ? 'Progress saved' : scrape.detail)}</span><span class="grow"></span><span class="fl-qual-status" title="${esc(qualify.detail)}">Qualification <b>${esc(qualify.label)}</b><small>${esc(qualify.detail)}</small></span>${qualify.label === 'Rules only' ? '<a class="fl-qual-setup" href="#/settings">Choose AI mode</a>' : `<button type="button" class="btn fl-qual-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button></div>`
-      + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>What is running</b><span>${esc(mode)}</span></div>`
-      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(overall === 'needs' ? 'needs' : scrape.paused ? 'paused' : scrape.state.toLowerCase())}Collection <span class="fl-engine-state">${esc(collectionWord(scrape))}</span></strong><small>${esc(scrape.state === 'Off' ? 'Progress is saved. Continue collecting where you left off.' : scrape.state === 'Stopping' ? 'Finishing the current request. Your progress stays saved.' : scrape.detail)}</small><span class="fl-collection-help">Stop keeps your progress. Continue picks up where you left off.</span></div><a href="#/accounts">View progress</a></div>`
-      + `<p class="fl-qual-progress">${esc(qualify.detail)}</p>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong><small>${esc(s.now || '')}</small><small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Bio checks read saved bios and your notes for business fit. Ranking hints reorder people using what is already saved.</span><a href="#/settings">Checking mode and setup</a></div>`
+    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button></div>`
+      + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
+
+      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong><small>${esc(s.now || '')}</small><small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     if (el.innerHTML === html) return;
     el.innerHTML = html;

@@ -32,7 +32,6 @@
   <aside class="side">
     <a class="brand" href="#/leads"><i>F</i><span>Fortunate</span></a>
     <nav class="tabs" aria-label="Main navigation">
-      <a href="#/start" data-view="start" id="tab-start" aria-label="Get started" hidden><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.5 5.2 11 8l-4.5 2.8z"/></svg><span>Get started</span><span class="num" id="n-start" hidden></span></a>
       <a href="#/leads" data-view="leads" aria-label="Leads"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.3 2.4-3.5 4.5-3.5s3.9 1.2 4.5 3.5M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 10.2c1.3.5 2.1 1.6 2.5 3.3"/></svg><span>Leads</span><span class="num" id="n-leads" hidden></span></a>
       <a href="#/map" data-view="map" aria-label="Connections"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="7" cy="12" r="2"/><path d="M5.8 4.3 10 4.8M4.9 5.8l1.4 4.4M10.9 6.7 8.2 10.5"/></svg><span>Connections</span></a>
       <a href="#/qual" data-view="qual" aria-label="Review"><svg viewBox="0 0 16 16"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg><span>Review</span><span class="num" id="n-qual" hidden></span></a>
@@ -153,13 +152,6 @@
       </div>
     </section>
 
-    <section class="view" id="view-start">
-      <div class="scr st-wrap">
-        <header class="ph"><div class="ph-t"><h1>Get started</h1><p>Paste an account, press Start. Lists and bios collect on their own and leads rank as they arrive.</p></div></header>
-        <div id="st-body"></div>
-      </div>
-    </section>
-
     <section class="view" id="view-tags">
       <div class="tg">
         <header class="ph">
@@ -241,17 +233,18 @@
       <div class="scr">
         <header class="ph">
           <div class="ph-t"><h1>Accounts</h1></div>
-          <div class="ph-a"><button class="btn" id="acc-start">Start local models</button><button class="btn" id="acc-add">Connect account</button></div>
+          <div class="ph-a"><button class="btn" id="acc-add">Connect account</button></div>
         </header>
-        <p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite"></p>
         <div class="alerts" id="acc-alerts"></div>
         <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>
+        <div id="account-setup" hidden></div>
         <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
         <div class="panel">
           <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
           <div id="acc-list"></div>
         </div>
+        <details class="adv"><summary>AI tools</summary><button class="btn" id="acc-start">Start local models</button><p class="acc-start-note" id="acc-start-status" role="status" aria-live="polite"></p></details>
       </div>
     </section>
 

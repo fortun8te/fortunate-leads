@@ -438,7 +438,6 @@ details:is(.workflow-editor, .workflow-optional) > summary:hover { color: var(--
 }
 @media (prefers-reduced-motion: reduce) { .help, .help-card { animation: none; } }
 
-.fl-collection-help { display: block; margin-top: 3px; color: var(--fg3); font-size: 12px; line-height: 1.4; }
 
 #pane-leads .row-connection { color: var(--fg2); }
 #pane-leads .row-connection-separator { color: var(--fg4); }
