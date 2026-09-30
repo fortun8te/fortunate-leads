@@ -631,8 +631,16 @@ def _index_for(conn, db_path):
     return entries
 
 
-def _present_ids(conn, ids):
+def _present_ids(conn, ids, db_path=None):
     present = set()
+    if db_path is not None:
+        with reader(db_path, 'closeness') as store:
+            if store is not None:
+                for start in range(0, len(ids), 900):
+                    chunk = ids[start:start + 900]
+                    present.update(row[0] for row in store.conn.execute(
+                        'SELECT person_id FROM mp WHERE person_id IN (%s)'
+                        % ','.join('?' * len(chunk)), chunk))
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
         present.update(r[0] for r in conn.execute(
@@ -659,7 +667,7 @@ def search_ids(conn, db_path, text, limit=Q_CAP):
     for (pid,) in prefix_rows:
         quality.setdefault(pid, 1)
     if prefix_capped:
-        prefix_present = _present_ids(conn, list(quality))
+        prefix_present = _present_ids(conn, list(quality), db_path)
         if len(prefix_present) >= limit:
             # Exact and prefix handles outrank every name/substring match.
             # A full prefix page needs no cold 265k-person name-search pool.
@@ -675,7 +683,7 @@ def search_ids(conn, db_path, text, limit=Q_CAP):
         elif text in handle or text in name:
             quality[pid] = 4
     ids = list(quality)
-    present = _present_ids(conn, ids)
+    present = _present_ids(conn, ids, db_path)
     ids = [i for i in ids if i in present]
     ids.sort(key=lambda i: (quality[i], i))
     return ids[:limit], prefix_capped or len(ids) > limit

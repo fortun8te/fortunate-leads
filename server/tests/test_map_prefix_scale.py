@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import db
 import map_view as MV
+import map_layout as ML
 
 
 class MapPrefixScale(unittest.TestCase):
@@ -40,6 +41,24 @@ class MapPrefixScale(unittest.TestCase):
         pool.assert_called_once()
         self.assertEqual(ids, [*self.prefix[:2], self.extra])
         self.assertTrue(capped)
+
+    def test_prepared_search_includes_disconnected_saved_people(self):
+        marked = db.upsert_person(self.conn, {'handle': 'saved_marked'})
+        unmarked = db.upsert_person(self.conn, {'handle': 'saved_unmarked'})
+        self.conn.execute("INSERT INTO marks(person_id,status) VALUES(?,'contacted')", (marked,))
+        self.conn.commit()
+        ML.build(self.path, modes=('closeness',))
+        self.addCleanup(MV.close_pool)
+        with MV.reader(self.path, 'closeness') as store:
+            expected = {row[0] for row in store.conn.execute(
+                "SELECT person_id FROM mp WHERE person_id IN (?,?)", (marked, unmarked))}
+        self.assertEqual(expected, {marked, unmarked})
+        for handle, pid in (('saved_marked', marked), ('saved_unmarked', unmarked)):
+            with self.subTest(handle=handle):
+                result = MV.search(self.conn, self.path, {'q': [handle]})
+                self.assertEqual(result['results'][0]['id'], pid)
+                self.assertIn('closeness', result['results'][0]['positions'])
+                self.assertFalse(result['results'][0]['pending'])
 
     def test_exact_result_outranks_prefixes_and_name_results(self):
         exact = db.upsert_person(self.conn, {'handle': 'needle'})
