@@ -244,8 +244,8 @@
       const response = await fetch(`/api/connections?${query}`, { signal: controller.signal });
       const data = await response.json();
       if (current !== request) return;
-      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Comparison is unavailable. Please try again.');
-      if (!data.source || !data.target || !Array.isArray(data.connectors)) throw new Error('The comparison response was incomplete. Please try again.');
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Comparison is unavailable. Try again.');
+      if (!data.source || !data.target || !Array.isArray(data.connectors)) throw new Error('The comparison came back incomplete. Try again.');
       render(data);
     } catch (error) {
       if (current !== request || error.name === 'AbortError') return;

@@ -28,7 +28,7 @@ test('local progress shows actual saved bio queue and separate research needs',a
  const h=harness();await h.ctx.loadProcessingStatus();h.ctx.renderCheckingMode();assert.match(h.$('#set-local-progress').textContent,/318 bios reviewed.*42 waiting.*2 notes waiting.*19 need more research/);assert.match(h.$('#set-mode-models').textContent,/K2 Horizon/);
 });
 test('new mode beats stale scraper snapshot, external summary preserves local and identifies research model',async()=>{
- const h=harness();await h.choose('RLEAI');h.S.sc.processing={mode:'R',generation:1};h.ctx.renderCheckingMode();assert.match(h.$('#set-mode-status').textContent,/RLEAI/);assert.match(h.$('#set-mode-models').textContent,/Laya are included.*grok.*optional/);
+ const h=harness();await h.choose('RLEAI');h.S.sc.processing={mode:'R',generation:1};h.ctx.renderCheckingMode();assert.match(h.$('#set-mode-status').textContent,/Rules \+ local \+ external AI selected/);assert.match(h.$('#set-mode-models').textContent,/Laya are included.*grok.*optional/);
 });
 test('legacy model save preserves order without changing mode',async()=>{
  const h=harness();await h.$('#set-models-save').onclick();assert.equal(h.calls.length,1);assert.equal(h.calls[0].url,'/api/llm/models');assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.dirty,false);

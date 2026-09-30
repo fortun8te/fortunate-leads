@@ -6,14 +6,19 @@ const LABEL = { run: 'Scraping', wait: 'Waiting', cool: 'Cooldown', stop: 'Idle'
 const ago = (t) => { const m = Math.max(0, Math.round((Date.now() - t) / 60e3)); return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm ago'; };
 const secs = (t) => Math.max(0, Math.ceil((t - Date.now()) / 1e3));
 
+const CODES = { rate_limit: 'Rate limited', soft_block: 'Temporarily blocked', login: 'Signed out', challenge: 'Security check', not_found: 'Not found', network: 'Connection problem', unsupported: 'Not supported', other: 'Unexpected reply' };
+const SAYS = { rate_limit: 'Instagram is limiting requests. Collection resumes on its own.', soft_block: 'Instagram is limiting this account for now. Collection resumes on its own.',
+  network: "Couldn't reach Instagram. Collection retries on its own.", unsupported: 'Instagram declined this request. Trying another route.', not_found: 'Instagram could not find that profile.', other: 'Instagram sent an unexpected reply. Collection retries on its own.' };
+// Errors look like "14:02 rate_limit (reason) on list x | raw sample": show a sentence, keep the raw sample in the details.
+const friendly = (e) => { const m = /^(?:\d\d:\d\d )?(\w+)(?: \([^)]*\))? on /.exec(e); return m && SAYS[m[1]] ? SAYS[m[1]] : e.replace(/ \| .*$/, ''); };
 let current = null, debug = null;
 function bucketText(b, what) {
   if (!b) return '–';
-  if (b.until) return 'cooling until ' + hm(b.until) + ' · ' + b.hits + ' hit' + (b.hits === 1 ? '' : 's') + '/24h';
-  if (b.left === 0) return 'daily budget used';
+  if (b.until) return 'paused until ' + hm(b.until) + ' · ' + b.hits + ' limit' + (b.hits === 1 ? '' : 's') + ' in 24h';
+  if (b.left === 0) return 'daily budget reached';
   const wait = b.readyAt ? secs(b.readyAt) : 0;
   const left = b.left == null ? 'no daily cap' : n(b.left) + ' ' + what + ' left'; // null = unlimited (Infinity does not survive storage)
-  return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + left + (b.infoOff ? ' · via page loads' : '');
+  return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + left + (b.infoOff ? ' · reading page loads' : '');
 }
 function render(v) {
   if (!v) return;
@@ -31,27 +36,27 @@ function render(v) {
   const t = v.today || {};
   $('today').textContent = n(t.people) + ' people · ' + n(t.list) + ' pages · ' + n(t.bios) + ' bios';
   const r = v.rate;
-  $('hour').textContent = r ? n(r.people_hour) + ' people · ' + n(r.pages_hour) + ' pages · ' + n(r.bios_hour) + ' bios · ' + n(r.requests_hour) + ' req' : '–';
+  $('hour').textContent = r ? n(r.people_hour) + ' people · ' + n(r.pages_hour) + ' pages · ' + n(r.bios_hour) + ' bios · ' + n(r.requests_hour) + ' requests' : '–';
   $('lists').textContent = bucketText(v.buckets && v.buckets.list, 'pages');
   $('bios').textContent = bucketText(v.buckets && v.buckets.profile, 'reads');
-  $('limits').textContent = r && r.last_hit_at ? n(r.hits_24h) + ' in 24h · last ' + ago(Date.parse(r.last_hit_at)) : 'none hit';
+  $('limits').textContent = r && r.last_hit_at ? n(r.hits_24h) + ' in 24h, last ' + ago(Date.parse(r.last_hit_at)) : 'none reached';
   $('boxdt').hidden = $('box').hidden = !v.box;
-  $('box').textContent = n(v.box) + ' waiting for server';
+  $('box').textContent = n(v.box) + (v.box === 1 ? ' result' : ' results') + ' waiting to reach the server';
   $('note').textContent = v.note || '';
   const err = v.lastError && v.lastError !== text ? v.lastError : '';
   $('errwrap').hidden = !err;
-  $('error').textContent = err.replace(/ \| HTTP .*$/, '');
+  $('error').textContent = friendly(err);
   const d = debug && err ? debug : null;
   $('raw').hidden = !d;
   if (d) {
-    $('rawsum').textContent = 'Raw sample · ' + d.code + (d.reason ? ' (' + d.reason + ')' : '') + ' · ' + hm(Date.parse(d.at));
-    $('sample').textContent = d.sample || '(empty)';
+    $('rawsum').textContent = 'Instagram response · ' + (CODES[d.code] || 'Unexpected reply') + ' · ' + hm(Date.parse(d.at));
+    $('sample').textContent = d.sample || 'Empty response';
   }
   const paused = v.state === 'paused' && !/workspace/i.test(text);
   $('toggle').textContent = paused ? 'Resume' : 'Pause';
   $('toggle').dataset.cmd = paused ? 'resume' : 'pause';
 }
-const showVer = (a) => { $('ver').textContent = 'v' + chrome.runtime.getManifest().version + (a && a.ig_id ? ' · ' + (a.handle ? '@' + a.handle : 'id ' + a.ig_id) : a ? ' · logged out' : ''); };
+const showVer = (a) => { $('ver').textContent = 'v' + chrome.runtime.getManifest().version + (a && a.ig_id ? ' · ' + (a.handle ? '@' + a.handle : 'id ' + a.ig_id) : a ? ' · signed out' : ''); };
 chrome.storage.local.get('account').then((o) => showVer(o.account));
 chrome.storage.onChanged.addListener((c) => { if (c.account) showVer(c.account.newValue); });
 chrome.storage.local.get(['view', 'debug']).then((o) => { debug = o.debug || null; render(o.view); });
@@ -82,6 +87,6 @@ $('copy').onclick = async () => {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
     try { ok = document.execCommand('copy'); } catch {} ta.remove();
   }
-  $('copy').textContent = ok ? 'Copied' : 'Copy failed';
-  setTimeout(() => { $('copy').textContent = 'Copy debug'; }, 1500);
+  $('copy').textContent = ok ? 'Copied' : "Couldn't copy";
+  setTimeout(() => { $('copy').textContent = 'Copy diagnostics'; }, 1500);
 };

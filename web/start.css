@@ -1,0 +1,31 @@
+/* Get started: checklist and the one-handle flow. Monochrome, same tokens as the rest of the app. */
+#view-start .st-wrap { display: grid; gap: var(--s5); max-width: 760px; }
+#st-body { display: grid; gap: var(--s5); }
+.st-flow h2 { font-size: var(--fs-xl); font-weight: 600; margin: 0 0 var(--s1); }
+.st-flow h3 { font-size: var(--fs-md); font-weight: 600; margin: var(--s3) 0 0; }
+.st-form { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.st-form .input { flex: 1 1 260px; min-width: 0; }
+.st-err { margin: 0; color: var(--fg); }
+.st-headline { font-size: var(--fs-lg); margin: var(--s2) 0 0; }
+.st-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); margin: 0; }
+.st-stats div { background: var(--bg2); border-radius: var(--r2); padding: var(--s3) var(--s4); }
+.st-stats dt { font-size: var(--fs-sm); color: var(--fg3); }
+.st-stats dd { margin: var(--s1) 0 0; font-size: var(--fs-xl); font-weight: 600; }
+.st-lists, .st-leads, .st-steps, .st-items { list-style: none; margin: 0; padding: 0; }
+.st-lists li { display: grid; grid-template-columns: minmax(0, 1fr) 120px auto; gap: var(--s3); align-items: center; padding: 6px 0; font-size: var(--fs); }
+.st-leads { counter-reset: lead; }
+.st-leads li a { display: flex; flex-wrap: wrap; gap: 2px var(--s3); padding: 8px 0; border-top: 1px solid var(--line); color: var(--fg); text-decoration: none; }
+.st-leads li a:hover b { text-decoration: underline; }
+.st-step { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: var(--s3); align-items: start; padding: var(--s4) var(--s5); border-top: 1px solid var(--line); }
+.st-step > .dot { margin-top: 6px; }
+.st-txt p { margin: 2px 0 0; font-size: var(--fs-sm); line-height: 1.5; }
+.st-act { display: flex; gap: var(--s2); }
+.st-items li { display: flex; gap: var(--s2); align-items: center; padding: 4px 0; font-size: var(--fs-sm); }
+.st-items .dot { width: 6px; height: 6px; }
+#tab-start[hidden] { display: none; }
+@media (max-width: 600px) {
+  .st-step { grid-template-columns: 8px minmax(0, 1fr); }
+  .st-act { grid-column: 2; }
+  .st-stats dd { font-size: var(--fs-lg); }
+  .st-lists li { grid-template-columns: minmax(0, 1fr) 70px auto; }
+}

@@ -575,6 +575,7 @@
     return client ? {converted_to_status:'client', status:'client', mark_rev:markRevs.get(id)} : {};
   }
 
+  let mockSkipped = null;
   function route(method, url, body) {
     const u = new URL(url, location.origin);
     const q = u.searchParams;
@@ -867,6 +868,35 @@
         .slice(0, body.limit || 50).map((p) => p.handle);
       seeds.forEach((h) => scraper.lists.push({ seed: h, direction: 'following', state: 'queued', received: 0, total: null, updated_at: now(), error: null }));
       return { ok: true, queued: seeds.length, seeds };
+    }
+    if (path === '/api/onboarding' || path === '/api/start') {
+      // ?mock_setup=fresh shows a Mac with nothing connected yet (empty checklist, no lists).
+      const fresh = /mock_setup=fresh/.test(location.search), accs = fresh ? [] : accounts;
+      if (path === '/api/start') {
+        const handles = body.handles || [body.handle];
+        let queued = 0;
+        handles.forEach((h) => ['followers', 'following'].forEach((d) => { if (!scraper.lists.some((l) => l.seed === h && l.direction === d)) { queued++; scraper.lists.push({ seed: h, direction: d, state: 'queued', received: 0, total: null, updated_at: now(), error: null }); } }));
+        scraper.paused = false;
+        return { queued, started: true, note: null };
+      }
+      mockSkipped = mockSkipped || new Set();
+      if (body.skip) { if (body.on === false) mockSkipped.delete(body.skip); else mockSkipped.add(body.skip); }
+      const online = accs.filter((a) => a.online), logged = online.filter((a) => a.ig_id && !a.hold);
+      const items = accs.map((a) => ({ lane_id: a.lane_id, name: a.name, state: a.hold ? 'bad' : a.online ? 'ok' : 'wait', text: a.hold === 'login' ? 'Logged out of Instagram' : a.online ? 'Connected' : 'Not connected right now' }));
+      const step = (id, title, status, detail, action, its) => ({ id, title, status, detail, action: action || null, items: its || [], optional: id === 'ai' || id === 'backups' });
+      const steps = [step('server', 'Server', 'ok', 'Running · v3.9.0'),
+        accs.length ? step('extension', 'Chrome extension', online.length ? 'ok' : 'todo', online.length ? online.length + ' Chrome profiles connected' : 'No Chrome profile is connected right now.', null, items)
+          : step('extension', 'Chrome extension', 'todo', 'No Chrome profile has connected yet. Load the extension once per profile.', { label: 'Connect a profile', route: '#/accounts', kind: 'wizard' }),
+        logged.length ? step('instagram', 'Instagram login', 'ok', 'Logged in: ' + logged.slice(0, 3).map((a) => a.name).join(', '))
+          : step('instagram', 'Instagram login', 'todo', 'Connect a Chrome profile first, then log in to Instagram in it.'),
+        step('ai', 'AI checking', mockSkipped.has('ai') ? 'ok' : 'todo', 'Optional. Leads are ranked by rules without a key. Add a free key for smarter checks.', { label: 'Add a key', route: '#/settings' }),
+        step('backups', 'Backups', 'ok', 'Last backup 3 h ago')];
+      const blocking = steps.filter((x) => !x.optional && x.status !== 'ok').length, open = steps.filter((x) => x.status !== 'ok').length;
+      const lists = fresh ? [] : scraper.lists.filter((l) => l.state !== 'done').slice(0, 6).concat(scraper.lists.filter((l) => l.state === 'done').slice(0, 2));
+      const act = lists.find((l) => l.state === 'running') || lists.find((l) => l.state === 'queued');
+      const flow = { state: !lists.length ? 'idle' : scraper.paused ? 'paused' : act ? 'running' : 'done', people: fresh ? 0 : people.length, bios: fresh ? 0 : Math.round(people.length * 0.4), ranked: fresh ? 0 : people.length, jobs_left: 0, lists,
+        headline: !lists.length ? 'Paste an Instagram account to begin.' : scraper.paused ? 'Collection is paused. Press Start to continue.' : act ? `Collecting @${act.seed}'s ${act.direction}: ${act.received.toLocaleString('en-US')}${act.total ? ' of about ' + act.total.toLocaleString('en-US') : ''} people so far.` : 'All lists collected.' };
+      return { ready: !blocking, healthy: !open, blocking, open, steps, flow };
     }
     if (path === '/api/scraper/seeds') {
       let queued = 0;

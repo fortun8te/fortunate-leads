@@ -232,6 +232,7 @@ Bad numbers / `has_bio` / `status` values → 400. Tag values are exact (case-se
 - `POST /api/accounts/{lane}` `{"role"?,"paused"?,"is_main"?,"label"?:str≤40|null,"budget"?:{list?,profile?}|null}` → `{"ok","account"}` (404 unknown lane).
 - `POST /api/accounts/{lane}/remove` → `{"ok","removed":0|1}` — its leases and lists go back to the queue.
 - `POST /api/settings/accounts` `{"main_list_share":0-1}` — share of the last hour's list pages the main account may take (0 = bios only).
+- `GET /api/onboarding` → `{"ready","healthy","blocking","open","steps":[{"id","title","status":"ok|todo|warn","detail","action","items","optional"}],"flow":{"state","headline","lists","people","bios","ranked"}}`: the Get started checklist (server, extension per Chrome profile, Instagram login, AI keys, backups) and live progress. `POST {"skip":"ai"|"backups","on":true}` hides an optional step. `POST /api/start {"handle"}` queues both lists of one account and resumes collection at the normal pace; a shared Instagram safety hold still applies (`started:false`).
 - `GET /api/setup` → `{"repo","extension_path","extension_id","extension_version","server","lanes"}` for the add-account wizard.
 - `GET /img/{id}` → cached profile picture (downloaded once from the Instagram CDN into `data/pfp/`; https + `*.cdninstagram.com`/`*.fbcdn.net` only, redirects never followed), 404 if none → UI shows initials.
 

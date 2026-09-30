@@ -1,0 +1,22 @@
+/* Daily workflow: status menu, detail lead navigation. Loaded last. Neutral only; the accent stays the one blue. */
+.status-menu {
+  position: fixed; z-index: 45; width: 220px; padding: 6px; background: var(--bg2); color: var(--fg);
+  border: 1px solid var(--line2); border-radius: var(--r); box-shadow: var(--shadow-2);
+}
+.status-menu .sm-h { padding: 6px 10px 8px; color: var(--fg3); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.status-menu button {
+  display: flex; align-items: center; justify-content: space-between; width: 100%; height: 34px; padding: 0 10px;
+  border-radius: var(--r2); text-align: left; color: var(--fg);
+}
+.status-menu button.on, .status-menu button:hover { background: var(--bg3); }
+.status-menu button:last-child { margin-top: 4px; color: var(--fg3); }
+.d-nav { margin-left: auto; align-self: flex-start; display: flex; gap: 2px; }
+.d-nav + .d-close { margin-left: 0; }
+.d-nav button { width: 30px; height: 30px; border-radius: var(--r2); color: var(--fg3); font-size: 15px; }
+.d-nav button:hover { background: var(--bg3); color: var(--fg); }
+.d-nav button:focus-visible, .status-menu button:focus-visible { outline: 2px solid var(--fg2); outline-offset: 1px; }
+@media (max-width: 900px) {
+  .d-nav button { width: 40px; height: 40px; font-size: 18px; }
+  .status-menu { left: 16px !important; right: 16px; width: auto; }
+}
+.empty kbd { margin-inline: 2px; }

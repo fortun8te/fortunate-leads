@@ -41,6 +41,7 @@ import owner_relationships  # noqa: E402
 import tag_projection  # noqa: E402
 import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
+import onboarding  # noqa: E402
 import processing_modes  # noqa: E402
 import processing_state  # noqa: E402
 import local_model  # noqa: E402
@@ -2743,6 +2744,38 @@ def api_setup(conn, q, b):
             'lanes': conn.execute('SELECT count(*) FROM accounts').fetchone()[0]}
 
 
+def api_onboarding(conn, q, b):
+    """Get-started checklist plus the one-handle flow. POST {"skip": "ai"|"backups"} hides an optional step."""
+    if b:
+        step = b.get('skip')
+        if step not in onboarding.OPTIONAL or not isinstance(b.get('on', True), bool):
+            raise Bad('skip must be one of ' + ', '.join(onboarding.OPTIONAL))
+        skipped = set(db.get_setting(conn, 'onboarding_skipped') or [])
+        skipped = skipped | {step} if b.get('on', True) else skipped - {step}
+        db.set_setting(conn, 'onboarding_skipped', sorted(skipped))
+        conn.commit()
+    now = datetime.now(timezone.utc)
+    accts = accounts.listing(conn, now, include_lists=False)
+    steps = onboarding.checks(accts, api_llm(conn, {}, {}), onboarding.newest_backup(CFG['db']),
+                              onboarding.backup_agent_loaded(), set(db.get_setting(conn, 'onboarding_skipped') or []),
+                              {'extension_version': json.loads((ROOT / 'extension' / 'manifest.json').read_text()).get('version')})
+    hold = workspace_cooldown(conn, now)
+    return {**onboarding.summarize(steps), 'steps': steps,
+            'flow': onboarding.flow(conn, bool(db.get_setting(conn, 'paused')), hold, accts)}
+
+
+def api_start(conn, q, b):
+    """The one button: queue both lists of an Instagram account and switch collection on at the normal pace."""
+    handles = b.get('handles') if isinstance(b.get('handles'), list) else [b.get('handle')]
+    queued = api_seeds(conn, q, {'handles': handles, 'directions': ['followers', 'following']})['queued']
+    started, note = True, None
+    try:
+        api_control_set(conn, q, {'stage': 'collection', 'action': 'resume'})
+    except Bad as exc:
+        started, note = False, str(exc)
+    return {'queued': queued, 'started': started, 'note': note}
+
+
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
 KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
@@ -2758,6 +2791,7 @@ ROUTES = [
     ('POST', r'/api/person/(\d+)/note-retry', api_note_retry),
     ('GET', r'/api/accounts', api_accounts), ('POST', rf'/api/accounts/{LANE}', api_account_edit),
     ('POST', rf'/api/accounts/{LANE}/remove', api_account_remove), ('GET', r'/api/setup', api_setup),
+    ('GET', r'/api/onboarding', api_onboarding), ('POST', r'/api/onboarding', api_onboarding), ('POST', r'/api/start', api_start),
     ('POST', r'/api/settings/accounts', api_account_settings),
     ('GET', r'/api/benchmark/next', benchmark_next),
     ('POST', r'/api/benchmark/permit', benchmark_permit),

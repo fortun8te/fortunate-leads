@@ -266,7 +266,7 @@ async function pageFetch(tab, input, init = {}) {
 
 function makePage(tab, html) {
   const u = new URL(tab.url), L = { win: {}, doc: {} };
-  const scripts = [...html.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/g)].map((m) => ({ textContent: m[1] }));
+  const scripts = [...html.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/g)].map((m) => ({ textContent: m[1], matches: (sel) => sel === 'script[type="application/json"]' })); // bridge.js scanScript() calls script.matches()
   const title = decode((html.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || '');
   const text = decode(html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<title>[\s\S]*?<\/title>/, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
   const on = (bag) => (t, fn) => (bag[t] = bag[t] || []).push(fn);
@@ -281,7 +281,7 @@ function makePage(tab, html) {
   vm.createContext(g);
   // Isolated world (relay.js): forwards bridge.js messages to the service worker.
   tab.bus = [];
-  const iso = { console: quiet, addEventListener: (t, fn) => t === 'message' && tab.bus.push(fn),
+  const iso = { console: quiet, location: g.location, document: doc, addEventListener: (t, fn) => t === 'message' && tab.bus.push(fn),
     chrome: { runtime: { id: EXT_ID, sendMessage: (msg) => { toWorker(clone(msg), { tab: tabInfo(tab), id: EXT_ID, origin: u.origin }); return Promise.resolve(); } } } };
   iso.window = iso; iso.self = iso;
   vm.createContext(iso);
@@ -295,7 +295,7 @@ function makePage(tab, html) {
 function navigate(tab, url, why) {
   tab.url = url; tab.status = 'loading'; tab.title = ''; tab.page = makePage(tab, '');
   const u = new URL(url), handle = decodeURIComponent((u.pathname.match(/^\/([^/]+)\/$/) || [])[1] || '');
-  const entry = { t: V.now, kind: why === 'lookup' ? 'page' : 'nav', bucket: seedByName.has(handle.toLowerCase()) ? 'list' : 'profile',
+  const entry = { t: V.now, kind: why === 'lookup' ? 'page' : 'nav', bucket: seedByName.has(handle.toLowerCase()) || store.cur?.job?.kind === 'list' ? 'list' : 'profile', // discovered seeds are list jobs too
     path: u.pathname, handle, sw: browser.sw && browser.sw.name };
   if (why === 'lookup') checkRequest(entry);
   igLog.push(entry);
@@ -503,9 +503,23 @@ async function workspaceResume() {
 }
 const uiOrigin = () => `http://127.0.0.1:${PORT.server}`; // the workspace page's own origin
 let holdN = 0;
+// An Instagram request that never confirmed completion (worker stopped mid-request) pauses collection on the server until the
+// owner has looked at the account tab and pressed Resume (server/accounts.py request_permit). Michael does that after 10 min.
+const attn = { seen: null, busy: false, log: [] };
+function attentionOperator() {
+  if (attn.busy) return;
+  attn.busy = true;
+  opsHttp('/api/control').then(async (c) => {
+    const a = c && c.instagram_request_attention;
+    if (!a) { attn.seen = null; return; }
+    if (attn.seen == null) { attn.seen = V.now; ev('server paused collection: request never confirmed'); }
+    if (V.now - attn.seen >= 10 * MIN && await resumeCollection()) { attn.log.push({ start: attn.seen, end: V.now }); attn.seen = null; }
+  }).catch(() => {}).finally(() => { attn.busy = false; });
+}
 function operator() {
   timer(OPS, MIN, operator);
   if (!serverUp) return;
+  attentionOperator();
   const st = store.st, h = holds.at(-1);
   if (st && st.hold && h && h.end == null) {
     h.policy = h.policy || HOLD_POLICY[holdN++ % HOLD_POLICY.length];

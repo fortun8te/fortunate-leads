@@ -14,7 +14,7 @@ const initials = (s) => (s || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split
 const ago = (t) => {
   if (!t) return '–';
   const s = Math.max(0, (Date.now() - Date.parse(t)) / 1000);
-  return s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
+  return s < 10 ? 'moments' : s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
 };
 const left = (t) => {
   const s = Math.max(0, Math.round((Date.parse(t) - Date.now()) / 1000));
@@ -42,7 +42,7 @@ const api = {
     try { r = await fetch(url, { cache: 'no-store', ...opts }); } catch (e) { setOnline(false); throw e; }
     setOnline(true);
     if (!r.ok) {
-      let msg = 'HTTP ' + r.status;
+      let msg = r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : r.status === 404 ? 'That item no longer exists. Refresh and try again.' : 'The request did not go through. Try again.';
       let detail = null;
       try { detail = await r.json(); if (detail && typeof detail.error === 'string') msg = detail.error; } catch (e) { /* not json */ }
       const err = new Error(msg); err.status = r.status; err.detail = detail; throw err;
@@ -277,7 +277,7 @@ function parseHash() {
   const h = location.hash.replace(/^#/, '') || '/leads';
   const i = h.indexOf('?');
   const v = (i < 0 ? h : h.slice(0, i)).replace(/^\//, '');
-  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
+  return { view: ['leads', 'map', 'qual', 'tags', 'scraper', 'accounts', 'settings', 'start'].includes(v) ? v : 'leads', qs: i < 0 ? '' : h.slice(i + 1) };
 }
 function hashFor(view) {
   const qs = view === 'leads' || view === 'map' ? toQuery().toString() : '';
@@ -317,6 +317,7 @@ function setView(v) {
   const work = v === 'leads' || v === 'map';
   if ($('#work-count')) $('#work-count').hidden = v !== 'leads';
   $('#view-work').classList.toggle('on', work);
+  $('#view-start').classList.toggle('on', v === 'start');
   $('#view-tags').classList.toggle('on', v === 'tags');
   $('#view-qual').classList.toggle('on', v === 'qual');
   $('#view-scraper').classList.toggle('on', v === 'scraper');
@@ -329,11 +330,13 @@ function setView(v) {
   if (v === 'map') M.show(); else if (prev === 'map') M.hide();
   if (v === 'leads' && prev !== 'leads') renderRows();
   if (v !== 'map' && S.seedCard) { S.seedCard = null; if (!S.open) $('#detail').hidden = true; }
-  if (prev !== v && narrow() && (S.open || S.seedCard)) closeDetail();
+  // The detail panel belongs to Leads and Connections only; never carry it onto another page.
+  if (prev !== v && (S.open || S.seedCard) && (!work || narrow())) closeDetail();
   if (v === 'scraper') renderScraper();
   if (v === 'accounts') renderAccounts();
   if (v !== 'accounts' && A.wiz) closeWizard();
   if (v === 'settings') loadSettings();
+  if (v === 'start') window.Start?.show();
   if (v === 'tags') T.show();
   if (v === 'qual') Q.show();
   if (prev !== v && SCRAPER_FULL_VIEWS.has(v) && !document.hidden) loadScraper();
@@ -748,6 +751,8 @@ async function loadMore(gen = S.gen, n = PAGE, replace = false) {
       S.rows.push(...d.rows.filter((r) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; }));
     }
     S.error = false;
+    // Start on the best lead so the keyboard works at once (desktop only; touch has no cursor).
+    if (S.cur < 0 && S.rows.length && S.view === 'leads' && !narrow()) S.cur = 0;
     S.done = d.has_more === false || S.nextOffset >= d.total || !d.rows.length;
   } catch (e) {
     if (gen === S.gen) S.error = true;
@@ -953,7 +958,11 @@ function renderRows() {
       box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/scraper">Add seeds</a>'}</div>`;
+      const st = S.f.status && STATUSES.includes(S.f.status) ? S.f.status : '';
+      const only = filtered === 1 && S.f.status;
+      const head = st ? `No leads marked ${esc(slabel(st))} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
+      const body = st && only ? 'Open all leads, pick one and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
+      box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/start">Get started</a>'}</div>`;
     }
     return;
   }
@@ -1007,12 +1016,14 @@ function serializeMutation(fn) {
   return run;
 }
 // ---------- marking ----------
-function mark(id, status) { return serializeMutation(() => markNow(id, status)); }
-async function markNow(id, status) {
+function mark(id, status, o = {}) { return serializeMutation(() => markNow(id, status, o)); }
+async function markNow(id, status, { quiet = false } = {}) {
   const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
   const prev = r ? r.status : null;
   invalidatePersonRead(id);
   patchRow(id, { status });
+  // Optimistic: say so at once; a failed save replaces this with an error.
+  if (!quiet && prev !== status) toast(status ? `@${r?.handle || 'lead'} marked ${slabel(status)}` : `@${r?.handle || 'lead'} status cleared`, () => mark(id, prev ?? null, { quiet: true }));
   try {
     await api.post(`/api/person/${id}/mark`, { status });
     loadCounts(); loadFacetsSoon();
@@ -1021,7 +1032,7 @@ async function markNow(id, status) {
     if (S.open === id) await refreshPerson(id);
     else refreshActivity(id);
   }
-  catch (e) { patchRow(id, { status: prev }); toast('Could not save'); }
+  catch (e) { patchRow(id, { status: prev }); toast("Couldn't save. Try again."); }
 }
 function patchRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
@@ -1181,6 +1192,7 @@ function renderDetail() {
   panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
       <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
+      ${S.view === 'leads' && S.rows.length > 1 ? '<div class="d-nav"><button type="button" id="d-prev" aria-label="Previous lead" title="Previous (k)">&#8593;</button><button type="button" id="d-next" aria-label="Next lead" title="Next (j)">&#8595;</button></div>' : ''}
       <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <div class="d-primary">
@@ -1193,7 +1205,7 @@ function renderDetail() {
     <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
-      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
+      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
     </section>
 
     ${workflowSummaryHTML(p)}
@@ -1256,6 +1268,8 @@ $('#detail').addEventListener('click', async (e) => {
   if (rel) return updateHumanRelationship(p.id, 'relationships', rel.dataset.humanRelationship);
   const familiarity = e.target.closest('[data-familiarity]');
   if (familiarity) return updateHumanRelationship(p.id, 'familiarity', familiarity.dataset.familiarity);
+  const nav = e.target.closest('#d-prev, #d-next');
+  if (nav) { const i = S.rows.findIndex((x) => x.id === p.id) + (nav.id === 'd-next' ? 1 : -1); if (S.rows[i]) { select(i, true); openDetail(S.rows[i].id); } return; }
   const m = e.target.closest('[data-s]');
   if (m) return mark(p.id, p.status === m.dataset.s ? null : m.dataset.s);
   const sd = e.target.closest('[data-seed]');
@@ -1355,7 +1369,7 @@ function saveHumanContext(id, update) {
       loadCounts(); loadFacetsSoon();
     } catch (error) {
       if (error.status === 409) await refreshPerson(id);
-      toast(error.status === 409 ? 'This profile changed. Review it and try again.' : 'Could not save relationship');
+      toast(error.status === 409 ? 'This profile changed. Review it and try again.' : "Couldn't save the relationship. Try again.");
     }
   });
 }
@@ -1388,7 +1402,7 @@ async function retryNoteRead(id) {
     const poll = notePolls.get(id);
     if (poll) poll.attempts = 0;
     await refreshPerson(id);
-  } catch { toast('Could not retry reading. Your note is saved.'); }
+  } catch { toast("Couldn't retry. Your note is saved."); }
   finally { noteRetryBusy.delete(id); if (S.person?.id === id) renderNoteState(id); }
 }
 function noteInsightsHTML(p) {
@@ -1425,7 +1439,7 @@ window.addEventListener('beforeunload', (e) => { if (noteQueue.dirty()) { noteQu
 document.addEventListener('visibilitychange', () => { if (document.hidden) noteQueue.flushAll().catch(() => {}); });
 async function editTags(id, add, remove) {
   invalidatePersonRead(id);
-  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || 'Could not save label'); return; }
+  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || "Couldn't save the tag. Try again."); return; }
   await refreshPerson(id);
   loadFacetsSoon();
   if (add.length) toast(/^client$/i.test(add[0]) ? 'Relationship set to Client' : `Tagged ${add[0]}`);
@@ -1777,7 +1791,9 @@ document.addEventListener('keydown', (e) => {
   if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id, { keyboard: true }); return; }
   if (!r) return;
   if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
-  if (/^[0-5]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
+  if (k === 's') { e.preventDefault(); openStatusMenu(r.id); return; }
+  if (k === 'n') { e.preventDefault(); const focusNote = () => { if (S.open === r.id) $('#note')?.focus(); }; if (S.open !== r.id) openDetail(r.id).then(focusNote); else focusNote(); return; }
+  if (/^[0-5]$/.test(k)) { setStatusKey(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
   if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
   if (k === 't') {
     e.preventDefault();
@@ -1786,6 +1802,64 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('#help').onclick = () => setHelp(false);
+// Marking someone "Not a fit" is triage: move on to the next lead, and Undo restores this one.
+function setStatusKey(id, status) {
+  mark(id, status);
+  if (status === 'no' && S.view === 'leads') {
+    const i = S.rows.findIndex((x) => x.id === id);
+    if (i >= 0 && i < S.rows.length - 1) { select(i + 1, true); if (S.open) openDetail(S.rows[i + 1].id); }
+  }
+}
+const statusMenu = { id: null, i: 0, from: null };
+function openStatusMenu(id) {
+  const r = S.rows.find((x) => x.id === id) || S.person;
+  if (!r) return;
+  closeStatusMenu(false);
+  statusMenu.id = id; statusMenu.from = document.activeElement;
+  const opts = [...STATUSES.map((s, n) => [s, String(n + 1)]), [null, '0']];
+  statusMenu.opts = opts.map(([s]) => s);
+  statusMenu.i = Math.max(0, statusMenu.opts.indexOf(r.status ?? null));
+  const el = document.createElement('div');
+  el.id = 'status-menu'; el.className = 'status-menu'; el.setAttribute('role', 'menu'); el.setAttribute('aria-label', 'Set status for @' + r.handle);
+  el.innerHTML = `<div class="sm-h">@${esc(r.handle)}</div>` + opts.map(([s, k], n) => `<button type="button" role="menuitem" data-sm="${n}" class="${n === statusMenu.i ? 'on' : ''}"><span>${s ? slabel(s) : 'No status'}</span><kbd>${k}</kbd></button>`).join('');
+  document.body.appendChild(el);
+  const anchor = $(`#rows [data-person-id="${id}"]`) || $('#detail');
+  const box = anchor.getBoundingClientRect(), w = 220;
+  el.style.left = Math.max(8, Math.min(innerWidth - w - 8, box.left + 56)) + 'px';
+  el.style.top = Math.max(8, Math.min(innerHeight - el.offsetHeight - 8, box.bottom - 8)) + 'px';
+  el.addEventListener('click', (e) => { const b = e.target.closest('[data-sm]'); if (b) chooseStatusMenu(+b.dataset.sm); });
+  document.addEventListener('mousedown', statusMenuOutside, true);
+}
+function statusMenuOutside(e) { if (!e.target.closest('#status-menu')) closeStatusMenu(true); }
+function closeStatusMenu(restore = true) {
+  const el = $('#status-menu'); if (el) el.remove();
+  document.removeEventListener('mousedown', statusMenuOutside, true);
+  statusMenu.id = null;
+  if (restore && statusMenu.from?.isConnected) statusMenu.from.focus({ preventScroll: true });
+}
+function chooseStatusMenu(n) {
+  const id = statusMenu.id, status = statusMenu.opts[n];
+  closeStatusMenu();
+  if (id != null) setStatusKey(id, status);
+}
+function moveStatusMenu(d) {
+  statusMenu.i = (statusMenu.i + d + statusMenu.opts.length) % statusMenu.opts.length;
+  $$('#status-menu [data-sm]').forEach((b, n) => b.classList.toggle('on', n === statusMenu.i));
+}
+// Captured first so the menu owns the keyboard while it is open.
+document.addEventListener('keydown', (e) => {
+  if (statusMenu.id == null || e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  if (k === 'Escape') closeStatusMenu();
+  else if (k === 'ArrowDown' || k === 'j') moveStatusMenu(1);
+  else if (k === 'ArrowUp' || k === 'k') moveStatusMenu(-1);
+  else if (k === 's') closeStatusMenu();
+  else if (k === 'Enter' || k === ' ') chooseStatusMenu(statusMenu.i);
+  else if (/^[0-5]$/.test(k)) chooseStatusMenu(k === '0' ? statusMenu.opts.length - 1 : +k - 1);
+  else if (k === 'Tab') closeStatusMenu(false);
+  else return;
+  if (k !== 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 
 // ---------- tags manager ----------
 const T = {
@@ -1869,7 +1943,7 @@ const T = {
     if (!to || to === from) { this.editing = null; this.render(); return; }
     const canon = this.list.find((t) => t.tag.toLowerCase() === to.toLowerCase());
     if (canon) to = canon.tag;
-    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast('Could not rename'); return; }
+    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast("Couldn't rename. Try again."); return; }
     this.fixFilter(from, to);
     this.editing = null;
     toast(canon ? `Merged ${from} into ${to}` : `Renamed to ${to}`);
@@ -1877,7 +1951,7 @@ const T = {
   },
   async remove(tags) {
     for (const tag of tags) {
-      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast('Could not delete ' + tag); return; }
+      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast("Couldn't delete " + tag + '. Try again.'); return; }
       this.fixFilter(tag, null);
     }
     this.confirm = null;
@@ -1965,12 +2039,12 @@ $('#rule-form').addEventListener('submit', async (e) => {
     const r = await api.post('/api/tag-rules', { tag, field, match });
     toast(`Rule added${r.hits != null ? ', ' + plural(r.hits, 'hit') : ''}`);
     $('#rl-match').value = ''; $('#rl-prev').textContent = ''; $('#rl-add').disabled = true;
-  } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add rule'); return; }
+  } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't add the rule. Try again."); return; }
   T.after();
 });
 async function deleteRule(id) {
   const r = (T.rules || []).find((x) => String(x.id) === String(id));
-  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast('Could not delete rule'); return; }
+  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast("Couldn't delete the rule. Try again."); return; }
   toast(r ? `Deleted rule ${r.tag}` : 'Rule deleted', r ? () => api.post('/api/tag-rules', { tag: r.tag, field: r.field, match: r.match }).then(() => T.after()) : null);
   T.after();
 }
@@ -2147,13 +2221,13 @@ $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
   const val = (el) => { const v = el.value.trim(); return /^\d+$/.test(v) ? +v : null; };
   const list = val($('#b-list')), profile = val($('#b-profile'));
-  if (list == null || profile == null) { toast('Budgets must be whole numbers, 0 or more'); return; }
-  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast('Could not save'); }
+  if (list == null || profile == null) { toast('Enter whole numbers, 0 or more'); return; }
+  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast("Couldn't save. Try again."); }
 });
 $('#snowball').onclick = async () => {
   try {
     const r = await api.post('/api/scraper/snowball', { min_status: 'interested' });
-    toast(r.queued ? `Queued who ${plural(r.queued, 'Interested lead')} follow${r.queued === 1 ? 's' : ''}` : 'Nothing new: every Interested, Talking or Client lead is already done or private');
+    toast(r.queued ? `Queued the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new. Every Interested, Talking or Client lead is already queued, done or private.');
     loadScraper();
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
 };
@@ -2195,7 +2269,7 @@ $('#seed-add').onclick = async () => {
     const r = await api.post('/api/scraper/seeds', { handles, directions });
     toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued${S.sc?.paused ? '. Use Start scraping when ready.' : ''}` : 'Already queued') : 'Queued');
     $('#seed-in').value = ''; syncSeed(); loadScraper();
-  } catch (e) { toast('Could not queue'); }
+  } catch (e) { toast("Couldn't queue. Try again."); }
   finally { seedAdding = false; syncSeed(); }
 };
 
@@ -2262,12 +2336,13 @@ function accountRow(a) {
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.status] || ''}"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
+    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
+    <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
     <div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <details class="adv acc-more"><summary>Account settings</summary>
-    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small></div>
     <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
 
@@ -2281,7 +2356,7 @@ function accountRow(a) {
     </div>
     <div class="acc-foot"><button class="btn ghost acc-edit" data-rename>Rename</button><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago</span>
       <span class="grow"></span>
-      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
+      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Remove account?' : 'Remove'}</button></div>
     </details>
   </section>`;
 }
@@ -2336,7 +2411,7 @@ async function addSuggestedTarget(handle) {
     toast(result.queued === 0 ? 'Already queued' : `@${handle} added to the collection queue`);
     loadScraper();
     await loadCollectionSuggestions(true);
-  } catch { state.error = `Could not add @${handle}. Try again.`; }
+  } catch { state.error = `Couldn't add @${handle}. Try again.`; }
   finally { state.busy.delete(handle); renderCollectionSuggestions(); }
 }
 
@@ -2485,7 +2560,7 @@ $('#acc-list').addEventListener('click', async (e) => {
       return;
     }
     A.confirm = null;
-    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast('Could not remove'); }
+    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast("Couldn't remove. Try again."); }
     loadScraper();
   }
 });
@@ -2504,7 +2579,7 @@ $('#acc-list').addEventListener('submit', async (e) => {
   if (e.target.hasAttribute('data-bud')) {
     const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
     const list = val('list'), profile = val('profile');
-    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Budgets are whole numbers, 0 or more'); return; }
+    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Enter whole numbers, 0 or more'); return; }
     document.activeElement?.blur();
     return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, list == null && profile == null ? 'Using the default budget' : 'Budget saved');
   }
@@ -2517,7 +2592,7 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting Laya and checking the local notes model…';
+  status.textContent = 'Starting local models and checking the notes model…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});
@@ -2530,7 +2605,7 @@ $('#acc-start').addEventListener('click', async () => {
   } catch (e) {
     status.dataset.state = 'error';
     status.textContent = 'Could not start local models. Check setup in Settings.';
-    toast('Could not start local models');
+    toast("Couldn't start local models. Try again.");
   } finally {
     A.starting = false;
     renderAccounts();
@@ -2649,7 +2724,7 @@ function localProcessingSummary() {
 function renderCheckingMode() {
   const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${code} selected · ${PROCESSING_LABELS[code]}` : 'Current mode unavailable. Refresh to try again.';
+  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Refresh to try again.';
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === code);
     button.setAttribute('aria-pressed', String(button.dataset.mode === code));
@@ -2671,7 +2746,7 @@ function renderCheckingMode() {
     const time = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
     const active = metrics?.active?.handle;
     const history = SET.localProcessing?.history || [];
-    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">K2 checks saved bios and your notes for business fit. Laya adds ranking hints. Your relationship labels stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
+    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">Local models check saved bios and your notes for business fit and suggest a ranking. Your relationship tags stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
   }
   const background = $('#background-ai'), local = SET.localProcessing;
   if (background) background.hidden = mode === 'rules';
@@ -2750,7 +2825,7 @@ $('#set-scout')?.addEventListener('click', async (e) => {
     : e.target.closest('[data-m]') ? { model: e.target.closest('[data-m]').dataset.m }
     : e.target.closest('[data-w]') ? { workers: +e.target.closest('[data-w]').dataset.w } : null;
   if (!body || (body.on && settingsMode(S.sc) !== 'external')) return;
-  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); renderCheckingMode(); toast('Saved'); } catch (err) { toast('Could not save'); }
+  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); renderCheckingMode(); toast('Saved'); } catch (err) { toast("Couldn't save. Try again."); }
 });
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
@@ -2806,7 +2881,7 @@ function renderModels() {
   // OpenRouter's current free catalogue (checked daily by the server); one click adds a model to the list above.
   const auto = SET.llm?.auto_models || {};
   const free = [...new Set([...(auto.stealth || []), ...(auto.free || [])])];
-  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? 'Could not reach OpenRouter' : 'Not checked yet';
+  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? "Couldn't reach OpenRouter" : 'Not checked yet';
   $('#set-free').innerHTML = free.length ? free.map((m) => `<li><code>${esc(m)}</code>${(auto.new_stealth || []).includes(m) ? '<span class="pill">New</span>' : ''}<span class="grow"></span>
     ${ms.includes(m) ? '<span class="muted">In use</span>' : `<button class="btn ghost" data-madd="${esc(m)}">Add</button>`}</li>`).join('')
     : '<li class="muted">None found</li>';
@@ -2819,25 +2894,25 @@ $('#set-free').addEventListener('click', (e) => {
 $('#set-free-refresh').onclick = async (e) => {
   e.target.disabled = true;
   try { const r = await api.post('/api/llm/models/refresh', {}); if (SET.llm) SET.llm.auto_models = r.auto; renderModels(); toast('Model list updated'); }
-  catch { toast('Could not reach OpenRouter'); }
+  catch { toast("Couldn't reach OpenRouter. Check your connection."); }
   finally { e.target.disabled = false; }
 };
 $('#set-q-auto').onclick = async () => {
   if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) return;
   const auto = !S.sc?.qualify_auto;
-  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast('Could not save'); }
+  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast("Couldn't save. Try again."); }
 };
 $('#set-q').addEventListener('submit', async (e) => {
   e.preventDefault();
   const n = (id) => { const v = $(id).value.trim(); return /^\d+$/.test(v) ? +v : NaN; };
   const body = { workers: n('#set-workers'), llm_min: n('#set-llm-min'), bio_min: n('#set-bio-min') };
-  if (Object.values(body).some(Number.isNaN)) { toast('Whole numbers only'); return; }
+  if (Object.values(body).some(Number.isNaN)) { toast('Enter whole numbers only'); return; }
   try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
 $('#set-share-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const v = $('#set-share').value.trim();
-  if (!/^\d+$/.test(v) || +v > 100) { toast('A share from 0 to 100 %'); return; }
+  if (!/^\d+$/.test(v) || +v > 100) { toast('Enter a share from 0 to 100'); return; }
   try { const r = await api.post('/api/settings/accounts', { main_list_share: +v / 100 }); SET.share = r.main_list_share; toast(+v ? `Main account takes up to ${v} % of list pages` : 'Main account reads bios only'); document.activeElement?.blur(); }
   catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
@@ -2846,12 +2921,12 @@ $('#set-key-f').addEventListener('submit', async (e) => {
   const key = $('#set-key').value.trim();
   if (!key) return;
   try { await api.post('/api/llm/keys', { key }); $('#set-key').value = ''; toast('Key added'); loadSettings(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add the key'); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't add the key. Check it and try again."); }
 });
 $('#set-limit-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const v = $('#set-limit').value.trim();
-  if (!/^\d+$/.test(v)) { toast('A whole number, 0 for no limit'); return; }
+  if (!/^\d+$/.test(v)) { toast('Enter a whole number. 0 means no limit.'); return; }
   try { await api.post('/api/llm/models', { daily_limit: +v }); toast('Daily limit saved'); document.activeElement?.blur(); loadSettings(); }
   catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
@@ -2859,7 +2934,7 @@ $('#set-model-f').addEventListener('submit', (e) => {
   e.preventDefault();
   const m = $('#set-model').value.trim();
   if (!/^[\w.-]+\/[\w.:-]+$/.test(m) || !/:free$|^stealth\//.test(m)) { toast('Choose a free model from the list, or enter vendor/model:free'); return; }
-  if (!SET.models) { toast('Wait for settings to load'); return; }
+  if (!SET.models) { toast('Settings are still loading. Try again in a moment.'); return; }
   if (!SET.models.includes(m)) { SET.models.push(m); SET.dirty = true; }
   $('#set-model').value = ''; renderModels();
 });
@@ -2884,9 +2959,9 @@ $('#view-settings').addEventListener('click', async (e) => {
   const swap = (i, j) => { [ms[i], ms[j]] = [ms[j], ms[i]]; SET.dirty = true; renderModels(); };
   if (b.dataset.mup) return swap(+b.dataset.mup, +b.dataset.mup - 1);
   if (b.dataset.mdown) return swap(+b.dataset.mdown, +b.dataset.mdown + 1);
-  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model'); return; }
+  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model in the list'); return; }
   if (b.dataset.ktest) {
-    if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) { toast('Enable External AI mode before testing a key'); return; }
+    if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) { toast('Switch to External AI to test a key'); return; }
     const id = b.dataset.ktest;
     SET.tests[id] = 'run'; renderSettings();
     try { SET.tests[id] = await api.post(`/api/llm/keys/${id}/test`, {}); } catch (err) { SET.tests[id] = { passed: false, error: 'Could not reach the server' }; }
@@ -2896,7 +2971,7 @@ $('#view-settings').addEventListener('click', async (e) => {
     const id = b.dataset.kdel;
     if (SET.confirm !== id) { SET.confirm = id; renderSettings(); setTimeout(() => { if (SET.confirm === id) { SET.confirm = null; renderSettings(); } }, 3000); return; }
     SET.confirm = null;
-    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not remove'); }
+    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't remove. Try again."); }
     return loadSettings();
   }
 });
@@ -3476,9 +3551,15 @@ const M = {
   status(t) {
     const c = this.ctx; if (!c) return;
     c.clearRect(0, 0, this.w, this.h);
-    c.fillStyle = css('--fg3'); c.font = '14px ' + css('--sans'); c.textAlign = 'left';
-    c.fillText(t, 16, 28);
+    const box = $('#map-state');
+    if (!box) { c.fillStyle = css('--fg3'); c.font = '14px ' + css('--sans'); c.textAlign = 'left'; c.fillText(t, 16, 28); return; }
+    const fail = /offline|could not|missing/i.test(t), empty = /^No people/.test(t);
+    const detail = /offline/i.test(t) ? 'The map will return when the connection does.' : fail ? 'Check your connection, then try again.' : empty ? 'Try removing a filter or search.' : 'Placing people by shared lists.';
+    box.dataset.kind = fail ? 'error' : empty ? 'empty' : 'loading';
+    box.innerHTML = `${fail || empty ? '' : '<i class="map-spin" aria-hidden="true"></i>'}<b>${esc(fail || empty ? t : 'Loading the map')}</b><p>${detail}</p>${fail ? '<button class="btn" id="map-retry" type="button">Try again</button>' : ''}`;
+    box.hidden = false;
   },
+  clearStatus() { const box = $('#map-state'); if (box && !box.hidden) box.hidden = true; },
   bounds(list) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of list) { x0 = Math.min(x0, n.x - n.r); y0 = Math.min(y0, n.y - n.r); x1 = Math.max(x1, n.x + n.r); y1 = Math.max(y1, n.y + n.r + (n.kind === 'seed' ? 22 : 0)); }
@@ -3567,6 +3648,7 @@ const M = {
     const k = this.k;
     c.clearRect(0, 0, this.w, this.h);
     if (!this.nodes.length) { $('#map-points').hidden = true; if ($('#map-render-status')) $('#map-render-status').hidden = true; this.status(this.loaded ? 'No people match these filters' : 'Loading'); return; }
+    this.clearStatus();
     c.save(); c.translate(this.x, this.y); c.scale(k, k);
     const hd = this.hood();
     const match = this.matchSet;
@@ -4052,5 +4134,5 @@ async function loadBiofetch() {
 $('#bf-on').onclick = async () => {
   const on = !$('#bf-on').classList.contains('on'), body = { on, ig_user_id: $('#bf-uid').value };
   if ($('#bf-tok').value) body.token = $('#bf-tok').value;
-  try { await api.post('/api/settings/biofetch', body); $('#bf-tok').value = ''; toast(on ? 'Meta bios on' : 'Meta bios off'); loadBiofetch(); } catch (e) { toast('Could not save'); }
+  try { await api.post('/api/settings/biofetch', body); $('#bf-tok').value = ''; toast(on ? 'Meta bios on' : 'Meta bios off'); loadBiofetch(); } catch (e) { toast("Couldn't save. Try again."); }
 };

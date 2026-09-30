@@ -19,7 +19,7 @@ const marking = source.slice(source.indexOf('async function markNow('), source.i
 test('saving a relationship waits for full detail readback before finishing', async () => {
   const calls = [];
   let finishRead;
-  const ctx = vm.createContext({S:{rows:[{id:7,status:null}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(['patch',p.status]),api:{post:async()=>calls.push(['saved'])},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>calls.push(['activity']),refreshPerson:()=>new Promise(resolve=>{calls.push(['read']);finishRead=resolve}),toast:()=>{}});
+  const ctx = vm.createContext({S:{rows:[{id:7,status:null}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(['patch',p.status]),api:{post:async()=>calls.push(['saved'])},loadCounts:()=>{},loadFacetsSoon:()=>{},slabel:s=>s,mark:()=>{},refreshActivity:()=>calls.push(['activity']),refreshPerson:()=>new Promise(resolve=>{calls.push(['read']);finishRead=resolve}),toast:()=>{}});
   vm.runInContext(marking, ctx);
   let done=false;
   const pending=ctx.markNow(7,'client').then(()=>{done=true});
@@ -31,7 +31,7 @@ test('saving a relationship waits for full detail readback before finishing', as
 });
 test('failed relationship save restores prior status without starting a detail read', async () => {
   const calls=[];
-  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},toast:()=>calls.push('error')});
+  const ctx=vm.createContext({S:{rows:[{id:7,status:'talking'}],open:7},invalidatePersonRead:()=>{},patchRow:(_id,p)=>calls.push(p.status),api:{post:async()=>{throw Error('offline')}},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{throw Error('must not refresh')},slabel:x=>x,mark:()=>{},toast:(m)=>m==="Couldn't save. Try again."&&calls.push('error')});
   vm.runInContext(marking,ctx);
   await ctx.markNow(7,'no');
   assert.deepEqual(calls,['no','talking','error']);
@@ -99,4 +99,15 @@ test('third-party note story links only selected profiles and offers no relation
   assert.match(html, /data-note-profile="2"/);
   assert.match(html, /@alex_new · Alex/);
   assert.doesNotMatch(html, /data-note-profile="3"|data-note-fact|Set Friend/);
+});
+
+test('marking a status is optimistic, offers Undo and restores the previous status', async () => {
+  const toasts=[], marks=[];
+  const ctx=vm.createContext({S:{rows:[{id:7,handle:'ana',status:'contacted'}],open:null},invalidatePersonRead:()=>{},patchRow:()=>{},api:{post:async()=>({})},loadCounts:()=>{},loadFacetsSoon:()=>{},refreshActivity:()=>{},refreshPerson:()=>{},slabel:x=>x[0].toUpperCase()+x.slice(1),mark:(...a)=>marks.push(a),toast:(m,undo)=>toasts.push([m,undo])});
+  vm.runInContext(marking,ctx);
+  const pending=ctx.markNow(7,'talking');
+  assert.equal(toasts.length,1,'feedback is shown before the save returns');
+  assert.equal(toasts[0][0],'@ana marked Talking');
+  toasts[0][1](); assert.equal(JSON.stringify(marks),JSON.stringify([[7,'contacted',{quiet:true}]]));
+  await pending;
 });
