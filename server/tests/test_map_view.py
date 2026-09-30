@@ -59,6 +59,7 @@ class MapViewTests(unittest.TestCase):
                          [(1, 'owner', 'Owner'), (2, 'saved', 'Saved lead'), (3, 'unreviewed', 'Unreviewed')])
         conn.execute("INSERT INTO marks(person_id,status) VALUES(2,'interested')")
         conn.commit()
+        self.assertEqual(ML.make_plan(conn)['people'], 3)
         ML.build(path, modes=('closeness',))
         result = json.loads(MV.view(conn, path, {'scope':['all']}, cache=False).body)
         self.assertEqual(result['total'], 3)
