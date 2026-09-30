@@ -11,6 +11,8 @@ Every request reads one snapshot of one layout file, so totals and nodes always 
 """
 import contextlib
 import hashlib
+import heapq
+from itertools import islice
 import json
 import math
 import os
@@ -49,7 +51,8 @@ class Raw:
 
 _POOL = {}
 _POOL_LOCK = threading.Lock()
-_POOL_KEEP = 6
+_POOL_KEEP = 2
+_POOL_MAX = 8
 _POINTER = {}
 
 
@@ -76,17 +79,28 @@ def _take(path):
     with _POOL_LOCK:
         idle = _POOL.get(str(path))
         if idle:
-            return idle.pop()
+            conn = idle.pop()
+            if not idle:
+                _POOL.pop(str(path), None)
+            return conn
     conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False, timeout=15)
     conn.execute('PRAGMA query_only=1')
     conn.execute('PRAGMA busy_timeout=15000')
-    conn.execute('PRAGMA mmap_size=4294967296')
-    conn.execute('PRAGMA cache_size=-32768')
+    conn.execute('PRAGMA mmap_size=268435456')
+    conn.execute('PRAGMA cache_size=-16384')
+    conn.execute('PRAGMA temp_store=FILE')
     return conn
 
 
 def _give(path, conn):
     with _POOL_LOCK:
+        if sum(len(items) for items in _POOL.values()) >= _POOL_MAX:
+            for key, items in list(_POOL.items()):
+                if items:
+                    items.pop(0).close()
+                    if not items:
+                        _POOL.pop(key, None)
+                    break
         idle = _POOL.setdefault(str(path), [])
         if len(idle) < _POOL_KEEP and os.path.exists(path):
             idle.append(conn)
@@ -308,6 +322,12 @@ def top_ranked(store, rect, mask, want, fraction):
     """
     x0, y0, x1, y1 = rect
     conn = store.conn
+    if rect == (0.0, 0.0, 1.0, 1.0) and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='mp_class_rank'").fetchone():
+        classes = [r[0] for r in conn.execute('SELECT DISTINCT cls FROM agg WHERE depth=1') if (mask >> r[0]) & 1]
+        cursors = [conn.execute('SELECT person_id,rk,cls FROM mp WHERE cls=? ORDER BY rk DESC,person_id LIMIT ?',
+                                (cls, want)) for cls in classes]
+        return list(islice(heapq.merge(*cursors, key=lambda row: (-row[1], row[0])), want))
     bulk = mask & 1
 
     def count(tau, cap):

@@ -149,3 +149,30 @@ class MapViewTests(unittest.TestCase):
             distance = ((ML.coord(row[1])-centre['x'])**2+(ML.coord(row[2])-centre['y'])**2)**0.5
             self.assertLessEqual(distance, centre['r'] + 1e-6)
             self.assertEqual(row[7], int(round(ML.closeness(feature,ctx)*1000)))
+
+    def test_equal_rank_world_uses_index_and_returns_exact_ties(self):
+        path = Path(self.temp.name)/'equal-rank.sqlite'
+        conn = ML.open_store(path,create=True)
+        try:
+            rows = [(i,ML.to_micro(.5),ML.to_micro(.5),.5,0,0,None,0,0) for i in range(1,10001)]
+            ML.insert_rows(conn,rows)
+            ML.build_agg(conn)
+            store = MV.Store(conn,path,'closeness')
+            ranked = MV.top_ranked(store,(0.,0.,1.,1.),1,20,1.)
+            self.assertEqual([r[0] for r in ranked],list(range(1,21)))
+            self.assertEqual(MV.top_ranked(store,(0.,0.,1.,1.),1<<5,20,1.),[])
+        finally:
+            conn.close()
+
+    def test_reader_pool_is_bounded_across_old_layout_files(self):
+        MV.close_pool()
+        class FakeConnection:
+            def __init__(self):self.closed=False
+            def close(self):self.closed=True
+        connections=[]
+        for index in range(30):
+            path=Path(self.temp.name)/f'old-{index}.sqlite';path.touch()
+            conn=FakeConnection();connections.append(conn);MV._give(path,conn)
+        self.assertLessEqual(sum(len(v) for v in MV._POOL.values()),MV._POOL_MAX)
+        self.assertGreaterEqual(sum(c.closed for c in connections),22)
+        MV.close_pool()

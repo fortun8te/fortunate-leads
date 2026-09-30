@@ -39,7 +39,7 @@ SEED_CLUSTERS = 160                           # seeds: one cluster per source, b
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -48,6 +48,7 @@ SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE mp(person_id INTEGER PRIMARY KEY, mx INTEGER NOT NULL, my INTEGER NOT NULL, rk REAL NOT NULL,
   cluster INTEGER NOT NULL, cls INTEGER NOT NULL, fit INTEGER, cl INTEGER NOT NULL, src INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX mp_class_rank ON mp(cls,rk DESC,person_id);
 CREATE VIRTUAL TABLE rtb USING rtree(id,minx,maxx,miny,maxy,minr,maxr);
 CREATE VIRTUAL TABLE rtk USING rtree(id,minx,maxx,miny,maxy,minr,maxr,+cls INTEGER);
 CREATE TABLE agg(depth INTEGER NOT NULL, cy INTEGER NOT NULL, cx INTEGER NOT NULL, cls INTEGER NOT NULL,
@@ -177,8 +178,9 @@ def open_store(path, create=False, readonly=False):
     if not readonly:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
-    conn.execute('PRAGMA mmap_size=4294967296')
-    conn.execute('PRAGMA temp_store=MEMORY')
+    conn.execute('PRAGMA mmap_size=268435456')
+    conn.execute('PRAGMA temp_store=FILE')
+    conn.execute('PRAGMA cache_size=-32768')
     if create:
         conn.executescript(SCHEMA)
     return conn

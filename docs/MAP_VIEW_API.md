@@ -181,5 +181,5 @@ source audiences have individual groups; remaining audiences appear under Other 
 Within displayed audiences, overlapping profiles belong to the smallest recorded source list, with
 handle ties resolved consistently. A person can still have many source links in their evidence.
 
-The new geometry requires an explicit layout rebuild (schema 2). Existing prepared layouts retain
+The new geometry requires an explicit layout rebuild (schema 3). Existing prepared layouts retain
 their old geometry until rebuilt; incremental maintenance must not mix layout arrangements.
