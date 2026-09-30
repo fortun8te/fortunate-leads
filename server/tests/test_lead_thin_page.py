@@ -1,7 +1,10 @@
 """Thin page selection must match the original full-profile query exactly."""
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
 import server
