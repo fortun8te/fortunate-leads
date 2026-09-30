@@ -563,38 +563,34 @@ def _view(conn, db_path, store, query):
 
 
 def _overview_rows(store, ranked, groups, depth, mask, budget):
-    """Reserve a quarter of an explicit overview for occupied spatial sectors.
+    """Reserve two thirds of an explicit overview for occupied spatial cells.
 
-    At most twelve existing count cells are probed, with the same bounded rank
+    At most 256 existing count cells are probed, with the same bounded rank
     fetch. All returned people remain actual layout rows and count subtraction
     uses their exact cells. Ordinary ranked views keep their original ordering.
     """
-    reserve = min(budget // 4, 120)
+    reserve = min(budget - 12, budget * 2 // 3)
     shown = list(ranked[:max(1, budget - reserve)])
     ids = {r[0] for r in shown}
+    # Count chips may use coarse cells. Sample a fixed, finer grid so one
+    # dense inner audience cannot consume an entire outer sector.
+    depth = 4
+    cell_range, _ = snap((0., 0., 1., 1.), depth)
+    spatial_groups, _ = read_cells(store, depth, cell_range, mask)
     cells = {}
-    for (cy, cx, _), (n, sx, sy) in groups.items():
+    for (cy, cx, _), (n, sx, sy) in spatial_groups.items():
         previous = cells.setdefault((cy, cx), [0, 0, 0])
         previous[0] += n; previous[1] += sx; previous[2] += sy
-    sectors = {}
-    for (cy, cx), (n, sx, sy) in cells.items():
-        x, y = sx / n / ML.MICRO, sy / n / ML.MICRO
-        radius = math.hypot(x - .5, y - .5)
-        if radius < .18:
-            continue
-        sector = int(((math.atan2(y - .5, x - .5) + math.pi) / ML.TWO_PI) * 12) % 12
-        previous = sectors.get(sector)
-        if previous is None or n > previous[0]:
-            sectors[sector] = (n, cy, cx)
     extra = []
-    per_cell = max(1, math.ceil(reserve / max(1, len(sectors))))
+    per_cell = max(1, math.ceil(reserve / max(1, len(cells))))
     grid = 1 << depth
-    for _, cy, cx in sectors.values():
+    for cy, cx in cells:
         rect = (cx / grid, cy / grid, (cx + 1) / grid, (cy + 1) / grid)
         candidates = top_ranked(store, rect, mask, per_cell + 2, 1 / (grid * grid))
         found = _details(store, [r[0] for r in candidates])
-        extra.extend(found[r[0]] for r in candidates if r[0] in found)
-    for row in extra + ranked:
+        extra.append([found[r[0]] for r in candidates if r[0] in found])
+    spatial = [rows[i] for i in range(per_cell + 2) for rows in extra if i < len(rows)]
+    for row in spatial + ranked:
         if row[0] not in ids and len(shown) < budget:
             shown.append(row); ids.add(row[0])
     pool = [r for r in ranked if r[0] not in ids]

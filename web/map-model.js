@@ -53,7 +53,7 @@
     on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
     emit(what) { for (const fn of this.listeners) fn(what); }
     setSize(w, h) { this.cam.resize(w, h); }
-    get budget() { return this.budgetOverride ? clamp(Math.round(this.budgetOverride), 250, 1500) : clamp(Math.round(this.cam.w * this.cam.h / 3400 * (1 + 2 * PAD) ** 2), 250, 1500); }
+    get budget() { return this.budgetOverride ? clamp(Math.round(this.budgetOverride), 250, 1500) : clamp(Math.round(this.cam.w * this.cam.h / 2000 * (1 + 2 * PAD) ** 2), 250, 1500); }
     get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0) + (this.follow !== 'all' ? 1 : 0); }
 
     /* ----- loading ----- */

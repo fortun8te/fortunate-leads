@@ -260,6 +260,8 @@ class MapViewTests(unittest.TestCase):
     def test_overview_keeps_exact_counts_with_bounded_spatial_sampling(self):
         result = self.view({'scope': ['all'], 'budget': ['80'], 'overview': ['1']})
         self.assertEqual(result['world']['layout'], 'network_disk')
+        ranked = self.view({'scope': ['all'], 'budget': ['80']})
+        self.assertTrue({n['id'] for n in ranked['nodes'][:12]} <= {n['id'] for n in result['nodes']})
         self.assertLessEqual(len(result['nodes']), 80)
         self.assertEqual(len({n['id'] for n in result['nodes']}), len(result['nodes']))
         self.assertEqual(sum(b['count'] for b in result['clusters']), result['hidden'])
