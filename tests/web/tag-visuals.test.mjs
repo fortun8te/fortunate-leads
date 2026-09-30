@@ -38,23 +38,45 @@ test('all Figma importance and evidence palettes retain readable text in both th
 });
 
 test('selection does not change tag importance or add a permanent outline',()=>{
-  for(const match of css.matchAll(/\.tag\.is-filtered(?:::after)?\s*\{([^}]+)\}/g)) {
+  for(const match of (css + refine).matchAll(/\.tag\.is-filtered(?:::after)?\s*\{([^}]+)\}/g)) {
     assert.doesNotMatch(match[1], /(?:background|border|box-shadow|color):/);
     if(match[1].includes('outline:')) assert.match(match[1],/outline: none/);
   }
   assert.match(refine,/\.tag:focus-visible[^}]+outline: 2px/s);
-  assert.match(refine, /border-radius: var\(--rad-chip\)/);
-  assert.match(refine, /height: 22px/);
+  assert.match(refine, /border-radius: var\(--tag-radius\)/);
+  assert.match(refine, /height: 28px/);
+  assert.match(refine, /\.tchip, \.d-tags \.tag[^}]*height: 34px/s);
 });
 
 test('exact Figma icons are local and commercial font bytes stay outside the repo',()=>{
   for(const name of ['sparkles','verified']) {
     const icon=readFileSync(new URL(`../../web/vendor/icons/tag-${name}.svg`,import.meta.url),'utf8');
     assert.match(icon,/<svg/);
-    // Exact reference icons remain local even when the quieter chip style hides icons.
-    assert.match(refine, /\.tag-icon\s*\{\s*display: none/);
+    assert.match(refine, new RegExp(`data-icon="${name}"[^}]+tag-${name}\\.svg`));
+    assert.match(refine, /\.tag-icon\s*\{\s*display: inline-block/);
   }
   assert.match(css,/local\("ABC Areal Superfamily Variable"\)/);
   assert.match(css,/url\("\/api\/local-font\/areal"\)/);
   assert.equal(existsSync(new URL('../../web/vendor/fonts/abc-areal-variable.ttf',import.meta.url)),false);
+});
+
+test('importance and evidence use their own palettes instead of one generic tint', () => {
+  for (const level of ['exceptional', 'priority', 'strong', 'accent', 'quiet', 'background']) {
+    const rule = refine.match(new RegExp(`\\.tag\\[data-importance="${level}"\\][^{]+\\{([^}]+)\\}`));
+    assert.ok(rule, level);
+    assert.match(rule[1], new RegExp(`--tag-${level}-`));
+    assert.doesNotMatch(rule[1], /--tint/);
+  }
+  assert.match(refine, /data-tone="positive"[^}]+--tag-signal-fill/s);
+  assert.match(refine, /data-tone="review"[^}]+--tag-review-fill/s);
+  assert.match(refine, /\.tag\.is-filtered::after\s*\{[^}]*content: "✓"/);
+  assert.match(refine, /data-filter-mode="exc"[^}]*content: "−"/);
+});
+
+test('responsive lead tags remain visible and virtualized row heights come from the root', () => {
+  assert.doesNotMatch(refine, /\.row[^,{]*\.c-tags\s*\{\s*display: none/);
+  assert.match(refine, /\.row > \.c-tags\s*\{\s*display: flex/);
+  assert.doesNotMatch(refine, /#pane-leads\s*\{[^}]*--row:/);
+  assert.match(refine, /@media \(max-width: 760px\)[\s\S]*:root\s*\{\s*--row: 108px/);
+  assert.match(refine, /:root\[data-density="compact"\]\s*\{\s*--row: 80px/);
 });

@@ -1,5 +1,5 @@
 /* Round two. Loaded last. Owns: the leads list, lead details, status strip, toasts and shortcut help.
-   Rules: one accent (--tint), flat surfaces, no gradients or glows, one icon weight (svg rule in app.css),
+   Rules: neutral shell, semantic tag colors, no glows, one icon weight (svg rule in app.css),
    one radius scale (chip 6, control 8, card 12), sentence case, tabular numbers. */
 
 :root {
@@ -16,29 +16,37 @@
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ic { flex: none; }
 
-/* ---------- Quiet chips: one shape everywhere a tag appears ---------- */
+/* ---------- Tags: importance stays distinct from filter selection ---------- */
 .tag, .tchip {
-  --chip-fg: var(--fg3); --chip-line: var(--line2); --chip-bg: transparent;
-  display: inline-flex; align-items: center; gap: 4px; height: 22px; min-height: 22px; max-width: 200px; padding: 0 8px; flex: none;
-  border: 0; border-radius: var(--rad-chip); background: var(--chip-bg); color: var(--chip-fg);
-  box-shadow: inset 0 0 0 1px var(--chip-line); font: 400 12px/22px var(--sans); letter-spacing: 0; white-space: nowrap;
+  --tag-fill: var(--tag-standard-fill); --tag-border: var(--tag-standard-border); --tag-text: var(--tag-standard-text);
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; min-height: 28px; max-width: 240px; padding: 3px 10px; flex: none;
+  border: 1px solid var(--tag-border); border-radius: var(--tag-radius); background: var(--tag-fill); color: var(--tag-text);
+  box-shadow: none; font: 500 13px/20px var(--sans); letter-spacing: 0; white-space: nowrap;
 }
-.tag > span, .tchip > span { overflow: hidden; text-overflow: ellipsis; }
-.tag b, .tchip b { margin: 0; padding: 0; border: 0; color: var(--fg4); font-weight: 400; font-variant-numeric: tabular-nums; }
-.tag-icon { display: none; }
-button.tag:hover, button.tchip:hover { --chip-fg: var(--fg); --chip-line: var(--line3); filter: none; }
-.tag:focus-visible, .tchip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-/* Fit and priority carry the one accent. Everything else stays neutral. */
-.tag[data-importance="exceptional"], .tag[data-importance="priority"], .tag[data-importance="strong"], .tag[data-importance="accent"],
-.tchip[data-importance="exceptional"], .tchip[data-importance="priority"], .tchip[data-importance="strong"], .tchip[data-importance="accent"] {
-  --chip-fg: var(--tint-ink); --chip-bg: var(--tint-soft); --chip-line: transparent; font-weight: 500;
+.tchip, .d-tags .tag { height: 34px; min-height: 34px; padding-inline: 12px; }
+.tag > span:not(.tag-icon), .tchip > span:not(.tag-icon) { overflow: hidden; text-overflow: ellipsis; }
+.tag b, .tchip b { margin: 0; padding: 0; border: 0; color: inherit; font-weight: 400; font-variant-numeric: tabular-nums; }
+.tag[data-importance="exceptional"], .tchip[data-importance="exceptional"] {
+  --tag-fill: linear-gradient(var(--tag-exceptional-top), var(--tag-exceptional-bottom)); --tag-border: var(--tag-exceptional-border); --tag-text: var(--tag-exceptional-text); font-weight: 700;
 }
-.tag[data-tone="review"], .tchip[data-tone="review"] { --chip-fg: var(--caution); --chip-bg: var(--caution-soft); --chip-line: transparent; }
-.tag[data-importance="background"], .tchip[data-importance="background"] { --chip-fg: var(--fg4); }
-.tag.is-filtered::after { content: none; }
-.tag.is-filtered { --chip-fg: var(--fg); --chip-line: var(--fg3); }
-.tag .x { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: -4px; border-radius: 50%; color: var(--fg3); font-style: normal; }
-.tag .x:hover { color: var(--fg); background: var(--bg3); }
+.tag[data-importance="priority"], .tchip[data-importance="priority"] {
+  --tag-fill: linear-gradient(var(--tag-priority-top), var(--tag-priority-bottom)); --tag-border: var(--tag-priority-border); --tag-text: var(--tag-priority-text); font-weight: 700;
+}
+.tag[data-importance="strong"], .tchip[data-importance="strong"] { --tag-fill: var(--tag-strong-fill); --tag-border: var(--tag-strong-border); --tag-text: var(--tag-strong-text); font-weight: 700; }
+.tag[data-importance="accent"], .tchip[data-importance="accent"] { --tag-fill: var(--tag-accent-fill); --tag-border: var(--tag-accent-border); --tag-text: var(--tag-accent-text); }
+.tag[data-importance="quiet"], .tchip[data-importance="quiet"] { --tag-fill: transparent; --tag-border: var(--tag-quiet-border); --tag-text: var(--tag-quiet-text); }
+.tag[data-importance="background"], .tchip[data-importance="background"] { --tag-fill: var(--tag-background-fill); --tag-border: var(--tag-background-border); --tag-text: var(--tag-background-text); font-weight: 400; }
+.tag[data-tone="positive"], .tchip[data-tone="positive"] { --tag-fill: var(--tag-signal-fill); --tag-border: var(--tag-signal-border); --tag-text: var(--tag-signal-text); }
+.tag[data-tone="review"], .tchip[data-tone="review"] { --tag-fill: var(--tag-review-fill); --tag-border: var(--tag-review-border); --tag-text: var(--tag-review-text); }
+.tag-icon { display: inline-block; width: 16px; height: 16px; flex: 0 0 16px; background: currentColor; mask: center / contain no-repeat; }
+.tag-icon[data-icon="sparkles"] { mask-image: url("vendor/icons/tag-sparkles.svg"); }
+.tag-icon[data-icon="verified"] { mask-image: url("vendor/icons/tag-verified.svg"); }
+button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
+.tag:focus-visible, .tchip:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.tag.is-filtered::after { content: "✓"; flex: none; font-size: 12px; line-height: 1; }
+.tag[data-filter-mode="exc"]::after { content: "−"; }
+.tag .x { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: -4px; border-radius: 50%; color: inherit; font-style: normal; }
+.tag .x:hover { background: var(--bg3); }
 .tag .x .ic { width: 10px; height: 10px; }
 
 /* ---------- Skeletons: same grid as the real thing, a slow fade and no gradient ---------- */
@@ -108,7 +116,8 @@ button.tag:hover, button.tchip:hover { --chip-fg: var(--fg); --chip-line: var(--
 .followup-chip.due { color: var(--caution); }
 
 #pane-leads .tags { display: flex; flex-wrap: nowrap; gap: var(--s1); align-items: center; overflow: hidden; max-height: none; padding: 0; }
-#pane-leads .tags .tag { max-width: 120px; flex: 0 1 auto; }
+#pane-leads .tags .tag { max-width: 150px; height: 24px; min-height: 24px; padding: 1px 8px; font-size: 12px; flex: 0 1 auto; }
+#pane-leads .tags .tag-icon { width: 14px; height: 14px; flex-basis: 14px; }
 #pane-leads .tags .owner-follow { --chip-fg: var(--fg2); cursor: default; }
 #pane-leads .fol { text-align: right; justify-self: end; font-size: 13px; font-weight: 400; color: var(--fg3); }
 
@@ -143,27 +152,38 @@ button.tag:hover, button.tchip:hover { --chip-fg: var(--fg); --chip-line: var(--
 :root[data-density="compact"] #pane-leads .who { align-content: center; }
 :root[data-density="compact"] #pane-leads { --av: 32px; }
 
-/* Room to breathe: chips go first when the list is squeezed by the details panel. */
+/* A squeezed list keeps its evidence below the name instead of losing the tags. */
 @container (max-width: 860px) {
   #pane-leads { --cols: var(--av) minmax(0, 1fr) 56px 40px 108px; }
-  #pane-leads .thead .c-tags, #pane-leads .row .c-tags { display: none; }
+  #pane-leads .thead .c-tags { display: none; }
+  #pane-leads .row .c-tags { position: absolute; left: calc(var(--pad) + var(--av) + var(--s4)); right: calc(var(--pad) + 56px + 40px + 108px + 3 * var(--s4)); bottom: 8px; display: flex; }
+  #pane-leads .row .who { align-self: start; padding-top: 8px; }
+  #pane-leads .why { display: none; }
+  :root[data-density="compact"] #pane-leads .row .who { padding-top: 2px; }
+  :root[data-density="compact"] #pane-leads .row .c-tags { bottom: 4px; }
+  :root[data-density="compact"] #pane-leads .tags .tag { height: 20px; min-height: 20px; font-size: 11px; }
 }
 @container (max-width: 560px) {
   #pane-leads { --cols: var(--av) minmax(0, 1fr) 40px 100px; }
   #pane-leads .thead .c-fol, #pane-leads .row .c-fol { display: none; }
+  #pane-leads .row .c-tags { right: calc(var(--pad) + 40px + 100px + 2 * var(--s4)); }
 }
 @media (max-width: 760px) {
-  #pane-leads { --pad: var(--s3); --row: 80px; --cols: var(--av) minmax(0, 1fr) 28px; }
-  :root[data-density="compact"] #pane-leads { --row: 60px; --av: 36px; }
+  :root { --row: 108px; }
+  :root[data-density="compact"] { --row: 80px; }
+  #pane-leads { --pad: var(--s3); --cols: var(--av) minmax(0, 1fr) 28px; }
+  :root[data-density="compact"] #pane-leads { --av: 36px; }
   #pane-leads .thead { display: none; }
   #pane-leads .row { column-gap: var(--s3); }
-  #pane-leads .row > .c-tags, #pane-leads .row > .c-fol, #pane-leads .row > .c-st { display: none; }
-  #pane-leads .row .who { align-content: center; }
+  #pane-leads .row > .c-fol, #pane-leads .row > .c-st { display: none; }
+  #pane-leads .row > .c-tags { display: flex; left: calc(var(--pad) + var(--av) + var(--s3)); right: var(--pad); bottom: 10px; }
+  #pane-leads .row .who { align-self: start; align-content: start; padding-top: 12px; }
+  :root[data-density="compact"] #pane-leads .row .who { padding-top: 8px; }
   #pane-leads .row-meta { display: flex; align-items: center; gap: var(--s2); font-size: 12px; line-height: 16px; color: var(--fg3); min-width: 0; white-space: nowrap; }
   #pane-leads .row-meta .stat { font-size: 12px; }
   #pane-leads .row-meta .c-st-m:not(:empty)::after { content: ""; }
   #pane-leads .row-meta .stat + .muted::before { content: ""; display: inline-block; width: 2px; height: 2px; margin-right: var(--s2); vertical-align: middle; border-radius: 50%; background: var(--fg4); }
-  #pane-leads .why { font-size: 13px; }
+  #pane-leads .why { display: block; font-size: 13px; }
   :root[data-density="compact"] #pane-leads .why { display: none; }
   #pane-leads .ig { display: none; }
 }
@@ -173,10 +193,10 @@ button.tag:hover, button.tchip:hover { --chip-fg: var(--fg); --chip-line: var(--
 .owner-follow { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; flex: none; border-radius: var(--rad-chip); box-shadow: inset 0 0 0 1px var(--line2); color: var(--fg2); font-size: 12px; white-space: nowrap; }
 .ig { opacity: 0; }
 .detail .ig { opacity: 1; }
-/* Filter list rows show the tag as plain text with its count. */
-.fi > .tag { height: auto; min-height: 0; padding: 0; box-shadow: none; background: none; color: inherit; font-size: inherit; line-height: inherit; max-width: 100%; }
+/* Filters retain the same importance and evidence colors as their lead chips. */
+.fi > .tag { height: 26px; min-height: 26px; padding: 2px 8px; font-size: 12px; max-width: 100%; }
 .fi > .tag b { margin-left: auto; padding-left: var(--s2); }
-.fi > .tag > span { flex: 0 1 auto; }
+.fi > .tag > span:not(.tag-icon) { flex: 0 1 auto; }
 
 /* The phone bar keeps five equal destinations: Accounts must not inherit the desktop gap. */
 @media (max-width: 760px) { .tabs a[data-view="accounts"] { margin-top: 0; } }

@@ -1,11 +1,4 @@
-/* Apple-grade polish pass. Loaded last; only refines what app.css defines.
-   Rules: flat surfaces, one blue accent, amber only for "needs a look", 4/8 spacing. */
-
-/* Flat tags: no gradients, no glow. */
-
-/* Positive signals read as quiet neutral chips; colour is kept for the one thing that matters. */
-
-/* Fit score: a soft tint, not a second solid blue pill next to "Strong fit". */
+/* Shared interaction refinements: hit areas, layout and account status shapes. */
 
 /* Bigger hit area for the small open-on-Instagram icon without moving anything. */
 .ig { position: relative; }
@@ -48,5 +41,3 @@ summary { align-content: center; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 44px !important; }
 
 }
-
-/* "Not a business fit" is a real action: give it hover, underline and a proper target. */

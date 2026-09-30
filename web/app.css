@@ -1028,8 +1028,6 @@ button:disabled { cursor:default; opacity:.5; }
   --tag-strong-text: white;
 }
 
-/* Figma tags: compact in rows, regular in browsing surfaces. */
-
 .tok-label { min-width: 0; padding: 0; border: 0; border-radius: 0; background: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 
 /* Quiet shell and simple, full-width working surfaces. */
