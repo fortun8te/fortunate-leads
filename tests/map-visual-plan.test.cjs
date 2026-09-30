@@ -50,3 +50,24 @@ test('network overview always keeps owner visible and bounds exploration', () =>
   cam.set(.5, .5, 1000);
   assert.equal(cam.k, 6);
 });
+test('portrait overview samples distinct communities and preserves real positions', () => {
+  const cam = new Camera(); cam.resize(1400,1000);
+  const scene = new Scene();
+  const nodes = Array.from({length:500}, (_,i)=>({id:i,cluster:i<350?0:1+Math.floor((i-350)/25),x:.06+(i%20)*.045,y:.06+Math.floor(i/20)*.035,fit:'unread',rank:1-i/500}));
+  scene.apply({nodes,clusters:[]},0,{instant:true});
+  const plan = displayPlan(scene,cam,[],null,null,0);
+  assert.ok(plan.nodes.length > 70);
+  assert.ok(new Set(plan.nodes.map(n=>n.it.d.cluster)).size >= 6);
+  assert.ok(plan.nodes.length <= 140);
+  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,38);
+  for(const mark of plan.nodes) assert.deepEqual([mark.it.x,mark.it.y],[nodes[mark.it.d.id].x,nodes[mark.it.d.id].y]);
+});
+test('overview count chips include loaded people hidden by portrait collisions', () => {
+  const cam=new Camera();cam.resize(1400,1000);const scene=new Scene();
+  const guides=Array.from({length:6},(_,i)=>({id:i,label:'Audience '+i,x:.18+(i%3)*.3,y:i<3?.28:.72}));
+  const nodes=Array.from({length:600},(_,i)=>({id:i,cluster:i%6,rank:i/600,fit:'weak',x:guides[i%6].x+(i%7)*.003,y:guides[i%6].y+(i%11)*.003}));
+  const clusters=guides.map(g=>({id:g.id,label:g.label,x:g.x,y:g.y,count:20}));
+  scene.apply({nodes,clusters},0,{instant:true});
+  const plan=displayPlan(scene,cam,guides);
+  assert.equal(plan.nodes.length+plan.groups.reduce((s,g)=>s+g.it.d.count,0),720);
+});

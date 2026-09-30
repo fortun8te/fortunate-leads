@@ -86,6 +86,8 @@
     if (o.minFit) p.set('min_fit', o.minFit);
     if (o.status) p.set('status', o.status);
     if (o.q) p.set('q', o.q);
+    if (o.follow && o.follow !== 'all') p.set('follow', o.follow);
+    if (o.overview) p.set('overview', '1');
     return p;
   }
   // Small LRU keyed by request. Entries only count while the data revision still matches.
@@ -189,7 +191,7 @@
   }
 
   /* ---------- Encodings ---------- */
-  const RADIUS = { strong: 5.4, good: 4.4, weak: 3.4, unread: 2.6 };
+  const RADIUS = { strong: 19, good: 16, weak: 12.5, unread: 10 };
   const hasRing = (n) => !!(n.follows_me || n.rel === 'follows' || n.rel === 'mutual' || n.status === 'client');
   // Which palette slot a person takes in a mode. 'a' is the one accent. Slots 0-5 are neutral tones.
   function toneFor(mode, n) {
@@ -208,27 +210,27 @@
   // Plain-words key per mode. Each row has a glyph the view draws and a sentence.
   const LEGENDS = {
     closeness: [
-      { g: 'centre', t: 'You are in the middle. Closer groups have stronger recorded evidence.', s: 'Closer: more evidence' },
-      { g: 'accent', t: 'Blue dots are people in your pipeline.', s: 'Blue: pipeline' },
-      { g: 'bubble', t: 'Counts group people. Bigger dots have a stronger fit.', s: 'Count: people · dot size: fit' }
+      { g: 'centre', t: 'You are in the middle. Distance bands reflect recorded connection evidence; positions within each band spread people for readability.', s: 'Distance: evidence band' },
+      { g: 'accent', t: 'Blue rims mark people in your pipeline.', s: 'Blue: pipeline' },
+      { g: 'bubble', t: 'Counts group people. Bigger portraits have a stronger fit.', s: 'Count: people · portrait size: fit' }
     ],
     fit: [
       { g: 'axis', t: 'Groups show strong, good, weak or unread fit.', s: 'Groups: fit' },
-      { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
+      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is a strong fit.', s: 'Blue: strong fit' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
       { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
     ],
     seeds: [
       { g: 'island', t: 'Groups show the collected source audiences.', s: 'Groups: source audiences' },
-      { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
+      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is someone in your pipeline.', s: 'Blue: pipeline' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
       { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
     ],
     status: [
       { g: 'lanes', t: 'Groups show where people are in your pipeline.', s: 'Groups: pipeline' },
-      { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
+      { g: 'size', t: 'Bigger portrait means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is talking or a client.', s: 'Blue: talking, client' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
       { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
@@ -265,12 +267,28 @@
       add(it.d.label || 'People nearby', it.d.count, it.x, it.y);
     }
     const overlaps = (x, y, r) => occupied.some(p => Math.hypot(x - p.x, y - p.y) < r + p.r + 7) || (blocked && x + r > blocked.x0 && x - r < blocked.x1 && y + r > blocked.y0 && y - r < blocked.y1);
-    const network = guides.some(g => g.label === 'Direct connections');
-    const limit = Math.round(clamp(cam.w * cam.h / (network && overview ? 45000 : 18000) * Math.min(8, cam.k), network && overview ? 10 : 18, network && overview ? 20 : 420));
-    const candidates = scene.nodes.filter(it => it.a >= .3 && it.ta !== 0).slice().sort((a, b) => {
+    const network = ownerId != null || guides.some(g => g.label === 'Direct connections');
+    const limit = Math.round(clamp(cam.w * cam.h / 5500 * Math.min(8, cam.k), 40, network && overview ? 140 : 240));
+    let candidates = scene.nodes.filter(it => it.a >= .3 && it.ta !== 0).slice().sort((a, b) => {
       const score = it => (((selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId)) ? 1e6 : 0) + (it.d.source ? 40 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) + (it.d.rank || 0);
       return score(b) - score(a) || String(a.d.id).localeCompare(String(b.d.id));
     });
+    if (network && overview) {
+      // Keep the strongest few people, then interleave real communities so a dense
+      // inner audience cannot hide every outer audience from the overview.
+      const priority = candidates.slice(0, 12), buckets = new Map();
+      for (const it of candidates.slice(12)) {
+        const key = String(it.d.cluster ?? 'unknown');
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(it);
+      }
+      const balanced = [];
+      for (let index = 0, any = true; any; index++) {
+        any = false;
+        for (const bucket of buckets.values()) if (bucket[index]) { balanced.push(bucket[index]); any = true; }
+      }
+      candidates = [...priority, ...balanced];
+    }
     // Summary anchors are reserved first so individual dots cannot cover their counts.
     const groups = [...summaries.values()].sort((a, b) => b.count - a.count);
     const groupMarks = [];
@@ -285,7 +303,7 @@
       groupMarks.push(mark); occupied.push(mark);
     }
     for (const it of candidates) {
-      const [x, y] = cam.toScreen(it.x, it.y), r = radiusFor(it.d, cam.k);
+      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 38 : radiusFor(it.d, cam.k);
       if (!inside(x, y, 8)) continue;
       const pinned = (selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId);
       if (!pinned && (nodeMarks.length >= limit || overlaps(x, y, r))) {
@@ -296,9 +314,51 @@
         if (grouped) grouped.it.d.count++;
         continue;
       }
-      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(mark);
+      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 68 } : mark);
     }
     return { nodes: nodeMarks, groups: groupMarks };
+  }
+
+  // Only saved local photos are eligible. Cap decoded images and in-flight requests;
+  // drawing thousands of records must never enqueue thousands of image downloads.
+  class PortraitCache {
+    constructor({createImage, normalize = null, changed = () => {}, max = 160, concurrency = 4} = {}) {
+      this.createImage = createImage; this.normalize = normalize; this.changed = changed; this.max = max;
+      this.concurrency = concurrency; this.entries = new Map(); this.queue = []; this.active = 0;
+    }
+    get(url) {
+      if (typeof url !== 'string' || !/^\/img\/\d+$/.test(url)) return null;
+      let entry = this.entries.get(url);
+      if (entry) { this.entries.delete(url); this.entries.set(url, entry); return entry.state === 'ready' ? entry.image : null; }
+      if (this.entries.size >= this.max) {
+        const victim = [...this.entries].find(([,e]) => e.state !== 'loading');
+        if (!victim) return null;
+        victim[1].image?.close?.();
+        this.entries.delete(victim[0]);
+        this.queue = this.queue.filter(e => e !== victim[1]);
+      }
+      entry = {url, state:'queued', image:null}; this.entries.set(url, entry); this.queue.push(entry); this.pump(); return null;
+    }
+    pump() {
+      while (this.active < this.concurrency && this.queue.length) {
+        const entry = this.queue.shift();
+        if (this.entries.get(entry.url) !== entry) continue;
+        entry.state = 'loading'; this.active++;
+        const image = entry.image = this.createImage(); image.decoding = 'async';
+        const finish = (ready) => {
+          if (entry.state !== 'loading') return;
+          entry.state = ready ? 'ready' : 'failed'; this.active--;
+          image.onload = image.onerror = null;
+          if (!ready) { entry.image = null; image.src = ''; }
+          this.pump(); this.changed();
+        };
+        image.onload = () => {
+          if (!image.naturalWidth) return finish(false);
+          if (!this.normalize) return finish(true);
+          Promise.resolve().then(() => this.normalize(image)).then(decoded => { entry.image = decoded; image.src = ''; finish(true); }, () => finish(false));
+        }; image.onerror = () => finish(false); image.src = entry.url;
+      }
+    }
   }
 
   /* ---------- Labels ---------- */
@@ -328,7 +388,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

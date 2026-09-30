@@ -16,7 +16,7 @@
     const position = n?.positions?.[mode];
     if (position) n = { ...n, ...position };
     if (!n || n.id == null || n.x == null || n.y == null || !finite(+n.x) || !finite(+n.y)) return null;
-    return { ...n, x: +n.x, y: +n.y, rank: finite(+n.rank) ? +n.rank : 0, fit: FITS.includes(n.fit) ? n.fit : finite(n.fit) ? (n.fit >= 70 ? 'strong' : n.fit >= 45 ? 'good' : 'weak') : 'unread', closeness: n.closeness != null && finite(+n.closeness) ? +n.closeness : null, handle: String(n.handle || n.id), name: n.name ? String(n.name) : '', status: n.status || null };
+    return { ...n, x: +n.x, y: +n.y, rank: finite(+n.rank) ? +n.rank : 0, fit: FITS.includes(n.fit) ? n.fit : finite(n.fit) ? (n.fit >= 70 ? 'strong' : n.fit >= 45 ? 'good' : 'weak') : 'unread', closeness: n.closeness != null && finite(+n.closeness) ? +n.closeness : null, pic: typeof n.pic === 'string' && /^\/img\/\d+$/.test(n.pic) ? n.pic : null, handle: String(n.handle || n.id), name: n.name ? String(n.name) : '', status: n.status || null };
   }
   function cleanCluster(c) {
     if (!c || c.id == null || c.x == null || c.y == null || !finite(+c.x) || !finite(+c.y) || !(+c.count > 0)) return null;
@@ -42,7 +42,7 @@
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
-      this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.q = '';
+      this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
@@ -54,10 +54,10 @@
     emit(what) { for (const fn of this.listeners) fn(what); }
     setSize(w, h) { this.cam.resize(w, h); }
     get budget() { return this.budgetOverride ? clamp(Math.round(this.budgetOverride), 250, 1500) : clamp(Math.round(this.cam.w * this.cam.h / 3400 * (1 + 2 * PAD) ** 2), 250, 1500); }
-    get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0); }
+    get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0) + (this.follow !== 'all' ? 1 : 0); }
 
     /* ----- loading ----- */
-    params(rect) { return viewQuery(rect, { mode: this.mode, budget: this.budget, scope: this.scope, minFit: this.minFit, status: this.status, q: this.q }); }
+    params(rect, cam = this.cam) { return viewQuery(rect, { mode: this.mode, budget: this.budget, scope: this.scope, minFit: this.minFit, status: this.status, q: this.q, follow: this.follow, overview: this.mode === 'closeness' && cam.k < 2.5 }); }
     // Does what we hold already answer the current view? Then panning costs nothing.
     needsLoad() {
       if (!this.loaded) return true;
@@ -71,7 +71,7 @@
     async load(opt = {}) {
       if (this.paused) return;
       const cam = opt.cam ? Object.assign(new Camera(), this.cam, { ...opt.cam }) : this.cam;
-      const rect = snapRect(cam.rect(PAD)), params = this.params(rect), key = params.toString();
+      const rect = snapRect(cam.rect(PAD)), params = this.params(rect, cam), key = params.toString();
       this.schedule.cancel();
       const cached = !opt.force && this.cache.get(key);
       if (cached) { this.stats.cacheHits++; this.viewReq.cancel(); this.pending = 0; this.emit('busy'); this.loaded = { rect, k: cam.k }; this.apply(cached, { rect, k: cam.k }); return; }
@@ -96,6 +96,7 @@
       if (!resp || !Array.isArray(resp.nodes)) { this.fail(new Error('The map came back incomplete.')); return; }
       if (resp.ready === false) {
         this.layout = resp.layout || {};
+        if (this.follow !== 'all') { this.pending = 0; this.emit('busy'); this.setPhase(this.layout.building ? 'building' : 'unprepared'); return; }
         try { const old = await this.fetchJson('/api/map?limit=400&scope=' + encodeURIComponent(this.scope), { signal: ticket.signal });
           if (!ticket.live()) return;
           resp = overview(old, this);
@@ -167,8 +168,8 @@
       this.deselect(); this.flyTo({ cx: 0.5, cy: 0.5, k: 1 }, 520); this.load({ cam: { cx: 0.5, cy: 0.5, k: 1 } });
     }
     setFilters(f) {
-      const next = { scope: f.scope ?? this.scope, minFit: f.minFit ?? this.minFit, status: f.status ?? this.status };
-      if (next.scope === this.scope && next.minFit === this.minFit && next.status === this.status) return;
+      const next = { scope: f.scope ?? this.scope, minFit: f.minFit ?? this.minFit, status: f.status ?? this.status, follow: f.follow ?? this.follow };
+      if (next.scope === this.scope && next.minFit === this.minFit && next.status === this.status && next.follow === this.follow) return;
       Object.assign(this, next); this.morph = 0;
       this.emit('filters'); this.load();
     }

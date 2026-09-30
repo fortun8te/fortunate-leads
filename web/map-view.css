@@ -152,3 +152,6 @@
 /* Counts and zoom hints stay secondary to the audience markers. */
 .mv-shown { line-height: 1.5; font-variant-numeric: tabular-nums; }
 .mv-hud { gap: 8px; }
+
+.mv-av { overflow: hidden; }
+.mv-av img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }

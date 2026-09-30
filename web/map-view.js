@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan } = Core;
+  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan, PortraitCache } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -40,6 +40,7 @@
       });
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
+      this.portraits = new PortraitCache({ createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 256 : 128; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -142,8 +143,15 @@
       const hovered = this.hover;
       const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.mode === 'closeness' ? m.world.me?.id : null);
       const bubbles = plan.groups;
-      const network = m.mode === 'closeness' && (m.world.guides || []).some(g => g.label === 'Direct connections');
-      const spheres = network && cam.k < 2.5;
+      for (const mark of plan.nodes) lab.block([mark.x-mark.r-2, mark.y-mark.r-2, mark.x+mark.r+2, mark.y+mark.r+2]);
+      const disk = m.mode === 'closeness' && m.world.layout === 'network_disk';
+      const network = m.mode === 'closeness' && (disk || (m.world.guides || []).some(g => g.label === 'Direct connections'));
+      const spheres = network && !disk && cam.k < 2.5;
+      if (disk && cam.k < 2.5) {
+        const center = m.world.center || { x: .5, y: .5 };
+        ctx.strokeStyle = P.line2; ctx.lineWidth = 1; ctx.beginPath();
+        ctx.arc(sx(center.x), sy(center.y), (m.world.radius || .47) * S, 0, TAU); ctx.stroke();
+      }
       const largestGroup = Math.max(1, ...bubbles.map(b => b.it.d.count));
       for (const b of bubbles) {
         const { x, y, it } = b, on = hovered && hovered.it.d.id === it.d.id;
@@ -164,37 +172,24 @@
       // Lines for the selected person, under the dots.
       if (edges && edges.state === 'ready') this.paintEdges(ctx, P, edges, sx, sy, now, sel);
 
-      // People. Opaque ones are batched by tone; fading ones draw one by one.
-      const k = cam.k, mode = m.mode, batches = new Map(), rings = [], fading = [];
-      for (const mark of plan.nodes) {
-        const { it, x, y } = mark, d = it.d;
-        if (x < -14 || y < -14 || x > W + 14 || y > H + 14) continue;
-        const r = radiusFor(d, k), tone = toneFor(mode, d);
-        if (it.a < 0.98) { fading.push([x, y, r, tone, it.a]); if (hasRing(d)) rings.push([x, y, r, it.a]); continue; }
-        let b = batches.get(tone); if (!b) batches.set(tone, b = []);
-        b.push(x, y, r);
-        if (hasRing(d)) rings.push([x, y, r, 1]);
-      }
-      const q = P.tones;
-      ctx.globalAlpha = dim;
-      for (const [tone, list] of batches) {
-        ctx.fillStyle = q[tone]; ctx.beginPath();
-        for (let i = 0; i < list.length; i += 3) { ctx.moveTo(list[i] + list[i + 2], list[i + 1]); ctx.arc(list[i], list[i + 1], list[i + 2], 0, TAU); }
-        ctx.fill();
-      }
-      for (const [x, y, r, tone, a] of fading) { ctx.globalAlpha = a * dim; ctx.fillStyle = q[tone]; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
-      ctx.lineWidth = 1.4; ctx.strokeStyle = P.fg;
-      for (const [x, y, r, a] of rings) { ctx.globalAlpha = a * dim * 0.9; ctx.beginPath(); ctx.arc(x, y, r + 2.6, 0, TAU); ctx.stroke(); }
-      ctx.globalAlpha = 1;
-
-      // You, in the middle of the closeness view.
+      // A bounded set of saved profile portraits; missing photos use their initials.
+      const k = cam.k, mode = m.mode;
       const me = m.world && m.world.me && mode === 'closeness' ? m.world.me : null;
+      if (me) this.portraits.get(me.pic);
+      let photoBudget = 140;
+      for (const mark of plan.nodes) {
+        const {it, x, y, r} = mark, d = it.d;
+        if (me && d.id === me.id) continue;
+        ctx.globalAlpha = it.a * dim;
+        this.paintPortrait(ctx, P, d, x, y, r, photoBudget-- > 0);
+      }
+      ctx.globalAlpha = 1;
       if (me) {
         const x = sx(me.x), y = sy(me.y);
-        if (network && cam.k < 2.5) { ctx.fillStyle = P.bg2; ctx.strokeStyle = P.fg3; ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(x, y, Math.max(22, Math.min(30, S * .035)), 0, TAU); ctx.fill(); ctx.stroke(); }
-        ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, TAU); ctx.fill();
-        ctx.strokeStyle = P.fg; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.stroke();
-        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: network && cam.k < 2.5 ? 30 : 10, w: 600, prefer: 'bottom', strong: true });
+        ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, 46, 0, TAU); ctx.stroke();
+        this.paintPortrait(ctx, P, me, x, y, 38, true, true);
+        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: 46, w: 600, prefer: 'bottom', strong: true });
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
@@ -204,10 +199,10 @@
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
-        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = radiusFor(sel, k);
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 38 : radiusFor(sel, k);
         ctx.strokeStyle = P.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke();
-        ctx.fillStyle = P.accent; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
-        want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
+        this.paintPortrait(ctx, P, sel, x, y, r, true);
+        if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
       }
       if (hovered && hovered.it && hovered.kind === 'n' && hovered.it.d !== sel) {
         ctx.strokeStyle = P.fg; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(hovered.x, hovered.y, hovered.r + 4, 0, TAU); ctx.stroke();
@@ -221,21 +216,37 @@
         want.push({ key: 'c:' + b.it.d.id, text: b.it.d.label.replace(/^(Around |Audience of )/, ''), x: b.x, y: spheres ? b.y - b.r - 12 : b.y, r: spheres ? 0 : b.r, w: 600, prefer: spheres ? 'top' : 'bottom', prio: 100 });
         if (++nb >= 14) break;
       }
-      const maxPeople = clamp(Math.round(W * H / 55000 * Math.min(k, 2)), 3, 20);
+      const maxPeople = clamp(Math.round(W * H / 80000 * Math.min(k, 2)), 3, 12);
       let np = 0; const peoplePerGroup = new Map();
       for (let i = 0; i < plan.nodes.length && np < maxPeople; i++) {
         const it = plan.nodes[i].it, d = it.d;
         if (it.a < 0.9 || (me && d.id === me.id) || (sel && d.id === sel.id)) continue;
-        if (spheres && (peoplePerGroup.get(d.cluster) || 0) >= 3) continue;
+        if (network && cam.k < 2.5 && (peoplePerGroup.get(d.cluster) || 0) >= 2) continue;
         const x = sx(it.x), y = sy(it.y);
         if (x < 8 || y < 8 || x > W - 8 || y > H - 8) continue;
-        want.push({ key: 'n:' + d.id, text: d.name || '@' + d.handle, x, y, r: radiusFor(d, k) + 1, w: 500, dimmed: !!edges });
+        want.push({ key: 'n:' + d.id, text: d.name || '@' + d.handle, x, y, r: plan.nodes[i].r + 2, w: 500, dimmed: !!edges });
         np++; peoplePerGroup.set(d.cluster, (peoplePerGroup.get(d.cluster) || 0) + 1);
       }
       this.paintLabels(ctx, P, lab, want, dt);
       this.renderCount(false);
       return this.labelsBusy;
     }
+    paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
+      const image = requestPhoto ? this.portraits.get(person.pic) : null;
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.clip();
+      ctx.fillStyle = owner ? P.bg2 : P.bg1; ctx.fillRect(x-radius, y-radius, radius*2, radius*2);
+      if (image) {
+        const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height, side = Math.min(iw, ih);
+        ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-radius, y-radius, radius*2, radius*2);
+      } else {
+        ctx.fillStyle = owner ? P.fg : P.fg2; ctx.font = `${owner ? 600 : 500} ${Math.round(radius * .67)}px ${P.sans}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(initials(person), x, y+.5);
+      }
+      ctx.restore(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU);
+      ctx.strokeStyle = owner ? P.fg : P.tones[toneFor(this.model.mode, person)]; ctx.lineWidth = owner ? 2.5 : hasRing(person) ? 2.2 : 1.2; ctx.stroke();
+      ctx.textAlign = 'left';
+    }
+
     paintGuides(ctx, P, m, cam, S, sx, sy, want) {
       const guides = (m.world && m.world.guides) || [];
       const W = cam.w, H = cam.h;
@@ -412,7 +423,8 @@
       f.scope.addEventListener('click', (e) => { const b = e.target.closest('[data-scope]'); if (b) m.setFilters({ scope: b.dataset.scope }); });
       f.fit.addEventListener('change', () => m.setFilters({ minFit: f.fit.value }));
       f.status.addEventListener('change', () => m.setFilters({ status: f.status.value }));
-      f.clear.addEventListener('click', () => { m.setFilters({ scope: 'all', minFit: '', status: '' }); });
+      f.follow?.addEventListener('change', () => m.setFilters({ follow: f.follow.value }));
+      f.clear.addEventListener('click', () => { m.setFilters({ scope: 'all', minFit: '', status: '', follow: 'all' }); });
       doc.addEventListener('click', (e) => { if (this.r.filtersBox.open && !this.r.filtersBox.contains(e.target)) this.r.filtersBox.open = false; });
       this.r.filtersBox.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.r.filtersBox.open) { e.stopPropagation(); this.r.filtersBox.open = false; this.r.filtersBox.querySelector('summary').focus(); } });
       // Card, states.
@@ -420,7 +432,7 @@
       this.r.state.addEventListener('click', (e) => {
         if (e.target.closest('[data-act="leads"]')) this.host.openList();
         if (e.target.closest('[data-act="retry"]')) m.retry();
-        if (e.target.closest('[data-act="clear"]')) m.setFilters({ scope: 'all', minFit: '', status: '' });
+        if (e.target.closest('[data-act="clear"]')) m.setFilters({ scope: 'all', minFit: '', status: '', follow: 'all' });
       });
       this.r.stale.addEventListener('click', () => m.retry());
       if (root.ResizeObserver) { const observer = new ResizeObserver(() => this.measure(false)); observer.observe(this.r.canvasBox); observer.observe(this.r.card); }
@@ -526,12 +538,13 @@
     renderModes() {
       for (const b of this.r.modes.children) { const on = b.dataset.mode === this.model.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
       this.r.modes.hidden = this.model.fallback;
+      if (this.r.filters.follow) { this.r.filters.follow.disabled = !!this.model.fallback; this.r.filters.follow.title = this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
       this.r.me.hidden = this.model.mode !== 'closeness' || !this.model.world.me;
     }
     renderFilters() {
       const m = this.model, f = this.r.filters;
       for (const b of f.scope.children) { const on = b.dataset.scope === m.scope; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); }
-      f.fit.value = m.minFit; f.status.value = m.status;
+      f.fit.value = m.minFit; f.status.value = m.status; if (f.follow) f.follow.value = m.follow;
       const n = m.filtersActive; this.r.badge.hidden = !n; this.r.badge.textContent = String(n);
       f.clear.hidden = !n;
       this.r.filtersBtn.setAttribute('aria-label', n ? `Filters, ${plural(n, 'filter')} on` : 'Filters');
@@ -608,10 +621,17 @@
       card.hidden = false;
       const facts = [['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Status', n.status ? SLABEL(n.status) : 'No status']];
       if (typeof n.closeness === 'number') facts.push(['Network evidence', Core.closenessWords(n.closeness).replace(' to you', '').replace(/^./, (c) => c.toUpperCase())]);
-      if (n.follows_me) facts.push(['Follows you', 'Yes']);
+      if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
+      if (n.follows_me) facts.push(['Follows you', 'Recorded']);
+      const avatar = h('span', { class: 'mv-av', 'aria-hidden': 'true', text: initials(n) });
+      if (/^\/img\/\d+$/.test(n.pic || '')) {
+        const image = h('img', { src: n.pic, alt: '', decoding: 'async' });
+        image.addEventListener('error', () => avatar.replaceChildren(initials(n)), { once: true });
+        avatar.replaceChildren(image);
+      }
       card.replaceChildren(
         h('div', { class: 'mv-c-head' },
-          h('span', { class: 'mv-av', 'aria-hidden': 'true', text: initials(n) }),
+          avatar,
           h('div', { class: 'mv-who' }, h('b', { text: n.name || '@' + n.handle }), h('span', { text: '@' + n.handle })),
           h('button', { type: 'button', class: 'mv-x', 'data-act': 'close', 'aria-label': 'Close details', title: 'Close (esc)', text: '×' })),
         h('p', { class: 'mv-why', text: why }),
@@ -706,7 +726,7 @@
     const pane = $('pane-map'); if (!pane || !$('map-canvas')) return null;
     return {
       pane, canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), modes: $('map-modes'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
-      badge: $('map-filter-badge'), filters: { scope: $('map-scope'), fit: $('map-fit-filter'), status: $('map-status-filter'), clear: $('map-filters-clear') },
+      badge: $('map-filter-badge'), filters: { scope: $('map-scope'), fit: $('map-fit-filter'), status: $('map-status-filter'), follow: $('map-follow-filter'), clear: $('map-filters-clear') },
       state: $('map-state'), stale: $('map-stale'), progress: $('map-progress'), tip: $('hover'), legend: $('map-legend'), hud: $('map-hud'), count: $('map-shown'), live: $('map-live'),
       card: $('map-card'), zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), fit: $('map-fit'), me: $('map-me')
     };
