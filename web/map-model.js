@@ -110,6 +110,7 @@
       this.setPhase(offline ? 'offline' : 'error');
     }
     apply(resp, at) {
+      const previousRev = this.rev;
       const nodes = resp.nodes.map(cleanNode).filter(Boolean), clusters = (resp.clusters || []).map(cleanCluster).filter(Boolean);
       this.fallback = !!resp.fallback; this.sampled = resp.sampled || 0;
       this.rev = resp.rev == null ? null : String(resp.rev);
@@ -131,6 +132,7 @@
       this.emit('selection');
       this.setPhase(!nodes.length && !clusters.length && !this.selected ? 'empty' : 'ready');
       this.emit('scene');
+      if (this.selected && previousRev !== this.rev) this.loadEdges(this.selected);
     }
     setPhase(p) { if (this.phase !== p) { this.phase = p; this.emit('phase'); } }
     retry() { this.stale = null; this.load({ force: true }); }
