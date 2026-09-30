@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan, PortraitCache } = Core;
+  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -40,7 +40,7 @@
       });
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 256 : 128; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
+      this.portraits = new PortraitCache({ createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -52,6 +52,7 @@
 
     /* ---------- model events ---------- */
     onModel(what) {
+      if (what === 'size') { this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
       if (what === 'edges') { this.edgeAt = performance.now(); this.renderSeeds(); }
       if (what === 'phase' || what === 'scene') { this.renderModes(); this.renderLegend(); this.renderState(); this.renderCount(); }
@@ -144,17 +145,12 @@
       const dim = edges && edges.state === 'ready' ? 0.5 : 1;
 
       const hovered = this.hover;
-      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode);
+      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode, m.size);
       const bubbles = plan.groups;
       for (const mark of plan.nodes) lab.block([mark.x-mark.r-2, mark.y-mark.r-2, mark.x+mark.r+2, mark.y+mark.r+2]);
       const disk = m.world.layout === 'network_disk';
       const network = disk || m.mode === 'closeness' && (m.world.guides || []).some(g => g.label === 'Direct connections');
       const spheres = network && !disk && cam.k < 2.5;
-      if (disk && cam.k < 2.5) {
-        const center = m.world.center || { x: .5, y: .5 };
-        ctx.strokeStyle = P.line2; ctx.lineWidth = 1; ctx.beginPath();
-        ctx.arc(sx(center.x), sy(center.y), (m.world.radius || .47) * S, 0, TAU); ctx.stroke();
-      }
       const largestGroup = Math.max(1, ...bubbles.map(b => b.it.d.count));
       for (const b of bubbles) {
         const { x, y, it } = b, on = hovered && hovered.it.d.id === it.d.id;
@@ -180,7 +176,7 @@
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
       if (me) this.portraits.get(me.pic);
-      let photoBudget = 140;
+      let photoBudget = 480;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
@@ -191,11 +187,11 @@
       if (me) {
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(x, y, 35, 0, TAU); ctx.stroke();
-        this.paintPortrait(ctx, P, me, x, y, 30, true, true);
+        ctx.beginPath(); ctx.arc(x, y, 29, 0, TAU); ctx.stroke();
+        this.paintPortrait(ctx, P, me, x, y, 24, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
-        ownerCaption = { x, y: y + 39, text };
-        lab.block([x-width/2-4, y+37, x+width/2+4, y+56]);
+        ownerCaption = { x, y: y + 33, text };
+        lab.block([x-width/2-4, y+31, x+width/2+4, y+50]);
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
@@ -205,7 +201,7 @@
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
-        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 30 : radiusFor(sel, k, mode);
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 24 : radiusFor(sel, k, m.size);
         ctx.strokeStyle = P.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke();
         this.paintPortrait(ctx, P, sel, x, y, r, true);
         if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
@@ -345,7 +341,11 @@
     pick(px, py) {
       const plan = this.displayMarks; if (!plan) return null;
       const reach = this.touch ? 16 : 9;
-      for (const mark of plan.nodes) if (Math.hypot(mark.x - px, mark.y - py) <= Math.max(mark.r + 3, reach)) return mark;
+      // Real photo bodies win before expanded hit targets in the dense overview.
+      for (const mark of plan.nodes) if (Math.hypot(mark.x-px,mark.y-py)<=mark.r) return mark;
+      let nearest=null, distance=Infinity;
+      for (const mark of plan.nodes) { const d=Math.hypot(mark.x-px,mark.y-py); if (d<=Math.max(mark.r+3,reach) && d<distance) { nearest=mark;distance=d; } }
+      if (nearest) return nearest;
       for (const mark of plan.groups) if (Math.hypot(mark.x - px, mark.y - py) <= Math.max(22, mark.r)) return mark;
       return null;
     }
@@ -356,9 +356,10 @@
       let drag = null, pinch = null, samples = [];
       const pos = (e) => { const b = c.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
       c.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
         this.touch = e.pointerType === 'touch';
-        c.setPointerCapture(e.pointerId); c.classList.remove('kb'); c.focus({ preventScroll: true });
-        pts.set(e.pointerId, pos(e)); m.flight = null; m.goal = null; m.vel = null;
+        c.setPointerCapture(e.pointerId); c.style.cursor=''; c.classList.remove('kb'); c.focus({ preventScroll: true });
+        pts.set(e.pointerId, pos(e)); m.interruptCamera();
         if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: m.cam.k, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; drag = null; return; }
         drag = { x: e.clientX, y: e.clientY, moved: false, at: this.pick(...pos(e)), t: performance.now() }; samples = [];
         c.classList.add('drag');
@@ -397,7 +398,8 @@
         drag = null; m.moved(); this.invalidate();
       };
       c.addEventListener('pointerup', end);
-      c.addEventListener('pointercancel', (e) => { pts.delete(e.pointerId); pinch = null; drag = null; c.classList.remove('drag'); });
+      const cancel = () => { pts.clear(); pinch=null; drag=null; m.interruptCamera(); c.classList.remove('drag'); };
+      c.addEventListener('pointercancel', cancel); c.addEventListener('lostpointercapture', (e) => { if (pts.has(e.pointerId)) cancel(); });
       c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { this.hover = null; this.hideTip(); this.invalidate(); } });
       c.addEventListener('wheel', (e) => {
         e.preventDefault();
@@ -419,6 +421,7 @@
         if (!d) return; e.preventDefault();
         const next = MODES[(i + d + MODES.length) % MODES.length]; m.setMode(next.id); this.r.modes.querySelector(`[data-mode="${next.id}"]`).focus();
       });
+      this.r.size?.addEventListener('change', () => m.setSizeEncoding(this.r.size.value));
       // Search.
       const input = this.r.q; let timer = 0;
       input.addEventListener('input', () => { this.closeResults(); clearTimeout(timer); timer = setTimeout(() => this.runSearch(), 160); if (!input.value.trim()) this.closeResults(); });
@@ -482,6 +485,7 @@
         tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? d.label.replace(/^(Around |Audience of )/, '') + '. ' : '') + 'Click to explore this group.' }));
       } else {
         tip.append(h('b', { text: d.name || '@' + d.handle }), h('span', { text: '@' + d.handle }),
+          h('span', { text: this.model.size === 'connections' ? `${int(d.source_count || 0)} collected source audiences` : this.model.size === 'followers' ? d.followers == null ? 'Follower count unknown' : `${int(d.followers)} followers` : this.model.size === 'equal' ? 'Equal portrait sizes' : `${FIT_LABEL[d.fit] || 'Unread'} fit` }),
           h('span', { text: `${FIT_LABEL[d.fit] || ''} fit${d.status ? ' · ' + SLABEL(d.status) : ''}` }));
       }
       tip.hidden = false;
@@ -542,6 +546,8 @@
     /* ---------- static DOM ---------- */
     buildStatic() {
       const r = this.r;
+      r.size?.replaceChildren(...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
+      if (r.size) r.size.value=this.model.size;
       r.modes.replaceChildren(...MODES.map((x) => h('button', { type: 'button', role: 'radio', 'data-mode': x.id, 'aria-checked': 'false', tabindex: '-1' },
         h('span', { class: 'mv-long', text: x.label }), h('span', { class: 'mv-short', text: x.short }))));
       this.renderModes();
@@ -577,7 +583,8 @@
           default: return svg('');
         }
       };
-      box.replaceChildren(...rows.map((row) => h('li', {}, h('span', { tabindex: '0', role: 'note', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
+      const encoded = rows.map(row => row.g === 'size' ? {g:'size',s:`Size: ${SIZE_OPTIONS.find(o=>o.id===this.model.size)?.label.toLowerCase() || 'followers'}`,t:SIZE_HELP[this.model.size]} : row);
+      box.replaceChildren(...encoded.map((row) => h('li', {}, h('span', { tabindex: '0', role: 'note', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
       this.measureHud(); this.invalidate();
     }
     renderCount(announce = true) {
@@ -632,7 +639,8 @@
       const label = n.lead ? 'Open lead' : 'Open profile';
       const why = n.reason || whyLine(n, seedLabel);
       card.hidden = false;
-      const facts = [['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Status', n.status ? SLABEL(n.status) : 'No status']];
+      const facts = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Status', n.status ? SLABEL(n.status) : 'No status']];
+      if (n.source_count != null) facts.push(['Collected audiences', int(n.source_count)]);
       if (typeof n.closeness === 'number') facts.push(['Network evidence', Core.closenessWords(n.closeness).replace(' to you', '').replace(/^./, (c) => c.toUpperCase())]);
       if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
       if (n.follows_me) facts.push(['Follows you', 'Recorded']);
@@ -738,7 +746,7 @@
     const $ = (id) => doc.getElementById(id);
     const pane = $('pane-map'); if (!pane || !$('map-canvas')) return null;
     return {
-      pane, canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), modes: $('map-modes'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
+      pane, size: $('map-size'), canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), modes: $('map-modes'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
       badge: $('map-filter-badge'), filters: { scope: $('map-scope'), fit: $('map-fit-filter'), status: $('map-status-filter'), follow: $('map-follow-filter'), clear: $('map-filters-clear') },
       state: $('map-state'), stale: $('map-stale'), progress: $('map-progress'), tip: $('hover'), legend: $('map-legend'), hud: $('map-hud'), count: $('map-shown'), live: $('map-live'),
       card: $('map-card'), zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), fit: $('map-fit'), me: $('map-me')

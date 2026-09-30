@@ -42,7 +42,7 @@
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
-      this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
+      this.size = 'followers'; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
@@ -57,7 +57,7 @@
     get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0) + (this.follow !== 'all' ? 1 : 0); }
 
     /* ----- loading ----- */
-    params(rect, cam = this.cam) { return viewQuery(rect, { mode: this.mode, budget: this.budget, scope: this.scope, minFit: this.minFit, status: this.status, q: this.q, follow: this.follow, overview: this.mode === 'closeness' && cam.k < 2.5 }); }
+    params(rect, cam = this.cam) { return viewQuery(rect, { mode: this.mode, budget: this.budget, scope: this.scope, minFit: this.minFit, status: this.status, q: this.q, follow: this.follow, overview: cam.k < 2.5 }); }
     // Does what we hold already answer the current view? Then panning costs nothing.
     needsLoad() {
       if (!this.loaded) return true;
@@ -148,6 +148,7 @@
     setMode(mode) {
       if (this.fallback || mode === this.mode) return;
       const keep = this.selected;
+      this.viewReq.cancel(); this.pending=0; this.hold=false; this.loaded=null;
       this.mode = mode; this.morph = 720; this.edges = null; this.edgeReq.cancel();
       this.emit('mode');
       const target = { cx: 0.5, cy: 0.5, k: 1 };
@@ -261,11 +262,18 @@
       this.emit('camera');
     }
     fit() { this.flyTo({ cx: 0.5, cy: 0.5, k: 1 }, 600); this.load({ cam: { cx: 0.5, cy: 0.5, k: 1 } }); }
-    pan(dx, dy) { this.flight = null; this.goal = null; this.vel = null; this.cam.panBy(dx, dy); this.moved(); }
-    release(vx, vy) { if (!this.reduced && Math.hypot(vx, vy) > 60) this.vel = { vx, vy }; }
+    pan(dx, dy) { this.interruptCamera(); this.cam.panBy(dx, dy); this.moved(); }
+    release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
+    setSizeEncoding(size) { if (!Core.SIZE_OPTIONS.some(o=>o.id===size) || size === this.size) return; this.size=size; this.emit('size'); }
+    interruptCamera() {
+      this.locateReq.cancel(); this.flight=null; this.goal=null; this.vel=null;
+      if (this.hold) { this.viewReq.cancel(); this.pending=0; this.loaded=null; this.emit('busy'); }
+      this.hold=false;
+    }
     // Smooth zoom that keeps the point under the pointer still.
     zoomBy(factor, px, py) {
-      this.flight = null; this.vel = null;
+      if (this.hold) { this.viewReq.cancel(); this.pending=0; this.loaded=null; this.hold=false; }
+      this.locateReq.cancel(); this.flight = null; this.vel = null;
       const [wx, wy] = this.goal ? [this.goal.wx, this.goal.wy] : this.cam.toWorld(px, py);
       const base = this.goal && Math.abs(this.goal.px - px) < 2 && Math.abs(this.goal.py - py) < 2 ? this.goal.k : this.cam.k;
       const k = clamp(base * factor, Core.K_MIN, K_MAX);

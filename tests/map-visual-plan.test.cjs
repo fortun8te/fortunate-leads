@@ -19,7 +19,7 @@ test('overview never paints overlapping count markers or individual dots', () =>
   const {cam, scene, guides} = fixture(); const plan = displayPlan(scene, cam, guides);
   const marks = [...plan.groups, ...plan.nodes];
   for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) {
-    assert.ok(Math.hypot(marks[i].x - marks[j].x, marks[i].y - marks[j].y) >= marks[i].r + marks[j].r + 7);
+    assert.ok(Math.hypot(marks[i].x - marks[j].x, marks[i].y - marks[j].y) >= marks[i].r + marks[j].r + 1.5);
   }
 });
 test('selected person remains visible even inside a summary footprint', () => {
@@ -46,7 +46,7 @@ test('network overview always keeps owner visible and bounds exploration', () =>
   scene.nodes[0].d.rank = 0;
   const plan = displayPlan(scene, cam, guides, null, null, 0);
   assert.ok(plan.nodes.some(n => n.it.d.id === 0));
-  assert.ok(plan.nodes.length <= 20);
+  assert.ok(plan.nodes.length <= 420);
   cam.set(.5, .5, 1000);
   assert.equal(cam.k, 6);
 });
@@ -56,10 +56,10 @@ test('portrait overview samples distinct communities and preserves real position
   const nodes = Array.from({length:500}, (_,i)=>({id:i,cluster:i<350?0:1+Math.floor((i-350)/25),x:.06+(i%20)*.045,y:.06+Math.floor(i/20)*.035,fit:'unread',rank:1-i/500}));
   scene.apply({nodes,clusters:[]},0,{instant:true});
   const plan = displayPlan(scene,cam,[],null,null,0);
-  assert.ok(plan.nodes.length > 70);
+  assert.ok(plan.nodes.length > 300);
   assert.ok(new Set(plan.nodes.map(n=>n.it.d.cluster)).size >= 6);
-  assert.ok(plan.nodes.length <= 140);
-  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,30);
+  assert.ok(plan.nodes.length <= 420);
+  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,24);
   for(const mark of plan.nodes) assert.deepEqual([mark.it.x,mark.it.y],[nodes[mark.it.d.id].x,nodes[mark.it.d.id].y]);
 });
 test('overview count chips include loaded people hidden by portrait collisions', () => {
@@ -76,13 +76,13 @@ test('mode encodings preserve circle geometry and use truthful sizes', () => {
   const {radiusFor,LEGENDS}=require('../web/map-core.js');
   const strong={fit:'strong',source_count:1},weak={fit:'weak',source_count:8};
   assert.ok(radiusFor(strong,1,'fit')>radiusFor(weak,1,'fit'));
-  assert.ok(radiusFor(weak,1,'seeds')>radiusFor(strong,1,'seeds'));
-  assert.equal(radiusFor(strong,1,'status'),radiusFor(weak,1,'status'));
+  assert.ok(radiusFor(weak,1,'connections')>radiusFor(strong,1,'connections'));
+  assert.equal(radiusFor(strong,1,'equal'),radiusFor(weak,1,'equal'));
   for(const mode of ['closeness','fit','seeds','status']) {
     const {cam,scene,guides}=fixture();const before=scene.nodes.map(n=>[n.x,n.y]);
     const plan=displayPlan(scene,cam,guides,null,null,0,mode);
     assert.deepEqual(scene.nodes.map(n=>[n.x,n.y]),before);
-    assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,30);
+    assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,24);
     assert.equal(LEGENDS[mode][0].s,'Distance: evidence');
     assert.equal(LEGENDS[mode].length,3);
   }
@@ -98,10 +98,10 @@ test('modest owner portrait keeps its fixed identity caption clear', () => {
   const cam=new Camera();cam.resize(1400,1000);const scene=new Scene();
   const nodes=[{id:0,x:.5,y:.5,fit:'unread'},...Array.from({length:100},(_,i)=>({id:i+1,x:.44+(i%10)*.015,y:.5+Math.floor(i/10)*.015,fit:'strong',rank:i/100}))];
   scene.apply({nodes,clusters:[]},0,{instant:true});const plan=displayPlan(scene,cam,[],null,null,0);
-  const owner=plan.nodes.find(n=>n.it.d.id===0);assert.equal(owner.r,30);
+  const owner=plan.nodes.find(n=>n.it.d.id===0);assert.equal(owner.r,24);
   for(const mark of plan.nodes.filter(n=>n.it.d.id!==0)) {
     const x=Math.max(owner.x-45,Math.min(mark.x,owner.x+45));
-    const y=Math.max(owner.y+37,Math.min(mark.y,owner.y+56));
+    const y=Math.max(owner.y+31,Math.min(mark.y,owner.y+50));
     assert.ok(Math.hypot(mark.x-x,mark.y-y)>mark.r);
   }
 });

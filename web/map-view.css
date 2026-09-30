@@ -154,3 +154,6 @@
 
 .mv-av { overflow: hidden; }
 .mv-av img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+
+.mv-size { display:flex; align-items:center; gap:6px; color:var(--fg3); font-size:11px; white-space:nowrap; }
+.mv-size .select { width:116px; height:32px; }

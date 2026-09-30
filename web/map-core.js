@@ -206,11 +206,17 @@
     if (n.status && n.status !== 'no') return 'a';
     return n.fit === 'strong' ? 't1' : n.fit === 'good' ? 't2' : n.fit === 'weak' ? 't3' : 't4';
   }
-  const radiusFor = (n, k, mode = 'closeness') => {
-    const base = mode === 'status' ? 16 : mode === 'seeds' ? clamp(10 + 2.5 * Math.log1p(Math.max(0, +n.source_count || 0)), 10, 19) : RADIUS[n.fit] || RADIUS.unread;
-    return base * clamp(0.92 + 0.11 * Math.log2(k + 1), 0.92, 2.1);
+  const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Connections'}, {id:'equal',label:'Equal'}];
+  const SIZE_HELP = {
+    followers:'Larger portraits have more saved followers. Unknown counts use the smallest size. Sizes use a logarithmic scale.',
+    fit:'Larger portraits have a stronger saved fit assessment. Unread profiles use the smallest size.',
+    connections:'Larger portraits appear in more distinct collected source audiences. This is recorded overlap, not friendship.',
+    equal:'Every person has the same portrait size.'
   };
-  // Plain-words key per mode. Each row has a glyph the view draws and a sentence.
+  const radiusFor = (n, k, size = 'followers') => {
+    const base = size === 'equal' ? 9 : size === 'connections' ? clamp(7 + 2*Math.sqrt(Math.max(0,+n.source_count||0)),8,14) : size === 'fit' ? ({strong:14,good:11.5,weak:9,unread:8}[n.fit]||8) : n.followers == null ? 8 : clamp(7+1.15*Math.log10(1+Math.max(0,+n.followers||0)),8,15);
+    return base * clamp(.85+.15*Math.sqrt(k),.85,1.35);
+  };
   const distanceKey = { g: 'centre', t: 'Distance bands show recorded connection evidence in every mode. Positions within each band spread people for readability; a follow is not a personal relationship.', s: 'Distance: evidence' };
   const fitSizeKey = { g: 'size', t: 'Larger portraits mean a stronger saved fit assessment. Numbered chips represent grouped people; click one to explore.', s: 'Size: fit' };
   const LEGENDS = {
@@ -232,7 +238,7 @@
   }
 
   // Select what can be read at this scale. Screen collisions never alter world coordinates.
-  function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null, mode = 'closeness') {
+  function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null, mode = 'closeness', size = 'followers') {
     const inside = (x, y, pad = 20) => x >= pad && y >= pad && x <= cam.w - pad && y <= cam.h - cam.inset.bottom - pad;
     const occupied = [], summaries = new Map(), nodeMarks = [];
     const guideByLabel = new Map(guides.map(g => [g.label, g]));
@@ -249,9 +255,9 @@
       const [x, y] = cam.toScreen(it.x, it.y); if (!inside(x, y, 0)) continue;
       add(it.d.label || 'People nearby', it.d.count, it.x, it.y);
     }
-    const overlaps = (x, y, r) => occupied.some(p => Math.hypot(x - p.x, y - p.y) < r + p.r + 7) || (blocked && x + r > blocked.x0 && x - r < blocked.x1 && y + r > blocked.y0 && y - r < blocked.y1);
+    const overlaps = (x, y, r) => occupied.some(p => Math.hypot(x - p.x, y - p.y) < r + p.r + 1.5) || (blocked && x + r > blocked.x0 && x - r < blocked.x1 && y + r > blocked.y0 && y - r < blocked.y1);
     const network = ownerId != null || guides.some(g => g.label === 'Direct connections');
-    const limit = Math.round(clamp(cam.w * cam.h / 5500 * Math.min(8, cam.k), 40, network && overview ? 140 : 240));
+    const limit = Math.round(clamp(cam.w * cam.h / 2200 * Math.min(8, cam.k), 120, network && overview ? 420 : 480));
     let candidates = scene.nodes.filter(it => it.a >= .3 && it.ta !== 0).slice().sort((a, b) => {
       const score = it => (((selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId)) ? 1e6 : 0) + (mode === 'closeness' ? (it.d.source ? 40 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) : 0) + (it.d.rank || 0);
       return score(b) - score(a) || String(a.d.id).localeCompare(String(b.d.id));
@@ -286,7 +292,7 @@
       groupMarks.push(mark); occupied.push(mark);
     }
     for (const it of candidates) {
-      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 30 : radiusFor(it.d, cam.k, mode);
+      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 24 : radiusFor(it.d, cam.k, size);
       if (!inside(x, y, 8)) continue;
       const pinned = (selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId);
       if (!pinned && (nodeMarks.length >= limit || overlaps(x, y, r))) {
@@ -297,8 +303,8 @@
         if (grouped) grouped.it.d.count++;
         continue;
       }
-      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 55 } : mark);
-      if (String(it.d.id) === String(ownerId)) occupied.push({ x, y: y + 47, r: 44 });
+      const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 46 } : mark);
+      if (String(it.d.id) === String(ownerId)) occupied.push({ x, y: y + 39, r: 44 });
     }
     return { nodes: nodeMarks, groups: groupMarks };
   }
@@ -306,7 +312,7 @@
   // Only saved local photos are eligible. Cap decoded images and in-flight requests;
   // drawing thousands of records must never enqueue thousands of image downloads.
   class PortraitCache {
-    constructor({createImage, normalize = null, changed = () => {}, max = 160, concurrency = 4} = {}) {
+    constructor({createImage, normalize = null, changed = () => {}, max = 512, concurrency = 6} = {}) {
       this.createImage = createImage; this.normalize = normalize; this.changed = changed; this.max = max;
       this.concurrency = concurrency; this.entries = new Map(); this.queue = []; this.active = 0;
     }
@@ -372,7 +378,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

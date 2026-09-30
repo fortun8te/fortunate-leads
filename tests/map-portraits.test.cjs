@@ -56,11 +56,46 @@ test('following filters and balanced overview are explicit request parameters', 
   model.follow = 'not_following';
   assert.equal(model.params(rect).get('follow'),'not_following');
   assert.equal(model.filtersActive,1);
-  model.mode = 'fit'; assert.equal(model.params(rect).has('overview'),false);
+  model.mode = 'fit'; assert.equal(model.params(rect).has('overview'),true);
 });
 test('unprepared fallback cannot claim an unsupported following filter', async () => {
   const {MapModel} = require('../web/map-model.js'); let requests=0;
   const model = new MapModel({fetchJson: async () => {requests++;return {ready:false,nodes:[],layout:{building:false}};}});
   model.follow='not_following'; await model.load();
   assert.equal(requests,1); assert.equal(model.phase,'unprepared'); assert.equal(model.pending,0);
+});
+
+test('size encoding changes presentation without requesting or moving people', () => {
+  const {MapModel}=require('../web/map-model.js');let requests=0;
+  const model=new MapModel({fetchJson:()=>{requests++;}}),before=model.cam.state();
+  model.setSizeEncoding('connections');assert.equal(model.size,'connections');
+  assert.equal(requests,0);assert.deepEqual(model.cam.state(),before);
+  model.setSizeEncoding('invalid');assert.equal(model.size,'connections');
+});
+test('drag interrupts a held flight and prevents delayed location recentering', () => {
+  const {MapModel}=require('../web/map-model.js');
+  const model=new MapModel({fetchJson:async()=>({nodes:[],clusters:[]})});model.setSize(1000,700);
+  const view=model.viewReq.begin(),locate=model.locateReq.begin();model.hold=true;model.pending=1;model.flight={};
+  const before=model.cam.cx;model.pan(80,0);
+  assert.equal(model.hold,false);assert.equal(model.flight,null);assert.equal(model.pending,0);
+  assert.equal(view.live(),false);assert.equal(locate.live(),false);assert.notEqual(model.cam.cx,before);
+  model.pause(true);
+});
+test('drag release caps fling speed so the map remains controllable', () => {
+  const {MapModel}=require('../web/map-model.js');const model=new MapModel();
+  model.release(5000,5000);assert.ok(Math.hypot(model.vel.vx,model.vel.vy)<=700.001);
+});
+test('dense photo bodies win over a neighboring expanded click target', () => {
+  const {MapView}=require('../web/map-view.js');
+  const left={x:0,y:0,r:15,it:{d:{id:1}}},right={x:24.5,y:0,r:8,it:{d:{id:2}}};
+  const hit=MapView.prototype.pick.call({touch:false,displayMarks:{nodes:[left,right],groups:[]}},17,0);
+  assert.equal(hit.it.d.id,2);
+});
+test('panning during mode relocation prevents the late reply from flying the camera', async () => {
+  const {MapModel}=require('../web/map-model.js');let resolve;
+  const model=new MapModel({fetchJson:()=>new Promise(r=>resolve=r),reduced:true});model.setSize(1000,700);
+  model.selected={id:1,handle:'test',x:.5,y:.5};model.setMode('fit');model.pan(80,0);model.pause(true);
+  const center=model.cam.cx;
+  resolve({results:[{id:1,handle:'test',positions:{fit:{x:.9,y:.9}}}]});await Promise.resolve();await Promise.resolve();
+  assert.equal(model.cam.cx,center);assert.equal(model.flight,null);
 });
