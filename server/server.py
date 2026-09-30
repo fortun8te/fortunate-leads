@@ -3068,14 +3068,19 @@ def network_context(conn, pids, me=None):
     members_ready = db.get_setting(conn, 'map_seed_member_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6 and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
+    # Start with explicit feedback, then look up memberships. Driving this
+    # join by seed scans an entire audience for every fifty-person page.
+    # Unary + keeps the source filter out of the index lookup: fetch each
+    # marked person's memberships once, rather than seek once per source.
     for chunk in chunks(relevant):
         slots = ','.join('?' * len(chunk))
         membership = 'map_seed_member' if members_ready else 'current_edges'
         distinct = '' if members_ready else 'DISTINCT '
         for r in conn.execute(
                 f"SELECT e.seed, count({distinct}CASE WHEN m.status IN {POSITIVE_SQL} THEN e.person_id END), "
-                f"count({distinct}e.person_id) FROM {membership} e JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=e.person_id "
-                f"WHERE m.status IS NOT NULL AND e.seed IN ({slots}) GROUP BY e.seed", chunk):
+                f"count({distinct}e.person_id) FROM ({owner.feedback_marks_sql()}) m "
+                f"CROSS JOIN {membership} e ON e.person_id=m.person_id "
+                f"WHERE m.status IS NOT NULL AND +e.seed IN ({slots}) GROUP BY e.seed", chunk):
             yields[r[0]] = (r[1], r[2])
         good_handles.update(r[0] for r in conn.execute(
             f"SELECT p.handle FROM people p JOIN ({owner.feedback_marks_sql()}) m ON m.person_id=p.id "

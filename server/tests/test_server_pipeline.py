@@ -362,7 +362,7 @@ class PerfTest(Base):
         idx = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         self.assertTrue({'edges_person_seed', 'people_bio_at'} <= idx)
         self.assertNotIn('edges_person', idx)
-        self.assertEqual(self.conn.execute('PRAGMA temp_store').fetchone()[0], 2)   # MEMORY
+        self.assertEqual(self.conn.execute('PRAGMA temp_store').fetchone()[0], 1)   # FILE
 
     def test_tags_and_map_are_cached_until_data_changes(self):
         db.set_setting(self.conn, 'qualify', True)
