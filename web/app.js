@@ -2307,26 +2307,43 @@ function parseHandles(s) {
   return [...out];
 }
 let seedAdding = false;
+let seedAction = '';
 const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v);
 function syncSeed() {
   const n = parseHandles($('#seed-in').value).length;
-  $('#seed-n').textContent = n ? plural(n, 'account') : '';
-  $('#seed-add').disabled = seedAdding || !n || !seedDirs().length;
-  $('#seed-add').textContent = seedAdding ? 'Adding…' : 'Add to queue';
+  const directions = seedDirs();
+  $('#seed-n').textContent = n ? `${plural(n, 'profile')} · ${plural(n * directions.length, 'list')}` : '';
+  const unavailable = seedAdding || !n || !directions.length || !!S.scStale;
+  $('#seed-add').disabled = unavailable;
+  $('#seed-start').disabled = unavailable;
+  $('#seed-in').disabled = seedAdding;
+  $('#seed-add').textContent = seedAdding && seedAction === 'queue' ? 'Adding…' : 'Add to queue';
+  $('#seed-start').textContent = seedAdding && seedAction === 'start' ? 'Starting…' : 'Start collection';
+  $$('#seed-dir button').forEach(b => { b.disabled = seedAdding; b.setAttribute('aria-pressed', String(b.classList.contains('on'))); });
 }
 $('#seed-in').addEventListener('input', syncSeed);
 $('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); syncSeed(); } });
-$('#seed-add').onclick = async () => {
+async function submitSeed(start = false) {
   const handles = parseHandles($('#seed-in').value), directions = seedDirs();
-  if (seedAdding || !handles.length || !directions.length) return;
-  seedAdding = true; syncSeed();
+  if (seedAdding || S.scStale || !handles.length || !directions.length) return;
+  seedAdding = true; seedAction = start ? 'start' : 'queue'; syncSeed();
   try {
-    const r = await api.post('/api/scraper/seeds', { handles, directions });
-    toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued${S.sc?.paused ? '. Use Start scraping when ready.' : ''}` : 'Already queued') : 'Queued');
+    const r = await api.post(start ? '/api/start' : '/api/scraper/seeds', { handles, directions });
+    if (start && r.started !== true) {
+      $('#seed-feedback').textContent = 'Profiles are queued. Could not confirm collection started. Check status and try again.';
+      loadScraper(); return;
+    }
+    const message = start ? 'Collection is on. Waiting lists continue from saved progress.'
+      : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue. Collection controls are above.` : 'Those lists are already queued.';
+    $('#seed-feedback').textContent = message;
+    toast(message);
+    window.dispatchEvent(new Event('fl:control-changed'));
     $('#seed-in').value = ''; syncSeed(); loadScraper();
-  } catch (e) { toast("Couldn't queue. Try again."); }
-  finally { seedAdding = false; syncSeed(); }
-};
+  } catch (e) { $('#seed-feedback').textContent = start ? "Couldn't start collection. Your input is kept. Try again." : "Couldn't add these lists. Your input is kept. Try again."; }
+  finally { seedAdding = false; seedAction = ''; syncSeed(); }
+}
+$('#seed-add').onclick = () => submitSeed(false);
+$('#seed-start').onclick = () => submitSeed(true);
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
 const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
@@ -2527,8 +2544,12 @@ function collectionCoverageHTML(sc) {
   const stages = sc.stages || sc.control?.stages || [];
   const held = stages.find(stage => stage.wait?.scope === 'workspace');
   const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
+  const activity = sc.control?.collection;
   const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
-  const state = pausedByUser ? 'Paused by you' : held ? collectionReason(held.reason_code || held.wait?.why, 'Scraping is waiting') : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
+  const state = activity?.stopping ? 'Stopping. Waiting for the current request to finish'
+    : pausedByUser ? activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Stopped'
+    : held ? collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
+    : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
   const until = held?.wait?.until;
   const resumes = !pausedByUser && until && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.now()
     ? ` · Retries automatically at ${new Date(until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}. Progress is saved.` : '';
@@ -2543,6 +2564,7 @@ function collectionCoverageHTML(sc) {
 
 function renderAccounts() {
   renderScraper();
+  syncSeed();
   const sc = S.sc;
   const accs = sc?.accounts || [];
   const coverage = $('#acc-coverage');
@@ -2757,7 +2779,8 @@ function backgroundAIState(local = SET.localProcessing) {
   if (resources?.busy) return 'Running';
   if (local.state === 'waiting_for_mac' || resources?.allowed === false && (resources.recovering || resources.thermal_limited || resources.error)) return 'Waiting for Mac';
   if (!local.ready) return local.state === 'starting' ? 'Starting' : 'Unavailable';
-  return local.state === 'working' || resources?.retry_in > 0 ? 'Running' : 'Ready';
+  if (local.state === 'waiting' || resources?.retry_in > 0) return 'Waiting';
+  return local.state === 'working' ? 'Running' : 'Ready';
 }
 function backgroundAIControlsHTML() {
   const local = SET.localProcessing;

@@ -71,7 +71,7 @@ test('polling keeps each account Advanced state and focused control', () => {
   };
   const renderSource = source.slice(source.indexOf('function renderAccounts() {'), source.indexOf('\nasync function editAccount(', source.indexOf('function renderAccounts() {')));
   const context = vm.createContext({
-    $, document, renderScraper(){}, A: { starting: false, wiz: null, dismissed: false, renaming: null },
+    $, document, renderScraper(){}, syncSeed(){}, A: { starting: false, wiz: null, dismissed: false, renaming: null },
     S: { sc: { accounts: [{ lane_id: 'first', online: true }, { lane_id: 'second', online: true }], alerts: [], rate: { people_last_hour: 12 } }, scStale: false },
     accountRow: (account) => `<section data-lane="${account.lane_id}"></section>`,
     esc: String, int: String, accountAccess: view.accountAccess, collectionCoverageHTML: () => '',

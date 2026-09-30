@@ -60,9 +60,10 @@
 .collection-summary { display:flex; flex-wrap:wrap; gap:5px 18px; padding:10px 0; font-size:12px; color:var(--fg2); }
 .collection-summary b { font-weight:500; color:var(--fg); }
 .collection-targets { margin-top:4px; }
-.collection-targets #seed-panel .p-body { padding:12px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
-.collection-targets #seed-in { flex:1 1 240px; min-height:36px; height:36px; max-height:100px; }
-.collection-targets #seed-panel .row-flex { flex:0 1 auto; gap:8px; }
+.collection-targets #seed-panel .p-body { padding:16px; }
+.collection-targets #seed-in { width:100%; min-height:72px; height:72px; max-height:160px; }
+.collection-targets #seed-panel .row-flex { gap:10px; margin-top:12px; flex-wrap:wrap; }
+#seed-feedback { margin:10px 0 0; font-size:12px; line-height:1.5; }
 .collection-targets .tbl-wrap { max-height:none; overflow:visible; }
 .collection-targets .tbl { table-layout:fixed; }
 .collection-targets .tbl th:first-child { width:27%; }

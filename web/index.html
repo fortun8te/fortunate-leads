@@ -102,6 +102,9 @@
                   <select class="select" id="map-fit-filter"><option value="">Any fit</option><option value="good">Good or stronger</option><option value="strong">Strong only</option></select></label>
                 <label class="mv-f"><span class="mv-fl">Status</span>
                   <select class="select" id="map-status-filter"><option value="">Any status</option><option value="interested">Interested</option><option value="contacted">Contacted</option><option value="talking">Talking</option><option value="spoke_before">Spoke before</option><option value="client">Client</option><option value="no">Not a fit</option></select></label>
+                <label class="mv-f"><span class="mv-fl">Following</span>
+                  <select class="select" id="map-follow-filter"><option value="all">All people</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
+                <p class="mv-filter-note muted">Following is based on saved observations. Missing evidence stays unknown.</p>
                 <button type="button" class="btn ghost" id="map-filters-clear" hidden>Clear filters</button>
               </div>
             </details>
@@ -206,11 +209,13 @@
           <div class="p-body">
             <textarea class="input" id="seed-in" aria-label="Accounts to scrape, one handle per line" spellcheck="false" placeholder="@handle, one per line"></textarea>
             <div class="row-flex">
-              <div class="seg" id="seed-dir"><button data-v="followers" class="on">Their followers</button><button data-v="following" class="on">Who they follow</button></div>
+              <div class="seg" id="seed-dir" aria-label="Lists to collect"><button data-v="followers" class="on" aria-pressed="true">Followers</button><button data-v="following" class="on" aria-pressed="true">Following</button></div>
               <div class="grow"></div>
-              <span class="muted num" id="seed-n"></span>
-              <button class="btn solid" id="seed-add" disabled>Add</button>
+              <span class="muted num" id="seed-n" aria-live="polite"></span>
+              <button class="btn" id="seed-add" disabled>Add to queue</button>
+              <button class="btn solid" id="seed-start" disabled>Start collection</button>
             </div>
+            <p class="muted" id="seed-feedback" role="status">Choose the lists above. Stop keeps your saved progress.</p>
           </div>
         </div>
         <div class="panel grow-panel">
@@ -242,11 +247,11 @@
         <div class="alerts" id="acc-alerts"></div>
         <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
         <div class="panel wiz" id="wiz" hidden></div>
+        <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
         <div class="panel">
           <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
           <div id="acc-list"></div>
         </div>
-        <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
       </div>
     </section>
 
