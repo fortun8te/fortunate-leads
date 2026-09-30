@@ -175,7 +175,7 @@ const S = {
   f: emptyFilter(), sort: store.get('sort', 'fit'),
   tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null,
   rows: [], total: null, done: false, loading: false, error: false, gen: 0, nextOffset: 0, rev: null, stale: false,
-  cur: -1, open: null, person: null, seedCard: null,
+  cur: -1, open: null, person: null,
   tagMore: {}, tagFind: '',
   side: false, fmore: store.get('fmore', false),
 };
@@ -358,9 +358,8 @@ function setView(v) {
   syncTabs();
   if (v === 'map') M.show(); else if (prev === 'map') M.hide();
   if (v === 'leads' && prev !== 'leads') renderRows();
-  if (v !== 'map' && S.seedCard) { S.seedCard = null; if (!S.open) $('#detail').hidden = true; }
   // The detail panel belongs to Leads and Connections only; never carry it onto another page.
-  if (prev !== v && (S.open || S.seedCard) && (!work || narrow())) closeDetail();
+  if (prev !== v && S.open && (!work || narrow())) closeDetail();
   if (v === 'scraper') renderScraper();
   if (v === 'accounts') renderAccounts();
   if (v !== 'accounts' && A.wiz) closeWizard();
@@ -380,8 +379,6 @@ function filtersChanged(o = {}) {
   renderFilters(); renderTokens();
   resetLeads();
   loadFacets(); loadCounts();
-  M.stale = true; M.relayout = true;
-  if (S.view === 'map') M.reloadSoon();
 }
 function clearFilters() {
   S.f = emptyFilter(); $('#q').value = '';
@@ -1092,7 +1089,7 @@ function current() { return S.open ? S.person || S.rows.find((r) => r.id === S.o
 async function openDetail(id, { keyboard = false } = {}) {
   if (S.open && S.open !== id) noteQueue.flush(S.open).catch(() => {});
   detailAccess.open();
-  S.open = id; S.seedCard = null;
+  S.open = id;
   const base = S.rows.find((r) => r.id === id);
   const node = M.byId.get('p:' + id);
   S.person = base ? { ...base, loading: true } : node ? { id, handle: node.handle, name: node.name, followers: node.followers, lists: node.lists, status: node.status, tags: [], loading: true } : { id, loading: true, handle: '', tags: [] };
@@ -1131,7 +1128,7 @@ async function refreshPerson(id) {
 }
 function closeDetail() {
   if (S.open) noteQueue.flush(S.open).catch(() => {});
-  S.open = null; S.person = null; S.seedCard = null;
+  S.open = null; S.person = null;
   $('#detail').hidden = true;
   M.focus = null;
   renderRows(); M.resize();
@@ -1213,7 +1210,6 @@ $('#detail').addEventListener('click', (e) => {
 });
 function renderDetail() {
   rememberDetailView();
-  if (S.seedCard) return renderSeedCard();
   const p = S.person;
   if (!p) return;
   const v = p.verdict || {};
@@ -1286,8 +1282,6 @@ function renderDetail() {
       <h4 class="d-h2">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
       ${p.review_history?.length ? `<h4 class="d-h2">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? `, ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
     </details>`;
-  const sn = M.seeds?.find((x) => x.pid === p.id);
-  if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
   wireWorkflow(p);
   const mentionDrafts = store.get('note-mention-drafts', {});
   LeadNoteMentions.attach($('#note'), {
@@ -1300,7 +1294,6 @@ function renderDetail() {
 }
 $('#detail').addEventListener('click', async (e) => {
   if (e.target.closest('#d-close')) return closeDetail();
-  if (S.seedCard || e.target.closest('[data-sf],[data-only],[data-focus]')) return seedCardClick(e);
   const p = S.person;
   if (!p) return;
   const mentionedProfile = e.target.closest('[data-note-profile]');
@@ -1797,7 +1790,7 @@ document.addEventListener('keydown', (e) => {
     if (typing) { (document.activeElement || e.target).blur(); if (detailAccess.isModal()) detailAccess.focusInitial(); return; }
     if (detailAccess.isModal()) { closeDetail(); return; }
     if ($('#filters').classList.contains('show')) { setDrawer(false); return; }
-    if (S.open || S.seedCard) { closeDetail(); return; }
+    if (S.open) { closeDetail(); return; }
     if (S.view === 'map' && M.focus) { M.focus = null; M.draw(); return; }
     if (S.view === 'leads' && S.cur >= 0) { S.cur = -1; renderRows(); }
     return;
@@ -2023,7 +2016,7 @@ const T = {
   fixFilter(from, to) {
     for (const k of ['tags', 'any', 'not']) S.f[k] = S.f[k].map((t) => t === from ? to : t).filter(Boolean);
   },
-  after() { this.load(); this.loadRules(); loadFacets(); M.stale = true; resetLeads(true); },
+  after() { this.load(); this.loadRules(); loadFacets(); resetLeads(true); },
   renderRules() {
     const rs = this.rules;
     $('#rl-n').textContent = rs ? int(rs.length) : '';
@@ -3164,8 +3157,8 @@ $('#ql-list').addEventListener('click', (e) => {
 // The map lives in map-core.js, map-model.js, map-view.js and map-host.js.
 // M is the small surface the rest of this file uses; it waits for the view to attach.
 const M = {
-  impl: null, wantShown: false, stale: false, relayout: false,
-  get byId() { return new Map((this.impl?.model.scene.nodes || []).map((it) => ['p:' + it.d.id, it.d])); }, seeds: [], overlap: new Map(), nbr: new Map(),
+  impl: null, wantShown: false,
+  get byId() { return new Map((this.impl?.model.scene.nodes || []).map((it) => ['p:' + it.d.id, it.d])); },
   attach(impl) { this.impl = impl; if (this.wantShown) impl.show(); },
   show() { this.wantShown = true; this.impl?.show(); },
   hide() { this.wantShown = false; this.impl?.hide(); },
@@ -3176,53 +3169,15 @@ const M = {
   zoomBy(f) { this.impl?.zoomCentre(f); },
   get focus() { return this.impl?.model.selected || null; },
   set focus(v) { if (!v) this.impl?.model.deselect(); },
-  reloadSoon() {},
   load() { this.impl?.model.retry(); },
-  status() {},
 };
-function openSeed(n) {
-  if (S.open) noteQueue.flush(S.open).catch(() => {});
-  S.seedCard = n.id; S.open = null; S.person = null;
-  $('#detail').hidden = false;
-  renderSeedCard(); renderRows();
-}
-function renderSeedCard() {
-  const n = M.byId.get(S.seedCard);
-  if (!n) return;
-  $('#detail').innerHTML = `
-    <div class="d-head"><span class="av lg">${esc(initials(n.label))}</span>
-      <div class="who"><b>${n.is_me ? 'You · ' : ''}@${esc(n.label)}${String(n.label).includes('~') ? '' : igLink(n.label)}</b><span>${String(n.label).includes('~') ? 'Archived account identity' : n.is_me ? 'Your Instagram account' : 'Source account'}</span></div>
-      <button class="d-close" id="d-close" title="Close (esc)">&times;</button></div>
-    ${n.is_me ? '' : '<div class="d-sec"><span class="muted">Profile details appear after this account is read.</span></div>'}
-    ${seedBlock(n)}`;
-}
-// The seed part of a panel: shown alone for a seed without a person row, or under that person's own panel.
-function seedBlock(n) {
-  const ov = M.overlap.get(n.id) || [];
-  const mx = Math.max(1, ...ov.map((o) => o[1]));
-  const ls = (S.sc?.lists || []).filter((l) => l.seed === n.label);
-  const via = canonTag('via @' + n.label);
-  return `<div class="d-sec"><h4>${n.is_me ? 'Your account' : 'Seed'}: its lists on the map</h4><div class="d-stats"><div><b>${fmt(n.degree)}</b><span>People</span></div><div><b>${fmt(n.vis)}</b><span>On map</span></div><div><b>${ov.length}</b><span>Overlaps</span></div><div><b>${ls.filter((l) => l.state === 'done').length}/${ls.length || '–'}</b><span>Lists</span></div></div></div>
-    <div class="d-sec"><div class="d-links" style="margin-top:0">
-      ${via || n.is_me ? `<button class="btn solid" data-sf="${esc(via || 'follows you')}">Filter to ${n.is_me ? 'people who follow you' : '@' + esc(n.label)}</button>` : ''}
-      <button class="btn" data-only="${esc(n.label)}">People found via @${esc(n.label)}</button>
-      ${String(n.label).includes('~') ? '' : `<a class="btn" href="https://www.instagram.com/${encodeURIComponent(n.label)}/" target="_blank" rel="noopener">Instagram</a>`}</div></div>
-    ${ls.length ? `<div class="d-sec"><h4>Lists</h4><div class="ov">${ls.map((l) => `<span>${esc(ucf(l.direction))}</span><span class="num muted">${int(l.received)}${l.total ? '/' + int(l.total) : ''}</span><span class="state ${esc(l.state)}">${esc(ucf(l.state))}</span>`).join('')}</div></div>` : ''}
-    <div class="d-sec"><h4>Shared people</h4>${ov.length ? `<div class="ov">${ov.map(([id, s]) => `<button data-focus="${esc(id)}">@${esc(M.byId.get(id)?.label)}</button><span class="num">${int(s)}</span><span><span class="bar-p done"><i style="width:${(s / mx) * 100}%"></i></span></span>`).join('')}</div>` : '<span class="muted">None</span>'}</div>`;
-}
-function seedCardClick(e) {
-  const sf = e.target.closest('[data-sf]');
-  if (sf) { setMode(sf.dataset.sf, 'inc'); filtersChanged(); return; }
-  const only = e.target.closest('[data-only]');
-  if (only) { S.f.seed = only.dataset.only; filtersChanged(); return; }
-}
 window.addEventListener('connections-viewchange', () => {
   if (S.view === 'map') M.show();
 });
 // Server came back: refresh whatever the offline spell left stale or empty.
 function reconnected() {
   resetLeads(true); loadFacets(); loadCounts();
-  M.stale = true; if (S.view === 'map') M.load();
+  if (S.view === 'map') M.load();
   if (S.view === 'tags') T.show();
   if (S.open) refreshPerson(S.open);
 }
