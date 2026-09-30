@@ -1,0 +1,51 @@
+{
+  "prepare_seconds": 50.68803575000493,
+  "ready": true,
+  "pages": [
+    {
+      "sort": "fit",
+      "offset": 0,
+      "ms": [
+        3664.0573749900796,
+        470.6560000195168,
+        440.4580830014311
+      ],
+      "total": 9983333,
+      "rows": 50
+    },
+    {
+      "sort": "fit",
+      "offset": 50,
+      "ms": [
+        562.1385839767754,
+        438.57366702286527,
+        448.4535420197062
+      ],
+      "total": 9983333,
+      "rows": 50
+    },
+    {
+      "sort": "score",
+      "offset": 0,
+      "ms": [
+        619.6418749750592,
+        2060.4544579982758,
+        1044.9055419885553
+      ],
+      "total": 9983333,
+      "rows": 50
+    },
+    {
+      "sort": "score",
+      "offset": 50,
+      "ms": [
+        523.0398330022581,
+        417.12424997240305,
+        442.0386250130832
+      ],
+      "total": 9983333,
+      "rows": 50
+    }
+  ],
+  "scope_note": "Synthetic 10,000,001-person copy. Preparation followed the completed default map build; OS disk cache was not flushed. Three samples per page."
+}

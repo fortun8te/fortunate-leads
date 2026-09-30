@@ -1,0 +1,22 @@
+{
+  "stage": "build",
+  "path": "synthetic-10m/synthetic.sqlite",
+  "requested_people": 10000001,
+  "layout_schema": 4,
+  "layout_source_sha256": "4bcdf5c4a22a699f3e287801e6a0b4e5b887d658055ccdaf9bbecee37e2837ee",
+  "build": {
+    "seconds": 1354.02,
+    "modes": [
+      {
+        "mode": "closeness",
+        "people": 10000001,
+        "seconds": 1354.01
+      }
+    ]
+  },
+  "elapsed_seconds": 1355.84,
+  "peak_rss_bytes": 485900288,
+  "disk_bytes": 8490396294,
+  "disk_free_bytes": 23312384000,
+  "scope_note": "Current schema-4 default geometry; fixture includes all people with graph membership. The later zero-edge inclusion fix does not alter this fixture. Other modes were not built."
+}

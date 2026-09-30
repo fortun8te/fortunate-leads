@@ -1,0 +1,10 @@
+{
+  "stage": "fixture",
+  "requested_people": 10000001,
+  "fixture_seconds": 914.95,
+  "elapsed_seconds": 914.95,
+  "peak_rss_bytes": 359710720,
+  "disk_bytes": 7116361728,
+  "disk_free_bytes": 32824508416,
+  "note": "Streaming synthetic generation with real schema summaries; layout and request results measured separately."
+}

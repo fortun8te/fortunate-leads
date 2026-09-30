@@ -34,8 +34,8 @@ and honest missing-layout states.
 
 ## Limits still to measure
 
-10-million-person build cost, disk use, peak memory, dense identical-rank cases, rare filter classes,
-and ongoing collection under maintenance have not been measured. Prefix handle search uses an index;
+Other layout modes at ten million, broader dense identical-rank distributions, rare filter classes,
+and ongoing collection under maintenance still need separate measurement. Prefix handle search uses an index;
 name and substring search deliberately covers a bounded engaged/top-ranked population. Layouts need
 an explicit first build. No request starts collection or a full layout rebuild.
 
@@ -78,18 +78,62 @@ Equal-rank cases do not scan/sort the whole population in the whole-world reques
 
 ### Ten-million run and reproduction
 
-A **10,000,001-person** fixture run was started and remained in progress at this checkpoint.
-**A completed 10-million build/request benchmark is not yet available.** No 10-million smoothness
-claim follows from the million-person results. The benchmark checks for at least 8 GiB free before
-loading batches and preserves its generated database so stages can run in separate processes.
+The current schema-4 **default owner-centred layout** completed on **10,000,001 actual synthetic
+people**, 11,628,537 edges and 11,609,490 distinct source memberships. Fixture generation took
+914.95 seconds. Default layout preparation took **1,354.02 seconds (22.6 minutes)**, with peak RSS
+**485,900,288 bytes (463 MiB)**. This includes the first build, not ongoing interactive work.
+Only the default mode was built at this size; the other three modes remain unverified at ten million.
+The fixture includes all profiles with graph membership, so the subsequent zero-edge inclusion fix
+does not change its layout rows. Raw evidence retains the build and request source hashes.
+
+A separate current-code request process peaked at **348,651,520 bytes (333 MiB)**. Source, default
+layout and prepared lead indexes occupied **9,088,486,631 bytes (8.46 GiB)**. These are retained
+file sizes and per-process RSS, not free disk requirements or whole-machine memory guarantees.
+The benchmark checks for at least 8 GiB free before loading fixture batches and preserves its database.
+
+| Current default case | First sample (ms) | Later four samples (ms) | People / aggregate bubbles | Bytes |
+| --- | ---: | --- | ---: | ---: |
+| Whole world | 442.24 | 5.07–6.05 | 600 / 20 | 110,131 |
+| Qualified | 231.44 | 4.99–7.05 | 600 / 20 | 106,500 |
+| Clients | 6.14 | 5.48–7.80 | 600 / 4 | 108,509 |
+| Zoom | 479.83 | 8.64–10.77 | 600 / 10 | 105,343 |
+| Pan | 266.46 | 12.87–14.05 | 600 / 4 | 105,005 |
+| Maximum budget | 286.56 | 13.73–14.50 | 1,500 / 20 | 270,159 |
+| Qualified zoom | 523.95 | 133.45–141.05 | 600 / 41 | 108,480 |
+| Client zoom | 243.76 | 133.72–143.48 | 600 / 9 | 108,742 |
+
+All responses were ready, met their individual-person budget, and had aggregate counts equal to
+hidden people. Whole-world matching count was 9,983,334, including the owner; the lead list excludes
+the owner and has 9,983,333 open leads. Requests bypassed the application response cache, but the
+operating-system disk cache was not flushed. These are repeated local samples, not worst-case bounds.
+
+Indexed lead preparation took **50.69 seconds**. Current request-process Score pages took
+**1,505 / 554 ms** (offsets 0 / 50), and Fit pages **628 / 620 ms**. Independent arithmetic fixture
+oracles verified both first 100 orderings and exact total. The separate three-repeat page run had
+Fit first-page samples 3,664 / 471 / 440 ms and Score 620 / 2,060 / 1,045 ms, demonstrating disk-cache
+variation. Unfiltered count computation took 2.23 ms initially and 0.10–0.13 ms afterward.
+
+**Whole-app smoothness is not established at ten million.** Direct uncached tag facets took
+**17,276 ms initially**, then **1,290–2,245 ms**. Prefix search took 1,447 ms in its first sample;
+name search covered its documented bounded population and took 37 ms. The synthetic profile rows
+have no bios or manual tags; one million qualification rows contribute projected fit facets. Broader
+profile/tag density and live collection need their own tests. Browser drawing is measured separately
+on the actual-data copy below, not inferred from database timings.
+
+Retained evidence: [fixture](benchmarks/map-10m-fixture.json),
+[default layout build](benchmarks/map-10m-build.json),
+[current API requests](benchmarks/map-10m-requests.json), and
+[index preparation and repeated lead pages](benchmarks/leads-10m-indexed.json).
 
 ```sh
 FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-1m --people 1000001 --stage all
 FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-10m --people 10000001 --stage fixture
-FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-10m --stage build
-FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-10m --stage requests
+FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-10m --people 10000001 --stage build --modes closeness
+FL_NO_ORSLOT=1 python3 tests/bench_map_large.py --directory /tmp/fortunate-scale-10m --people 10000001 --stage requests
 ```
 
+Prepare the synthetic lead projection between build and requests with
+`python3 server/lead_rank.py --db /tmp/fortunate-scale-10m/synthetic.sqlite`.
 Each stage writes its JSON results beside the synthetic database. Request validation includes
 whole-world, zoom, pan, maximum budget, fit/client filters, search and two lead pages. Remove the
 synthetic directory explicitly when the evidence is no longer needed; the benchmark never deletes

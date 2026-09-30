@@ -1,0 +1,230 @@
+{
+  "stage": "requests",
+  "path": "synthetic-10m/synthetic.sqlite",
+  "requested_people": 10000001,
+  "layout_schema": 4,
+  "layout_source_sha256": "77be4ce3bcbe2e76cc77e3179c2283d91c0b4daca54006c5adffc26c747545c7",
+  "requests": {
+    "counts": {
+      "people": 10000001,
+      "edges": 11628537,
+      "map_seed_member": 11609490
+    },
+    "closeness": {
+      "world": {
+        "samples_ms": [
+          442.24,
+          6.05,
+          5.6,
+          5.55,
+          5.07
+        ],
+        "bytes": 110131,
+        "nodes": 600,
+        "groups": 20,
+        "total": 9983334,
+        "hidden": 9982734
+      },
+      "qualified": {
+        "samples_ms": [
+          231.44,
+          7.05,
+          6.74,
+          4.99,
+          6.03
+        ],
+        "bytes": 106500,
+        "nodes": 600,
+        "groups": 20,
+        "total": 276238,
+        "hidden": 275638
+      },
+      "clients": {
+        "samples_ms": [
+          6.14,
+          7.09,
+          7.8,
+          6.38,
+          5.48
+        ],
+        "bytes": 108509,
+        "nodes": 600,
+        "groups": 4,
+        "total": 16666,
+        "hidden": 16066
+      },
+      "zoom": {
+        "samples_ms": [
+          479.83,
+          10.62,
+          8.64,
+          9.53,
+          10.77
+        ],
+        "bytes": 105343,
+        "nodes": 600,
+        "groups": 10,
+        "total": 50845,
+        "hidden": 50245
+      },
+      "pan": {
+        "samples_ms": [
+          266.46,
+          14.05,
+          12.93,
+          12.87,
+          13.56
+        ],
+        "bytes": 105005,
+        "nodes": 600,
+        "groups": 4,
+        "total": 6220,
+        "hidden": 5620
+      },
+      "maximum": {
+        "samples_ms": [
+          286.56,
+          13.92,
+          14.5,
+          13.73,
+          14.22
+        ],
+        "bytes": 270159,
+        "nodes": 1500,
+        "groups": 20,
+        "total": 9983334,
+        "hidden": 9981834
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          523.95,
+          134.44,
+          141.05,
+          137.01,
+          133.45
+        ],
+        "bytes": 108480,
+        "nodes": 600,
+        "groups": 41,
+        "total": 35097,
+        "hidden": 34497
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          243.76,
+          133.72,
+          135.18,
+          134.27,
+          143.48
+        ],
+        "bytes": 108742,
+        "nodes": 600,
+        "groups": 9,
+        "total": 7049,
+        "hidden": 6449
+      }
+    },
+    "leads": {
+      "0": {
+        "milliseconds": 1505.1,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 554.27,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "leads_fit": {
+      "0": {
+        "milliseconds": 628.25,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 620.41,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "initial_view": {
+      "tag_facets": {
+        "samples_ms": [
+          17276.23,
+          2244.96,
+          1299.06,
+          1290.12,
+          1305.63
+        ],
+        "payload": [
+          {
+            "tag": "Fit: strong",
+            "grp": "signal",
+            "source": "auto",
+            "count": 276238,
+            "total": 276238
+          },
+          {
+            "tag": "Fit: good",
+            "grp": "signal",
+            "source": "auto",
+            "count": 222770,
+            "total": 222770
+          }
+        ]
+      },
+      "counts": {
+        "samples_ms": [
+          2.23,
+          0.13,
+          0.1,
+          0.1,
+          0.1
+        ],
+        "payload": {
+          "hot": 0,
+          "warm": 0,
+          "cold": 0,
+          "unread": 9000003,
+          "interested": 16667,
+          "contacted": 16667,
+          "talking": 16667,
+          "spoke_before": 16666,
+          "client": 16666,
+          "no": 16667,
+          "none": 9900000,
+          "open": 9983333,
+          "maybe": 983330,
+          "total": 10000001,
+          "with_bio": 0
+        }
+      }
+    },
+    "search_user000123": {
+      "milliseconds": 1446.61,
+      "results": 20
+    },
+    "search_Person 123": {
+      "milliseconds": 36.51,
+      "results": 20
+    },
+    "search_src00": {
+      "milliseconds": 27.68,
+      "results": 1
+    }
+  },
+  "elapsed_seconds": 44.99,
+  "peak_rss_bytes": 348651520,
+  "disk_bytes": 9088486631,
+  "disk_free_bytes": 25086681088,
+  "scope_note": "Current default layout only; uncached application requests, OS page cache not flushed. Synthetic profiles contain no bios or stored manual tags; qualification contributes projected tags."
+}
