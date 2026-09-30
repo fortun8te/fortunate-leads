@@ -111,3 +111,15 @@ test('unprepared spatial layout still offers bounded honest ranked overview', as
   assert.equal(model.scene.nodes[0].d.closeness, null);
   assert.equal(model.kFor(model.scene.nodes[0].d), 1, 'overview search should keep context at large totals');
 });
+
+// Real API search places coordinates inside positions, unlike the demo world.
+test('real search positions and numeric fit survive the API boundary', async () => {
+  const model = new MapModel({ fetchJson: async () => ({ results: [{ id: 3, handle: 'source', fit: 81, positions: { closeness: { x: .3, y: .2, rank: .9 }, fit: { x: .8, y: .7, rank: .8 } } }] }) });
+  const rows = await model.searchPeople('source');
+  assert.equal(rows.length, 1); assert.equal(rows[0].x, .3); assert.equal(rows[0].fit, 'strong');
+  model.mode = 'fit';
+  const other = await model.searchPeople('source'); assert.equal(other[0].x, .8);
+  assert.equal(cleanNode(person(1, { fit: 45 })).fit, 'good');
+  assert.equal(cleanNode(person(1, { fit: 44 })).fit, 'weak');
+  assert.equal(cleanNode(person(1, { fit: null })).fit, 'unread');
+});

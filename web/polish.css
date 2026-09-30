@@ -43,11 +43,9 @@ textarea { min-height: 32px; }
 .seg button::after { content: ""; position: absolute; inset: -3px 0; }
 .seg button::after { content: none; }
 summary { align-content: center; }
-#pane-map .map-search { min-height: 34px; }
 @media (max-width: 760px) {
   button:not(.tag):not(.tchip):not(.tok):not(.ck), summary, select, .toggle,
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 44px !important; }
-  #pane-map .map-search { min-height: 44px; }
 
 }
 

@@ -12,9 +12,11 @@
 
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
   // Trust the shape, not the server: keep only people with a place on the map.
-  function cleanNode(n) {
+  function cleanNode(n, mode) {
+    const position = n?.positions?.[mode];
+    if (position) n = { ...n, ...position };
     if (!n || n.id == null || n.x == null || n.y == null || !finite(+n.x) || !finite(+n.y)) return null;
-    return { ...n, x: +n.x, y: +n.y, rank: finite(+n.rank) ? +n.rank : 0, fit: FITS.includes(n.fit) ? n.fit : 'unread', closeness: n.closeness != null && finite(+n.closeness) ? +n.closeness : null, handle: String(n.handle || n.id), name: n.name ? String(n.name) : '', status: n.status || null };
+    return { ...n, x: +n.x, y: +n.y, rank: finite(+n.rank) ? +n.rank : 0, fit: FITS.includes(n.fit) ? n.fit : finite(n.fit) ? (n.fit >= 70 ? 'strong' : n.fit >= 45 ? 'good' : 'weak') : 'unread', closeness: n.closeness != null && finite(+n.closeness) ? +n.closeness : null, handle: String(n.handle || n.id), name: n.name ? String(n.name) : '', status: n.status || null };
   }
   function cleanCluster(c) {
     if (!c || c.id == null || c.x == null || c.y == null || !finite(+c.x) || !finite(+c.y) || !(+c.count > 0)) return null;
@@ -157,7 +159,7 @@
       try {
         const r = await this.fetchJson(`/api/map/search?q=${encodeURIComponent(person.handle)}&mode=${mode}`, { signal: ticket.signal });
         if (!ticket.live() || mode !== this.mode) return;
-        const hit = (r.results || []).map(cleanNode).find((n) => n && String(n.id) === String(person.id));
+        const hit = (r.results || []).map(n => cleanNode(n, mode)).find((n) => n && String(n.id) === String(person.id));
         if (hit) { this.selected = { ...person, ...hit }; this.scene.pin(this.selected); const t = { cx: hit.x, cy: hit.y, k }; this.flyTo(t, 560); this.load({ cam: t }); this.emit('selection'); this.loadEdges(this.selected); return; }
       } catch (_) { /* fall through to the whole map */ }
       if (!ticket.live() || mode !== this.mode) return;
@@ -238,7 +240,7 @@
       if (!q) return [];
       const r = await this.fetchJson(this.fallback ? '/api/map?limit=400&scope=' + encodeURIComponent(this.scope) + '&q=' + encodeURIComponent(q) : `/api/map/search?q=${encodeURIComponent(q)}&mode=${this.mode}`, { signal: ticket.signal });
       if (!ticket.live()) return null;
-      return (this.fallback ? overview(r).nodes : r.results || []).map(cleanNode).filter(Boolean);
+      return (this.fallback ? overview(r).nodes : r.results || []).map(n => cleanNode(n, this.mode)).filter(Boolean);
     }
     // Where to zoom so this person shows as an individual: enough that the server's budget covers the area.
     kFor(n) { if (this.fallback) return Math.max(1, Math.min(this.cam.k, 4)); return clamp(Math.max(this.cam.k, Math.sqrt(Math.max(1, this.total) / Math.max(1, this.budget / 2.2)) * 1.1), 1, K_MAX); }

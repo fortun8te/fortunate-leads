@@ -132,37 +132,12 @@
 .settings-page .settings-setup .sg { grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); }
 @media (max-width: 900px) { .settings-page .sg { grid-template-columns: minmax(0, 1fr); } }
 
-/* ---------- Map: real loading, offline and empty states ---------- */
-.map-state {
-  position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: var(--s2); padding: var(--s6); text-align: center; pointer-events: none;
-}
-.map-state b { font-size: var(--fs-title); line-height: 24px; font-weight: 600; }
-.map-state p { max-width: 32ch; color: var(--fg3); font-size: var(--fs-body); line-height: var(--lh-body); }
-.map-state .btn { margin-top: var(--s2); pointer-events: auto; }
-.map-spin { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line3); border-top-color: var(--fg2); animation: map-spin .9s linear infinite; }
-@keyframes map-spin { to { transform: rotate(360deg); } }
-.map-state[data-kind="error"] b::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: var(--s2); border-radius: 1px; background: var(--fg); transform: rotate(45deg) translateY(-1px); }
-#pane-map .map-density { z-index: 3; }
-#pane-map .stage > .map-density select { padding-right: 24px; }
-.zoom button { border-color: var(--line2); background: var(--bg1); }
-@media (prefers-reduced-motion: reduce) { .map-spin { animation: none; border-top-color: var(--line3); } }
 
 /* ---------- Motion: restrained ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
 
-/* Map toolbar and footer controls */
-#pane-map .stage > .map-density select { width: 136px; min-width: 136px; max-width: none; padding: 0 var(--s2) 0 var(--s3); }
-#pane-map #map-count { left: 160px; bottom: 18px; font-size: var(--fs-cap); }
 @media (max-width: 640px) {
-  #pane-map .map-density select { width: 120px; min-width: 120px; max-width: none; }
-  #pane-map #map-count { left: 152px; }
   #pane-map #connections-toggle { font-size: var(--fs-body); margin: 0; }
-  #pane-map .map-toolbar .relationship-filter { flex: 1 1 100%; width: 100%; }
-  #pane-map .map-toolbar { flex-wrap: wrap; gap: var(--s2); padding: var(--s2) var(--s3); }
-  #pane-map .map-toolbar .map-search { flex: 1 1 100%; order: -1; }
-  #pane-map .map-toolbar > .btn, #pane-map .map-toolbar > details, #pane-map .map-toolbar > select { flex: 1 1 auto; }
-  #pane-map .map-toolbar #map-fit, #pane-map .map-toolbar #map-me { flex: 0 0 44px; justify-content: center; }
 }

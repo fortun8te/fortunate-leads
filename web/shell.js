@@ -32,6 +32,4 @@
   window.addEventListener('resize', () => { if (nav.classList.contains('more-open')) set(false); });
   new MutationObserver(sync).observe(nav, { attributes: true, subtree: true, attributeFilter: ['class'] });
   sync();
-  // Map load failures get a real retry, not a line of canvas text.
-  document.addEventListener('click', (e) => { if (e.target.closest('#map-retry') && typeof M !== 'undefined') { M.status('Loading'); M.load(); } });
 })();
