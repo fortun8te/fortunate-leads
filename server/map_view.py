@@ -684,9 +684,11 @@ def _index_for(conn, db_path):
     with reader(db_path, 'closeness') as store:
         if store is None:
             return []
-        ids = [r[0] for r in store.conn.execute('SELECT id FROM rtk LIMIT ?', (SEARCH_POOL_KNOWN,))]
+        engaged_mask = class_mask('status', 'all', None, None) & ~sum(1 << (direction * 64) for direction in FOLLOW_FILTERS['all'])
+        ids = [r[0] for r in store.conn.execute('SELECT person_id FROM mp WHERE ' + _class_sql(engaged_mask) +
+                                              ' LIMIT ?', (SEARCH_POOL_KNOWN,))]
         total = sum((store.meta('counts', {}) or {}).values())
-        top = top_ranked(store, (0.0, 0.0, 1.0, 1.0), 1 | ((1 << 56) - 2), min(SEARCH_POOL_TOP, total), 1.0)
+        top = top_ranked(store, (0.0, 0.0, 1.0, 1.0), class_mask('status', 'all', None, None), min(SEARCH_POOL_TOP, total), 1.0)
         ids.extend(r[0] for r in top)
     ids = list(dict.fromkeys(ids))
     entries = []

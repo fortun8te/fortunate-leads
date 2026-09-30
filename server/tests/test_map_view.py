@@ -209,6 +209,7 @@ class MapViewTests(unittest.TestCase):
         # snapshot; legacy edges and never-collected profiles remain unknown.
         conn.execute("UPDATE edge_evidence SET active=0 WHERE seed='owner' AND direction='following' AND person_id IN(5,7)")
         db.add_edge(conn, 'owner', 6, 'following', observed=False)
+        conn.execute("UPDATE people SET name='Distinct owner follow' WHERE id=2")
         conn.commit(); ML.build(path, modes=('closeness',))
         expected = {'following': {2,4}, 'followers': {3,4,7}, 'mutual': {4},
                     'not_following': {5,7}, 'unknown': {1,3,6,8}, 'all': set(range(1,9))}
@@ -221,6 +222,10 @@ class MapViewTests(unittest.TestCase):
                 if node['id'] in (5,7): self.assertEqual(node['following_evidence'], 'absent')
                 if node['id'] in (1,3,6,8): self.assertEqual(node['following_evidence'], 'unknown')
                 if node['id'] == 2: self.assertEqual(node['pic'], '/img/2')
+        found = MV.search(conn, path, {'q':['Distinct owner follow']})['results']
+        self.assertEqual([person['id'] for person in found], [2])
+        self.assertEqual(found[0]['pic'], '/img/2')
+        self.assertTrue(found[0]['followed'])
         # A later positive observation wins over the dated negative. Source case
         # differences and an inactive incoming direction cannot invert that fact.
         db.add_edge(conn, 'OWNER', 5, 'following', ts='2099-01-01T00:00:00+00:00')
