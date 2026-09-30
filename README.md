@@ -14,6 +14,4 @@ AI qualification.
 - Feature research and scope decisions: [docs/FEATURE_RESEARCH.md](docs/FEATURE_RESEARCH.md)
 - UI polish research, comparisons and checks: [docs/UI-POLISH.md](docs/UI-POLISH.md)
 
-```sh
-python3 server/server.py    # then open http://127.0.0.1:8777
-```
+New Mac: `ops/install.sh`, then follow Get started in the web app. By hand: `python3 server/server.py` and open http://127.0.0.1:8777.

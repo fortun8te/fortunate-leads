@@ -4,6 +4,25 @@ Fortunate Leads runs on one Mac: a local Python server (the database and the web
 http://127.0.0.1:8777) and a Chrome extension in one Chrome profile per Instagram account. The extension
 reads lists and can read bios from a logged-in tab; the server decides what to fetch next.
 
+## New Mac: three steps
+
+1. **Get the code.** Needs macOS, Google Chrome and git (Python 3.9+ is already on a Mac with the Command Line Tools).
+   ```sh
+   git clone https://github.com/fortun8te/fortunate-leads.git ~/fortunate-leads
+   ```
+2. **Run the installer.** It sets up the server at login, a daily backup and a health check, then opens the web app.
+   ```sh
+   ~/fortunate-leads/ops/install.sh
+   ```
+   Safe to re-run. Later, double-click `ops/start-all.command` to start everything (it runs the installer first if needed).
+3. **Follow Get started in the web app.** It checks the server, the extension in each Chrome profile, the Instagram
+   login, optional AI keys and backups, and gives one action per item. Load the extension once per profile
+   (`chrome://extensions`, Developer mode, Load unpacked, the `extension` folder; the installer copies the path),
+   log in to instagram.com there, then paste an account handle and press Start. Lists and bios collect at the safe
+   pace and leads rank as they arrive. Get started disappears from the sidebar once everything is in place.
+
+The sections below are the detail behind those steps.
+
 ## 1. Prerequisites
 
 - macOS with Google Chrome.
