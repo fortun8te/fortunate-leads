@@ -36,7 +36,7 @@ function mount() {
     document: { addEventListener: (_, fn) => { handler = fn; }, documentElement: { dataset: { density: 'comfortable' } } },
     $: selector => nodes[selector],
     S: { view: 'map', person: { id: 123, handle: 'overview_person', status: null } },
-    M: { fit: record('fit'), zoomBy: record('zoom'), toggleLabels: record('labels'), next: record('next') },
+    M: { focus: { id: 123, handle: 'overview_person', status: null }, fit: record('fit'), zoomBy: record('zoom'), toggleLabels: record('labels'), next: record('next') },
     gPending: 0, CYCLE: [null, 'saved'], STATUSES: ['saved', 'contacted', 'replied', 'done', 'skipped'],
     mark: record('mark'), window: { open: record('open') }, applyDensity: record('density'),
     location, hashFor: view => '#/' + view,
@@ -64,7 +64,7 @@ test('returning to overview restores navigation and actions for its selected per
   assert.deepEqual(ui.effects, [
     ['mark', 123, 'saved'], ['mark', 123, null], ['mark', 123, 'contacted'],
     ['open', 'https://www.instagram.com/overview_person/', '_blank', 'noopener'],
-    ['tag-focus'], ['fit'], ['zoom', 1.4], ['zoom', 1 / 1.4]
+    ['fit'], ['zoom', 1.4], ['zoom', 1 / 1.4]
   ]);
 });
 
