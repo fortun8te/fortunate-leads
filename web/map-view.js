@@ -80,10 +80,8 @@
       const dpr = Math.min(root.devicePixelRatio || 1, 2), cam = this.model.cam;
       const narrow = root.matchMedia('(max-width: 760px)').matches, sheet = this.r.card.hidden || !narrow ? 0 : this.r.card.offsetHeight;
       if (w === cam.w && h === cam.h && dpr === this.dpr && cam.inset.bottom === sheet && !first) return;
-      const keep = cam.toWorld(0, 0), had = this.sized;
       this.dpr = dpr; this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr);
       this.model.setSize(w, h);
-      if (had) cam.lock(keep[0], keep[1], 0, 0, cam.k);
       this.sized = true;
       const priorSheet = cam.inset.bottom;
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
