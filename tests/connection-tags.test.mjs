@@ -41,6 +41,7 @@ function mount(tags = [mention]) {
   vm.runInContext(section('const TOP_TAGS =', 'function tagChip('), context);
   vm.runInContext(section('function tagLabel(', 'function whyHTML('), context);
   vm.runInContext(section('let sugg =', 'function moveSuggest'), context);
+  vm.runInContext(section('function leadConnectionLines(', 'function rowHTML('), context);
   vm.runInContext(section('function renderDetail()', "$('#detail').addEventListener('click', async"), context);
   return { context, person, suggestions, detail, renderedTags };
 }

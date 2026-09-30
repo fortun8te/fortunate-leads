@@ -13,7 +13,7 @@ test('list directions distinguish followers, following and mutual observations',
   assert.deepEqual(lines({connection_edges: [
     {seed:'alice',direction:'followers'}, {seed:'bob',direction:'following'},
     {seed:'mutual',direction:'followers'}, {seed:'mutual',direction:'following'},
-  ]}), ['Follows @alice', '@bob follows them', 'Mutual with @mutual']);
+  ]}), ['Follows @alice', '@bob follows them', 'They and @mutual follow each other']);
 });
 test('owner evidence takes precedence without inventing a path through another seed', () => {
   assert.deepEqual(lines({relationship_owner:'michael',connection_edges:[

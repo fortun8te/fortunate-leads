@@ -983,7 +983,7 @@ function leadConnectionLines(r) {
   }
   const lines = [...bySeed.values()].sort((a, b) => Number(b.seed.toLowerCase() === owner) - Number(a.seed.toLowerCase() === owner) || a.seed.localeCompare(b.seed)).map(({ seed, dirs }) => {
     const isYou = seed.toLowerCase() === owner;
-    if (dirs.size === 2) return isYou ? 'You follow each other' : 'Mutual with @' + seed;
+    if (dirs.size === 2) return isYou ? 'You follow each other' : 'They and @' + seed + ' follow each other';
     if (dirs.has('followers')) return isYou ? 'Follows you' : 'Follows @' + seed;
     return isYou ? 'You follow them' : '@' + seed + ' follows them';
   });
