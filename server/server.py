@@ -43,6 +43,7 @@ import owner_relationships  # noqa: E402
 import tag_projection  # noqa: E402
 import owner_notes  # noqa: E402
 import engine_start  # noqa: E402
+import browser_startup  # noqa: E402
 import onboarding  # noqa: E402
 import processing_modes  # noqa: E402
 import processing_state  # noqa: E402
@@ -2716,6 +2717,8 @@ def api_control_set(conn, q, b):
         raise
     if b.get('stage') in ('ai', 'all'):
         schedule_local_services(conn)
+    if b.get('action') in ('resume', 'start_all') and b.get('stage') != 'ai':
+        browser_startup.schedule(ROOT, conn)
     return api_control(conn, q, b)
 
 
@@ -4365,6 +4368,7 @@ def main():
     conn.commit()
     retag_if_changed(conn)
     refresh_laya_prefilter_if_changed(conn)
+    browser_startup.schedule(ROOT, conn)
     conn.close()
     start_workers(threading.Event())
     print(f'Fortunate Leads on http://127.0.0.1:{a.port}  db={CFG["db"]}', flush=True)

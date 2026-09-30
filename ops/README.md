@@ -1,9 +1,30 @@
 # ops quickstart (macOS)
 
 After the one-time service install below, double-click `ops/start-all.command` to
-start the server, Laya, the Michael/BOT/BOT2 Chrome profiles, and the saved work
-stages. External AI scoring resumes only when local-only mode is off; it may use paid provider calls. Instagram
-login holds and cooldowns still apply; the Accounts page shows them.
+start the server and reconcile local models with their saved settings. Collection
+and AI modes retain their separate saved pause states.
+
+Background Chrome startup is opt-in. Once each extension has reported its actual
+Instagram account, bind its lane to the Chrome profile where you verified that
+account is signed in:
+
+```sh
+python3 ops/configure-browser-startup.py --profile 'Profile 2=VERIFIED_LANE_ID' --profile 'Profile 5=SECOND_VERIFIED_LANE_ID'
+python3 ops/configure-browser-startup.py --disable
+```
+
+Bindings stay private in `data/browser-startup.json`; no cookies or credentials are
+copied. The server at login, the local launcher, and an explicit collection Resume
+reopen only those profiles, only for unpaused collection. Chrome loads them without
+a foreground window. The extension then reuses its Instagram tab or opens an
+inactive/minimized one under the existing request gate. Authentication, challenges,
+account budgets and cooldowns remain enforced. The Accounts page's live heartbeat
+is the readiness check; launching Chrome does not confirm an Instagram login.
+
+There is no browser watchdog: closing Chrome leaves it closed until the next
+explicit start/resume or server startup. Stop is checked before each profile launch;
+repeated starts within a minute do not dispatch the same profile again. An account
+whose recorded Instagram identity has changed must be explicitly rebound.
 
 ```sh
 ops/install.sh                             # new Mac: server + daily backup + health check, then opens the web app

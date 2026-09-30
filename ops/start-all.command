@@ -45,12 +45,18 @@ else
 fi
 
 # Reconcile each engine independently against current saved intent.
-"$FL_PYTHON" - "$FL_REPO" "$FL_DB" <<'PYENGINES'
+"$FL_PYTHON" - "$FL_REPO" "$FL_DB" "$OPEN_DASHBOARD" <<'PYENGINES'
 import sqlite3, sys
 sys.path.insert(0, sys.argv[1] + '/server')
 import engine_start
+import browser_startup
 with sqlite3.connect('file:' + sys.argv[2] + '?mode=ro', uri=True) as conn:
     engine_start.reconcile_models(sys.argv[1], conn)
+# Reopening saved browsers is opt-in and follows saved collection pause state.
+if sys.argv[3] == '1':
+    with sqlite3.connect(sys.argv[2]) as conn:
+        conn.row_factory = sqlite3.Row
+        browser_startup.launch_saved(sys.argv[1], conn)
 PYENGINES
 
 if [ "$OPEN_DASHBOARD" -eq 1 ]; then
