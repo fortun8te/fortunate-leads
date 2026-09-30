@@ -50,6 +50,42 @@ class MapViewTests(unittest.TestCase):
                 self.assertEqual(sum(b['count'] for b in result['clusters']), result['hidden'])
                 self.assertLessEqual(len(result['clusters']), MV.BUBBLE_MAX)
 
+    def test_all_modes_share_exact_positions_communities_and_owner(self):
+        reference = None
+        groups = None
+        for mode in ML.MODES:
+            with MV.reader(self.path, mode) as store:
+                positions = store.conn.execute('SELECT person_id,mx,my,cluster FROM mp ORDER BY person_id').fetchall()
+                if reference is None:
+                    reference, groups = positions, store.groups()
+                self.assertEqual(positions, reference)
+                self.assertEqual(store.groups(), groups)
+            result = self.view({'mode':[mode], 'scope':['all'], 'status':['all'], 'overview':['1'], 'budget':['80']})
+            self.assertEqual(result['world']['layout'], 'network_disk')
+            self.assertAlmostEqual(result['world']['me']['x'], .5, places=6)
+            self.assertAlmostEqual(result['world']['me']['y'], .5, places=6)
+            self.assertEqual(sum(b['count'] for b in result['clusters']), result['hidden'])
+            self.assertLessEqual(len(result['nodes']), 80)
+            for node in result['nodes']:
+                degree = self.conn.execute('SELECT degree FROM map_person_degree WHERE person_id=?', (node['id'],)).fetchone()
+                self.assertEqual(node['source_count'], degree[0] if degree else 0)
+
+    def test_partial_mode_build_reuses_shared_geometry_plan(self):
+        path = Path(self.temp.name) / 'shared-plan.sqlite'
+        fixture = make(path, people=50)
+        ML.build(path, modes=('closeness',))
+        conn = db.connect(path); self.addCleanup(conn.close)
+        with MV.reader(path, 'closeness') as store:
+            original = store.meta('plan')
+        # A new audience changes a newly computed angular allocation. Preparing
+        # another mode alone must retain existing anchors instead of relocating.
+        pid = fixture['first']
+        db.add_edge(conn, 'new_audience', pid, 'followers'); conn.commit()
+        self.assertIn('new_audience', ML.make_plan(conn)['src'])
+        ML.build(path, modes=('fit',), fresh=True)
+        with MV.reader(path, 'fit') as store:
+            self.assertEqual(store.meta('plan'), original)
+
     def test_disconnected_saved_people_and_owner_are_included(self):
         path = Path(self.temp.name) / 'disconnected.sqlite'
         conn = db.init(str(path))
@@ -91,7 +127,7 @@ class MapViewTests(unittest.TestCase):
         self.assertFalse(ML.status(path)['modes']['closeness']['ready'])
         self.assertEqual(ML.apply_ids(path,[self.fixture['first']],main=conn), {})
         plan.pop('network_disk', None)
-        plan['network_centres'] = ML.NETWORK_CENTRES
+        plan['network_centres'] = [[.5,.5,.1]]
         ML._write_json(ML.map_dir(path) / 'plan.json', {'state':'building','schema':ML.SCHEMA_VERSION-1,
                        'modes':['closeness'],'plan':plan})
         ML.build(path,modes=('closeness',))
@@ -125,12 +161,15 @@ class MapViewTests(unittest.TestCase):
         self.conn.execute("INSERT INTO marks(person_id,status) VALUES(?,'client') ON CONFLICT(person_id) DO UPDATE SET status='client'", (pid,))
         self.conn.commit()
         ML.apply_dirty(self.path, main=self.conn)
+        positions = []
         for mode in ML.MODES:
             with MV.reader(self.path, mode) as store:
                 ctx = ML.load_ctx(store.conn)
                 feature = ML.features_for(self.conn, ctx, [pid])[pid]
                 actual = store.conn.execute('SELECT * FROM mp WHERE person_id=?',(pid,)).fetchone()
                 self.assertEqual(tuple(actual), tuple(ML.layout_row(mode,feature,ctx)))
+                positions.append((actual[1], actual[2], actual[4]))
+        self.assertEqual(len(set(positions)), 1)
 
     def test_http_routes_and_conditional_response(self):
         import http.client
@@ -222,6 +261,7 @@ class MapViewTests(unittest.TestCase):
                 if node['id'] in (5,7): self.assertEqual(node['following_evidence'], 'absent')
                 if node['id'] in (1,3,6,8): self.assertEqual(node['following_evidence'], 'unknown')
                 if node['id'] == 2: self.assertEqual(node['pic'], '/img/2')
+                if node['id'] == 4: self.assertEqual(node['source_count'], 1)
         found = MV.search(conn, path, {'q':['Distinct owner follow']})['results']
         self.assertEqual([person['id'] for person in found], [2])
         self.assertEqual(found[0]['pic'], '/img/2')
@@ -241,7 +281,7 @@ class MapViewTests(unittest.TestCase):
 
     def test_network_group_never_promotes_an_interested_source_to_a_known_relationship(self):
         plan = {'owner': 'owner', 'owner_id': 1, 'src': {'cold': [10,1,0,0]}, 'comm': ['cold'],
-                'seed_list': ['cold'], 'centres': [[.5,.5,.1]], 'network_centres': ML.NETWORK_CENTRES,
+                'seed_list': ['cold'], 'network_disk': True, 'network_sectors': [[0,3.14],[3.14,3.14]],
                 'known_sources': []}
         ctx = ML.Ctx(plan)
         feature = (2, 1, None, None, 0, 0, ('cold',), 0, 0, 0)

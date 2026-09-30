@@ -433,8 +433,8 @@ def _people(conn, ids):
     out = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT id,handle,name,pic_file FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
-            out[r[0]] = (r[1], r[2], f'/img/{r[0]}' if r[3] else None)
+        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0) FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+            out[r[0]] = (r[1], r[2], f'/img/{r[0]}' if r[3] else None, r[4])
     return out
 
 
@@ -480,12 +480,12 @@ def _bubbles(groups, shown, pool, label_of, depth, per_cell):
 
 def _node(row, people, mode):
     pid, mx, my, rk, cluster, cls, fit, cl, src = row
-    handle, name, pic = people.get(pid, ('', None, None))
+    handle, name, pic, source_count = people.get(pid, ('', None, None, 0))
     status = ML.CODE_STATUS.get((cls % 64) >> 3)
     follow = cls // 64
     node = {'id': pid, 'handle': handle, 'name': name, 'x': round(ML.coord(mx), 7), 'y': round(ML.coord(my), 7),
             'rank': round(rk, 6), 'fit': fit, 'status': status, 'cluster': cluster, 'closeness': cl / 1000.0,
-            'lead': ML.is_lead(cls), 'pic': pic, 'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
+            'lead': ML.is_lead(cls), 'pic': pic, 'source_count': source_count, 'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
             'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown'}
     if src:
         node['source'] = True
@@ -551,7 +551,7 @@ def _view(conn, db_path, store, query):
     details = _details(store, [r[0] for r in ranked])
     rows = [details[r[0]] for r in ranked if r[0] in details]
     shown, pool = rows[:budget], rows[budget:]
-    if query.overview and mode == 'closeness' and query.rect == (0., 0., 1., 1.) and rows:
+    if query.overview and query.rect == (0., 0., 1., 1.) and rows:
         shown, pool = _overview_rows(store, rows, groups, depth, mask, budget)
     people = _people(conn, [r[0] for r in shown])
     nodes = [_node(r, people, mode) for r in shown]
@@ -604,7 +604,7 @@ def _response(store, query, rect, nodes, bubbles, groups, total, wt, capped):
     shown = len(nodes)
     counts = store.meta('counts', {})
     world = {'w': 1, 'h': 1}
-    if store.mode == 'closeness' and store.meta('plan', {}).get('network_disk'):
+    if store.meta('plan', {}).get('network_disk'):
         world.update(layout='network_disk', center={'x': .5, 'y': .5}, radius=.47,
                      distance_note='Broad bands reflect recorded connection evidence; position within an audience spreads people for readability.')
     return {'rev': store.rev, 'mode': store.mode, 'ready': True, 'world': world,
@@ -781,7 +781,7 @@ def search(conn, db_path, q):
     people = {}
     for start in range(0, len(ids), 900):
         chunk = ids[start:start + 900]
-        for r in conn.execute('SELECT id,handle,name,pic_file FROM people WHERE id IN (%s)' % ','.join('?' * len(chunk)), chunk):
+        for r in conn.execute('SELECT p.id,p.handle,p.name,p.pic_file,coalesce(d.degree,0) FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id WHERE p.id IN (%s)' % ','.join('?' * len(chunk)), chunk):
             people[r[0]] = r
     results = []
     with reader(db_path, 'closeness') as store:
@@ -793,7 +793,7 @@ def search(conn, db_path, q):
         cls = d[5] if d else 0
         follow = cls // 64
         results.append({'id': pid, 'handle': people[pid][1], 'name': people[pid][2],
-                        'pic': f'/img/{pid}' if people[pid][3] else None,
+                        'pic': f'/img/{pid}' if people[pid][3] else None, 'source_count': people[pid][4],
                         'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
                         'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown',
                         'fit': d[6] if d else None, 'status': ML.CODE_STATUS.get((cls % 64) >> 3),

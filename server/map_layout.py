@@ -33,13 +33,11 @@ STATUS_CODE = {None: 0, '': 0, 'interested': 1, 'good': 1, 'contacted': 2, 'talk
                'spoke_before': 4, 'client': 5, 'no': 6}
 CODE_STATUS = {i + 1: n for i, n in enumerate(STATUS_NAMES)}
 BAND_EDGES = (0, 25, 45, 60, 70, 85)          # min_fit snaps down to one of these
-FIT_BAND_LABEL = ('Not read', 'Weak fit', 'Good fit', 'Strong fit')
 COMMUNITIES = 12                              # default view: largest recorded source audiences
-SEED_CLUSTERS = 160                           # seeds: one cluster per source, biggest first
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -224,11 +222,6 @@ def _owner_handle(conn):
 
 
 NETWORK_LABELS = ('Direct connections', 'Known sources', 'Shared audiences', 'Other collected', 'You')
-# Sphere centre distance encodes a discrete recorded-evidence category.
-# Positions within a sphere spread its members for readability, not friendship strength.
-NETWORK_CENTRES = ((0.57, 0.378756, 0.068), (0.375, 0.716506, 0.095),
-                   (0.208558, 0.32473, 0.115), (0.839119, 0.586591, 0.115),
-                   (0.5, 0.5, 0.035))
 NETWORK_RADII = ((.075, .21), (.16, .32), (.22, .405), (.255, .47))
 
 
@@ -278,21 +271,11 @@ def make_plan(conn):
     for weight in weights:
         width = TWO_PI * weight / sum(weights)
         sectors.append([angle, width]); angle += width
-    seed_list = sources[:SEED_CLUSTERS]
     known_sources = known_source_handles(conn, [h for h, _ in sources])
-    # seeds mode: a sunflower of source centres, biggest in the middle
-    biggest = max([n for _, n in seed_list] or [1])
-    centres = []
-    for i, (h, n) in enumerate(seed_list):
-        radius = 0.40 * math.sqrt((i + 0.5) / max(1, len(seed_list)))
-        theta = i * 2.399963229728653
-        centres.append([round(0.5 + radius * math.cos(theta), 6), round(0.5 + radius * math.sin(theta), 6),
-                        round(0.010 + 0.045 * math.sqrt(n / biggest), 6)])
     src = {}
     kmap = {h: k for k, h in enumerate(comm)}
-    smap = {h: s for s, (h, _) in enumerate(seed_list)}
     for h, n in sources:
-        src[h] = [n, classes[h], kmap.get(h, -1), smap.get(h, -1)]
+        src[h] = [n, classes[h], kmap.get(h, -1)]
     source_ids = [r[0] for r in conn.execute('SELECT p.id FROM map_source_handles h '
                                              'JOIN people p ON p.handle=h.handle')]
     row = conn.execute('SELECT id FROM people WHERE handle=?', (owner,)).fetchone()
@@ -300,7 +283,7 @@ def make_plan(conn):
     plan = {'id': hashlib.sha1(f'{time.time()}-{os.getpid()}'.encode()).hexdigest()[:10],
             'made_at': db.now(), 'owner': owner, 'owner_id': owner_id, 'people': total, 'src': src,
             'comm': comm, 'network_disk': True, 'network_sectors': sectors, 'known_sources': known_sources,
-            'seed_list': [h for h, _ in seed_list], 'centres': centres, 'source_ids': source_ids}
+            'source_ids': source_ids}
     return plan
 
 
@@ -311,70 +294,27 @@ class Ctx:
         self.plan = plan
         self.owner = plan['owner']
         self.owner_id = plan.get('owner_id', 0)
-        self.src = {h: (v[1], v[2], v[3]) for h, v in plan['src'].items()}
+        self.src = {h: (v[1], v[2]) for h, v in plan['src'].items()}
         self.k_other = len(plan['comm'])
-        self.k_me = self.k_other + 1
-        self.network_centres = plan.get('network_centres')
         self.network_disk = plan.get('network_disk', False)
         self.network_sectors = plan.get('network_sectors', [])
         self.known_sources = set(plan.get('known_sources', []))
-        self.audience_centres = plan.get('audience_centres')
-        # Keep an older active layout consistent until an explicit rebuild replaces it.
-        self.wedges = (plan['wedges'] + [plan['wedge_other'], plan['wedge_me']]) if 'wedges' in plan else []
-        self.s_other = len(plan['seed_list'])
-        self.centres = plan['centres']
 
     def groups(self, mode):
-        """Label anchors for the renderer: [{id,label,x,y,r}]."""
+        """The same source/evidence anchors in every mode; mode only changes rank."""
         out = []
-        if mode == 'closeness':
-            if self.network_disk:
-                for audience in range(self.k_other + 1):
-                    label = ('Audience of @' + self.plan['comm'][audience] if audience < self.k_other else 'Other collected audiences')
-                    start, width = self.network_sectors[audience]
-                    theta = start + .5 * width
-                    for category, (low, high) in enumerate(NETWORK_RADII):
-                        radius = math.sqrt((low * low + high * high) / 2)
-                        out.append({'id': audience * 4 + category, 'label': label,
-                                    'category': NETWORK_LABELS[category],
-                                    'x': .5 + radius * math.cos(theta), 'y': .5 + radius * math.sin(theta),
-                                    'r': min(.045, radius * width * .22)})
-                out.append({'id': (self.k_other + 1) * 4, 'label': 'You', 'x': .5, 'y': .5, 'r': .035})
-                return out
-            if self.network_centres:
-                return [{'id': k, 'label': NETWORK_LABELS[k], 'x': p[0], 'y': p[1], 'r': p[2]}
-                        for k, p in enumerate(self.network_centres)]
-            for k in range(self.k_me + 1):
-                label = ('Audience of @' + self.plan['comm'][k] if k < self.k_other else
-                         'Other audiences' if k == self.k_other else 'Connected to you')
-                if self.audience_centres:
-                    x, y, radius = self.audience_centres[k]
-                else:
-                    a0, width = self.wedges[k]
-                    x, y, radius = 0.5 + 0.4 * math.cos(a0 + width/2), 0.5 + 0.4 * math.sin(a0 + width/2), 0.05
-                out.append({'id': k, 'label': label, 'x': x, 'y': y, 'r': radius})
-        elif mode == 'fit':
-            for band, (cx, cy, r) in FIT_BLOBS.items():
-                out.append({'id': band, 'label': FIT_BAND_LABEL[band], 'x': cx, 'y': cy, 'r': r})
-        elif mode == 'seeds':
-            for s, (cx, cy, r) in enumerate(self.centres):
-                out.append({'id': s, 'label': '@' + self.plan['seed_list'][s], 'x': cx, 'y': cy, 'r': r})
-            out.append({'id': self.s_other, 'label': 'Other sources', 'x': SEED_OTHER[0], 'y': SEED_OTHER[1],
-                        'r': SEED_OTHER[2]})
-        else:
-            for code, (cx, cy, r) in STATUS_BLOBS.items():
-                out.append({'id': code, 'label': STATUS_LABEL[code], 'x': cx, 'y': cy, 'r': r})
+        for audience in range(self.k_other + 1):
+            label = ('Audience of @' + self.plan['comm'][audience] if audience < self.k_other else 'Other collected audiences')
+            start, width = self.network_sectors[audience]
+            theta = start + .5 * width
+            for category, (low, high) in enumerate(NETWORK_RADII):
+                radius = math.sqrt((low * low + high * high) / 2)
+                out.append({'id': audience * 4 + category, 'label': label,
+                            'category': NETWORK_LABELS[category],
+                            'x': .5 + radius * math.cos(theta), 'y': .5 + radius * math.sin(theta),
+                            'r': min(.045, radius * width * .22)})
+        out.append({'id': (self.k_other + 1) * 4, 'label': 'You', 'x': .5, 'y': .5, 'r': .035})
         return out
-
-
-FIT_BLOBS = {3: (0.27, 0.29, 0.15), 2: (0.72, 0.28, 0.17), 1: (0.26, 0.72, 0.16), 0: (0.70, 0.70, 0.26)}
-SEED_OTHER = (0.93, 0.93, 0.05)
-STATUS_LABEL = {0: 'No status', 1: 'Interested', 2: 'Contacted', 3: 'Talking', 4: 'Spoke before',
-                5: 'Client', 6: 'Not a fit'}
-STATUS_BLOBS = {0: (0.5, 0.5, 0.27)}
-for _i, _code in enumerate((5, 3, 4, 1, 2, 6)):
-    _a = -math.pi / 2 + _i * math.pi / 3
-    STATUS_BLOBS[_code] = (round(0.5 + 0.385 * math.cos(_a), 4), round(0.5 + 0.385 * math.sin(_a), 4), 0.085)
 
 
 # ---------- per-person facts ----------
@@ -528,89 +468,23 @@ def layout_row(mode, F, ctx, c=None):
         c = closeness(F, ctx)
     owner = ctx.owner
     others = [s for s in seeds if s != owner]
-    u1, u2, u3 = uniforms(pid, MODES.index(mode))
-    if mode == 'closeness':
-        if ctx.network_disk:
-            if pid == ctx.owner_id:
-                k, x, y = (ctx.k_other + 1) * 4, .5, .5
-            else:
-                category = network_group(F, ctx)
-                recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
-                chosen = min(recorded, key=lambda s: (ctx.plan['src'][s][0], s)) if recorded else None
-                audience = ctx.src[chosen][1] if chosen else ctx.k_other
-                start, width = ctx.network_sectors[audience]
-                theta = start + (.035 + .93 * u1) * width
-                low, high = NETWORK_RADII[category]
-                radius = math.sqrt(low * low + u2 * (high * high - low * low))
-                x, y = .5 + radius * math.cos(theta), .5 + radius * math.sin(theta)
-                k = audience * 4 + category
-        elif ctx.network_centres:
-            k = network_group(F, ctx)
-            cx, cy, radius = ctx.network_centres[k]
-            if pid == ctx.owner_id:
-                x, y = 0.5, 0.5
-            else:
-                r = radius * math.sqrt(u2) * 0.94
-                theta = TWO_PI * u1
-                x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
-        elif ctx.audience_centres:
-            # Assign the smallest recorded source audience, with a stable tie break.
-            # This is a display grouping, not a claim of personal familiarity.
-            recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
-            chosen = min(recorded, key=lambda s: (ctx.plan['src'][s][0], s)) if recorded else None
-            k = ctx.src[chosen][1] if chosen else ctx.k_me if (pid == ctx.owner_id or (not others and me)) else ctx.k_other
-            cx, cy, radius = ctx.audience_centres[k]
-            r = radius * math.sqrt(u2) * (0.8 + 0.2 * (1.0 - c))
-            theta = TWO_PI * u1
-            x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
-        else:
-            known = [ctx.src[s][1] for s in others if s in ctx.src and ctx.src[s][1] >= 0]
-            k = max(known) if known else ctx.k_me if (not others and me) else ctx.k_other
-            a0, width = ctx.wedges[k]
-            theta = a0 + (0.04 + 0.92 * u1) * width
-            r = min(0.485, 0.03 + 0.45 * (1.0 - c) ** 0.75 * (0.9 + 0.2 * u2))
-            x, y = 0.5 + r * math.cos(theta), 0.5 + r * math.sin(theta)
-        cluster = k
-    elif mode == 'fit':
-        band = 0 if fit is None else 1 if fit < 45 else 2 if fit < 70 else 3
-        cluster = band
-        cx, cy, radius = FIT_BLOBS[band]
-        q = fit / 100.0 if fit is not None else c
-        r = radius * math.sqrt(u2) * (0.55 + 0.45 * (1.0 - q))
-        theta = TWO_PI * u1
-        x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
-    elif mode == 'seeds':
-        srcmap = ctx.src
-        known = [info[2] for info in (srcmap.get(s) for s in others) if info is not None and info[2] >= 0]
-        cluster = max(known) if known else ctx.s_other
+    # A person's position and community belong to the network, not the selected
+    # view. Mode changes ranking only, preserving the user's spatial context.
+    u1, u2, u3 = uniforms(pid, 0)
+    if pid == ctx.owner_id:
+        cluster, x, y = (ctx.k_other + 1) * 4, .5, .5
     else:
-        cluster = code
-    n_others = len(others)
-    raw = _rank(mode, F, c, n_others, ctx.owner_id)
-    if mode == 'seeds':
-        centres = ctx.centres
-        if known:
-            if len(known) == 1:
-                cx, cy, radius = centres[known[0]]
-                r = radius * math.sqrt(u2) * (0.6 + 0.4 * (1.0 - min(1.0, raw)))
-                theta = TWO_PI * u1
-                x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
-            else:
-                sx = sum(centres[s][0] for s in known) / len(known)
-                sy = sum(centres[s][1] for s in known) / len(known)
-                r = 0.006 * math.sqrt(u2)
-                theta = TWO_PI * u1
-                x, y = sx + r * math.cos(theta), sy + r * math.sin(theta)
-        else:
-            cx, cy, radius = SEED_OTHER
-            r = radius * math.sqrt(u2)
-            theta = TWO_PI * u1
-            x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
-    elif mode == 'status':
-        cx, cy, radius = STATUS_BLOBS[code]
-        r = radius * math.sqrt(u2) * (0.55 + 0.45 * (1.0 - min(1.0, 0.6 * c + 0.4 * (score or 0) / 100.0)))
-        theta = TWO_PI * u1
-        x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
+        category = network_group(F, ctx)
+        recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
+        chosen = min(recorded, key=lambda s: (ctx.plan['src'][s][0], s)) if recorded else None
+        audience = ctx.src[chosen][1] if chosen else ctx.k_other
+        start, width = ctx.network_sectors[audience]
+        theta = start + (.035 + .93 * u1) * width
+        low, high = NETWORK_RADII[category]
+        radius = math.sqrt(low * low + u2 * (high * high - low * low))
+        x, y = .5 + radius * math.cos(theta), .5 + radius * math.sin(theta)
+        cluster = audience * 4 + category
+    raw = _rank(mode, F, c, len(others), ctx.owner_id)
     rk = f32(min(1.0, max(0.0, raw)) * 0.9999 + 1e-4 * u3)
     return (pid, to_micro(x), to_micro(y), rk, cluster, cls_of(code, fit, me), fit, int(round(c * 1000)), src)
 
@@ -830,7 +704,22 @@ def build(db_path, modes=MODES, chunk=100_000, workers=1, fresh=False, log=None)
         try:
             state = _read_json(directory / 'plan.json')
             if fresh or not state or state.get('state') != 'building' or state.get('modes') != list(modes) or state.get('schema') != SCHEMA_VERSION:
-                plan = make_plan(src)
+                plan = None
+                # A partial-mode preparation must retain the geometry used by
+                # the other current modes. Rebuild all modes to refresh anchors.
+                if set(modes) != set(MODES):
+                    for existing in MODES:
+                        if not mode_exists(db_path, existing):
+                            continue
+                        active = open_store(mode_path(db_path, existing), readonly=True)
+                        try:
+                            if meta_get(active, 'schema') == SCHEMA_VERSION:
+                                plan = meta_get(active, 'plan')
+                        finally:
+                            active.close()
+                        if plan:
+                            break
+                plan = plan or make_plan(src)
                 for mode in modes:
                     for suffix in ('', '-wal', '-shm'):
                         (directory / f'{mode}.building.sqlite{suffix}').unlink(missing_ok=True)

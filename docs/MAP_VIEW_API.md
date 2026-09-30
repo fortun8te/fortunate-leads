@@ -7,7 +7,7 @@ zooming in reveals the next-ranked people. The older `/api/map`, `/api/map-overv
 `/api/connections` endpoints are unchanged.
 
 All coordinates are normalized: x and y are in `[0,1]`, origin top-left, y grows downward.
-The world always includes `{"w":1,"h":1}`. Current default layouts also return
+The world always includes `{"w":1,"h":1}`. All current modes also return
 `layout:"network_disk"`, `center:{"x":0.5,"y":0.5}` and `radius:0.47`.
 
 ## GET /api/map/view
@@ -21,7 +21,7 @@ The world always includes `{"w":1,"h":1}`. Current default layouts also return
 | `min_fit` | 0..100. Only people with a qualification fit at or above it. Snapped **down** to 0, 25, 45, 60, 70 or 85; the value used comes back in `filters.min_fit`. Unread people have no fit and never pass. |
 | `status` | Comma list of `interested, contacted, talking, spoke_before, client, no, none`, or `all`. Absent means everything except `no` (in `status` mode: everything). |
 | `follow` | `all` (default), `following` (owner follows them), `followers` (they follow owner), `mutual`, `not_following` or `unknown`. Negative results require explicit outgoing absence recorded by a complete check; missing outgoing evidence stays unknown, even when an incoming follow is known. |
-| `overview` | `1` opts the whole-world default mode into spatial overview sampling: up to a quarter of the budget (maximum 120 people) comes from up to 12 occupied spatial sectors. Default `0` keeps exact rank ordering. Search/zoom and other modes retain ordinary ranked selection. |
+| `overview` | `1` opts any whole-world mode into spatial overview sampling: up to a quarter of the budget (maximum 120 people) comes from up to 12 occupied spatial sectors. Default `0` keeps exact rank ordering. Search and zoom retain ordinary ranked selection. |
 | `q` | Handle or name text. Restricts the population to matches (see Search limits). `total` counts matches, capped at 2,000 (`filters.q_capped`). |
 
 Response:
@@ -71,6 +71,9 @@ Fields:
     good and client accounts, seed overlap and pipeline status.
   - `cluster` is the semantic cluster id for colour (see Modes). `lead` follows `scope=leads`.
   - `source: true` appears only on source (seed) accounts that have a person row.
+  - `source_count` is the number of distinct current collected source audiences containing this
+    person, including the owner if observed. Both directions of one source count once. This
+    bounded field uses the existing maintained source-degree summary.
   - `pic` is the local `/img/<id>` URL only when a cached portrait exists, otherwise `null`.
   - `followed` and `follows_me` preserve the independent observed owner directions.
     `following_evidence` is `observed`, `absent` or `unknown`; `absent` means the last complete
@@ -146,10 +149,15 @@ place until their own data changes.
 
 | Mode | Layout | `cluster` | Rank |
 | --- | --- | --- | --- |
-| `closeness` | One owner-centred disk, with source neighborhoods in broad evidence distance bands. | source audience crossed with direct, known-source, shared or other evidence; owner separate | closeness, then score |
-| `fit` | Four blobs: strong (70+), good (45-69), weak (under 45), not read. Higher fit sits nearer the blob centre. | 0 not read, 1 weak, 2 good, 3 strong | fit, then closeness |
-| `seeds` | One cluster per source account. People sit at the centre of the sources they appear in, so people in several lists sit between clusters. | source index by size; the last id is "other" | number of sources, then closeness |
-| `status` | Blobs by pipeline status. | 0 none, 1 interested, 2 contacted, 3 talking, 4 spoke before, 5 client, 6 not a fit | status, then score |
+| `closeness` | Shared owner-centred network disk. | source/evidence neighborhood | connection evidence, then existing score/fit |
+| `fit` | Same exact positions and neighborhoods. | same community ids | existing fit, then connection evidence |
+| `seeds` | Same exact positions and neighborhoods. | same community ids | distinct collected sources, then connection evidence |
+| `status` | Same exact positions and neighborhoods. | same community ids | workflow status, then existing score |
+
+Changing modes changes importance, visual size/color encoding and which bounded people are shown;
+it never relocates a person. Source-count, fit and status fields provide those view encodings.
+All modes include the same network boundary and positioned owner context. A person's recorded
+connection facts may change their position through incremental maintenance in every mode together.
 
 In every mode a person Michael works with (any status other than `no`) ranks above unread people.
 
@@ -194,11 +202,12 @@ Recorded follows and shared audiences do not prove friendship or an introduction
 People use actual cached portraits when available. Group counts describe hidden people and individual
 size describes existing fit. The optional overview keeps priority people and adds bounded spatial
 samples so the outer neighborhoods remain visible. Zoom reveals further ranked people within the
-requested region; search locates saved profiles directly. Other modes group by fit, source and status.
+requested region; search locates saved profiles directly. Other modes emphasize fit, source count and workflow status within those same positions.
 
-Layout schema 5 stores owner-direction facets alongside status and fit in the precomputed class.
+Layout schema 6 shares geometry across all four modes and stores owner-direction facets alongside status and fit in the precomputed class.
 The API uses bounded integer class predicates rather than binding an oversized bitmask to SQLite.
-Older layouts report unprepared and remain untouched by incremental updates; an explicit build
+A partial-mode build reuses the current shared geometry plan. Rebuild all four modes to refresh
+source anchors together. Older layouts report unprepared and remain untouched by incremental updates; an explicit build
 creates the current schema. Interrupted plans from an older schema are not resumed.
 
 The interface keeps the full filtered population separate from the count inside the current viewport. Layout preparation and browser rendering remain separate from collection and qualification.
