@@ -29,6 +29,7 @@ function mount() {
   vm.runInContext(section('const RELATIONSHIP_LABELS =', 'const seedList ='), context);
   vm.runInContext(section('const TOP_TAGS =', 'function whyHTML('), context);
   vm.runInContext(section('function tagItem(', 'function tagSection('), context);
+  vm.runInContext(section('function followUpChip(', 'function renderRows()'), context);
   vm.runInContext(section('function rowHTML(', 'function renderRows()'), context);
   const ui = vm.runInContext('({ tagTier, tagImportance, tagTone, tagIcon, tagChip, tagItem, rowHTML, rowTagSelection, detailTagSelection })', context);
   return { context, groupNode, ui };
@@ -57,9 +58,9 @@ test('dense lead rows lead with saved fit then user labels and count distinct re
   const html = ui.rowHTML(row, 0, 64);
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.ok(desktopTags, 'desktop tag cell is present');
-  assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 3);
-  assert.match(desktopTags, /data-tag="Fit: strong"[\s\S]*data-tag="Warm intro"[\s\S]*data-tag="Founder"/);
-  assert.match(desktopTags, /title="Brand · Shop Link · Jewelry"\>\+3/);
+  assert.equal([...desktopTags.matchAll(/class="tag /g)].length, 2);
+  assert.match(desktopTags, /data-tag="Fit: strong"[\s\S]*data-tag="Warm intro"/);
+  assert.match(desktopTags, /title="Founder · Brand · Shop Link · Jewelry"\>\+4/);
   assert.doesNotMatch(html, /data-tag="via @seed"/);
 });
 
@@ -92,9 +93,9 @@ test('near-synonymous fit and identity chips cannot fill a lead row', () => {
   ] };
   const html = ui.rowHTML(row, 0, 64);
   const desktopTags = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
-  assert.match(desktopTags, /data-tag="AI: Top fit"[\s\S]*data-tag="client"[\s\S]*data-tag="follows you"/);
+  assert.match(desktopTags, /data-tag="AI: Top fit"[\s\S]*data-tag="client"/);
   assert.doesNotMatch(desktopTags, /data-tag="AI: Decision maker"|data-tag="AI: Skincare"/);
-  assert.match(desktopTags, /\+3/);
+  assert.match(desktopTags, /\+4/);
   assert.match(ui.tagChip(tag('AI: Skincare', 'niche'), false), /data-tag="AI: Skincare"[^>]*title="AI: Skincare · auto"[^>]*><span>Skincare<\/span>/);
 
   const sparse = ui.rowTagSelection({ tags: [tag('Founder', 'role'), tag('AI: Decision maker', 'ai'), tag('AI: Top fit', 'ai')] });
@@ -140,7 +141,7 @@ test('niche chips and filters use one neutral tier without product hues', () => 
 test('mobile overflow omits synonymous decision tags', () => {
   const { ui } = mount();
   const html = ui.rowHTML({ id: 10, handle: 'founder', tags: [tag('Founder', 'role'), tag('AI: Decision maker', 'ai')] }, 0, 64);
-  const mobile = html.match(/<div class="row-mobile-tags">([\s\S]*?)<\/div>/)?.[1];
+  const mobile = html.match(/<div class="tags c-tags">([\s\S]*?)<\/div>/)?.[1];
   assert.match(mobile, /data-tag="Founder"/);
   assert.doesNotMatch(mobile, /AI: Decision maker|\+1/);
 });

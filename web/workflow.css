@@ -10,13 +10,10 @@
 }
 .status-menu button.on, .status-menu button:hover { background: var(--bg3); }
 .status-menu button:last-child { margin-top: 4px; color: var(--fg3); }
-.d-nav { margin-left: auto; align-self: flex-start; display: flex; gap: 2px; }
-.d-nav + .d-close { margin-left: 0; }
-.d-nav button { width: 30px; height: 30px; border-radius: var(--r2); color: var(--fg3); font-size: 15px; }
-.d-nav button:hover { background: var(--bg3); color: var(--fg); }
-.d-nav button:focus-visible, .status-menu button:focus-visible { outline: 2px solid var(--fg2); outline-offset: 1px; }
+
+.status-menu button:focus-visible { outline: 2px solid var(--fg2); outline-offset: 1px; }
 @media (max-width: 900px) {
-  .d-nav button { width: 40px; height: 40px; font-size: 18px; }
+
   .status-menu { left: 16px !important; right: 16px; width: auto; }
 }
 .empty kbd { margin-inline: 2px; }

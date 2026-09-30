@@ -90,17 +90,7 @@
 
 /* ---------- Control strip: calm, one status, one action ---------- */
 .status { padding: 0 var(--s5); min-height: 48px; background: var(--bg); }
-.fl-ctl-top { min-height: 48px; gap: var(--s4); }
-.fl-ctl-summary { border-color: transparent; background: none; padding: 0 var(--s2); margin-left: calc(-1 * var(--s2)); border-radius: var(--r2); }
-.fl-ctl-summary:hover, .fl-ctl-summary[aria-expanded="true"] { background: var(--bg2); }
-.fl-ctl-inline { gap: 4px var(--s4); color: var(--fg3); font-size: var(--fs-cap); }
-.fl-ctl-direct, .fl-ctl-top .fl-ctl-direct { background: none; color: var(--fg2); border-color: var(--line2); }
-.fl-ctl-direct:hover { background: var(--bg2); color: var(--fg); border-color: var(--line3); }
-.fl-ctl-direct[data-action="resume"] { background: var(--fg); color: var(--inv); border-color: var(--fg); }
-.fl-state-dot { width: 8px; height: 8px; }
-.fl-state-dot[data-state="running"], .fl-state-dot[data-state="on"] { background: var(--ok); }
-.fl-ctl-panel { border-radius: var(--r); box-shadow: var(--shadow-2); padding: var(--s4); }
-.fl-engine-row { padding: var(--s3) 0; }
+
 @media (max-width: 640px) { .status { padding: 0 var(--s4); } }
 
 /* ---------- Accounts: state, today, what needs you ---------- */

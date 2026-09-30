@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 
 const css = readFileSync(new URL('../../web/app.css', import.meta.url), 'utf8');
+const refine = readFileSync(new URL('../../web/refine.css', import.meta.url), 'utf8');
 const visual = css.slice(css.indexOf('/* Figma tag variables:'));
 function colors(selector) {
   const start = visual.indexOf(selector);
@@ -41,17 +42,17 @@ test('selection does not change tag importance or add a permanent outline',()=>{
     assert.doesNotMatch(match[1], /(?:background|border|box-shadow|color):/);
     if(match[1].includes('outline:')) assert.match(match[1],/outline: none/);
   }
-  assert.match(visual,/\.tag:focus-visible[^}]+outline: 2px/s);
-  assert.match(visual,/border-radius: 9px/);
-  assert.match(visual,/height: 28px/);
-  assert.match(visual,/height: 34px/);
+  assert.match(refine,/\.tag:focus-visible[^}]+outline: 2px/s);
+  assert.match(refine, /border-radius: var\(--rad-chip\)/);
+  assert.match(refine, /height: 22px/);
 });
 
 test('exact Figma icons are local and commercial font bytes stay outside the repo',()=>{
   for(const name of ['sparkles','verified']) {
     const icon=readFileSync(new URL(`../../web/vendor/icons/tag-${name}.svg`,import.meta.url),'utf8');
     assert.match(icon,/<svg/);
-    assert.match(css,new RegExp(`tag-${name}\\.svg`));
+    // Exact reference icons remain local even when the quieter chip style hides icons.
+    assert.match(refine, /\.tag-icon\s*\{\s*display: none/);
   }
   assert.match(css,/local\("ABC Areal Superfamily Variable"\)/);
   assert.match(css,/url\("\/api\/local-font\/areal"\)/);

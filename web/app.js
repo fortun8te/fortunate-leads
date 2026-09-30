@@ -2,10 +2,16 @@
 /* Fortunate Leads UI. Plain JS, no build step. */
 
 // ---------- utilities ----------
+const { icon, ring } = window.Icons;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (v) => { if (v == null || v === '' || !Number.isFinite(+v)) return '–'; const n = +v; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(n)); };
+// Compact counts: 850, 2.7k, 12.4k, 124k, 1.2M. Full counts (with separators) use int().
+const fmt = (v) => {
+  if (v == null || v === '' || !Number.isFinite(+v)) return '–';
+  const n = Math.round(+v), one = (x) => x.toFixed(1).replace(/\.0$/, '');
+  return n >= 999500 ? one(n / 1e6) + 'M' : n >= 1e5 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? one(n / 1e3) + 'k' : String(n);
+};
 const int = (n) => n == null || n === '' || !Number.isFinite(+n) ? '–' : Number(n).toLocaleString('en-US');
 // Only http(s) URLs become links; anything else (javascript:, data:) is never rendered as an href.
 const safeUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u.trim()) ? u.trim() : null;
@@ -34,7 +40,7 @@ function setOnline(ok) {
   if (ok) { const was = offlineSince; offlineSince = null; $('#offline').hidden = true; if (was) reconnected(); return; }
   offlineSince = offlineSince || Date.now();
   $('#offline').hidden = false;
-  $('#offline-t').textContent = ago(new Date(offlineSince).toISOString());
+  $('#offline-t').textContent = Date.now() - offlineSince < 60000 ? '' : 'Offline for ' + ago(new Date(offlineSince).toISOString()) + '.';
 }
 const api = {
   async req(url, opts) {
@@ -53,14 +59,37 @@ const api = {
   post(url, body) { return this.req(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); },
 };
 
-let toastT;
-function toast(msg, undo) {
+// One quiet message at the bottom of the screen. Errors carry an icon; Undo stays until it times out.
+// Hovering or focusing a toast keeps it open so it can be read and acted on.
+let toastT, toastOut;
+const toastHold = { in: false };
+function toast(msg, undo, opts = {}) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button id="undo">Undo</button>' : ''}`;
+  const error = opts.error ?? /^(couldn't|could not|can't|cannot|not saved)/i.test(String(msg));
+  clearTimeout(toastT); clearTimeout(toastOut);
+  el.removeAttribute('data-leaving');
+  toastHold.in = el.matches(':hover') || el.contains(document.activeElement);
+  el.className = 'toast' + (error ? ' is-error' : '');
+  el.innerHTML = `${error ? icon('alert', 16, 'toast-ic') : ''}<span class="toast-msg">${esc(msg)}</span>${undo ? '<button type="button" class="toast-act" id="undo">Undo</button>' : ''}<button type="button" class="toast-x" aria-label="Dismiss message">${icon('close', 14)}</button>`;
   el.hidden = false;
-  if (undo) $('#undo').onclick = () => { el.hidden = true; undo(); };
-  clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, undo ? 6000 : 2400);
+  el.querySelector('.toast-x').onclick = () => hideToast();
+  if (undo) $('#undo').onclick = () => { hideToast(true); undo(); };
+  const wait = undo ? 7000 : error ? 5500 : 3000;
+  const arm = (ms) => { clearTimeout(toastT); toastT = setTimeout(() => (toastHold.in ? arm(1200) : hideToast()), ms); };
+  arm(wait);
 }
+function hideToast(now) {
+  const el = $('#toast');
+  clearTimeout(toastT); clearTimeout(toastOut);
+  if (now || el.hidden) { el.hidden = true; el.removeAttribute('data-leaving'); return; }
+  el.dataset.leaving = '';
+  toastOut = setTimeout(() => { el.hidden = true; el.removeAttribute('data-leaving'); }, 180);
+}
+$('#toast').addEventListener('mouseenter', () => { toastHold.in = true; });
+$('#toast').addEventListener('mouseleave', () => { toastHold.in = false; });
+$('#toast').addEventListener('focusin', () => { toastHold.in = true; });
+$('#toast').addEventListener('focusout', () => { toastHold.in = false; });
+
 
 function avatar(pic, name, cls = '') {
   const i = esc(initials(name));
@@ -123,7 +152,7 @@ const youLink = (r) => { const tags = r.tags || []; const names = tags.map(tagNa
   if (r.relationship != null && !facts.length && names.includes('Instagram link')) facts.push(YOU['Instagram link']);
   if (names.includes('mentions you')) facts.push(YOU['mentions you']);
   if (tags.some((t) => t.tag === 'knows you' && t.source === 'manual')) facts.push(YOU['knows you']);
-  return facts.join(' · ');
+  return facts.join('. ');
 };
 const RELATIONSHIP_LABELS = { follows: 'Follows you', followed: 'You follow', mutual: 'Follow each other' };
 function observedRelationship(r) {
@@ -916,29 +945,46 @@ function detailTagSelection(p) {
   }
   return { primary, related };
 }
+// One plain sentence on why this person fits: the review's own words, else the first line of their bio.
 function whyHTML(r) {
   if (r.reason) return esc(r.reason);
-  const sig = rowTags(r).filter((t) => t.grp === 'signal').slice(0, 3).map((t) => t.tag);
-  return sig.length ? esc(sig.join(' · ')) : r.bio ? esc(r.bio) : '<span class="none">No bio</span>';
+  const sig = rowTags(r).filter((t) => t.grp === 'signal').slice(0, 3).map((t) => tagLabel(t.tag));
+  const bio = String(r.bio || '').split(/\n/)[0].trim();
+  return sig.length ? esc(sig.join(', ')) : bio ? esc(bio) : '<span class="none">Not reviewed yet</span>';
 }
-const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}" title="${esc(SDESC[s])}"><i></i>${slabel(s)}</span>` : '';
-const rowFitHTML = (r) => `<span class="row-fit f-${fitOf(r)}" aria-label="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)}" title="Business fit ${r.business_fit == null ? 'unavailable' : esc(r.business_fit)} · Priority ${r.score == null ? 'unavailable' : esc(r.score)}"><i></i><b>${r.business_fit == null ? '–' : esc(r.business_fit)}</b></span>`;
+const statHTML = (s) => STATUSES.includes(s) ? `<span class="stat ${s}"><i></i>${slabel(s)}</span>` : '';
+// Fit is a ring, not a pill: the arc is the score out of 100, the number sits inside.
+const rowFitHTML = (r, size = 28) => {
+  const has = r.business_fit != null && Number.isFinite(+r.business_fit);
+  return `<span class="row-fit f-${fitOf(r)}${has && +r.business_fit >= 100 ? ' wide' : ''}" role="img" aria-label="${has ? `Fit ${esc(r.business_fit)} out of 100` : 'Fit not scored yet'}">${ring(has ? r.business_fit : null, size)}<b class="num">${has ? esc(Math.round(+r.business_fit)) : ''}</b></span>`;
+};
 // One-click "open on Instagram": a plain link, so the row / map click underneath never fires.
-const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${encodeURIComponent(h)}/" target="_blank" rel="noopener" title="Open on Instagram (o)" aria-label="Open @${esc(h)} on Instagram"><svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg></a>`;
-const noteIcon = (note) => note ? `<span class="note-ic" title="${esc(note)}" aria-label="Has a note"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 2.5h7l3 3v8H3z M10 2.5v3h3 M5.5 8.5h5 M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span>` : '';
+const igLink = (h) => `<a class="ig" data-ig href="https://www.instagram.com/${encodeURIComponent(h)}/" target="_blank" rel="noopener" title="Open on Instagram (o)" aria-label="Open @${esc(h)} on Instagram">${icon('external', 13)}</a>`;
+const noteIcon = (note) => note ? `<span class="note-ic" aria-label="Has a note">${icon('note', 13)}</span>` : '';
+// Follow-ups read as plain dates. Only an open one shows in the row.
+function followUpChip(f) {
+  if (!f || f.completed_at) return '';
+  const today = LeadWorkflow.localToday(), late = f.due_on < today;
+  const text = late ? 'Overdue' : f.due_on === today ? 'Due today' : 'Follow up ' + shortDate(f.due_on);
+  return `<span class="followup-chip${late || f.due_on === today ? ' due' : ''}"${f.note ? ` title="${esc(f.note)}"` : ''}>${esc(text)}</span>`;
+}
+// Keep the saved classification and owner tags visible, with remaining evidence available on hover.
+const ROW_CHIPS = 2;
+function rowChips(r) {
+  const tags = rowTagSelection(r, ROW_CHIPS);
+  return tags.shown.map((t) => tagChip(t)).join('') + (tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : '');
+}
 function rowHTML(r, i, h) {
-  const n = lists(r);
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
-  const tags = rowTagSelection(r);
-  const mobileHidden = [...tags.shown.slice(2), ...tags.hidden];
+  const named = r.name && r.name !== r.handle;
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}</div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>@${esc(r.handle)}</b></button>${igLink(r.handle)}${noteIcon(r.note)}${r.follow_up ? `<span class="followup-chip" title="${esc(r.follow_up.note || 'Follow-up')}">${r.follow_up.completed_at ? 'Done' : r.follow_up.due_on < LeadWorkflow.localToday() ? 'Overdue' : 'Follow-up'} ${esc(r.follow_up.due_on)}</span>` : ''}${r.name && r.name !== r.handle ? `<span>${esc(r.name)}</span>` : ''}</div><div class="why">${relationshipHTML(r)}<span>${whyHTML(r)}</span></div><div class="row-mobile-tags">${tags.shown.slice(0, 2).map((t) => tagChip(t)).join('')}${mobileHidden.length ? `<span class="more" title="${esc(mobileHidden.map((t) => t.tag).join(' · '))}">+${mobileHidden.length}</span>` : ''}</div></div>
-    <div class="tags c-tags">${tags.shown.map((t) => tagChip(t)).join('')}${tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : ''}</div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>${esc(named ? r.name : '@' + r.handle)}</b>${named ? `<span class="handle">@${esc(r.handle)}</span>` : ''}</button>${igLink(r.handle)}${noteIcon(r.note)}${followUpChip(r.follow_up)}</div><div class="why"><span>${whyHTML(r)}</span></div>
+      <div class="row-meta"><span class="c-st-m">${statHTML(r.status)}</span><span class="num muted">${fmt(r.followers)} followers</span></div></div>
+    <div class="tags c-tags">${rowChips(r)}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <div class="c-fit">${rowFitHTML(r)}</div>
     <span class="c-st">${statHTML(r.status)}</span>
-    <div class="mnum"><span class="num">${fmt(r.followers)} followers</span>${rowFitHTML(r)}</div>
   </div>`;
 }
 function renderRows() {
@@ -948,12 +994,11 @@ function renderRows() {
   const focusKey = active?.matches('.lead-open') ? '.lead-open' : active?.matches('[data-ig]') ? '[data-ig]' : active?.hasAttribute('data-tag') ? `[data-tag="${CSS.escape(active.dataset.tag)}"]` : null;
   const box = $('#rows'), sc = $('#scroll'), h = rowH();
   if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
-  $('#work-loaded').textContent = S.total != null && !S.done && S.total > 0
-    ? `${int(S.rows.length)} of ${int(S.total)} loaded${S.loading ? ' · Loading…' : ''}` : '';
   if (!S.rows.length) {
     box.style.height = '100%';
     if (S.loading || (S.total == null && !S.error)) {
-      box.innerHTML = Array.from({ length: 14 }, (_, i) => `<div class="skel" style="top:${i * h}px"><i></i><i style="width:${120 + (i * 37) % 80}px"></i><i style="width:${200 + (i * 53) % 160}px"></i></div>`).join('');
+      // Same grid as a real row, so nothing moves when the data arrives.
+      box.innerHTML = `<span class="sr-only" role="status">Loading leads</span>` + Array.from({ length: Math.max(8, Math.ceil(sc.clientHeight / h) + 1) }, (_, i) => `<div class="row skel" aria-hidden="true" style="top:${i * h}px"><div class="c-sel"><span class="av"></span></div><div class="who"><i style="width:${34 + (i * 7) % 18}%"></i><i style="width:${52 + (i * 11) % 30}%"></i></div><div class="tags c-tags"><i class="chip"></i><i class="chip"></i></div><span class="c-fol"><i></i></span><div class="c-fit"><i class="rg"></i></div><span class="c-st"><i></i></span></div>`).join('');
     } else if (S.error) {
       box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
@@ -1093,13 +1138,19 @@ function closeDetail() {
   detailAccess.close();
 }
 function edgeDay(value) { const date = String(value || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : ''; }
+// Dates read as "Sep 16", with the year only when it is not this year. The ISO day stays in the datetime attribute.
+function shortDate(day) {
+  const d = new Date(String(day).slice(0, 10) + 'T00:00:00');
+  if (Number.isNaN(+d)) return String(day);
+  return d.toLocaleDateString('en-US', d.getFullYear() === new Date().getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+}
 function connectionEvidenceHTML(current, historical) {
   const direction = (e) => e.direction === 'followers' ? `They followed @${e.seed}` : e.direction === 'following' ? `@${e.seed} followed them` : 'Seen in a list';
-  const seen = (value, label) => { const day = edgeDay(value); return day ? `<time datetime="${esc(day)}">${label} ${esc(day)}</time>` : `${label} date unavailable`; };
-  const active = current.length ? current.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by @${esc(e.seed)}"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${seen(e.observed_at, 'Seen')}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>';
+  const seen = (value, label) => { const day = edgeDay(value); return day ? `<time datetime="${esc(day)}">${label} ${esc(shortDate(day))}</time>` : `${label} date unavailable`; };
+  const active = current.length ? current.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by @${esc(e.seed)}"><b>@${esc(e.seed)}</b><span>${esc(direction(e))}. ${seen(e.observed_at, 'Seen')}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>';
   const earlier = historical.length ? `<h4 class="d-history-heading">Earlier observations</h4><div class="edges d-history-edges">${historical.map((e) => {
-    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? ` · ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')} · not reverified`;
-    return `<div class="d-history-row"><b>@${esc(e.seed)}</b><span>${esc(direction(e))} · ${timing}</span></div>`;
+    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? `. ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')}, not reverified`;
+    return `<div class="d-history-row"><b>@${esc(e.seed)}</b><span>${esc(direction(e))}. ${timing}</span></div>`;
   }).join('')}</div>` : '';
   return `<div class="edges">${active}</div>${earlier}`;
 }
@@ -1171,7 +1222,8 @@ function renderDetail() {
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
   const tags = detailTagSelection(p);
   const manualTags = [...tags.primary, ...tags.related].filter((t) => t.source === 'manual' && !(p.status === 'client' && /^client$/i.test(t.tag)));
-  const overviewTags = tags.primary.filter((t) => t.source !== 'manual');
+  // Fit has its own ring in the summary, so verdict tags stay out of the tag list.
+  const overviewTags = tags.primary.filter((t) => t.source !== 'manual' && rowTagFacet(t) !== 'verdict');
   const evidenceTags = tags.related.filter((t) => t.source !== 'manual');
   const url = safeUrl(p.website);
   const site = p.website ? String(p.website).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') : '';
@@ -1189,46 +1241,50 @@ function renderDetail() {
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
+  const fitLabel = p.loading ? '' : ({ strong: 'Strong fit', good: 'Good fit', weak: 'Weak fit', unread: 'Not reviewed' })[fitOf(p)];
+  const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '') || (p.loading ? '' : 'No summary yet.');
+  const connection = you || (edges.length ? (edges[0].direction === 'followers' ? 'Follows @' + edges[0].seed : edges[0].direction === 'following' ? '@' + edges[0].seed + ' follows them' : 'Seen in @' + edges[0].seed + '’s list') : '');
+  const readDate = p.bio_at ? new Date(p.bio_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   panel.innerHTML = `
-    <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
-      ${S.view === 'leads' && S.rows.length > 1 ? '<div class="d-nav"><button type="button" id="d-prev" aria-label="Previous lead" title="Previous (k)">&#8593;</button><button type="button" id="d-next" aria-label="Next lead" title="Next (j)">&#8595;</button></div>' : ''}
-      <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
+    <header class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
+      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '')}</b><span>@${esc(p.handle)}${role ? `<i class="d-role">${esc(ucf(role))}</i>` : ''}</span></div>
+      <div class="d-tools">${S.view === 'leads' && S.rows.length > 1 ? `<button type="button" id="d-prev" class="d-icon" aria-label="Previous lead" title="Previous (k)">${icon('arrowUp')}</button><button type="button" id="d-next" class="d-icon" aria-label="Next lead" title="Next (j)">${icon('arrowDown')}</button>` : ''}<button type="button" class="d-icon d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">${icon('close')}</button></div></header>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
-    <div class="d-primary">
-      ${p.handle ? `<a class="btn solid d-instagram" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Open Instagram ↗</a>` : ''}
-      <span class="d-follower-count"><b>${fmt(p.followers)}</b> followers</span>${relationshipHTML(p)}
-      ${url ? `<a class="d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
-    </div>
-    ${overviewTags.length || p.bio ? `<section class="d-sec d-overview">${overviewTags.length ? `<div class="d-tags d-overview-tags">${overviewTags.map(t => tagChip(t)).join('')}</div>` : ''}${p.bio ? `<p class="d-overview-bio">${esc(p.bio)}</p>` : ''}</section>` : ''}
-    <section class="d-sec d-note-section"><h4><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h4><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what matters… Type @ to link a profile.">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
-    <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
-      ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
-      ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
-      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
+    <section class="d-sec d-summary" aria-label="Summary">
+      ${why ? `<p class="d-why">${esc(why)}</p>` : p.loading ? '<p class="d-why"><i class="sk sk-line"></i></p>' : ''}
+      <div class="d-facts">${p.loading ? '' : `<span class="d-fit">${rowFitHTML(p, 32)}<b>${esc(fitLabel)}</b></span>`}<span class="d-follower-count"><b class="num">${fmt(p.followers)}</b> followers</span>${relationshipHTML(p)}</div>
+      ${connection ? `<p class="d-connection-summary">${esc(connection)}</p>` : ''}
+      <div class="d-primary">
+        ${p.handle ? `<a class="btn solid d-instagram" href="https://www.instagram.com/${encodeURIComponent(p.handle)}/" target="_blank" rel="noopener">Open Instagram${icon('external', 14)}</a>` : ''}
+        ${url ? `<a class="btn d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website${icon('external', 14)}</a>` : ''}
+      </div>
     </section>
-
+    <section class="d-sec d-status-section" aria-labelledby="d-h-status"><h3 class="d-h" id="d-h-status">Status</h3>${statusChoicesHTML(p)}${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}</section>
+    <section class="d-sec d-note-section"><h3 class="d-h"><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h3><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="How you know them, what matters. Type @ to link a profile.">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     ${workflowSummaryHTML(p)}
-    ${you || edges.length ? `<p class="d-sec d-connection-summary">${esc(you || (edges[0].direction === 'followers' ? 'Follows @' + edges[0].seed : edges[0].direction === 'following' ? '@' + edges[0].seed + ' follows them' : 'Seen in @' + edges[0].seed + '’s list'))}</p>` : ''}
-    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary">More details</summary>
-      <h4 class="d-more-heading">Profile</h4>
-      <div class="d-fit-h">${p.loading ? '' : fitBadge(p, 'lg')}${p.score == null ? '' : `<span class="muted">Priority ${esc(p.score)}</span>`}</div>
-      ${reason ? `<p class="d-reason">${esc(reason)}</p>` : ''}
-      ${evidenceTags.length ? `<div class="d-tags d-evidence-tags">${evidenceTags.map((t) => tagChip(t)).join('')}</div>` : ''}
+    <section class="d-sec d-labels-section" aria-labelledby="d-h-tags"><h3 class="d-h" id="d-h-tags">Tags</h3>
+      ${overviewTags.length || manualTags.length ? `<div class="d-tags">${overviewTags.map((t) => tagChip(t)).join('')}${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">${icon('close', 10)}</button></span>`).join('')}</div>` : p.loading ? '' : '<p class="d-empty">No tags yet.</p>'}
+      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a tag" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add tag</button></form>
+    </section>
+    <section class="d-sec d-know-section" aria-labelledby="d-h-know"><h3 class="d-h" id="d-h-know">How you know them</h3>${knowThemHTML(p)}</section>
+    <details class="d-sec d-disclosure" data-detail-section="profile" data-owner="${p.id}" ${view.sections.profile ? 'open' : ''}><summary id="d-profile-summary"><span>More details</span>${icon('chevronDown', 14, 'd-chev')}</summary>
+      <h4 class="d-h2">Profile</h4>
       ${p.category ? `<p class="d-category">${esc(p.category)}</p>` : ''}
       <div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
-      <div class="d-stats"><div><b>${fmt(p.followers)}</b><span>Followers</span></div><div><b>${fmt(p.following)}</b><span>Following</span></div><div><b>${fmt(p.posts)}</b><span>Posts</span></div></div>
+      <dl class="d-stats"><div><dt>Followers</dt><dd class="num">${int(p.followers)}</dd></div><div><dt>Following</dt><dd class="num">${int(p.following)}</dd></div><div><dt>Posts</dt><dd class="num">${int(p.posts)}</dd></div>${p.score == null ? '' : `<div><dt>Priority</dt><dd class="num">${esc(p.score)}</dd></div>`}</dl>
       ${site && !url ? `<p class="muted">${esc(site)}</p>` : ''}
-      <p class="muted profile-freshness">${p.bio_at ? 'Profile read ' + esc(new Date(p.bio_at).toLocaleDateString()) : 'Profile not read yet'} · ${esc(profile.source)}</p>
+      <p class="muted profile-freshness">${readDate ? 'Profile read ' + esc(readDate) + '.' : 'Profile not read yet.'} Source: ${esc(profile.source.toLowerCase())}.</p>
       ${profile.message ? `<p class="${profile.failed ? 'bad' : 'muted'} profile-freshness" role="status">${esc(profile.message)}</p>` : ''}
       ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}
+      ${ev.length || evidenceTags.length || p.site || p.scout ? `<h4 class="d-h2">Evidence</h4>` : ''}
+      ${evidenceTags.length ? `<div class="d-tags d-evidence-tags">${evidenceTags.map((t) => tagChip(t)).join('')}</div>` : ''}
       ${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
       ${websiteEvidence(p.site)}
       ${scoutHTML(p.scout)}
-      <h4 class="d-more-heading">Observed connections${n ? ` · ${plural(n, 'list')}` : ''}</h4>
+      <h4 class="d-h2">Connections${n ? `<span class="d-h2-n">${plural(n, 'list')}</span>` : ''}</h4>
       ${connectionEvidenceHTML(edges, oldEdges)}
-      <h4 class="d-more-heading">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
-      ${p.review_history?.length ? `<h4 class="d-more-heading">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? ` · ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
+      <h4 class="d-h2">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
+      ${p.review_history?.length ? `<h4 class="d-h2">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? `, ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
     </details>`;
   const sn = M.seeds?.find((x) => x.pid === p.id);
   if (sn) $('#detail').insertAdjacentHTML('beforeend', `<div class="d-seed">${seedBlock(sn)}</div>`);
@@ -1338,14 +1394,20 @@ const FAMILIARITY_LABELS = { briefly: 'Briefly', know_them: 'Know them', close: 
 function humanRelationships(p) {
   return Array.isArray(p.relationships) ? p.relationships : p.status === 'client' ? ['client', 'worked_with'] : [];
 }
-function humanRelationshipHTML(p) {
-  const selected = humanRelationships(p), disabled = p.loading || p.failed ? 'disabled' : '';
-  return `<h4>How you know them</h4><div class="marks relationship-choices" role="group" aria-label="How you know them">${Object.entries(HUMAN_RELATIONSHIPS).map(([key,label]) => `<button type="button" id="d-relationship-${key}" data-human-relationship="${key}" aria-label="${label} relationship" aria-pressed="${selected.includes(key)}" class="${selected.includes(key) ? 'on' : ''}" ${disabled}><i></i><b>${label}</b></button>`).join('')}</div>
-    <p class="relationship-hint">Past or present. Add detail in your note.</p>
-    <div class="relationship-familiarity"><span>How well? · Optional</span><div class="marks" role="group" aria-label="How well you know them (optional)">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
-    <h4 class="relationship-conversation-title">Conversation</h4><div class="marks" role="group" aria-label="Conversation">${STATUSES.filter(s => s !== 'no').map(s => `<button type="button" id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${p.status === s ? 'on' : ''}" ${disabled}><i></i><b>${slabel(s)}</b></button>`).join('')}</div>
-    <button type="button" id="d-status-no" data-s="no" aria-pressed="${p.status === 'no'}" class="relationship-not-fit ${p.status === 'no' ? 'on' : ''}" ${disabled}>${p.status === 'no' ? '✓ ' : ''}Not a business fit</button>`;
+// Where the conversation stands. One choice at a time; the second press clears it.
+function statusChoicesHTML(p) {
+  const disabled = p.loading || p.failed ? 'disabled' : '';
+  return `<div class="marks status-choices" role="group" aria-label="Status">${STATUSES.filter(s => s !== 'no').map(s => `<button type="button" id="d-status-${s}" data-s="${s}" aria-pressed="${p.status === s}" class="${p.status === s ? 'on' : ''}" ${disabled}><span class="stat ${s}"><i></i></span><b>${slabel(s)}</b></button>`).join('')}</div>
+    <button type="button" id="d-status-no" data-s="no" aria-pressed="${p.status === 'no'}" class="relationship-not-fit ${p.status === 'no' ? 'on' : ''}" ${disabled}>${p.status === 'no' ? icon('check', 14) : ''}<span>Not a fit</span></button>`;
 }
+// History with them, and how well. Both are optional and independent of the status above.
+function knowThemHTML(p) {
+  const selected = humanRelationships(p), disabled = p.loading || p.failed ? 'disabled' : '';
+  return `<div class="marks relationship-choices" role="group" aria-label="How you know them">${Object.entries(HUMAN_RELATIONSHIPS).map(([key,label]) => `<button type="button" id="d-relationship-${key}" data-human-relationship="${key}" aria-label="${label} relationship" aria-pressed="${selected.includes(key)}" class="${selected.includes(key) ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div>
+    <div class="relationship-familiarity"><span>How well? <em>Optional</em></span><div class="marks" role="group" aria-label="How well you know them (optional)">${Object.entries(FAMILIARITY_LABELS).map(([key,label]) => `<button type="button" id="d-familiarity-${key}" data-familiarity="${key}" aria-pressed="${p.familiarity === key}" class="${p.familiarity === key ? 'on' : ''}" ${disabled}><b>${label}</b></button>`).join('')}</div></div>
+    <p class="relationship-hint">Past or present. Add detail in your note.</p>`;
+}
+function humanRelationshipHTML(p) { return statusChoicesHTML(p) + knowThemHTML(p); }
 function updateHumanRelationship(id, field, value) {
   return saveHumanContext(id, p => {
     if (field === 'relationships') {
@@ -1502,9 +1564,9 @@ function workflowSummaryHTML(p) {
   if (p.loading || p.failed) return '';
   const f = p.follow_up, open = f && !f.completed_at, d = workflowDrafts.get(p.id) || {};
   const today = LeadWorkflow.localToday(), overdue = open && f.due_on < today;
-  const status = !f ? 'No follow-up scheduled' : f.completed_at ? 'Follow-up completed' : (overdue ? 'Overdue · ' : f.due_on === today ? 'Due today · ' : 'Scheduled · ') + f.due_on;
+  const status = !f ? 'No follow-up scheduled' : f.completed_at ? 'Follow-up completed' : overdue ? 'Overdue, was due ' + shortDate(f.due_on) : f.due_on === today ? 'Due today' : 'Due ' + shortDate(f.due_on);
   const disabled = workflowBusy(p.id) ? 'disabled' : '';
-  return `<section class="d-sec workflow" id="workflow-summary" aria-label="Follow-up">
+  return `<section class="d-sec workflow" id="workflow-summary" aria-labelledby="d-h-follow"><h3 class="d-h" id="d-h-follow">Follow-up</h3>
     ${open ? `<div class="workflow-summary-line"><p class="${overdue ? 'bad' : 'muted'}">${esc(status)}</p><button type="button" class="btn" id="followup-complete" data-follow-action="complete" ${disabled}>Complete</button></div>` : ''}
     ${open && f.note ? `<p class="workflow-next-action">${esc(f.note)}</p>` : ''}
     <details class="workflow-editor" id="followup-editor" data-owner="${p.id}" data-workflow-disclosure="followOpen" ${d.followOpen ? 'open' : ''}><summary id="followup-editor-summary">${open ? 'Change follow-up' : f ? 'Schedule next follow-up' : 'Add follow-up'}</summary>
@@ -1801,7 +1863,7 @@ document.addEventListener('keydown', (e) => {
     if (S.open !== r.id) openDetail(r.id).then(focusTag); else focusTag();
   }
 });
-$('#help').onclick = () => setHelp(false);
+$('#help').onclick = (e) => { if (e.target === e.currentTarget || e.target.closest('#help-close')) setHelp(false); };
 // Marking someone "Not a fit" is triage: move on to the next lead, and Undo restores this one.
 function setStatusKey(id, status) {
   mark(id, status);

@@ -1,8 +1,5 @@
 /* Collection progress uses the same source form and queue table in both views. */
-.fl-ctl-status-link { color:var(--fg); text-decoration:none; padding:5px 8px; border-radius:8px; }
-.fl-ctl-status-link:hover { background:var(--bg2); }
-.fl-ctl-top { display:flex; align-items:center; flex-wrap:wrap; gap:8px 20px; }
-.fl-ctl-top .fl-ctl-direct { position:static; margin:4px 0 4px auto; width:auto; }
+
 .collection-targets .tbl { min-width:0; }
 .list-direction-mobile { display:none; }
 .collection-targets { margin:24px 0; }

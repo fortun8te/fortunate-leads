@@ -1,21 +1,8 @@
 /* Observed follow directions use their own neutral treatment, outside tag importance. */
-.owner-follow { display: inline-flex; align-items: center; flex: none; gap: 5px; padding: 2px 6px; border: 1px solid var(--line2); border-radius: 5px; color: var(--fg2); font-size: 11px; font-weight: 500; line-height: 1.4; white-space: nowrap; }
-.owner-follow::before { content: '↗'; color: var(--fg3); font-size: 12px; }
-.owner-follow[data-relationship="mutual"]::before { content: '↔'; }
-.owner-follow[data-relationship="follows"]::before { content: '↙'; }
-.row .why { display: flex; align-items: center; gap: 7px; }
-.row .why > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .relationship-filter { max-width: 174px; min-width: 132px; }
 .ql-network > .owner-follow { margin-bottom: 8px; }
-.d-primary > .owner-follow { margin-left: 0; }
+
 @media(max-width:640px) { .qbar .relationship-filter { max-width: 100%; } .map-toolbar .relationship-filter { max-width: 150px; min-width: 0; } }
 
 /* Personal history, familiarity and conversation are independent choices. */
-.relationship-hint { margin: 8px 0 14px; color: var(--fg3); font-size: 12px; }
-.relationship-familiarity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-.relationship-familiarity > span { font-size: 12px; color: var(--fg2); }
-.relationship-familiarity .marks button { padding: 5px 9px; font-size: 12px; }
-.d-sec h4.relationship-conversation-title { margin-top: 20px; }
-.relationship-not-fit { margin: 13px 0 0; padding: 0; background: none; border: 0; color: var(--fg3); font: inherit; font-size: 12px; cursor: pointer; }
-.relationship-not-fit.on { color: var(--fg); }
-.relationship-not-fit:focus-visible { outline: 2px solid var(--fg2); outline-offset: 4px; }
