@@ -34,12 +34,12 @@ STATUS_CODE = {None: 0, '': 0, 'interested': 1, 'good': 1, 'contacted': 2, 'talk
 CODE_STATUS = {i + 1: n for i, n in enumerate(STATUS_NAMES)}
 BAND_EDGES = (0, 25, 45, 60, 70, 85)          # min_fit snaps down to one of these
 FIT_BAND_LABEL = ('Not read', 'Weak fit', 'Good fit', 'Strong fit')
-COMMUNITIES = 48                              # closeness: wedges for the biggest sources
+COMMUNITIES = 12                              # default view: largest recorded source audiences
 SEED_CLUSTERS = 160                           # seeds: one cluster per source, biggest first
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -221,37 +221,20 @@ def _owner_handle(conn):
                         "(lower(handle)='fortun8te') DESC,handle LIMIT 1),'fortun8te')").fetchone()[0]
 
 
-def _wedge_order(conn, communities):
-    """Order communities so ones that share people sit next to each other (greedy chain)."""
-    index = {h: i for i, h in enumerate(communities)}
-    if len(index) < 3:
-        return list(range(len(communities)))
-    pair = {}
-    rows = conn.execute('SELECT person_id FROM map_person_degree WHERE hidden=0 AND degree>=2 '
-                        'ORDER BY degree DESC LIMIT 60000').fetchall()
-    ids = [r[0] for r in rows]
-    for start in range(0, len(ids), 900):
-        chunk = ids[start:start + 900]
-        by_person = {}
-        for pid, seed in conn.execute('SELECT person_id,seed FROM map_seed_member WHERE person_id IN (%s)'
-                                      % ','.join('?' * len(chunk)), chunk):
-            k = index.get(seed.lower())
-            if k is not None:
-                by_person.setdefault(pid, []).append(k)
-        for ks in by_person.values():
-            for a in ks:
-                for b in ks:
-                    if a < b:
-                        pair[(a, b)] = pair.get((a, b), 0) + 1
-    weight = lambda a, b: pair.get((min(a, b), max(a, b)), 0)   # noqa: E731
-    left = set(range(1, len(communities)))
-    chain = [0]
-    while left:
-        last = chain[-1]
-        best = max(left, key=lambda k: (weight(last, k), -k))
-        chain.append(best)
-        left.discard(best)
-    return chain
+def audience_grid(count):
+    """Separated audience cells across a compact square, including overflow and owner groups."""
+    cols = math.ceil(math.sqrt(count))
+    rows = math.ceil(count / cols)
+    dx, dy = 0.82 / cols, 0.82 / rows
+    centres = []
+    for index in range(count):
+        row, col = divmod(index, cols)
+        row_count = min(cols, count - row * cols)
+        offset = (cols - row_count) / 2
+        centres.append([round(0.09 + (col + offset + 0.5) * dx, 6),
+                        round(0.09 + (row + 0.5) * dy, 6), round(0.38 * min(dx, dy), 6)])
+    centres.sort(key=lambda c: ((c[0] - 0.5)**2 + (c[1] - 0.5)**2, c[1], c[0]))
+    return centres
 
 
 def make_plan(conn):
@@ -263,23 +246,8 @@ def make_plan(conn):
     total = conn.execute('SELECT count(*) FROM map_person_degree').fetchone()[0]
     comm = [h for h, _ in sources[:COMMUNITIES]]
     seed_list = sources[:SEED_CLUSTERS]
-    order = _wedge_order(conn, comm)
-    sizes = {h: n for h, n in sources}
-    # closeness wedges: width ~ sqrt(members), fixed slivers for "other" and "connected to you"
-    gap = 0.025
-    other_w, me_w = 0.30, 0.22
-    room = TWO_PI - gap * (len(comm) + 2) - other_w - me_w
-    weights = [math.sqrt(sizes[h]) for h in comm]
-    scale = room / sum(weights) if weights else 0
-    wedges = [None] * len(comm)
-    angle = -math.pi / 2
-    for pos in order:
-        width = weights[pos] * scale
-        wedges[pos] = [round(angle, 6), round(width, 6)]
-        angle += width + gap
-    other = [round(angle, 6), other_w]
-    angle += other_w + gap
-    me = [round(angle, 6), me_w]
+    # Audience groups fill the viewport; distance from Michael has no spatial meaning.
+    audience_centres = audience_grid(len(comm) + 2)
     # seeds mode: a sunflower of source centres, biggest in the middle
     biggest = max([n for _, n in seed_list] or [1])
     centres = []
@@ -299,7 +267,7 @@ def make_plan(conn):
     owner_id = row[0] if row else 0
     plan = {'id': hashlib.sha1(f'{time.time()}-{os.getpid()}'.encode()).hexdigest()[:10],
             'made_at': db.now(), 'owner': owner, 'owner_id': owner_id, 'people': total, 'src': src,
-            'comm': comm, 'wedges': wedges, 'wedge_other': other, 'wedge_me': me,
+            'comm': comm, 'audience_centres': audience_centres,
             'seed_list': [h for h, _ in seed_list], 'centres': centres, 'source_ids': source_ids}
     return plan
 
@@ -314,7 +282,9 @@ class Ctx:
         self.src = {h: (v[1], v[2], v[3]) for h, v in plan['src'].items()}
         self.k_other = len(plan['comm'])
         self.k_me = self.k_other + 1
-        self.wedges = plan['wedges'] + [plan['wedge_other'], plan['wedge_me']]
+        self.audience_centres = plan.get('audience_centres')
+        # Keep an older active layout consistent until an explicit rebuild replaces it.
+        self.wedges = (plan['wedges'] + [plan['wedge_other'], plan['wedge_me']]) if 'wedges' in plan else []
         self.s_other = len(plan['seed_list'])
         self.centres = plan['centres']
 
@@ -322,12 +292,15 @@ class Ctx:
         """Label anchors for the renderer: [{id,label,x,y,r}]."""
         out = []
         if mode == 'closeness':
-            for k, (a0, w) in enumerate(self.wedges):
-                label = ('Around @' + self.plan['comm'][k] if k < self.k_other else
-                         'Other communities' if k == self.k_other else 'Connected to you')
-                mid = a0 + w / 2
-                out.append({'id': k, 'label': label, 'x': round(0.5 + 0.40 * math.cos(mid), 4),
-                            'y': round(0.5 + 0.40 * math.sin(mid), 4), 'r': round(0.05 + 0.04 * w, 4)})
+            for k in range(self.k_me + 1):
+                label = ('Audience of @' + self.plan['comm'][k] if k < self.k_other else
+                         'Other audiences' if k == self.k_other else 'Connected to you')
+                if self.audience_centres:
+                    x, y, radius = self.audience_centres[k]
+                else:
+                    a0, width = self.wedges[k]
+                    x, y, radius = 0.5 + 0.4 * math.cos(a0 + width/2), 0.5 + 0.4 * math.sin(a0 + width/2), 0.05
+                out.append({'id': k, 'label': label, 'x': x, 'y': y, 'r': radius})
         elif mode == 'fit':
             for band, (cx, cy, r) in FIT_BLOBS.items():
                 out.append({'id': band, 'label': FIT_BAND_LABEL[band], 'x': cx, 'y': cy, 'r': r})
@@ -495,20 +468,24 @@ def layout_row(mode, F, ctx, c=None):
     others = [s for s in seeds if s != owner]
     u1, u2, u3 = uniforms(pid, MODES.index(mode))
     if mode == 'closeness':
-        srcmap = ctx.src
-        k = -1
-        for s in others:
-            info = srcmap.get(s)
-            if info is not None and info[1] > k:
-                k = info[1]
-        if k < 0:
-            k = ctx.k_me if (not others and me) else ctx.k_other
+        if ctx.audience_centres:
+            # Assign the smallest recorded source audience, with a stable tie break.
+            # This is a display grouping, not a claim of personal familiarity.
+            recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
+            chosen = min(recorded, key=lambda s: (ctx.plan['src'][s][0], s)) if recorded else None
+            k = ctx.src[chosen][1] if chosen else ctx.k_me if (pid == ctx.owner_id or (not others and me)) else ctx.k_other
+            cx, cy, radius = ctx.audience_centres[k]
+            r = radius * math.sqrt(u2) * (0.8 + 0.2 * (1.0 - c))
+            theta = TWO_PI * u1
+            x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
+        else:
+            known = [ctx.src[s][1] for s in others if s in ctx.src and ctx.src[s][1] >= 0]
+            k = max(known) if known else ctx.k_me if (not others and me) else ctx.k_other
+            a0, width = ctx.wedges[k]
+            theta = a0 + (0.04 + 0.92 * u1) * width
+            r = min(0.485, 0.03 + 0.45 * (1.0 - c) ** 0.75 * (0.9 + 0.2 * u2))
+            x, y = 0.5 + r * math.cos(theta), 0.5 + r * math.sin(theta)
         cluster = k
-        a0, w = ctx.wedges[k]
-        theta = a0 + (0.04 + 0.92 * u1) * w
-        r = 0.03 + 0.45 * (1.0 - c) ** 0.75 * (0.9 + 0.2 * u2)
-        r = min(r, 0.485)
-        x, y = 0.5 + r * math.cos(theta), 0.5 + r * math.sin(theta)
     elif mode == 'fit':
         band = 0 if fit is None else 1 if fit < 45 else 2 if fit < 70 else 3
         cluster = band

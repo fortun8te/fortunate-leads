@@ -126,3 +126,26 @@ class MapViewTests(unittest.TestCase):
         for mode in ML.MODES:
             with MV.reader(self.path,mode) as store:
                 self.assertIsNone(store.conn.execute('SELECT 1 FROM mp WHERE person_id=?',(pid,)).fetchone())
+
+    def test_default_audiences_fill_compact_grid_and_preserve_membership(self):
+        with MV.reader(self.path, 'closeness') as store:
+            ctx = ML.load_ctx(store.conn)
+            groups = ctx.groups('closeness')
+            self.assertEqual(len(ctx.plan['comm']), 12)
+            self.assertEqual(len(groups), 14)
+            for i, group in enumerate(groups):
+                for other in groups[i+1:]:
+                    distance = ((group['x']-other['x'])**2+(group['y']-other['y'])**2)**0.5
+                    self.assertGreater(distance, group['r'] + other['r'])
+            self.assertLess(((groups[0]['x']-.5)**2+(groups[0]['y']-.5)**2)**0.5, .2)
+            feats = ML.features_for(self.conn, ctx, [self.fixture['first']+3])
+            feature = next(iter(feats.values()))
+            row = ML.layout_row('closeness', feature, ctx)
+            source_handles = [s for s in feature[6] if s != ctx.owner and s in ctx.src and ctx.src[s][1] >= 0]
+            if source_handles:
+                smallest = min(source_handles, key=lambda s:(ctx.plan['src'][s][0],s))
+                self.assertEqual(row[4], ctx.src[smallest][1])
+            centre = groups[row[4]]
+            distance = ((ML.coord(row[1])-centre['x'])**2+(ML.coord(row[2])-centre['y'])**2)**0.5
+            self.assertLessEqual(distance, centre['r'] + 1e-6)
+            self.assertEqual(row[7], int(round(ML.closeness(feature,ctx)*1000)))

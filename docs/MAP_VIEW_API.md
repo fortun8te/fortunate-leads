@@ -136,7 +136,7 @@ place until their own data changes.
 
 | Mode | Layout | `cluster` | Rank |
 | --- | --- | --- | --- |
-| `closeness` | Radial. Distance from the centre is closeness to Michael. Angle groups communities (the source account a person is most specific to). | community index; the last id is "other communities" | closeness, then score |
+| `closeness` | Compact audience grid. Up to 12 source audiences plus Other audiences and Connected to you. Each person belongs to their smallest displayed collected source audience. | displayed source audience, overflow audience or owner connections | closeness, then score |
 | `fit` | Four blobs: strong (70+), good (45-69), weak (under 45), not read. Higher fit sits nearer the blob centre. | 0 not read, 1 weak, 2 good, 3 strong | fit, then closeness |
 | `seeds` | One cluster per source account. People sit at the centre of the sources they appear in, so people in several lists sit between clusters. | source index by size; the last id is "other" | number of sources, then closeness |
 | `status` | Blobs by pipeline status. | 0 none, 1 interested, 2 contacted, 3 talking, 4 spoke before, 5 client, 6 not a fit | status, then score |
@@ -171,3 +171,15 @@ Layouts are derived data. Database and workspace backups preserve the people and
 but do not include the `<db>.map/` directory. After restoring a database, prepare new layouts with
 the commands above. The bounded overview remains usable before preparation. Do not copy layout
 files from a different database snapshot, because their person IDs and revision may differ.
+
+## Default audience arrangement
+
+The default view groups people by recorded source membership in a compact grid. Larger source
+audiences occupy the central cells. Distance across the map does not measure personal familiarity
+and Michael is not an implied centre. The `closeness` value remains ranking metadata. The 12 largest
+source audiences have individual groups; remaining audiences appear under Other audiences.
+Within displayed audiences, overlapping profiles belong to the smallest recorded source list, with
+handle ties resolved consistently. A person can still have many source links in their evidence.
+
+The new geometry requires an explicit layout rebuild (schema 2). Existing prepared layouts retain
+their old geometry until rebuilt; incremental maintenance must not mix layout arrangements.
