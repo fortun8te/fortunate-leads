@@ -26,7 +26,7 @@
         <span class="bar-p ${l.state === 'done' ? 'done' : l.state === 'running' ? 'run' : l.total ? '' : 'unknown'}"><i style="width:${pct}%"></i></span>
         <span class="num muted">${N(l.received)}${l.total ? ' of ' + N(l.total) : ''}</span></li>`;
     };
-    return `<p class="st-headline" role="status" aria-live="polite" data-state="${E(f.state)}">${E(f.headline)}</p>
+    return `<p class="st-headline" role="status" aria-live="polite" data-state="${E(f.state)}">${E(f.state === 'paused' ? 'Collection is stopped. Continue collecting where you left off.' : f.headline)}</p>
       <dl class="st-stats"><div><dt>People found</dt><dd class="num">${N(f.people)}</dd></div><div><dt>Bios read</dt><dd class="num">${N(f.bios)}</dd></div><div><dt>Ranked</dt><dd class="num">${N(f.ranked)}</dd></div></dl>
       ${f.lists.length ? `<ul class="st-lists">${f.lists.slice(0, 6).map(bar).join('')}</ul>` : ''}`;
   }
@@ -38,7 +38,7 @@
 
   if (typeof document === 'undefined' || !document.getElementById('view-start')) return;
   const root = document.getElementById('view-start'), tab = document.getElementById('tab-start');
-  const St = { data: null, leads: [], timer: 0, busy: false, error: false, landed: false, input: '' };
+  const St = { data: null, leads: [], timer: 0, busy: false, error: false, landed: false, input: '', pending: null, changing: false };
 
   function render() {
     const d = St.data;
@@ -49,8 +49,9 @@
         <div><h2>Find leads from an account</h2>
         <p class="muted">Paste a brand or competitor your customers follow. We read who follows it and who it follows, at Instagram's safe pace.</p></div>
         <form class="st-form" id="st-form"><input class="input" id="st-in" value="${E(St.input)}" aria-label="Instagram handle or link" placeholder="@handle or instagram.com/handle" autocomplete="off" spellcheck="false">
-          <button class="btn solid" id="st-go" ${St.busy ? 'disabled' : ''}>${St.busy ? 'Starting…' : 'Start'}</button>
-          ${going || paused ? `<button type="button" class="btn" id="st-pause">${paused ? 'Resume' : 'Pause'}</button>` : ''}</form>
+          <button class="btn solid" id="st-go" ${St.busy || St.changing ? 'disabled' : ''}>${St.busy ? 'Starting…' : 'Start collection'}</button>
+          ${going || paused ? `<button type="button" class="btn" id="st-pause" ${St.changing ? 'disabled' : ''}>${St.changing ? paused ? 'Starting…' : 'Stopping…' : paused ? 'Continue collecting' : 'Stop collecting'}</button>` : ''}</form>
+        ${going || paused ? '<p class="st-control-help muted">Stop keeps your progress. Continue picks up where you left off.</p>' : ''}
         <p class="st-err muted" id="st-err" role="alert" hidden></p>
         ${flowHTML(d.flow)}${leadsHTML(St.leads)}
       </div></section>
@@ -67,6 +68,11 @@
     n.hidden = !(d && d.blocking);
   }
   async function refresh() {
+    if (St.pending) return St.pending;
+    St.pending = readStatus();
+    try { await St.pending; } finally { St.pending = null; }
+  }
+  async function readStatus() {
     try {
       const r = await fetch('/api/onboarding', { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status);
@@ -98,6 +104,7 @@
   }
   root.addEventListener('submit', async (e) => {
     if (e.target.id !== 'st-form') return;
+    if (St.busy || St.changing) { e.preventDefault(); return; }
     e.preventDefault();
     St.input = root.querySelector('#st-in').value;
     const handles = window.parseHandles ? parseHandles(St.input) : [];
@@ -108,15 +115,17 @@
       const r = await post('/api/start', { handles });
       if (window.toast) toast(r.started ? (r.queued ? 'Started. Lists collect at a safe pace.' : 'Already queued. Collection is on.') : 'Lists queued. Check collection status before starting.');
       window.dispatchEvent(new Event('fl:control-changed'));
-      St.busy = false; await refresh(); render();
+      St.busy = false; await refresh();
     } catch (x) { St.busy = false; render(); const e2 = root.querySelector('#st-err'); e2.textContent = "Couldn't start collection. Try again."; e2.hidden = false; }
   });
   root.addEventListener('click', async (e) => {
     const t = e.target;
     if (t.closest('#st-pause')) {
+      if (St.changing || St.busy) return;
+      St.changing = true; render();
       const paused = St.data?.flow.state === 'paused';
-      try { await post('/api/control', { stage: 'collection', action: paused ? 'resume' : 'pause' }); window.dispatchEvent(new Event('fl:control-changed')); } catch (x) { if (window.toast) toast(paused ? "Couldn't resume collection. Try again." : "Couldn't pause collection. Try again."); }
-      refresh(); return;
+      try { await post('/api/control', { stage: 'collection', action: paused ? 'resume' : 'pause' }); window.dispatchEvent(new Event('fl:control-changed')); } catch (x) { if (window.toast) toast(paused ? "Couldn't continue collecting. Try again." : "Couldn't stop collecting. Try again."); }
+      St.changing = false; await refresh(); return;
     }
     const skip = t.closest('[data-st-skip]');
     if (skip) { try { await post('/api/onboarding', { skip: skip.dataset.stSkip }); } catch (x) { if (window.toast) toast("Couldn't save setup. Try again."); } refresh(); return; }
@@ -124,10 +133,9 @@
     if (copy) { if (window.copyText) copyText(copy.dataset.stCopy, copy); return; }
     if (t.closest('[data-st-wizard]')) { location.hash = '#/accounts'; setTimeout(() => document.getElementById('acc-add')?.click(), 50); }
   });
-  window.Start = { show() { render(); refresh().then(() => { badge(); if (root.classList.contains('on')) render(); }); clearTimeout(St.timer); St.timer = setTimeout(schedule, 4000); }, refresh };
-  window.addEventListener('fl:control-changed', () => refresh());
+  window.Start = { show() { render(); refresh(); clearTimeout(St.timer); St.timer = setTimeout(schedule, 4000); }, refresh };
+  window.addEventListener('fl:control-changed', () => { if (!St.busy && !St.changing) refresh(); });
   window.addEventListener('hashchange', badge);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
-  if (root.classList.contains('on')) window.Start.show();
   schedule();
 })();

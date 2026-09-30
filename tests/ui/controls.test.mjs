@@ -37,10 +37,10 @@ async function ready() {const h=harness();h.respond(0,collection());h.respond(1,
 
 test('initial control state keeps scraping action and per-engine statuses visible', async () => {
   const h=await ready();
-  assert.match(h.el.innerHTML,/fl-ctl-word">Paused/);
+  assert.match(h.el.innerHTML,/fl-ctl-word">Stopped/);
   assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
   assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Off in R mode<\/span>/);
-  assert.match(h.el.innerHTML,/Resume collection/);
+  assert.match(h.el.innerHTML,/Continue collecting/);
   assert.match(h.el.innerHTML,/aria-expanded="false"/);
 });
 
@@ -103,12 +103,12 @@ test('a slow status response cannot undo a confirmed scraping pause', async () =
   const post=h.requests.find(request=>request.url==='/api/control' && request.options?.method==='POST');
   assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'resume'});
   post.resolve({ok:true,status:200,json:async()=>collection(false)});await settle();
-  assert.match(h.el.innerHTML,/Pause collection/);
+  assert.match(h.el.innerHTML,/Stop collecting/);
   h.respond(2,collection(true));h.respond(3,engines());await settle();
-  assert.match(h.el.innerHTML,/Pause collection/);
+  assert.match(h.el.innerHTML,/Stop collecting/);
   const latest=h.requests.length;
   h.respond(latest-2,collection(false));h.respond(latest-1,engines());await settle();
-  assert.match(h.el.innerHTML,/Pause collection/);
+  assert.match(h.el.innerHTML,/Stop collecting/);
 });
 
 test('a failed engine change reports the error and keeps the last confirmed state', async () => {
@@ -118,4 +118,52 @@ test('a failed engine change reports the error and keeps the last confirmed stat
   post.reject(new Error('offline'));await settle();
   assert.match(h.el.innerHTML,/Couldn&#39;t confirm ranking hints change/);
   assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
+});
+
+test('idle and waiting collection never claim to be collecting', async () => {
+  for (const [state, word] of [['idle', 'Ready'], ['waiting', 'Waiting']]) {
+    const h = harness(), status = collection(false);
+    status.stages.filter(stage => stage.id !== 'ai').forEach(stage => { stage.state = state; stage.now = ''; });
+    h.respond(0, status); h.respond(1, engines()); await settle();
+    assert.match(h.el.innerHTML, new RegExp(`fl-ctl-word">${word}`));
+    assert.doesNotMatch(h.el.innerHTML, /fl-ctl-word">Collecting/);
+    assert.match(h.el.innerHTML, /Stop keeps your progress/);
+  }
+});
+
+test('stop waits for the active request to finish before offering Continue', async () => {
+  const h = harness(), status = collection(false);
+  h.respond(0, status); h.respond(1, engines()); await settle();
+  h.click(button => button.dataset.stage === 'collection');
+  assert.match(h.el.innerHTML, />Stopping…<\/button>/);
+  const post = h.requests.find(request => request.options?.method === 'POST');
+  assert.deepEqual(JSON.parse(post.options.body), { stage: 'collection', action: 'pause' });
+  const stopping = collection(true); stopping.stages[0].active = true; stopping.stages[0].state = 'stopping';
+  post.resolve({ ok: true, json: async () => stopping }); await settle();
+  assert.match(h.el.innerHTML, /fl-ctl-word">Stopping…/);
+  assert.match(h.el.innerHTML, /disabled>Stopping…/);
+  assert.doesNotMatch(h.el.innerHTML, />Continue collecting<\/button>/);
+  const last = h.requests.length;
+  h.respond(last - 2, collection(true)); h.respond(last - 1, engines()); await settle();
+  assert.match(h.el.innerHTML, />Continue collecting<\/button>/);
+  assert.match(h.el.innerHTML, /Progress is saved/);
+  assert.equal(h.requests.filter(request => !request.options?.method).length, 4, 'one status read after the action, not two');
+});
+
+test('an unchanged status poll preserves the control buttons and keyboard focus', async () => {
+  const h = await ready(), button = h.el.querySelector('[data-focus="collection"]');
+  button.focus();
+  h.poll(); h.respond(2, collection()); h.respond(3, engines()); await settle();
+  assert.equal(h.el.querySelector('[data-focus="collection"]'), button);
+  assert.equal(h.document.activeElement, button);
+});
+
+test('a partial stop reply cannot pretend that collection stopped', async () => {
+  const h = harness(); h.respond(0, collection(false)); h.respond(1, engines()); await settle();
+  h.click(button => button.dataset.stage === 'collection');
+  const post = h.requests.find(request => request.options?.method === 'POST');
+  post.resolve({ ok: true, json: async () => ({ stages: [{ id: 'lists', paused: true }] }) }); await settle();
+  assert.match(h.el.innerHTML, /Couldn&#39;t confirm collection change/);
+  assert.match(h.el.innerHTML, /aria-expanded="true"/);
+  assert.doesNotMatch(h.el.innerHTML, />Continue collecting<\/button>/);
 });

@@ -417,3 +417,5 @@ details:is(.workflow-editor, .workflow-optional) > summary:hover { color: var(--
   .help-head { padding-inline: var(--s4); }
 }
 @media (prefers-reduced-motion: reduce) { .help, .help-card { animation: none; } }
+
+.fl-collection-help { display: block; margin-top: 3px; color: var(--fg3); font-size: 12px; line-height: 1.4; }

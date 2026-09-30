@@ -11,7 +11,7 @@
   const el = document.createElement('div');
   el.className = 'fl-ctl';
   el.setAttribute('role', 'region');
-  el.setAttribute('aria-label', 'Engine controls');
+  el.setAttribute('aria-label', 'Collection controls');
 
   function mount() {
     if (el.isConnected) return;
@@ -55,16 +55,17 @@
     return {state, detail, paused, available:!controlError && collection.length === 2};
   }
   // One calm word for the whole strip. Details live in the popover.
-  const OVERALL = {collecting:'Collecting', paused:'Paused', needs:'Needs you', waiting:'Waiting', checking:'Checking', unavailable:'Status unavailable'};
+  const OVERALL = {collecting:'Collecting', paused:'Stopped', stopping:'Stopping…', ready:'Ready', needs:'Needs you', waiting:'Waiting', checking:'Checking', unavailable:'Status unavailable'};
   function overallState(scrape) {
     if (!control && !controlError) return 'checking';
     if (!scrape.available) return 'unavailable';
     if (scrape.state === 'Needs attention') return 'needs';
+    if (scrape.state === 'Stopping') return 'stopping';
     if (scrape.paused) return 'paused';
-    if (/^Waiting/.test(scrape.state) && scrape.state !== 'Waiting') return 'waiting';
-    return 'collecting';
+    if (/^Waiting/.test(scrape.state)) return 'waiting';
+    return scrape.state === 'Running' ? 'collecting' : 'ready';
   }
-  const collectionWord = scrape => ({Running:'Running', On:'Ready', Off:'Paused', 'Needs attention':'Needs you'})[scrape.state] || scrape.state;
+  const collectionWord = scrape => ({Running:'Running', On:'Ready', Off:'Stopped', 'Needs attention':'Needs you'})[scrape.state] || scrape.state;
   const SUMMARY_ICON = '<svg class="ic fl-ctl-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M4 6.5l4 4 4-4"/></svg>';
   function render() {
     mount();
@@ -78,13 +79,15 @@
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
       return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(state.item?.state || 'unknown')}${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id].toLowerCase()}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
     };
-    const action = busy === 'collection' ? 'Saving…' : scrape.paused ? 'Resume' : 'Pause';
-    const wait = scrape.paused ? 'Resume collection' : 'Pause collection';
-    el.innerHTML = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="grow"></span><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available ? 'disabled' : ''}>${action}</button></div>`
+    const action = busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Continue collecting' : 'Stop collecting';
+    const wait = scrape.paused ? 'Continue collecting' : 'Stop collecting';
+    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="grow"></span><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button></div>`
       + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>What is running</b><span>${esc(mode)}</span></div>`
-      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(overall === 'needs' ? 'needs' : scrape.paused ? 'paused' : scrape.state.toLowerCase())}Collection <span class="fl-engine-state">${esc(collectionWord(scrape))}</span></strong><small>${esc(scrape.detail)}</small></div><a href="#/accounts">View progress</a></div>`
+      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(overall === 'needs' ? 'needs' : scrape.paused ? 'paused' : scrape.state.toLowerCase())}Collection <span class="fl-engine-state">${esc(collectionWord(scrape))}</span></strong><small>${esc(scrape.state === 'Off' ? 'Progress is saved. Continue collecting where you left off.' : scrape.state === 'Stopping' ? 'Finishing the current request. Your progress stays saved.' : scrape.detail)}</small><span class="fl-collection-help">Stop keeps your progress. Continue picks up where you left off.</span></div><a href="#/accounts">View progress</a></div>`
       + `${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Bio checks read saved bios and your notes for business fit. Ranking hints reorder people using what is already saved.</span><a href="#/settings">Checking mode and setup</a></div>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
+    if (el.innerHTML === html) return;
+    el.innerHTML = html;
     el.querySelector('.fl-ctl-panel').scrollTop = scroll;
     if (focus) el.querySelector(`[data-focus="${focus}"]`)?.focus({preventScroll:true});
   }
@@ -107,11 +110,15 @@
     busy = target; error = ''; ++revision; render();
     try {
       const result = await request(target === 'collection' ? '/api/control' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if (target === 'collection') { if (!Array.isArray(result.stages)) throw new Error('Unconfirmed'); control = result; controlError = false; }
+      if (target === 'collection') {
+        const stages = result.stages?.filter(stage => ['lists', 'bios'].includes(stage.id));
+        if (stages?.length !== 2 || stages.some(stage => stage.paused !== (body.action === 'pause'))) throw new Error('Unconfirmed');
+        control = result; controlError = false;
+      }
       else { if (!result.engines?.[target] || result.engines[target].enabled !== body.enabled) throw new Error('Unconfirmed'); engines = result; engineError = false; }
       render();
       window.dispatchEvent(new Event('fl:control-changed'));
-    } catch { error = `Couldn't confirm ${target === 'collection' ? 'collection' : names[target].toLowerCase()} change. Check status and try again.`; }
+    } catch { open = true; error = `Couldn't confirm ${target === 'collection' ? 'collection' : names[target].toLowerCase()} change. Check status and try again.`; }
     finally { busy = ''; render(); await poll(true); }
   }
   el.addEventListener('click', event => {
@@ -128,7 +135,7 @@
   document.addEventListener('click', event => { if (open && !el.contains(event.target)) { open = false; render(); } });
   document.addEventListener('keydown', event => { if (open && event.key === 'Escape') { open = false; render(); el.querySelector('.fl-ctl-summary')?.focus(); } });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); });
-  window.addEventListener('fl:control-changed', () => poll());
+  window.addEventListener('fl:control-changed', () => { if (!busy) poll(true); });
   function start() { render(); poll(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();
