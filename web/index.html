@@ -10,12 +10,14 @@
     var t = localStorage.getItem('fl-theme'); if (t === '"light"' || t === '"dark"') document.documentElement.dataset.theme = JSON.parse(t);
     var d = localStorage.getItem('fl-density'); if (d === '"compact"') document.documentElement.dataset.density = 'compact';
   } catch (e) {}
-  if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script>');
+  if (/[?&]mock=1\b/.test(location.search)) document.write('<script src="mock.js"><\/script><script src="map-mock.js"><\/script>');
+  else if (/[?&]mapmock=1\b/.test(location.search)) document.write('<script src="map-mock.js"><\/script>');
 </script>
 <link rel="preload" href="/api/local-font/areal" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="relationship.css">
 <link rel="stylesheet" href="connections.css">
+<link rel="stylesheet" href="map-view.css">
 <link rel="stylesheet" href="settings.css">
   <link rel="stylesheet" href="collection.css">
   <link rel="stylesheet" href="start.css">
@@ -84,32 +86,45 @@
         </div>
 
         <div class="mpane" id="pane-map">
-          <div class="map-toolbar mbar">
-            <label class="map-search"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="map-q" type="search" aria-label="Find a person on the map" placeholder="Find a person" autocomplete="off" spellcheck="false"></label>
-            <button class="btn map-me" id="map-me" aria-label="Centre on your account" title="Centre on your account" hidden><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg></button>
-            <button class="btn" id="map-fit" aria-label="Fit map" title="Fit map"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button>
-            <details class="map-options"><summary class="btn">Map options</summary><div class="map-options-panel">
-              <label>Bubble size<select class="select" id="map-size"><option value="lists">Source lists</option><option value="followers">Followers</option></select></label>
-              <label>Distance<select class="select" id="map-distance"><option value="sources">Source connections</option><option value="familiarity">Recorded familiarity</option></select></label>
-              <p id="map-distance-note" hidden>Closer means you marked them as more familiar. Unrecorded people sit outside. Follows alone do not imply familiarity.</p>
-              <label>Tag<input id="map-tag" list="tag-dl" placeholder="Add a tag filter"></label>
-              <label>Min followers<input id="map-followers-min" type="number" min="0" placeholder="Any"></label>
-              <label>Max followers<input id="map-followers-max" type="number" min="0" placeholder="Any"></label>
-            </div></details>
+          <div class="mv-bar" role="toolbar" aria-label="Map controls">
+            <div class="mv-search">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+              <input id="map-q" type="search" role="combobox" aria-label="Find a person on the map" aria-expanded="false" aria-controls="map-search-results" aria-autocomplete="list" placeholder="Name or handle" autocomplete="off" spellcheck="false">
+              <div id="map-search-results" class="mv-results" role="listbox" aria-label="Matching people" hidden></div>
+            </div>
+            <div class="mv-modes seg" id="map-modes" role="radiogroup" aria-label="View"></div>
+            <details class="mv-filters" id="map-filters">
+              <summary class="btn"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg><span>Filters</span><span class="mv-badge num" id="map-filter-badge" hidden></span></summary>
+              <div class="mv-pop">
+                <div class="mv-f"><span class="mv-fl" id="map-scope-l">Show</span>
+                  <div class="seg" id="map-scope" role="group" aria-labelledby="map-scope-l"><button type="button" data-scope="all">Everyone</button><button type="button" data-scope="leads">Leads only</button></div></div>
+                <label class="mv-f"><span class="mv-fl">Fit</span>
+                  <select class="select" id="map-fit-filter"><option value="">Any fit</option><option value="good">Good or stronger</option><option value="strong">Strong only</option></select></label>
+                <label class="mv-f"><span class="mv-fl">Status</span>
+                  <select class="select" id="map-status-filter"><option value="">Any status</option><option value="interested">Interested</option><option value="contacted">Contacted</option><option value="talking">Talking</option><option value="spoke_before">Spoke before</option><option value="client">Client</option><option value="no">Not a fit</option></select></label>
+                <button type="button" class="btn ghost" id="map-filters-clear" hidden>Clear filters</button>
+              </div>
+            </details>
             <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
           </div>
-          <div id="map-search-results" class="map-search-results" aria-label="Matching profiles" hidden></div>
           <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
-          <div class="stage" id="stage">
-            <div id="map-overview" class="map-overview" hidden></div>
-            <canvas id="map-points" aria-hidden="true" hidden></canvas>
-            <canvas id="canvas" role="img" aria-label="Connection map. Open Leads for an accessible list of people and their recorded connections."></canvas>
-            <div class="map-state" id="map-state" role="status" aria-live="polite" hidden></div>
-            <div class="hover" id="hover" hidden></div>
-            <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
-            <label class="map-density" for="map-density"><select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option><option value="10000">10,000 people</option><option value="30000">30,000 people</option><option value="100000">100,000 people</option><option value="0">All saved · overview</option></select></label>
-            <span class="map-count num muted" id="map-count" aria-live="polite"></span>
-            <span id="map-render-status" class="map-render-status muted" role="status" hidden>Using basic graphics · large maps may be slower.</span>
+          <div class="stage mv-stage" id="stage">
+            <div class="mv-canvas" id="map-canvas-box">
+              <canvas id="map-canvas" tabindex="0" role="application" aria-roledescription="map" aria-label="Connection map. Arrow keys pan, plus and minus zoom, slash searches, escape clears the selection. Open Leads for a list of people."></canvas>
+              <div class="mv-progress" id="map-progress" hidden aria-hidden="true"></div>
+              <div class="mv-tip" id="hover" hidden></div>
+              <div class="mv-state" id="map-state" hidden></div>
+              <button type="button" class="btn mv-stale" id="map-stale" hidden></button>
+              <div class="mv-hud" id="map-hud"><ul class="mv-legend" id="map-legend" aria-label="Map key"></ul><span class="mv-shown num" id="map-shown"></span></div>
+              <div class="mv-zoom" role="group" aria-label="Map view">
+                <button type="button" id="zoom-in" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+                <button type="button" id="zoom-out" title="Zoom out (-)" aria-label="Zoom out"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3.5 8h9"/></svg></button>
+                <button type="button" id="map-fit" title="Show everyone (f)" aria-label="Show everyone"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button>
+                <button type="button" id="map-me" title="Centre on you" aria-label="Centre on you" hidden><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg></button>
+              </div>
+            </div>
+            <aside class="mv-card" id="map-card" aria-label="Selected person" hidden></aside>
+            <div class="mv-sr" id="map-live" role="status" aria-live="polite"></div>
           </div>
         </div>
       </div>
@@ -385,8 +400,7 @@
     <section><h3>Connections</h3><dl>
       <div><dt><kbd>f</kbd></dt><dd>Fit the map to the screen</dd></div>
       <div><dt><kbd>+</kbd><kbd>-</kbd></dt><dd>Zoom</dd></div>
-      <div><dt><kbd>l</kbd></dt><dd>Show or hide labels</dd></div>
-      <div><dt><kbd>n</kbd></dt><dd>Next search match</dd></div>
+      <div><dt><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>Pan the map</dd></div>
     </dl></section>
     <section><h3>Anywhere</h3><dl>
       <div><dt><kbd>g</kbd> then <kbd>l</kbd> <kbd>m</kbd> <kbd>q</kbd> <kbd>t</kbd> <kbd>s</kbd> <kbd>a</kbd> <kbd>,</kbd></dt><dd>Go to leads, map, review, tags, scraper, accounts or settings</dd></div>
@@ -405,13 +419,16 @@
 <script src="daily.js"></script>
 <script src="refresh.js"></script>
 <script src="accessibility.js"></script>
-<script src="map-renderer.js"></script>
 <script src="note-mentions.js"></script>
 <script src="app.js"></script>
 <script src="dm-import.js"></script>
 <script src="connections.js" defer></script>
 <script src="controls.js"></script>
 <script src="start.js"></script>
+<script src="map-core.js"></script>
+<script src="map-model.js"></script>
+<script src="map-view.js"></script>
+<script src="map-host.js"></script>
 <script src="k2-connection.js"></script>
 <script src="shell.js"></script>
 </body>
