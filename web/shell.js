@@ -2,7 +2,7 @@
 (() => {
   const nav = document.querySelector('.tabs');
   if (!nav || nav.querySelector('.tab-more')) return;
-  const items = ['start', 'tags', 'settings'].map((v) => nav.querySelector(`a[data-view="${v}"]`)).filter(Boolean);
+  const items = ['tags', 'settings'].map((v) => nav.querySelector(`a[data-view="${v}"]`)).filter(Boolean);
   items.forEach((a) => a.classList.add('more-item'));
   const btn = document.createElement('button');
   btn.type = 'button'; btn.className = 'tab-more';

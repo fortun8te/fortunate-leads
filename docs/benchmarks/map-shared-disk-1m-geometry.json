@@ -1,0 +1,20 @@
+{
+  "layout_schema": 6,
+  "fixture_people": 1000001,
+  "elapsed_seconds": 1.847,
+  "compared_to": "closeness",
+  "modes": {
+    "fit": {
+      "people": 1000001,
+      "position_or_community_mismatches": 0
+    },
+    "seeds": {
+      "people": 1000001,
+      "position_or_community_mismatches": 0
+    },
+    "status": {
+      "people": 1000001,
+      "position_or_community_mismatches": 0
+    }
+  }
+}

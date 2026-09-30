@@ -15,11 +15,12 @@ reads lists and can read bios from a logged-in tab; the server decides what to f
    ~/fortunate-leads/ops/install.sh
    ```
    Safe to re-run. Later, double-click `ops/start-all.command` to start everything (it runs the installer first if needed).
-3. **Follow Get started in the web app.** It checks the server, the extension in each Chrome profile, the Instagram
-   login, optional AI keys and backups, and gives one action per item. Load the extension once per profile
-   (`chrome://extensions`, Developer mode, Load unpacked, the `extension` folder; the installer copies the path),
-   log in to instagram.com there, then paste an account handle and press Start. Lists and bios collect at the safe
-   pace and leads rank as they arrive. Get started disappears from the sidebar once everything is in place.
+3. **Open Accounts.** Missing connection steps appear there. Load the extension once per Chrome profile
+   (`chrome://extensions`, Developer mode, Load unpacked, the `extension` folder), then sign in to Instagram.
+   Paste profiles, choose Followers or Following, and press Start collection. Lists and bios keep their saved
+   progress when stopped. Collection is independent of optional AI checks; inspect both under Activity.
+   The main account's Inbox button opens Instagram in the verified Chrome profile. See
+   [Instagram connection and recovery](INSTAGRAM_ACCOUNT.md) for limits and unfinished benchmark recovery.
 
 The sections below are the detail behind those steps.
 

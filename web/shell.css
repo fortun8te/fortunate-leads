@@ -11,11 +11,9 @@
 .btn.solid:hover { opacity: 1; background: var(--fg2); border-color: var(--fg2); }
 
 /* ---------- One page frame and one page header ---------- */
-#view-accounts .scr, #view-settings .scr, #view-start .scr, #view-scraper .scr {
+#view-accounts .scr, #view-settings .scr, #view-scraper .scr {
   max-width: 1040px; padding: var(--s6) var(--s6) 64px; gap: var(--s5);
 }
-#view-start .st-wrap { display: flex; flex-direction: column; max-width: 1040px; }
-#view-start #st-body { max-width: 760px; width: 100%; flex: none; }
 .scr > .ph { flex: none; align-items: flex-start; min-height: 40px; margin-bottom: 0; }
 .scr > .ph h1 { font-size: var(--fs-page); line-height: 32px; font-weight: 600; letter-spacing: -.02em; }
 .scr > .ph p { margin-top: var(--s1); max-width: 56ch; color: var(--fg3); font-size: var(--fs-body); line-height: var(--lh-body); }
@@ -23,7 +21,7 @@
 .scr .sg-h h2, .scr .collection-target-heading h2 { font-size: var(--fs-title); line-height: 24px; font-weight: 600; letter-spacing: -.01em; margin: 0; }
 .scr .sg-h p { margin-top: var(--s1); max-width: 56ch; color: var(--fg3); font-size: var(--fs-cap); line-height: var(--lh-body); }
 @media (max-width: 640px) {
-  #view-accounts .scr, #view-settings .scr, #view-start .scr, #view-scraper .scr { padding: var(--s4) var(--s4) var(--s6); gap: var(--s4); }
+  #view-accounts .scr, #view-settings .scr, #view-scraper .scr { padding: var(--s4) var(--s4) var(--s6); gap: var(--s4); }
   .scr > .ph h1 { font-size: 22px; line-height: 28px; }
 }
 

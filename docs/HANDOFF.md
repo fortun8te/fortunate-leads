@@ -1,5 +1,16 @@
 # Handoff — 30 September 2026
 
+## Neutral shared map and simpler local workflow, 30 September 2026
+
+All map modes now share exact positions and the same circular arrangement. The owner is smaller, with a fixed caption; the legend is a compact key. Removed warm colour overrides. Lead rows show the actual direction of saved follow observations, with additional sources in a tooltip. This adds no per-row graph traversal or new page query.
+
+Removed the separate Get started page; missing setup lives in Accounts. The header contains one collection action and a current state/reason. Qualification, model setup and stage detail are under Activity. Accounts has an account-verified Instagram Inbox shortcut when the updated extension is loaded. The preview cannot claim a verified browser identity. Imported message history remains metadata only and optional.
+
+An unfinished benchmark can be reviewed and stopped through a narrow operator action. It preserves the original unknown outcome, all queue/cursor data, cooldowns and holds. The real-data-copy proof retained 14,623 jobs and 135 lists unchanged. It refuses active requests or unrelated attention. Activation and live recovery require explicit user approval; Michael gave that approval during this session. Status of the actual rollout is recorded separately from these source tests.
+
+Validation: 1,159 backend tests passed with two existing skips, plus 49 focused recovery/workflow tests after stricter attention matching; 473 frontend/extension tests passed after the final cleanup. The eight-hour collection simulation passed 82 checks. All four schema-6 views passed the fresh million-person benchmark and a SQL comparison of every person's position/community. See [measurements](MAP_VIEW_PERFORMANCE.md). The exact current layout remains unmeasured at ten million.
+
+
 ## Laptop photo network and workflow revision, 30 September 2026
 
 The map now fills one owner-centred circular disk with cached profile-photo bubbles instead of separate sparse audience circles. Network, Fit, Sources and Status views share bounded loading, exact group counts and follow-direction filters. Missing follow evidence is explicitly unknown. The owner's current saved lists do not establish complete outgoing coverage, so the UI cannot honestly claim every person not followed yet.

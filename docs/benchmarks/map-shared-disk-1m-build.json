@@ -1,0 +1,36 @@
+{
+  "stage": "build",
+  "path": "../scale/disk-1m/synthetic.sqlite",
+  "requested_people": 1000001,
+  "layout_schema": 6,
+  "layout_source_sha256": "05443227982ad4774055802eef52197adf6ae89b62498c170618dd31b805ac47",
+  "build": {
+    "seconds": 168.56,
+    "modes": [
+      {
+        "mode": "closeness",
+        "people": 1000001,
+        "seconds": 28.13
+      },
+      {
+        "mode": "fit",
+        "people": 1000001,
+        "seconds": 32.22
+      },
+      {
+        "mode": "seeds",
+        "people": 1000001,
+        "seconds": 72.13
+      },
+      {
+        "mode": "status",
+        "people": 1000001,
+        "seconds": 36.03
+      }
+    ]
+  },
+  "elapsed_seconds": 168.57,
+  "peak_rss_bytes": 672235520,
+  "disk_bytes": 1338079344,
+  "disk_free_bytes": 12682817536
+}

@@ -92,12 +92,12 @@
     if (root) return;
     const view = document.querySelector('#view-accounts .scr');
     if (!view) return;
-    root = document.createElement('section');
+    root = document.createElement('details');
     root.className = 'panel'; root.id = 'dm-import';
-    root.innerHTML = `<div class="p-head"><h3>Import Instagram message history</h3></div>
-      <div class="p-body"><p class="muted">Use the ZIP or message JSON files from your Instagram download. Review each person before saving. Message text stays out of Fortunate Leads.</p>
+    root.innerHTML = `<summary class="p-head">Message history</summary>
+      <div class="p-body"><p class="muted">Import contact history from an Instagram download. Review usernames before saving; message text stays out of Fortunate.</p>
       <input class="input" type="file" data-dm-file aria-label="Instagram message ZIP or JSON files" accept=".zip,.json,application/zip,application/json" multiple>
-      <p class="muted">For a large download, unzip it and choose the extracted folder:</p>
+      <p class="muted">ZIP or JSON, up to 32 MB. For larger downloads, choose the extracted messages folder.</p>
       <input class="input" type="file" data-dm-folder aria-label="Extracted Instagram download folder" webkitdirectory multiple>
       <p class="muted" data-dm-notice role="status" aria-live="polite"></p><div data-dm-preview></div></div>`;
     view.append(root);

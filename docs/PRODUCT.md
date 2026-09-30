@@ -30,7 +30,7 @@ personal accounts, brands outside the markets above (`Other market`).
 
 ## What "done" looks like
 
-- A new Mac goes from clone to collecting in three steps (`docs/SETUP.md`), and the Get started page says what is missing.
+- A new Mac goes from clone to collecting in three steps (`docs/SETUP.md`), and Accounts shows missing connection steps.
 - Paste a handle, press Start, leads appear ranked, nothing else to configure.
 - It looks and reads like software Apple would ship: short plain English, one accent, keyboard friendly, no jargon.
 - Collection never trips Instagram's limits. The account matters more than speed.
@@ -41,7 +41,7 @@ personal accounts, brands outside the markets above (`Other market`).
   More throughput means more accounts, not faster requests.
 - **No evasion.** No proxies, Tor or block dodging. The old Tor collector is archived and deliberately unmerged.
 - **Free by default.** No paid scraping services (Apify was rejected). AI uses `:free` OpenRouter models and local models.
-- **Plain, monochrome UI.** Short product language, warm neutral, no filler. See `docs/COPY.md`.
+- **Plain, monochrome UI.** Short product language, neutral grey, no filler. See `docs/COPY.md`.
 - **Honest numbers.** Never present stale or synthetic figures as fact.
 
 ## Known limits

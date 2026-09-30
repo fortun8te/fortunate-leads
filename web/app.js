@@ -3271,6 +3271,8 @@ function reconnected() {
   if (S.open) refreshPerson(S.open);
 }
 
+window.addEventListener('dm-import-complete', reconnected);
+
 // ---------- boot ----------
 applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
 applyDensity(store.get('density', 'comfortable'));

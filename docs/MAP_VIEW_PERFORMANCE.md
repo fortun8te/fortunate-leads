@@ -4,7 +4,17 @@ The viewport API reads precomputed layouts. It sends at most 1,500 people plus a
 zooming requests a new rectangle. Existing pair comparison remains independent of this display budget.
 The measurements distinguish preparation, indexed requests and browser drawing. The current schema-5 photo network has a fresh million-person measurement below. Older measurements are historical; the ten-million run used the earlier schema-4 geometry.
 
-## Current photo network, schema 5
+## Current shared circular map, schema 6
+
+All four modes use identical per-person positions and community anchors. Network, Fit, Sources and Status change rank, size and visual emphasis, while retaining the same owner-centred disk. The owner's portrait is 60 px, with its caption below; the legend is a compact key with detailed meanings on hover or keyboard focus. Base UI surfaces use the neutral grey tokens rather than warm overrides.
+
+The fresh **1,000,001-person** fixture built all four layouts in **168.57 seconds**, with **641 MiB peak process RSS**. Prepared source/layout/projection files occupied **1.30 GiB**; the separate request process peaked at **509 MiB RSS**. Across all modes, first whole-world samples took **153–214 ms**, then **7–10 ms**. A direct SQL comparison of every layout row verified **zero position or community mismatches** between Network and each other view across the full million-person fixture. Bounded request counts and aggregate conservation also passed. These local samples do not establish worst-case latency or whole-system memory.
+
+Actual saved-data laptop checks used 111,699 people. All four current layouts rebuilt in 7.48 seconds. Profile images still use the bounded progressive cache; changing views retains the circular arrangement. This exact schema has not had a ten-million run. The historical schema-4 run below remains evidence for the bounded approach, not a performance guarantee for current all-mode rendering.
+
+Evidence: [fixture](benchmarks/map-shared-disk-1m-fixture.json), [build](benchmarks/map-shared-disk-1m-build.json), [requests](benchmarks/map-shared-disk-1m-requests.json), [full-population geometry oracle](benchmarks/map-shared-disk-1m-geometry.json).
+
+## Earlier photo network, schema 5
 
 The owner stays at the centre of one circular network disk. Source audiences receive angular space proportional to their membership. Broad distance bands describe saved connection evidence; spacing within an audience exists for readability. Cached profile photos load progressively; absent photos use initials. Unknown follow direction stays unknown, including when the owner's outgoing list has not been collected completely.
 
