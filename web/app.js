@@ -971,12 +971,39 @@ function rowChips(r) {
   const tags = rowTagSelection(r, ROW_CHIPS);
   return tags.shown.map((t) => tagChip(t)).join('') + (tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : '');
 }
+function leadConnectionLines(r) {
+  const edges = r.connection_edges || r.edges;
+  const owner = String(r.relationship_owner || 'fortun8te').toLowerCase();
+  const bySeed = new Map();
+  for (const edge of edges || []) {
+    if (!edge?.seed || !['followers', 'following'].includes(edge.direction)) continue;
+    const key = edge.seed.toLowerCase();
+    if (!bySeed.has(key)) bySeed.set(key, { seed: edge.seed, dirs: new Set() });
+    bySeed.get(key).dirs.add(edge.direction);
+  }
+  const lines = [...bySeed.values()].sort((a, b) => Number(b.seed.toLowerCase() === owner) - Number(a.seed.toLowerCase() === owner) || a.seed.localeCompare(b.seed)).map(({ seed, dirs }) => {
+    const isYou = seed.toLowerCase() === owner;
+    if (dirs.size === 2) return isYou ? 'You follow each other' : 'Mutual with @' + seed;
+    if (dirs.has('followers')) return isYou ? 'Follows you' : 'Follows @' + seed;
+    return isYou ? 'You follow them' : '@' + seed + ' follows them';
+  });
+  if (!lines.length && !Array.isArray(edges)) {
+    lines.push(...[...new Set(r.via || [])].map(seed => 'Seen in @' + seed + '’s list'));
+  }
+  return lines;
+}
+function rowConnectionHTML(r) {
+  const lines = leadConnectionLines(r);
+  if (!lines.length) return '';
+  const text = lines[0] + (lines.length > 1 ? ' +' + (lines.length - 1) : '');
+  return `<span class="row-connection" title="${esc('Saved follows: ' + lines.join('; '))}">${esc(text)}</span><span class="row-connection-separator" aria-hidden="true"> · </span>`;
+}
 function rowHTML(r, i, h) {
   const cls = ['row', i === S.cur ? 'cur' : '', S.open === r.id ? 'open' : '', r.status === 'no' ? 'st-no' : ''].join(' ');
   const named = r.name && r.name !== r.handle;
   return `<div class="${cls}" data-i="${i}" data-person-id="${r.id}" style="top:${i * h}px">
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}</div>
-    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>${esc(named ? r.name : '@' + r.handle)}</b>${named ? `<span class="handle">@${esc(r.handle)}</span>` : ''}</button>${igLink(r.handle)}${noteIcon(r.note)}${followUpChip(r.follow_up)}</div><div class="why"><span>${whyHTML(r)}</span></div>
+    <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>${esc(named ? r.name : '@' + r.handle)}</b>${named ? `<span class="handle">@${esc(r.handle)}</span>` : ''}</button>${igLink(r.handle)}${noteIcon(r.note)}${followUpChip(r.follow_up)}</div><div class="why">${rowConnectionHTML(r)}<span>${whyHTML(r)}</span></div>
       <div class="row-meta"><span class="c-st-m">${statHTML(r.status)}</span><span class="num muted">${fmt(r.followers)} followers</span></div></div>
     <div class="tags c-tags">${rowChips(r)}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
@@ -1239,7 +1266,8 @@ function renderDetail() {
   panel.dataset.owner = String(p.id);
   const fitLabel = p.loading ? '' : ({ strong: 'Strong fit', good: 'Good fit', weak: 'Weak fit', unread: 'Not reviewed' })[fitOf(p)];
   const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '') || (p.loading ? '' : 'No summary yet.');
-  const connection = you || (edges.length ? (edges[0].direction === 'followers' ? 'Follows @' + edges[0].seed : edges[0].direction === 'following' ? '@' + edges[0].seed + ' follows them' : 'Seen in @' + edges[0].seed + '’s list') : '');
+  const connectionLines = leadConnectionLines({...p, edges});
+  const connection = you || connectionLines.slice(0, 2).join(' · ') + (connectionLines.length > 2 ? ' +' + (connectionLines.length - 2) : '');
   const readDate = p.bio_at ? new Date(p.bio_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   panel.innerHTML = `
     <header class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}

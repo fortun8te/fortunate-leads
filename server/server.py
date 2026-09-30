@@ -1052,12 +1052,16 @@ def lead_rows(conn, rows):
         return []
     marks = ','.join('?' * len(ids))
     nets = network_context(conn, ids)
-    tags, via, history_via = {}, {}, {}
+    tags, via, history_via, connection_edges = {}, {}, {}, {}
     followups = {r['person_id']: {k: r[k] for k in ('due_on', 'note', 'completed_at', 'updated_at')} for r in conn.execute(f'SELECT * FROM followups WHERE person_id IN ({marks})', ids)}
     for t in conn.execute(f'SELECT * FROM ({tag_projection.relation()}) t WHERE t.person_id IN ({marks}) ORDER BY {TAG_ORDER}', ids):
         tags.setdefault(t['person_id'], []).append({'tag': t['tag'], 'grp': t['grp'], 'source': t['source']})
-    for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM current_edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
-        via.setdefault(e['person_id'], []).append(e['seed'])
+    for e in conn.execute(f'SELECT person_id, seed, direction, observed_at FROM current_edges WHERE person_id IN ({marks}) ORDER BY seed,direction', ids):
+        sources = via.setdefault(e['person_id'], [])
+        if e['seed'] not in sources:
+            sources.append(e['seed'])
+        connection_edges.setdefault(e['person_id'], []).append({
+            'seed': e['seed'], 'direction': e['direction'], 'observed_at': e['observed_at']})
     for e in conn.execute(f'SELECT DISTINCT person_id, seed FROM edges WHERE person_id IN ({marks}) ORDER BY seed', ids):
         history_via.setdefault(e['person_id'], []).append(e['seed'])
     result = [{'id': r['id'], 'handle': r['handle'], 'name': r['name'], 'pic': f"/img/{r['id']}" if r['pic_file'] else None,
@@ -1068,6 +1072,7 @@ def lead_rows(conn, rows):
              'relationship': nets[r['id']]['me'],
              'role': r['role'], 'reason': r['reason'],
              'tags': tags.get(r['id'], []), 'via': via.get(r['id'], []), 'lists': r['lists'],
+             'connection_edges': connection_edges.get(r['id'], []),
              'history_via': history_via.get(r['id'], []), 'history_lists': len(history_via.get(r['id'], [])),
              'status': r['status'], 'mark_rev': r['mark_rev'],
              'note': r['note'] or None, 'bio_at': r['bio_at'], 'bio_src': r['bio_src'], 'follow_up': followups.get(r['id'])} for r in rows]
