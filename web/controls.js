@@ -33,7 +33,7 @@
     if (engines.paused && item.enabled) label = item.stop_acknowledged ? 'Paused' : 'Stopping';
     if (modeOff && item.state === 'off') label = 'Off in R mode';
     let detail = item.reason || (item.active ? 'Working now' : item.ready ? 'Ready for saved work' : '');
-    if (modeOff) detail = item.enabled ? 'Included when RLAI or RLEAI is selected.' : 'Excluded from AI modes until you include it.';
+    if (modeOff) detail = item.enabled ? 'Included when a local or external AI mode is selected.' : 'Excluded from AI modes until you include it.';
     if (id === 'k2' && local && !engineError && !modeOff) {
       const active = local.progress?.active?.handle;
       const queue = Number(local.queue || 0), notes = Number(local.notes_pending || 0), reviewed = Number(local.reviewed || 0);
@@ -60,7 +60,7 @@
     const scrape = scraping(), k2 = engineState('k2'), laya = engineState('laya');
     const states = [scrape.state, laya.label, k2.label];
     const overall = states.includes('Needs attention') ? 'Needs attention' : states.includes('Stopping') ? 'Stopping' : states.includes('Running') ? 'Running' : states.includes('Waiting') ? 'Waiting' : states.every(state => state === 'Off' || state === 'Off in R mode' || state === 'Paused') ? 'Off' : 'Ready';
-    const mode = ({R:'R · Rules',RLAI:'RLAI · Local AI',RLEAI:'RLEAI · External AI'})[engines?.processing?.mode || control?.processing?.mode] || 'Mode unavailable';
+    const mode = ({R:'Rules',RLAI:'Rules + local AI',RLEAI:'Rules + local + external AI'})[engines?.processing?.mode || control?.processing?.mode] || 'Mode unavailable';
     const engineRow = (id, state) => {
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
       return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong><span class="fl-state-dot" data-state="${esc(state.item?.state || 'unknown')}"></span>${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id]}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
