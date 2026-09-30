@@ -1,0 +1,29 @@
+{
+  "fixture_people": 1000001,
+  "query": {
+    "scope": [
+      "all"
+    ],
+    "mode": [
+      "closeness"
+    ],
+    "budget": [
+      "1500"
+    ],
+    "overview": [
+      "1"
+    ]
+  },
+  "runs_ms": [
+    654.01,
+    191.55,
+    200.61
+  ],
+  "node_count": 1500,
+  "peak_rss_bytes": 149192704,
+  "matching_people": 998334,
+  "shown": 1500,
+  "hidden": 996834,
+  "summed_group_counts": 996834,
+  "conservation_passed": true
+}
