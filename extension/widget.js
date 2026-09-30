@@ -47,7 +47,7 @@
     <div class="nums"><div><b id="people">0</b><span>people</span></div><div><b id="pages">0</b><span>pages</span></div><div><b id="bios">0</b><span>bios</span></div></div>
     <p class="lbl">All accounts</p>
     <div class="stages" id="stages"><div class="stage"><span class="word">Loading…</span></div></div>
-    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The stages above are for all accounts.">Pause this account</button><button class="btn" id="open">Open app</button></div>
+    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The stages above are for all accounts.">Pause this account</button><button class="btn" id="open">Open workspace</button></div>
   </div>
 </div>`;
   const $ = (id) => root.getElementById(id);
@@ -58,8 +58,8 @@
     try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; ok(r || null); }); } catch { alive = false; ok(null); }
   });
   function sentence(v) {
-    if (!v) return 'Extension is starting…';
-    if (v.stale) return 'No update from the extension for a while.';
+    if (!v) return 'Starting…';
+    if (v.stale) return 'No update from the extension. Reload it in chrome://extensions.';
     let t = String(v.text || '');
     if (/^Needs attention/.test(t)) return t.replace(/^Needs attention:\s*/, '');
     if (v.job) return (v.key === 'run' ? 'Reading ' : 'Next: ') + v.job;

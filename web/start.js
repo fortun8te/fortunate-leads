@@ -42,7 +42,7 @@
 
   function render() {
     const d = St.data;
-    if (!d) { root.querySelector('#st-body').innerHTML = `<p class="muted">${St.error ? 'Server not reachable. Start it with ops/start-all.command.' : 'Checking…'}</p>`; return; }
+    if (!d) { root.querySelector('#st-body').innerHTML = `<p class="muted">${St.error ? 'The server is not running. Open ops/start-all.command to start it.' : 'Checking…'}</p>`; return; }
     const paused = d.flow.state === 'paused', going = ['running', 'wait'].includes(d.flow.state);
     root.querySelector('#st-body').innerHTML = `
       <section class="panel st-flow"><div class="p-body">
@@ -92,7 +92,7 @@
   async function post(url, body) {
     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+    if (!r.ok) throw new Error(j.error || (r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : 'The request did not go through. Try again.'));
     return j;
   }
   root.addEventListener('submit', async (e) => {

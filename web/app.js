@@ -14,7 +14,7 @@ const initials = (s) => (s || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split
 const ago = (t) => {
   if (!t) return '–';
   const s = Math.max(0, (Date.now() - Date.parse(t)) / 1000);
-  return s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
+  return s < 10 ? 'moments' : s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
 };
 const left = (t) => {
   const s = Math.max(0, Math.round((Date.parse(t) - Date.now()) / 1000));
@@ -42,7 +42,7 @@ const api = {
     try { r = await fetch(url, { cache: 'no-store', ...opts }); } catch (e) { setOnline(false); throw e; }
     setOnline(true);
     if (!r.ok) {
-      let msg = 'HTTP ' + r.status;
+      let msg = r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : r.status === 404 ? 'That item no longer exists. Refresh and try again.' : 'The request did not go through. Try again.';
       let detail = null;
       try { detail = await r.json(); if (detail && typeof detail.error === 'string') msg = detail.error; } catch (e) { /* not json */ }
       const err = new Error(msg); err.status = r.status; err.detail = detail; throw err;
@@ -1023,7 +1023,7 @@ async function markNow(id, status) {
     if (S.open === id) await refreshPerson(id);
     else refreshActivity(id);
   }
-  catch (e) { patchRow(id, { status: prev }); toast('Could not save'); }
+  catch (e) { patchRow(id, { status: prev }); toast("Couldn't save. Try again."); }
 }
 function patchRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
@@ -1195,7 +1195,7 @@ function renderDetail() {
     <section class="d-sec d-labels-section d-status-section">${humanRelationshipHTML(p)}
       ${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}
       ${manualTags.length ? `<div class="d-tags d-manual-tags">${manualTags.map((t) => `<span class="d-tag-item">${tagChip(t)}<button type="button" class="d-tag-remove" data-rmtag="${esc(t.tag)}" aria-label="Remove ${esc(t.tag)} tag" title="Remove ${esc(t.tag)}">×</button></span>`).join('')}</div>` : ''}
-      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a label" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
+      <form class="tag-add d-label-editor" id="tag-form"><input class="input" id="tag-in" data-owner="${p.id}" aria-label="Add a tag" list="tag-dl" placeholder="Add a label…" autocomplete="off" value="${esc(tagVal)}"><button class="btn" type="submit">Add</button></form>
     </section>
 
     ${workflowSummaryHTML(p)}
@@ -1357,7 +1357,7 @@ function saveHumanContext(id, update) {
       loadCounts(); loadFacetsSoon();
     } catch (error) {
       if (error.status === 409) await refreshPerson(id);
-      toast(error.status === 409 ? 'This profile changed. Review it and try again.' : 'Could not save relationship');
+      toast(error.status === 409 ? 'This profile changed. Review it and try again.' : "Couldn't save the relationship. Try again.");
     }
   });
 }
@@ -1390,7 +1390,7 @@ async function retryNoteRead(id) {
     const poll = notePolls.get(id);
     if (poll) poll.attempts = 0;
     await refreshPerson(id);
-  } catch { toast('Could not retry reading. Your note is saved.'); }
+  } catch { toast("Couldn't retry. Your note is saved."); }
   finally { noteRetryBusy.delete(id); if (S.person?.id === id) renderNoteState(id); }
 }
 function noteInsightsHTML(p) {
@@ -1427,7 +1427,7 @@ window.addEventListener('beforeunload', (e) => { if (noteQueue.dirty()) { noteQu
 document.addEventListener('visibilitychange', () => { if (document.hidden) noteQueue.flushAll().catch(() => {}); });
 async function editTags(id, add, remove) {
   invalidatePersonRead(id);
-  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || 'Could not save label'); return; }
+  try { await api.post(`/api/person/${id}/tags`, { add, remove }); } catch (e) { toast(e.message || "Couldn't save the tag. Try again."); return; }
   await refreshPerson(id);
   loadFacetsSoon();
   if (add.length) toast(/^client$/i.test(add[0]) ? 'Relationship set to Client' : `Tagged ${add[0]}`);
@@ -1871,7 +1871,7 @@ const T = {
     if (!to || to === from) { this.editing = null; this.render(); return; }
     const canon = this.list.find((t) => t.tag.toLowerCase() === to.toLowerCase());
     if (canon) to = canon.tag;
-    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast('Could not rename'); return; }
+    try { await api.post('/api/tags/rename', { from, to }); } catch (e) { toast("Couldn't rename. Try again."); return; }
     this.fixFilter(from, to);
     this.editing = null;
     toast(canon ? `Merged ${from} into ${to}` : `Renamed to ${to}`);
@@ -1879,7 +1879,7 @@ const T = {
   },
   async remove(tags) {
     for (const tag of tags) {
-      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast('Could not delete ' + tag); return; }
+      try { await api.post('/api/tags/delete', { tag }); } catch (e) { toast("Couldn't delete " + tag + '. Try again.'); return; }
       this.fixFilter(tag, null);
     }
     this.confirm = null;
@@ -1972,7 +1972,7 @@ $('#rule-form').addEventListener('submit', async (e) => {
 });
 async function deleteRule(id) {
   const r = (T.rules || []).find((x) => String(x.id) === String(id));
-  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast('Could not delete rule'); return; }
+  try { await api.post(`/api/tag-rules/${encodeURIComponent(id)}/delete`); } catch (e) { toast("Couldn't delete the rule. Try again."); return; }
   toast(r ? `Deleted rule ${r.tag}` : 'Rule deleted', r ? () => api.post('/api/tag-rules', { tag: r.tag, field: r.field, match: r.match }).then(() => T.after()) : null);
   T.after();
 }
@@ -2149,13 +2149,13 @@ $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
   const val = (el) => { const v = el.value.trim(); return /^\d+$/.test(v) ? +v : null; };
   const list = val($('#b-list')), profile = val($('#b-profile'));
-  if (list == null || profile == null) { toast('Budgets must be whole numbers, 0 or more'); return; }
-  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast('Could not save'); }
+  if (list == null || profile == null) { toast('Enter whole numbers, 0 or more'); return; }
+  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast("Couldn't save. Try again."); }
 });
 $('#snowball').onclick = async () => {
   try {
     const r = await api.post('/api/scraper/snowball', { min_status: 'interested' });
-    toast(r.queued ? `Queued who ${plural(r.queued, 'Interested lead')} follow${r.queued === 1 ? 's' : ''}` : 'Nothing new: every Interested, Talking or Client lead is already done or private');
+    toast(r.queued ? `Queued the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new. Every Interested, Talking or Client lead is already queued, done or private.');
     loadScraper();
   } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
 };
@@ -2197,7 +2197,7 @@ $('#seed-add').onclick = async () => {
     const r = await api.post('/api/scraper/seeds', { handles, directions });
     toast(r.queued != null ? (r.queued ? `${ucf(plural(r.queued, 'list'))} queued${S.sc?.paused ? '. Use Start scraping when ready.' : ''}` : 'Already queued') : 'Queued');
     $('#seed-in').value = ''; syncSeed(); loadScraper();
-  } catch (e) { toast('Could not queue'); }
+  } catch (e) { toast("Couldn't queue. Try again."); }
   finally { seedAdding = false; syncSeed(); }
 };
 
@@ -2283,7 +2283,7 @@ function accountRow(a) {
     </div>
     <div class="acc-foot"><button class="btn ghost acc-edit" data-rename>Rename</button><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago</span>
       <span class="grow"></span>
-      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Confirm remove' : 'Remove'}</button></div>
+      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Remove account?' : 'Remove'}</button></div>
     </details>
   </section>`;
 }
@@ -2487,7 +2487,7 @@ $('#acc-list').addEventListener('click', async (e) => {
       return;
     }
     A.confirm = null;
-    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast('Could not remove'); }
+    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast("Couldn't remove. Try again."); }
     loadScraper();
   }
 });
@@ -2506,7 +2506,7 @@ $('#acc-list').addEventListener('submit', async (e) => {
   if (e.target.hasAttribute('data-bud')) {
     const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
     const list = val('list'), profile = val('profile');
-    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Budgets are whole numbers, 0 or more'); return; }
+    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Enter whole numbers, 0 or more'); return; }
     document.activeElement?.blur();
     return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, list == null && profile == null ? 'Using the default budget' : 'Budget saved');
   }
@@ -2519,7 +2519,7 @@ $('#acc-start').addEventListener('click', async () => {
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
-  status.textContent = 'Starting Laya and checking the local notes model…';
+  status.textContent = 'Starting local models and checking the notes model…';
   renderAccounts();
   try {
     const result = await api.post('/api/engine/start', {});
@@ -2532,7 +2532,7 @@ $('#acc-start').addEventListener('click', async () => {
   } catch (e) {
     status.dataset.state = 'error';
     status.textContent = 'Could not start local models. Check setup in Settings.';
-    toast('Could not start local models');
+    toast("Couldn't start local models. Try again.");
   } finally {
     A.starting = false;
     renderAccounts();
@@ -2673,7 +2673,7 @@ function renderCheckingMode() {
     const time = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
     const active = metrics?.active?.handle;
     const history = SET.localProcessing?.history || [];
-    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">K2 checks saved bios and your notes for business fit. Laya adds ranking hints. Your relationship labels stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
+    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} validated reviews/min` : 'Measuring review speed'}${eta ? ` · about ${time} for this queue` : ''}</span></div><p class="muted">Local models check saved bios and your notes for business fit and suggest a ranking. Your relationship tags stay yours.</p>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
   }
   const background = $('#background-ai'), local = SET.localProcessing;
   if (background) background.hidden = mode === 'rules';
@@ -2752,7 +2752,7 @@ $('#set-scout')?.addEventListener('click', async (e) => {
     : e.target.closest('[data-m]') ? { model: e.target.closest('[data-m]').dataset.m }
     : e.target.closest('[data-w]') ? { workers: +e.target.closest('[data-w]').dataset.w } : null;
   if (!body || (body.on && settingsMode(S.sc) !== 'external')) return;
-  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); renderCheckingMode(); toast('Saved'); } catch (err) { toast('Could not save'); }
+  try { SET.scout = await api.post('/api/settings/scout', body); renderScout(); renderCheckingMode(); toast('Saved'); } catch (err) { toast("Couldn't save. Try again."); }
 });
 async function checkHealth() {
   SET.health = 'checking'; renderServices();
@@ -2808,7 +2808,7 @@ function renderModels() {
   // OpenRouter's current free catalogue (checked daily by the server); one click adds a model to the list above.
   const auto = SET.llm?.auto_models || {};
   const free = [...new Set([...(auto.stealth || []), ...(auto.free || [])])];
-  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? 'Could not reach OpenRouter' : 'Not checked yet';
+  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? "Couldn't reach OpenRouter" : 'Not checked yet';
   $('#set-free').innerHTML = free.length ? free.map((m) => `<li><code>${esc(m)}</code>${(auto.new_stealth || []).includes(m) ? '<span class="pill">New</span>' : ''}<span class="grow"></span>
     ${ms.includes(m) ? '<span class="muted">In use</span>' : `<button class="btn ghost" data-madd="${esc(m)}">Add</button>`}</li>`).join('')
     : '<li class="muted">None found</li>';
@@ -2821,25 +2821,25 @@ $('#set-free').addEventListener('click', (e) => {
 $('#set-free-refresh').onclick = async (e) => {
   e.target.disabled = true;
   try { const r = await api.post('/api/llm/models/refresh', {}); if (SET.llm) SET.llm.auto_models = r.auto; renderModels(); toast('Model list updated'); }
-  catch { toast('Could not reach OpenRouter'); }
+  catch { toast("Couldn't reach OpenRouter. Check your connection."); }
   finally { e.target.disabled = false; }
 };
 $('#set-q-auto').onclick = async () => {
   if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) return;
   const auto = !S.sc?.qualify_auto;
-  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast('Could not save'); }
+  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast("Couldn't save. Try again."); }
 };
 $('#set-q').addEventListener('submit', async (e) => {
   e.preventDefault();
   const n = (id) => { const v = $(id).value.trim(); return /^\d+$/.test(v) ? +v : NaN; };
   const body = { workers: n('#set-workers'), llm_min: n('#set-llm-min'), bio_min: n('#set-bio-min') };
-  if (Object.values(body).some(Number.isNaN)) { toast('Whole numbers only'); return; }
+  if (Object.values(body).some(Number.isNaN)) { toast('Enter whole numbers only'); return; }
   try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
 $('#set-share-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const v = $('#set-share').value.trim();
-  if (!/^\d+$/.test(v) || +v > 100) { toast('A share from 0 to 100 %'); return; }
+  if (!/^\d+$/.test(v) || +v > 100) { toast('Enter a share from 0 to 100'); return; }
   try { const r = await api.post('/api/settings/accounts', { main_list_share: +v / 100 }); SET.share = r.main_list_share; toast(+v ? `Main account takes up to ${v} % of list pages` : 'Main account reads bios only'); document.activeElement?.blur(); }
   catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
@@ -2848,12 +2848,12 @@ $('#set-key-f').addEventListener('submit', async (e) => {
   const key = $('#set-key').value.trim();
   if (!key) return;
   try { await api.post('/api/llm/keys', { key }); $('#set-key').value = ''; toast('Key added'); loadSettings(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not add the key'); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't add the key. Check it and try again."); }
 });
 $('#set-limit-f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const v = $('#set-limit').value.trim();
-  if (!/^\d+$/.test(v)) { toast('A whole number, 0 for no limit'); return; }
+  if (!/^\d+$/.test(v)) { toast('Enter a whole number. 0 means no limit.'); return; }
   try { await api.post('/api/llm/models', { daily_limit: +v }); toast('Daily limit saved'); document.activeElement?.blur(); loadSettings(); }
   catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
@@ -2861,7 +2861,7 @@ $('#set-model-f').addEventListener('submit', (e) => {
   e.preventDefault();
   const m = $('#set-model').value.trim();
   if (!/^[\w.-]+\/[\w.:-]+$/.test(m) || !/:free$|^stealth\//.test(m)) { toast('Choose a free model from the list, or enter vendor/model:free'); return; }
-  if (!SET.models) { toast('Wait for settings to load'); return; }
+  if (!SET.models) { toast('Settings are still loading. Try again in a moment.'); return; }
   if (!SET.models.includes(m)) { SET.models.push(m); SET.dirty = true; }
   $('#set-model').value = ''; renderModels();
 });
@@ -2886,9 +2886,9 @@ $('#view-settings').addEventListener('click', async (e) => {
   const swap = (i, j) => { [ms[i], ms[j]] = [ms[j], ms[i]]; SET.dirty = true; renderModels(); };
   if (b.dataset.mup) return swap(+b.dataset.mup, +b.dataset.mup - 1);
   if (b.dataset.mdown) return swap(+b.dataset.mdown, +b.dataset.mdown + 1);
-  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model'); return; }
+  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model in the list'); return; }
   if (b.dataset.ktest) {
-    if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) { toast('Enable External AI mode before testing a key'); return; }
+    if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) { toast('Switch to External AI to test a key'); return; }
     const id = b.dataset.ktest;
     SET.tests[id] = 'run'; renderSettings();
     try { SET.tests[id] = await api.post(`/api/llm/keys/${id}/test`, {}); } catch (err) { SET.tests[id] = { passed: false, error: 'Could not reach the server' }; }
@@ -2898,7 +2898,7 @@ $('#view-settings').addEventListener('click', async (e) => {
     const id = b.dataset.kdel;
     if (SET.confirm !== id) { SET.confirm = id; renderSettings(); setTimeout(() => { if (SET.confirm === id) { SET.confirm = null; renderSettings(); } }, 3000); return; }
     SET.confirm = null;
-    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not remove'); }
+    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't remove. Try again."); }
     return loadSettings();
   }
 });
@@ -4054,5 +4054,5 @@ async function loadBiofetch() {
 $('#bf-on').onclick = async () => {
   const on = !$('#bf-on').classList.contains('on'), body = { on, ig_user_id: $('#bf-uid').value };
   if ($('#bf-tok').value) body.token = $('#bf-tok').value;
-  try { await api.post('/api/settings/biofetch', body); $('#bf-tok').value = ''; toast(on ? 'Meta bios on' : 'Meta bios off'); loadBiofetch(); } catch (e) { toast('Could not save'); }
+  try { await api.post('/api/settings/biofetch', body); $('#bf-tok').value = ''; toast(on ? 'Meta bios on' : 'Meta bios off'); loadBiofetch(); } catch (e) { toast("Couldn't save. Try again."); }
 };

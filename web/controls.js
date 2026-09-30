@@ -21,7 +21,7 @@
     const deadline = setTimeout(() => controller.abort(), DEADLINE_MS);
     try {
       const response = await fetch(url, {cache:'no-store', ...options, signal:controller.signal});
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(response.status >= 500 ? 'The server hit a problem.' : 'The server did not accept the request.');
       return await response.json();
     } finally { clearTimeout(deadline); }
   }
