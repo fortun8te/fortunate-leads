@@ -1251,6 +1251,18 @@ def tag_facets(conn, q):
     # Group each branch separately so SQLite can retain the stored-tag covering
     # index instead of materializing the entire tag relation before filtering.
     for branch, projected in enumerate(tag_projection.parts()):
+        if where == ["coalesce(m.status,'')!='no'"] and not args:
+            # Walk tag rows once and check only their people. Building every
+            # person's ID first makes even a small tag set scale with the DB.
+            eligible = (f"EXISTS(SELECT 1 FROM people p LEFT JOIN marks m ON m.person_id=p.id "
+                        f"WHERE p.id=t.person_id AND {NOT_ME} AND coalesce(m.status,'')!='no')")
+            for tag, source, grp, total, n in conn.execute(
+                f'SELECT t.tag,t.source,min(t.grp),count(*),sum({eligible}) '
+                f'FROM ({projected}) t GROUP BY t.tag,t.source'):
+                counts[tag, source] = counts.get((tag, source), 0) + n
+                previous = totals.get((tag, source), (grp, 0))
+                totals[tag, source] = (grp, previous[1] + total)
+            continue
         selected = f"SELECT p.id {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)}"
         count_sql = (f"WITH f AS MATERIALIZED ({selected}) SELECT t.tag,t.source,count(*) "
                      f"FROM f JOIN ({projected}) t ON t.person_id=f.id GROUP BY t.tag,t.source"
