@@ -2,7 +2,7 @@
 
 The viewport API reads precomputed layouts. It sends at most 1,500 people plus aggregated bubbles;
 zooming requests a new rectangle. Existing pair comparison remains independent of this display budget.
-This is a design for large databases, not a verified claim of handling 10 million people.
+The measurements below distinguish preparation, indexed requests and browser drawing. The earlier 100k and million-person map samples used the pre-feedback audience arrangement. The current default restores the owner-centred network concept; its separate ten-million-person measurement is recorded when complete.
 
 ## Synthetic measurement, 30 September 2026
 
@@ -98,3 +98,9 @@ an existing database. Rendering still needs separate browser measurement on boun
 ### Lead-page follow-up
 
 A thin-ID sort followed by hydration of only the selected page preserves all lead sort/filter semantics. On the same million-person disposable database, first-page time was 2,371 ms and offset-50 time was 816 ms (baseline 2,725 / 1,013 ms); total remained 998,333. This is a modest improvement, not a smooth-at-ten-million claim. Exact fit ordering still needs a matching maintained index before end-to-end scale can be claimed. Oracle tests compare every sort, six filter variants and three offsets against the original query.
+
+## Actual-data feedback revision
+
+The revised owner-centred default was built on a consistent copy of 111,699 saved people. All four current layouts built in 7.41 seconds after the zero-connection inclusion fix. Desktop and 390-pixel phone checks used that copy, including profile clicks, group expansion and return to the overview. The canvas with 728 loaded people painted in a measured 0.9 ms median and 1.3 ms p95. This browser drawing sample is separate from query/network latency and whole-system resource usage.
+
+Ordinary lead pages and unfiltered counts now have explicit maintained indexes; preparation and current measurements are in [LEAD_SCALE.md](LEAD_SCALE.md). Default tag facets no longer materialize every person ID. On the actual copy, identical facet results took 331 ms initially and 275–288 ms afterward, against 996 ms for the earlier query. On the million-person synthetic fixture, the initial new query took 1,679 ms and warm samples 134–183 ms, against 3,922 ms previously. These fixtures differ in tag density; their timings do not predict every ten-million database.
