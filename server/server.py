@@ -1214,8 +1214,21 @@ def api_leads(conn, q, b):
     sql_where = ' WHERE ' + ' AND '.join([NOT_ME] + where)
     with read_snapshot(conn):
         rev = data_rev(conn)
-        total = conn.execute(f'SELECT count(*) {PEOPLE_FROM}{sql_where}', args).fetchone()[0]
-        rows = conn.execute(f'{LEAD_SQL}{sql_where} ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+        # The unfiltered total needs neither verdicts nor connection summaries.
+        # Sort a thin page first so SQLite never carries bios and notes through
+        # the full ranking sort; hydrate only the selected profiles afterward.
+        count_from = ('FROM people p LEFT JOIN marks m ON m.person_id=p.id'
+                      if where == ["coalesce(m.status,'')!='no'"] and not args else PEOPLE_FROM)
+        total = conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
+        picked = conn.execute(f'SELECT p.id, {LISTS} AS lists {PEOPLE_FROM}{sql_where} '
+                              f'ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+        ids = [row['id'] for row in picked]
+        if ids:
+            placeholders = ','.join('?' for _ in ids)
+            by_id = {row['id']: row for row in conn.execute(f'{LEAD_SQL} WHERE p.id IN ({placeholders})', ids)}
+            rows = [by_id[pid] for pid in ids]
+        else:
+            rows = []
         next_offset = offset + len(rows)
         return {'total': total, 'rows': lead_rows(conn, rows), 'rev': rev,
                 'next_offset': next_offset, 'has_more': next_offset < total}
