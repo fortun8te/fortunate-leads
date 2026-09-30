@@ -59,11 +59,6 @@
   --custom-fg: #4c4c4c; --custom-bg: #ededed;
   color-scheme: light;
 }
-:root[data-theme="light"] .side {
-  --bg1: #111111; --bg2: #1c1c1c; --bg3: #262626; --line: #111111; --line2: #2a2a2a; --line3: #3a3a3a;
-  --fg: #ededed; --fg2: #b5b5b5; --fg3: #969696; --fg4: #8d8d8d; --inv: #0a0a0a; --focus: #bfbfbf;
-  color: var(--fg); color-scheme: dark;
-}
 :root[data-density="compact"] { --row: 48px; --av: 32px; }
 
 /* ---------- Base ---------- */

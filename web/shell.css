@@ -1,32 +1,11 @@
 /* App shell, Accounts, Settings, Map states, Get started. Loaded after polish.css.
-   Rules: warm neutral, one accent (the existing blue on the map only), flat surfaces, 4/8 spacing,
+   Rules: neutral grey, one accent (the existing blue on the map only), flat surfaces, 4/8 spacing,
    one type scale, restrained motion. Nothing here changes behaviour. */
 
-/* ---------- Tokens: warm neutral, designed per theme (not inverted) ---------- */
+/* ---------- Shared type and motion ---------- */
 :root {
-  --bg: #121110; --bg1: #191817; --bg2: #211f1e; --bg3: #2b2927;
-  --line: #262422; --line2: #34312e; --line3: #4a4642;
-  --fg: #ece9e4; --fg2: #bab5ae; --fg3: #9b968e; --fg4: #918c84;
-  --inv: #121110; --sel: #1f1d1c; --chip-key: #34312e;
-  --focus: #c9c4bc; --control-line: #77726b;
-  --ok: #d8d3cb; --online: #d8d3cb;
-  --shadow-2: 0 8px 24px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 245, 230, .05);
   --fs-cap: 12px; --lh-cap: 16px; --fs-body: 13px; --lh-body: 20px; --fs-title: 15px; --fs-page: 24px;
   --dur: .16s;
-}
-:root[data-theme="light"] {
-  --bg: #fdfcfa; --bg1: #f9f7f4; --bg2: #f2efeb; --bg3: #e8e4de;
-  --line: #ece8e2; --line2: #ded9d2; --line3: #c7c1b8;
-  --fg: #1a1816; --fg2: #514c46; --fg3: #665f58; --fg4: #6a635b;
-  --inv: #fdfcfa; --sel: #f1eeea; --chip-key: #e6e1da;
-  --focus: #4d4842; --control-line: #857e75;
-  --ok: #3d3833; --online: #3d3833;
-  --shadow-2: 0 8px 24px rgba(40, 30, 20, .10), 0 0 0 1px rgba(40, 30, 20, .06);
-}
-:root[data-theme="light"] .side {
-  --bg1: #f9f7f4; --bg2: #f2efeb; --bg3: #e8e4de; --line: #ece8e2; --line2: #ded9d2; --line3: #c7c1b8;
-  --fg: #1a1816; --fg2: #514c46; --fg3: #665f58; --fg4: #6a635b; --inv: #fdfcfa; --focus: #4d4842;
-  color: var(--fg); color-scheme: light;
 }
 .btn, .input, .select, .seg, .seg button, .toggle i, .toggle i::after { transition-duration: var(--dur); }
 .btn.solid:hover { opacity: 1; background: var(--fg2); border-color: var(--fg2); }
