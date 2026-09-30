@@ -13,11 +13,17 @@ Ordinary Fit/Score lead pages and unfiltered counts now have exact maintained in
 
 The full backend suite passed 1,135 tests (two existing skips). A final focused
 21-test tag suite covered the later readiness guards and interrupted preparation.
+A final focused 25-test map/search run covered the full-prefix shortcut and
+saved disconnected profiles. All 24 zero-degree profiles in the actual copy were
+found with prepared positions; 23 had previously been omitted by search.
 The frontend suite passed 445 tests. The collection simulation passed all 82
 checks over eight simulated hours, including outages, restart recovery and cooldowns.
 These use isolated copied or synthetic data; no live Instagram soak was performed.
+Generated million/ten-million benchmark database files were removed after validation
+removing 10.08 GiB of generated files; measurement JSON, logs and manifests remain.
 
-The current default owner-centred map was built and queried on a retained fixture containing 10,000,001 synthetic people. Warm whole-world requests took 5–6 ms, zoom/pan 9–14 ms and filtered zoom 133–143 ms, with slower first requests. The first layout build took 22.6 minutes and peaked at 463 MiB process RSS. Only the default mode is measured at ten million; the other three modes, broader tag density, rare filters and ongoing collection at that size need separate validation. See [measured performance and limits](MAP_VIEW_PERFORMANCE.md).
+
+The current default owner-centred map was built and queried on a fixture containing 10,000,001 synthetic people. Warm whole-world requests took 5–6 ms, zoom/pan 9–14 ms and filtered zoom 133–143 ms, with slower first requests. The first layout build took 22.6 minutes and peaked at 463 MiB process RSS. Only the default mode is measured at ten million; the other three modes, broader tag density, rare filters and ongoing collection at that size need separate validation. See [measured performance and limits](MAP_VIEW_PERFORMANCE.md).
 
 On the actual 111,699-person saved-data copy, all four current layouts were built and browser checks covered desktop/phone, both themes, tags, lead rows/detail, profile selection, group expansion and return to overview. This preview uses copied data without background collection; changes there do not update the live database. The live service remains on its earlier build on port 8777.
 

@@ -41,7 +41,7 @@ an explicit first build. No request starts collection or a full layout rebuild.
 
 ## Verified million-person run
 
-The retained streaming fixture contains **1,000,001 actual people**, skewed membership across
+The streaming benchmark fixture contained **1,000,001 actual synthetic people**, skewed membership across
 30 source accounts, overlaps, observed owner follows, qualification records and workflow statuses.
 It uses the real application schema and restores production summary triggers after loading.
 Data generation holds only 25,000 ids at once. No live database or collection is used.
@@ -187,8 +187,38 @@ counts took 0.10–0.17 ms. Process RSS peaked at 373 MiB and retained files
 occupied 8.50 GiB after tag preparation.
 
 The same prefix-search sample took 14,663.7 ms, compared with 1,447 ms in the
-earlier process. This remains an unresolved latency concern; fast map drawing
-and prepared default facets do not establish uniformly fast search. Bounded
+earlier process. This is preserved as baseline evidence; the prefix-pool fix below addresses this
+specific case. Fast drawing and prepared facets do not establish every search bound. Bounded
 name search took 36.6 ms. Disk cache was not flushed and other local validation
 was running. [Complete final request samples](benchmarks/map-10m-final-requests.json)
 preserve this limitation and the successful correctness checks.
+
+### Full handle-prefix search follow-up
+
+The slow handle-prefix sample unconditionally warmed a pool of up to 265,536
+profile names, despite already having a full eligible prefix page. Exact/prefix
+handles outrank all name and substring matches. The lookup now returns a full
+prefix page directly, preserving exact-handle priority and the capped indicator;
+insufficient eligible prefixes continue through the original name fallback.
+
+On the same ten-million fixture, the complete `user000123` response matched all
+20 IDs. The original first request took 17,127.5 ms, then 34.6/33.0 ms; the revised
+first request took 1.78 ms, then 0.44/0.42 ms. This is a same-process comparison,
+not an operating-system cache-flushed cold-read bound. Names and incomplete
+prefixes can still require the initial bounded name-pool build.
+[Exact before/after response samples](benchmarks/map-10m-prefix-search.json).
+
+After validation, only generated scale-test SQLite databases/layout files were
+removed: 10,825,131,161 bytes (10.08 GiB) of generated files. JSON measurements, logs and
+layout manifests remain; the actual-data preview and live database remain intact.
+Storage totals above describe the measured fixtures before cleanup. Reproduce
+with the fixture/build stages rather than assuming those large files remain.
+
+### Saved profiles without active connections
+
+The actual copy contained 24 saved profiles without active connection degree.
+All 24 were present in the prepared default layout, but search previously omitted
+the 23 whose handles were not sources. Search now checks the prepared layout's
+indexed profile IDs alongside existing graph/source presence. All 24 exact-handle
+searches returned their prepared positions. The focused marked/unmarked regression
+and 25 map/search tests passed. [Sanitized actual-data presence evidence](benchmarks/map-real-disconnected-search.json).
