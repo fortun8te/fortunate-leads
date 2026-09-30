@@ -1,6 +1,14 @@
 # Handoff — 30 September 2026
 
 
+## Feedback revision, 30 September 2026
+
+The synthetic grid preview was rejected. The revised default map puts Michael in the centre, with four surrounding evidence spheres, a finite zoom range, collision-limited labels and all saved profiles, including people with no collected connections. Desktop and phone checks now use a consistent copy of the actual local database: 111,699 people and 12,033 bios. The real app on port 8777 remains on its earlier checkout; the copied-data preview on port 8880 serves the integration build without background workers.
+
+Restored the earlier tag hierarchy and icons, with visible evidence chips on phones and correct virtualized row heights. Setup and Review now disclose failed refreshes and offer Retry instead of presenting stale results as current.
+
+Ordinary Fit/Score lead pages and unfiltered counts now have exact maintained indexes and summaries. Existing databases need explicit preparation on a copy first; see [LEAD_SCALE.md](LEAD_SCALE.md). Ten-million map and page measurements are being completed separately. No live data or collection pacing was changed.
+
 ## Current continuation, 30 September 2026
 
 Recovered the unfinished Claude map/API/UI work and integrated it with the already merged cloud fixes. Connections now uses compact audience groups, progressive detail, four viewing modes, filters, search and selected-profile evidence. Collection uses Start, Stop and Continue with saved-progress and waiting states. Legacy map panels, unused rendering assets and redundant refreshes were removed.
