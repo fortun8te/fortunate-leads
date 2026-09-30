@@ -5,6 +5,7 @@ A local server keeps the database and the web app. A Chrome extension, one per I
 lists and can read bios. Ranking uses network links and profile evidence, with rules and optional free-model
 AI qualification.
 
+- What this is and why: [docs/PRODUCT.md](docs/PRODUCT.md)
 - Setup, first run, backups and troubleshooting: [docs/SETUP.md](docs/SETUP.md)
 - API and database: [docs/CONTRACT.md](docs/CONTRACT.md)
 - Connection mapping research and design: [docs/CONNECTION_MAPPING_RESEARCH.md](docs/CONNECTION_MAPPING_RESEARCH.md)
