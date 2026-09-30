@@ -631,6 +631,18 @@ def _index_for(conn, db_path):
     return entries
 
 
+def _present_ids(conn, ids):
+    present = set()
+    for start in range(0, len(ids), 900):
+        chunk = ids[start:start + 900]
+        present.update(r[0] for r in conn.execute(
+            'SELECT person_id FROM map_person_degree WHERE person_id IN (%s)' % ','.join('?' * len(chunk)), chunk))
+        present.update(r[0] for r in conn.execute(
+            'SELECT p.id FROM people p JOIN map_source_handles h ON h.handle=p.handle WHERE p.id IN (%s)'
+            % ','.join('?' * len(chunk)), chunk))
+    return present
+
+
 def search_ids(conn, db_path, text, limit=Q_CAP):
     """People matching ``text`` (in the map), best match first, and whether the list was cut."""
     text = _normalize(text)
@@ -646,6 +658,13 @@ def search_ids(conn, db_path, text, limit=Q_CAP):
     prefix_capped = len(prefix_rows) > limit
     for (pid,) in prefix_rows:
         quality.setdefault(pid, 1)
+    if prefix_capped:
+        prefix_present = _present_ids(conn, list(quality))
+        if len(prefix_present) >= limit:
+            # Exact and prefix handles outrank every name/substring match.
+            # A full prefix page needs no cold 265k-person name-search pool.
+            ids = sorted(prefix_present, key=lambda pid: (quality[pid], pid))
+            return ids[:limit], True
     for pid, handle, name in _index_for(conn, db_path):
         if pid in quality:
             continue
@@ -656,14 +675,7 @@ def search_ids(conn, db_path, text, limit=Q_CAP):
         elif text in handle or text in name:
             quality[pid] = 4
     ids = list(quality)
-    present = set()
-    for start in range(0, len(ids), 900):
-        chunk = ids[start:start + 900]
-        present.update(r[0] for r in conn.execute(
-            'SELECT person_id FROM map_person_degree WHERE person_id IN (%s)' % ','.join('?' * len(chunk)), chunk))
-        present.update(r[0] for r in conn.execute(
-            'SELECT p.id FROM people p JOIN map_source_handles h ON h.handle=p.handle WHERE p.id IN (%s)'
-            % ','.join('?' * len(chunk)), chunk))
+    present = _present_ids(conn, ids)
     ids = [i for i in ids if i in present]
     ids.sort(key=lambda i: (quality[i], i))
     return ids[:limit], prefix_capped or len(ids) > limit
