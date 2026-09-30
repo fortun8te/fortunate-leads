@@ -298,6 +298,7 @@
         continue;
       }
       const mark = { kind: 'n', it, x, y, r }; nodeMarks.push(mark); occupied.push(String(it.d.id) === String(ownerId) ? { ...mark, r: 55 } : mark);
+      if (String(it.d.id) === String(ownerId)) occupied.push({ x, y: y + 47, r: 44 });
     }
     return { nodes: nodeMarks, groups: groupMarks };
   }

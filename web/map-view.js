@@ -178,6 +178,7 @@
       // A bounded set of saved profile portraits; missing photos use their initials.
       const k = cam.k, mode = m.mode;
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
+      let ownerCaption = null;
       if (me) this.portraits.get(me.pic);
       let photoBudget = 140;
       for (const mark of plan.nodes) {
@@ -192,7 +193,9 @@
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, 35, 0, TAU); ctx.stroke();
         this.paintPortrait(ctx, P, me, x, y, 30, true, true);
-        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: 35, w: 600, prefer: 'bottom', strong: true });
+        const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
+        ownerCaption = { x, y: y + 39, text };
+        lab.block([x-width/2-4, y+37, x+width/2+4, y+56]);
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
@@ -231,6 +234,11 @@
         np++; peoplePerGroup.set(d.cluster, (peoplePerGroup.get(d.cluster) || 0) + 1);
       }
       this.paintLabels(ctx, P, lab, want, dt);
+      if (ownerCaption) {
+        ctx.font = font(600, 12); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.strokeStyle = P.bg; ctx.lineWidth = 4; ctx.strokeText(ownerCaption.text, ownerCaption.x, ownerCaption.y);
+        ctx.fillStyle = P.fg; ctx.fillText(ownerCaption.text, ownerCaption.x, ownerCaption.y); ctx.textAlign = 'left';
+      }
       this.renderCount(false);
       return this.labelsBusy;
     }

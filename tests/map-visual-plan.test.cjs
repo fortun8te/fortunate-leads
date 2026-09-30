@@ -94,3 +94,14 @@ test('Fit and Sources preserve mode priority instead of forcing pipeline people 
   assert.equal(displayPlan(scene,cam,[],null,null,null,'seeds').nodes[0].it.d.id,2);
   assert.equal(displayPlan(scene,cam,[],null,null,null,'closeness').nodes[0].it.d.id,1);
 });
+test('modest owner portrait keeps its fixed identity caption clear', () => {
+  const cam=new Camera();cam.resize(1400,1000);const scene=new Scene();
+  const nodes=[{id:0,x:.5,y:.5,fit:'unread'},...Array.from({length:100},(_,i)=>({id:i+1,x:.44+(i%10)*.015,y:.5+Math.floor(i/10)*.015,fit:'strong',rank:i/100}))];
+  scene.apply({nodes,clusters:[]},0,{instant:true});const plan=displayPlan(scene,cam,[],null,null,0);
+  const owner=plan.nodes.find(n=>n.it.d.id===0);assert.equal(owner.r,30);
+  for(const mark of plan.nodes.filter(n=>n.it.d.id!==0)) {
+    const x=Math.max(owner.x-45,Math.min(mark.x,owner.x+45));
+    const y=Math.max(owner.y+37,Math.min(mark.y,owner.y+56));
+    assert.ok(Math.hypot(mark.x-x,mark.y-y)>mark.r);
+  }
+});

@@ -68,7 +68,7 @@
 .mv-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 0; padding: 5px 7px; list-style: none; background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
 .mv-legend li { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--fs-xs); line-height: 1.4; color: var(--fg2); }
 .mv-legend svg { flex: none; margin-top: 1px; fill: none; stroke: none; }
-.mv-key { display: flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--fg2); font: inherit; font-size: 10px; line-height: 18px; cursor: help; pointer-events: auto; }
+.mv-key { min-height: 0; height: 18px; display: flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--fg2); font: inherit; font-size: 10px; line-height: 18px; cursor: help; pointer-events: auto; }
 .mv-key:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
 .mv-legend .k-f { fill: var(--fg2); }
 .mv-legend .k-a { fill: var(--accent); }
