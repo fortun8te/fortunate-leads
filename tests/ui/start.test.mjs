@@ -64,19 +64,20 @@ test('mock backend answers the onboarding and start routes with the real shape',
 });
 
 function liveStart() {
-  const listeners = {}, messages = []; let reads = 0, offline = false;
+  const listeners = {}, messages = [], posts = []; let reads = 0, offline = false;
+  const go = {disabled:false};
   const body = { innerHTML: '' }, input = { value: '@glowbrand.co' }, error = { textContent: '', hidden: true };
-  const root = { classList: { contains: () => true }, querySelector: selector => ({ '#st-body': body, '#st-in': input, '#st-err': error, '#st-form': {} })[selector],
+  const root = { classList: { contains: () => true }, querySelector: selector => ({ '#st-body': body, '#st-in': input, '#st-err': error, '#st-form': {}, '#st-go': go })[selector],
     addEventListener: (name, handler) => { listeners[name] = handler; } };
   const nodes = { 'view-start': root, 'tab-start': {}, 'n-start': {} };
-  const data = { ready: false, open: 1, blocking: 1, steps: [], flow: { state: 'idle', people: 0, bios: 0, ranked: 0, lists: [], headline: 'Ready' } };
+  const data = { control: {stages:[{id:"lists",state:"idle",paused:false},{id:"bios",state:"idle",paused:false}]}, ready: false, open: 1, blocking: 1, steps: [], flow: { state: 'idle', people: 0, bios: 0, ranked: 0, lists: [], headline: 'Ready' } };
   const document = { hidden: false, activeElement: null, getElementById: id => nodes[id], querySelector: () => ({}), addEventListener() {} };
   const window = { parseHandles: () => ['glowbrand.co'], toast: msg => messages.push(msg), addEventListener() {}, dispatchEvent() {} };
   const context = vm.createContext({ window, document, location: { hash: '#/start' }, parseHandles: window.parseHandles, toast: window.toast,
     setTimeout() {}, clearTimeout() {}, Event,
-    fetch: async (_url, options) => { if (!options?.method) { ++reads; if (offline) throw Error('offline'); } return options?.method === 'POST' ? { ok: false, json: async () => ({ error: 'lease_429_internal' }) } : { ok: true, json: async () => data }; } });
+    fetch: async (_url, options) => { if (options?.method === 'POST') posts.push({url:_url,body:JSON.parse(options.body)}); if (!options?.method) { ++reads; if (offline) throw Error('offline'); } return options?.method === 'POST' ? { ok: false, json: async () => ({ error: 'lease_429_internal' }) } : { ok: true, json: async () => data }; } });
   vm.runInContext(read('start.js'), context);
-  return { window, listeners, messages, body, input, error, setOffline(value) { offline = value; }, get reads() { return reads; } };
+  return { window, listeners, messages, body, input, error, posts, go, setOffline(value) { offline = value; }, get reads() { return reads; } };
 }
 
 test('failed start keeps the entered handle and gives actionable feedback without raw diagnostics', async () => {
@@ -124,4 +125,27 @@ test('saved setup becomes visibly unavailable after disconnect and recovers on r
   h.setOffline(false);
   await h.listeners.click({target:{closest: selector => selector === '[data-st-retry]' ? {} : null}});
   assert.doesNotMatch(h.body.innerHTML, /Cannot update collection status|id="st-go" disabled/);
+});
+
+
+test('queued list work uses the actual waiting stage and labels stored totals honestly', () => {
+  const html = V.flowHTML({state:'running',headline:'Collecting @x',people:12,bios:3,ranked:2,lists:[{seed:'x',direction:'followers',received:25,total:200,state:'queued'}]}, {stages:[{id:'lists',state:'waiting',queue:2,today:0,now:'Waiting for a connected Chrome profile.'},{id:'bios',state:'idle',queue:0,today:3,now:'Nothing left to do.'}]});
+  assert.match(html, /Lists <span class="muted">Waiting/);
+  assert.match(html, /Waiting for a connected Chrome profile/);
+  assert.match(html, /2 list jobs remaining/);
+  assert.match(html, /Recent list activity/);
+  assert.match(html, /Totals across your saved workspace/);
+  assert.match(html, /<small>Queued/);
+});
+
+
+test('selected following scope is sent to Start; an empty scope cannot submit', async () => {
+  const h=liveStart();await h.window.Start.refresh();
+  h.listeners.change({target:{dataset:{stDirection:'followers'},checked:false}});
+  await h.listeners.submit({target:{id:'st-form'},preventDefault(){}});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.posts[0])),{url:'/api/start',body:{handles:['glowbrand.co'],directions:['following']}});
+  h.listeners.change({target:{dataset:{stDirection:'following'},checked:false}});
+  assert.equal(h.go.disabled,true);
+  await h.listeners.submit({target:{id:'st-form'},preventDefault(){}});
+  assert.equal(h.posts.length,1);
 });

@@ -30,7 +30,7 @@ function harness() {
     fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
   const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
   const fail = index => requests[index].reject(new Error('offline'));
-  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
   return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
 async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
@@ -74,7 +74,7 @@ test('stopping remains visible until the backend acknowledges the stop', async (
   const stopping=engines({processing:{mode:'RLAI'},paused:true,engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'stopping',active:true,ready:true,reason:'Finishing the current request.',stop_acknowledged:false}}});
   h.respond(1,stopping);await settle();
   assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Stopping<\/span>/);
-  h.poll();h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},paused:true,engines:{...stopping.engines,k2:{...stopping.engines.k2,state:'off',active:false,stop_acknowledged:true}}}));await settle();
+  h.poll();h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},paused:true,stop_acknowledged:true,engines:{...stopping.engines,k2:{...stopping.engines.k2,state:'off',active:false,stop_acknowledged:true}}}));h.respond(4,{paused:true,stop_acknowledged:true,state:'paused'});await settle();
   assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Paused<\/span>/);
 });
 
@@ -166,4 +166,25 @@ test('a partial stop reply cannot pretend that collection stopped', async () => 
   assert.match(h.el.innerHTML, /Couldn&#39;t confirm collection change/);
   assert.match(h.el.innerHTML, /aria-expanded="true"/);
   assert.doesNotMatch(h.el.innerHTML, />Continue collecting<\/button>/);
+});
+
+
+test('bio checks stay visible with the panel closed and pause independently of collection', async () => {
+  const h=harness();h.respond(0,collection(false));h.respond(1,engines({processing:{mode:'RLAI'},paused:false,stop_acknowledged:false}));await settle();
+  h.poll();h.respond(2,collection(false));h.respond(3,engines({processing:{mode:'RLAI'},paused:false,stop_acknowledged:false}));h.respond(4,{paused:false,state:'working',queue:12,reviewed:4,stop_acknowledged:false,progress:{active:{handle:'owner'}}});await settle();
+  assert.match(h.el.innerHTML,/fl-qual-status[^>]*>Qualification <b>Checking/);
+  assert.match(h.el.innerHTML,/4 bios reviewed · 12 remaining/);
+  h.click(b=>b.dataset.focus==='qualification');
+  const post=h.requests.find(r=>r.options?.method==='POST');
+  assert.equal(post.url,'/api/local-processing');assert.deepEqual(JSON.parse(post.options.body),{paused:true});
+  post.resolve({ok:true,json:async()=>({paused:true,state:'stopping',stop_acknowledged:false})});await settle();
+  assert.match(h.el.innerHTML,/disabled>Stopping…/);
+  assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);
+  assert.doesNotMatch(h.el.innerHTML,/>Continue checks<\/button>/);
+});
+
+test('collection detail prioritizes a running bio stage over idle lists', async () => {
+  const h=harness(),status=collection(false);status.stages[0].state='idle';status.stages[0].now='No lists waiting';status.stages[1].state='running';status.stages[1].now='Reading @founder';
+  h.respond(0,status);h.respond(1,engines());await settle();
+  assert.match(h.el.innerHTML,/fl-ctl-current">Reading @founder/);
 });
