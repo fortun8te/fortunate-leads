@@ -95,7 +95,7 @@ test('label collision avoids covering existing labels', () => {
   assert.ok(first); assert.ok(second); assert.notDeepEqual(first, second);
 });
 test('invalid coordinates cannot poison the scene', () => {
-  assert.equal(cleanNode(person(1, { x: NaN })), null); assert.equal(cleanNode(person(1, { y: Infinity })), null);
+  assert.equal(cleanNode(person(1, { x: null })), null); assert.equal(cleanNode(person(1, { x: NaN })), null); assert.equal(cleanNode(person(1, { y: Infinity })), null);
 });
 test('combobox has a list alternative, radio modes, and mobile sheet', () => {
   const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
@@ -109,4 +109,5 @@ test('unprepared spatial layout still offers bounded honest ranked overview', as
   await model.load(); assert.equal(model.phase, 'ready'); assert.equal(model.fallback, true); assert.equal(model.scene.nodes.length, 400); assert.equal(model.total, 10000000);
   assert.ok(urls[1].includes('limit=400')); assert.equal(model.world.me, undefined);
   assert.equal(model.scene.nodes[0].d.closeness, null);
+  assert.equal(model.kFor(model.scene.nodes[0].d), 1, 'overview search should keep context at large totals');
 });
