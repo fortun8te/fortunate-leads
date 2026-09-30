@@ -330,7 +330,8 @@ function setView(v) {
   if (v === 'map') M.show(); else if (prev === 'map') M.hide();
   if (v === 'leads' && prev !== 'leads') renderRows();
   if (v !== 'map' && S.seedCard) { S.seedCard = null; if (!S.open) $('#detail').hidden = true; }
-  if (prev !== v && narrow() && (S.open || S.seedCard)) closeDetail();
+  // The detail panel belongs to Leads and Connections only; never carry it onto another page.
+  if (prev !== v && (S.open || S.seedCard) && (!work || narrow())) closeDetail();
   if (v === 'scraper') renderScraper();
   if (v === 'accounts') renderAccounts();
   if (v !== 'accounts' && A.wiz) closeWizard();
@@ -750,6 +751,8 @@ async function loadMore(gen = S.gen, n = PAGE, replace = false) {
       S.rows.push(...d.rows.filter((r) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; }));
     }
     S.error = false;
+    // Start on the best lead so the keyboard works at once (desktop only; touch has no cursor).
+    if (S.cur < 0 && S.rows.length && S.view === 'leads' && !narrow()) S.cur = 0;
     S.done = d.has_more === false || S.nextOffset >= d.total || !d.rows.length;
   } catch (e) {
     if (gen === S.gen) S.error = true;
@@ -955,7 +958,11 @@ function renderRows() {
       box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
-      box.innerHTML = `<div class="empty"><b>${filtered ? 'No matches' : 'No leads yet'}</b><p>${filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.'}</p>${filtered ? '<button class="btn" id="clear-all">Clear filters <kbd>c</kbd></button>' : '<a class="btn" href="#/start">Get started</a>'}</div>`;
+      const st = S.f.status && STATUSES.includes(S.f.status) ? S.f.status : '';
+      const only = filtered === 1 && S.f.status;
+      const head = st ? `Nobody is ${esc(slabel(st).toLowerCase())} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
+      const body = st && only ? 'Select a lead and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
+      box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/start">Get started</a>'}</div>`;
     }
     return;
   }
@@ -1009,12 +1016,14 @@ function serializeMutation(fn) {
   return run;
 }
 // ---------- marking ----------
-function mark(id, status) { return serializeMutation(() => markNow(id, status)); }
-async function markNow(id, status) {
+function mark(id, status, o = {}) { return serializeMutation(() => markNow(id, status, o)); }
+async function markNow(id, status, { quiet = false } = {}) {
   const r = S.rows.find((x) => x.id === id) || (S.person?.id === id ? S.person : null);
   const prev = r ? r.status : null;
   invalidatePersonRead(id);
   patchRow(id, { status });
+  // Optimistic: say so at once; a failed save replaces this with an error.
+  if (!quiet && prev !== status) toast(status ? `@${r?.handle || 'lead'} marked ${slabel(status)}` : `@${r?.handle || 'lead'} status cleared`, () => mark(id, prev ?? null, { quiet: true }));
   try {
     await api.post(`/api/person/${id}/mark`, { status });
     loadCounts(); loadFacetsSoon();
@@ -1183,6 +1192,7 @@ function renderDetail() {
   panel.innerHTML = `
     <div class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
       <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '…')}</b><span>@${esc(p.handle)}${role ? ' · ' + esc(ucf(role)) : ''}</span></div>
+      ${S.view === 'leads' && S.rows.length > 1 ? '<div class="d-nav"><button type="button" id="d-prev" aria-label="Previous lead" title="Previous (k)">&#8593;</button><button type="button" id="d-next" aria-label="Next lead" title="Next (j)">&#8595;</button></div>' : ''}
       <button class="d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">&times;</button></div>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <div class="d-primary">
@@ -1258,6 +1268,8 @@ $('#detail').addEventListener('click', async (e) => {
   if (rel) return updateHumanRelationship(p.id, 'relationships', rel.dataset.humanRelationship);
   const familiarity = e.target.closest('[data-familiarity]');
   if (familiarity) return updateHumanRelationship(p.id, 'familiarity', familiarity.dataset.familiarity);
+  const nav = e.target.closest('#d-prev, #d-next');
+  if (nav) { const i = S.rows.findIndex((x) => x.id === p.id) + (nav.id === 'd-next' ? 1 : -1); if (S.rows[i]) { select(i, true); openDetail(S.rows[i].id); } return; }
   const m = e.target.closest('[data-s]');
   if (m) return mark(p.id, p.status === m.dataset.s ? null : m.dataset.s);
   const sd = e.target.closest('[data-seed]');
@@ -1779,7 +1791,9 @@ document.addEventListener('keydown', (e) => {
   if (k === 'Enter' && S.rows[S.cur]) { e.preventDefault(); openDetail(S.rows[S.cur].id, { keyboard: true }); return; }
   if (!r) return;
   if (k === 'm') { mark(r.id, CYCLE[(CYCLE.indexOf(r.status ?? null) + 1) % CYCLE.length]); return; }
-  if (/^[0-5]$/.test(k)) { mark(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
+  if (k === 's') { e.preventDefault(); openStatusMenu(r.id); return; }
+  if (k === 'n') { e.preventDefault(); const focusNote = () => { if (S.open === r.id) $('#note')?.focus(); }; if (S.open !== r.id) openDetail(r.id).then(focusNote); else focusNote(); return; }
+  if (/^[0-5]$/.test(k)) { setStatusKey(r.id, k === '0' ? null : STATUSES[+k - 1]); return; }
   if (k === 'o') { window.open(`https://www.instagram.com/${encodeURIComponent(r.handle)}/`, '_blank', 'noopener'); return; }
   if (k === 't') {
     e.preventDefault();
@@ -1788,6 +1802,64 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('#help').onclick = () => setHelp(false);
+// Marking someone "Not a fit" is triage: move on to the next lead, and Undo restores this one.
+function setStatusKey(id, status) {
+  mark(id, status);
+  if (status === 'no' && S.view === 'leads') {
+    const i = S.rows.findIndex((x) => x.id === id);
+    if (i >= 0 && i < S.rows.length - 1) { select(i + 1, true); if (S.open) openDetail(S.rows[i + 1].id); }
+  }
+}
+const statusMenu = { id: null, i: 0, from: null };
+function openStatusMenu(id) {
+  const r = S.rows.find((x) => x.id === id) || S.person;
+  if (!r) return;
+  closeStatusMenu(false);
+  statusMenu.id = id; statusMenu.from = document.activeElement;
+  const opts = [...STATUSES.map((s, n) => [s, String(n + 1)]), [null, '0']];
+  statusMenu.opts = opts.map(([s]) => s);
+  statusMenu.i = Math.max(0, statusMenu.opts.indexOf(r.status ?? null));
+  const el = document.createElement('div');
+  el.id = 'status-menu'; el.className = 'status-menu'; el.setAttribute('role', 'menu'); el.setAttribute('aria-label', 'Set status for @' + r.handle);
+  el.innerHTML = `<div class="sm-h">@${esc(r.handle)}</div>` + opts.map(([s, k], n) => `<button type="button" role="menuitem" data-sm="${n}" class="${n === statusMenu.i ? 'on' : ''}"><span>${s ? slabel(s) : 'No status'}</span><kbd>${k}</kbd></button>`).join('');
+  document.body.appendChild(el);
+  const anchor = $(`#rows [data-person-id="${id}"]`) || $('#detail');
+  const box = anchor.getBoundingClientRect(), w = 220;
+  el.style.left = Math.max(8, Math.min(innerWidth - w - 8, box.left + 56)) + 'px';
+  el.style.top = Math.max(8, Math.min(innerHeight - el.offsetHeight - 8, box.bottom - 8)) + 'px';
+  el.addEventListener('click', (e) => { const b = e.target.closest('[data-sm]'); if (b) chooseStatusMenu(+b.dataset.sm); });
+  document.addEventListener('mousedown', statusMenuOutside, true);
+}
+function statusMenuOutside(e) { if (!e.target.closest('#status-menu')) closeStatusMenu(true); }
+function closeStatusMenu(restore = true) {
+  const el = $('#status-menu'); if (el) el.remove();
+  document.removeEventListener('mousedown', statusMenuOutside, true);
+  statusMenu.id = null;
+  if (restore && statusMenu.from?.isConnected) statusMenu.from.focus({ preventScroll: true });
+}
+function chooseStatusMenu(n) {
+  const id = statusMenu.id, status = statusMenu.opts[n];
+  closeStatusMenu();
+  if (id != null) setStatusKey(id, status);
+}
+function moveStatusMenu(d) {
+  statusMenu.i = (statusMenu.i + d + statusMenu.opts.length) % statusMenu.opts.length;
+  $$('#status-menu [data-sm]').forEach((b, n) => b.classList.toggle('on', n === statusMenu.i));
+}
+// Captured first so the menu owns the keyboard while it is open.
+document.addEventListener('keydown', (e) => {
+  if (statusMenu.id == null || e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  if (k === 'Escape') closeStatusMenu();
+  else if (k === 'ArrowDown' || k === 'j') moveStatusMenu(1);
+  else if (k === 'ArrowUp' || k === 'k') moveStatusMenu(-1);
+  else if (k === 's') closeStatusMenu();
+  else if (k === 'Enter' || k === ' ') chooseStatusMenu(statusMenu.i);
+  else if (/^[0-5]$/.test(k)) chooseStatusMenu(k === '0' ? statusMenu.opts.length - 1 : +k - 1);
+  else if (k === 'Tab') closeStatusMenu(false);
+  else return;
+  if (k !== 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 
 // ---------- tags manager ----------
 const T = {
