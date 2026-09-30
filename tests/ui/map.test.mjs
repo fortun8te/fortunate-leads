@@ -123,3 +123,12 @@ test('real search positions and numeric fit survive the API boundary', async () 
   assert.equal(cleanNode(person(1, { fit: 44 })).fit, 'weak');
   assert.equal(cleanNode(person(1, { fit: null })).fit, 'unread');
 });
+
+
+test('viewport totals keep the full filtered population available across zoom levels', async () => {
+  const model = new MapModel({reduced:true,fetchJson:async()=>({...response(1),total:20,world_total:111699})});
+  await model.load();
+  assert.equal(model.total,20);
+  assert.equal(model.worldTotal,111699);
+  assert.equal(model.shown,1);
+});

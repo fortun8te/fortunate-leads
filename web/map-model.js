@@ -43,7 +43,7 @@
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
       this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.q = '';
-      this.phase = 'idle'; this.error = ''; this.total = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
+      this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
       this.load = this.load.bind(this);
@@ -113,10 +113,11 @@
     }
     apply(resp, at) {
       const previousRev = this.rev;
-      const nodes = resp.nodes.map(cleanNode).filter(Boolean), clusters = (resp.clusters || []).map(cleanCluster).filter(Boolean);
+      const nodes = resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), clusters = (resp.clusters || []).map(cleanCluster).filter(Boolean);
       this.fallback = !!resp.fallback; this.sampled = resp.sampled || 0;
       this.rev = resp.rev == null ? null : String(resp.rev);
       this.total = finite(+resp.total) ? +resp.total : nodes.length;
+      this.worldTotal = resp.world_total != null && finite(+resp.world_total) ? +resp.world_total : this.total;
       this.shown = finite(+resp.shown) ? +resp.shown : nodes.length;
       this.hidden = finite(+resp.hidden) ? +resp.hidden : clusters.reduce((a, c) => a + c.count, 0);
       this.world = { ...(resp.world || {}) };
