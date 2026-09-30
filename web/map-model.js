@@ -13,11 +13,11 @@
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
   // Trust the shape, not the server: keep only people with a place on the map.
   function cleanNode(n) {
-    if (!n || n.id == null || !finite(+n.x) || !finite(+n.y)) return null;
+    if (!n || n.id == null || n.x == null || n.y == null || !finite(+n.x) || !finite(+n.y)) return null;
     return { ...n, x: +n.x, y: +n.y, rank: finite(+n.rank) ? +n.rank : 0, fit: FITS.includes(n.fit) ? n.fit : 'unread', closeness: n.closeness != null && finite(+n.closeness) ? +n.closeness : null, handle: String(n.handle || n.id), name: n.name ? String(n.name) : '', status: n.status || null };
   }
   function cleanCluster(c) {
-    if (!c || c.id == null || !finite(+c.x) || !finite(+c.y) || !(+c.count > 0)) return null;
+    if (!c || c.id == null || c.x == null || c.y == null || !finite(+c.x) || !finite(+c.y) || !(+c.count > 0)) return null;
     return { ...c, x: +c.x, y: +c.y, count: +c.count, label: c.label ? String(c.label) : '' };
   }
 
@@ -51,7 +51,7 @@
     on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
     emit(what) { for (const fn of this.listeners) fn(what); }
     setSize(w, h) { this.cam.resize(w, h); }
-    get budget() { return this.budgetOverride || clamp(Math.round(this.cam.w * this.cam.h / 3400 * (1 + 2 * PAD) ** 2), 250, 1500); }
+    get budget() { return this.budgetOverride ? clamp(Math.round(this.budgetOverride), 250, 1500) : clamp(Math.round(this.cam.w * this.cam.h / 3400 * (1 + 2 * PAD) ** 2), 250, 1500); }
     get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0); }
 
     /* ----- loading ----- */
@@ -239,7 +239,7 @@
       return (this.fallback ? overview(r).nodes : r.results || []).map(cleanNode).filter(Boolean);
     }
     // Where to zoom so this person shows as an individual: enough that the server's budget covers the area.
-    kFor(n) { return clamp(Math.max(this.cam.k, Math.sqrt(Math.max(1, this.total) / Math.max(1, this.budget / 2.2)) * 1.1), 1, K_MAX); }
+    kFor(n) { if (this.fallback) return Math.max(1, Math.min(this.cam.k, 4)); return clamp(Math.max(this.cam.k, Math.sqrt(Math.max(1, this.total) / Math.max(1, this.budget / 2.2)) * 1.1), 1, K_MAX); }
     goTo(n, opt = {}) {
       const person = cleanNode(n); if (!person) return;
       this.select(person);
