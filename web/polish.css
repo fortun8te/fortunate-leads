@@ -29,15 +29,12 @@
 .acc-top .dot.off { height: 2px; width: 10px; border-radius: 1px; background: var(--fg3); }
 .acc-top .dot:not(.live):not(.hollow):not(.need):not(.off) { border-radius: 2px; }
 
-/* Target sizes: 32px minimum on desktop, 44px on phones. Last-layer override, so !important. */
-button:not(.tag):not(.tchip):not(.tok):not(.ck), summary, select, .toggle,
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 32px !important; }
+/* Primary controls share a height; small inline icons keep their own geometry. */
+.btn, .seg button, .select, .input { min-height: 32px; }
 textarea { min-height: 32px; }
-.seg button::after { content: ""; position: absolute; inset: -3px 0; }
-.seg button::after { content: none; }
 summary { align-content: center; }
+.row-fit::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; }
+.d-tag-remove::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; }
 @media (max-width: 760px) {
-  button:not(.tag):not(.tchip):not(.tok):not(.ck), summary, select, .toggle,
-  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 44px !important; }
-
+  .btn, .seg button, .select, .input { min-height: 44px; }
 }

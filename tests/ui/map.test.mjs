@@ -132,3 +132,50 @@ test('viewport totals keep the full filtered population available across zoom le
   assert.equal(model.worldTotal,111699);
   assert.equal(model.shown,1);
 });
+
+test('zoom and pan magnify the loaded cohort without requesting replacement people', async () => {
+  const requests=[];
+  const m=new MapModel({reduced:true,fetchJson:async(url)=>{requests.push(url);return response(1,[person(1),person(2)]);}});
+  m.setSize(1092,665);await m.load();
+  const ids=m.scene.nodes.map(n=>n.d.id);
+  m.cam.set(.7,.3,4);m.moved();
+  assert.equal(m.needsLoad(),false);
+  await m.load();
+  assert.equal(requests.length,1);
+  assert.deepEqual(m.scene.nodes.map(n=>n.d.id),ids);
+});
+
+test('paging is explicit and failed next-page requests preserve the current page', async()=>{
+ let fail=false;const requests=[];
+ const m=new MapModel({reduced:true,fetchJson:async url=>{requests.push(url);if(fail)throw new Error('failed');return {...response(1,[person(1)]),next_cursor:'[0.5,1,"rev"]'};}});
+ await m.load();const ids=m.scene.nodes.map(n=>n.d.id);fail=true;await m.browse(1);
+ assert.equal(m.pageIndex,0);assert.equal(m.cursor,'');assert.deepEqual(m.scene.nodes.map(n=>n.d.id),ids);
+ assert.match(requests[1],/after=/);
+});
+
+test('map status saves read back the server result and revert failed writes',async()=>{
+ const {MapView}=require('../../web/map-view.js');
+ const writes=[];
+ const view={r:{card:{querySelector:()=>null}},model:{scene:{get:()=>({d:{status:'interested'}})},patchStatus:(id,status)=>writes.push(status)},host:{setStatus:async()=>({status:'talking'}),toast:()=>{}}};
+ await MapView.prototype.setStatus.call(view,{id:1,status:'interested'},'contacted');
+ assert.deepEqual(writes,['contacted','talking']);writes.length=0;
+ view.host.setStatus=async()=>{throw new Error('save failed');};
+ await MapView.prototype.setStatus.call(view,{id:1,status:'interested'},'contacted');
+ assert.deepEqual(writes,['contacted','interested']);
+});
+
+test('search outside a zoomed cohort pans to the selected person without changing zoom',()=>{
+ const requests=[];
+ const model=new MapModel({reduced:true,fetchJson:async url=>{requests.push(url);return {nodes:[],edges:[]};}});
+ model.apply(response(1,[person(1),person(2)]),{});model.cam.set(.2,.3,3);
+ model.goTo(person(3,{x:.9,y:.9}));
+ assert.equal(model.cam.k,3);assert.equal(model.cam.cx,model.selected.x);assert.equal(model.cam.cy,model.selected.y);
+ assert.equal(model.selected.id,3);assert.ok(requests.every(url=>!url.includes('/api/map/view')));
+});
+
+test('map number shortcuts still set and clear status without the removed hidden button list',()=>{
+ const {MapView}=require('../../web/map-view.js');const writes=[];
+ const view={model:{selected:{id:1}},host:{statuses:['interested','contacted','talking','spoke_before','no']},setStatus:(n,status)=>writes.push([n.id,status])};
+ for(const key of ['1','5','0']) MapView.prototype.key.call(view,{key,stopPropagation:()=>{}},true);
+ assert.deepEqual(writes,[[1,'interested'],[1,'no'],[1,null]]);
+});

@@ -50,8 +50,9 @@
 #view-accounts .acc-start-note:empty,#view-accounts .acc-summary:empty,#view-accounts .alerts:empty { display:none; }
 #view-accounts .acc { padding:12px 16px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 20px; }
 #view-accounts .acc-top { grid-column:1/-1; padding:0; min-height:28px; }
-#view-accounts .acc-brief { display:flex; gap:12px; align-items:center; min-width:0; font-size:12px; }
-#view-accounts .acc-brief > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-accounts .acc-brief { display:flex; flex-wrap:wrap; gap:4px 12px; align-items:flex-start; min-width:0; font-size:12px; }
+#view-accounts .acc-brief > span { min-width:0; white-space:normal; overflow-wrap:anywhere; }
+#view-accounts .acc-brief > span:last-child { flex:1 1 240px; }
 #view-accounts .acc-mode { margin:0; gap:8px; }
 #view-accounts .acc-more { grid-column:1/-1; margin:0; padding:0; border:0; }
 #view-accounts .acc-more > summary { padding:4px 0 0; font-size:11px; }
@@ -63,6 +64,7 @@
 .collection-targets #seed-panel .p-body { padding:16px; }
 .collection-targets #seed-in { width:100%; min-height:72px; height:72px; max-height:160px; }
 .collection-targets #seed-panel .row-flex { gap:10px; margin-top:12px; flex-wrap:wrap; }
+#seed-feedback:empty { display:none; }
 #seed-feedback { margin:10px 0 0; font-size:12px; line-height:1.5; }
 .collection-targets .tbl-wrap { max-height:none; overflow:visible; }
 .collection-targets .tbl { table-layout:fixed; }

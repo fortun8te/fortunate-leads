@@ -28,7 +28,7 @@ test('local progress shows actual saved bio queue and separate research needs',a
  const h=harness();await h.ctx.loadProcessingStatus();h.ctx.renderCheckingMode();assert.match(h.$('#set-local-progress').textContent,/318 bios reviewed.*42 waiting.*2 notes waiting.*19 need more research/);assert.match(h.$('#set-mode-models').textContent,/K2 Horizon/);
 });
 test('new mode beats stale scraper snapshot, external summary preserves local and identifies research model',async()=>{
- const h=harness();await h.choose('RLEAI');h.S.sc.processing={mode:'R',generation:1};h.ctx.renderCheckingMode();assert.match(h.$('#set-mode-status').textContent,/Rules \+ local \+ external AI selected/);assert.match(h.$('#set-mode-models').textContent,/Laya are included.*grok.*optional/);
+ const h=harness();await h.choose('RLEAI');h.S.sc.processing={mode:'R',generation:1};h.ctx.renderCheckingMode();assert.match(h.$('#set-mode-status').textContent,/External AI selected/);assert.match(h.$('#set-mode-models').textContent,/K2 Horizon.*Laya.*External review: grok/);
 });
 test('legacy model save preserves order without changing mode',async()=>{
  const h=harness();await h.$('#set-models-save').onclick();assert.equal(h.calls.length,1);assert.equal(h.calls[0].url,'/api/llm/models');assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.dirty,false);
@@ -56,7 +56,7 @@ test('background pause uses separate endpoint and preserves processing mode',asy
  assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0])),{url:'/api/local-processing',body:{paused:true}});
  assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.localProcessing.paused,true);
  assert.equal(h.$('#local-ai-state').textContent,'Paused');assert.equal(h.$('#local-ai-toggle').textContent,'Resume');
- assert.match(h.$('#local-ai-help').textContent,/queue is saved.*rules and scraping continue/);
+ assert.match(h.$('#local-ai-help').textContent,/Queue saved.*Collection continues/);
 });
 test('unconfirmed background pause is shown as unknown, never still running',async()=>{
  const h=harness({failPost:true});h.SET.localProcessing={enabled:true,ready:true,state:'working'};
@@ -93,4 +93,15 @@ test('unverified local outputs stay separate from completed bio reviews and queu
  assert.equal(h.ctx.backgroundAIState(),'Ready');
  h.SET.localProcessing.paused=true;h.SET.localProcessing.stop_acknowledged=true;
  assert.match(h.ctx.localProcessingSummary(),/paused.*3 profiles need review/);
+});
+
+test('unacknowledged stop cannot be resumed from Settings or shared Review controls',async()=>{
+ const h=harness();h.ctx.esc=String;
+ h.SET.localProcessing={enabled:true,paused:true,stop_acknowledged:false,state:'working'};
+ h.ctx.renderCheckingMode();
+ assert.equal(h.$('#local-ai-toggle').disabled,true);
+ assert.equal(h.$('#local-ai-toggle').textContent,'Stopping…');
+ assert.match(h.ctx.backgroundAIControlsHTML(),/disabled[^>]*>Stopping…/);
+ await h.ctx.toggleBackgroundAI();
+ assert.equal(h.calls.length,0);
 });

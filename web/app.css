@@ -1109,9 +1109,9 @@ button:disabled { cursor:default; opacity:.5; }
 
 /* The directory uses the same component sizes, spacing and section hierarchy as Figma. */
 #view-tags { background: var(--bg); }
-.tg { max-width: 1200px; margin-inline: auto; padding: 40px 56px; }
-.tg > .ph { padding: 0 0 32px; }
-.tg > .ph h1 { font-size: 36px; line-height: 44px; }
+.tg { max-width: 1040px; margin-inline: auto; padding: var(--s6) var(--s6) 64px; }
+.tg > .ph { padding: 0 0 var(--s5); }
+.tg > .ph h1 { font-size: var(--fs-page); line-height: 32px; font-weight: 600; }
 .tg-groups { gap: 30px; }
 .tg-top { background: var(--tag-panel); border: 0; padding: 24px; border-radius: 16px; }
 .tg-main, .tg-rest { gap: 30px 40px; }

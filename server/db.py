@@ -276,6 +276,7 @@ def init(path):
                              ('jobs', 'backend_lane', 'TEXT'), ('jobs', 'backend_viewer_ig_id', 'TEXT'),
                              ('accounts', 'collection_backend', "TEXT NOT NULL DEFAULT 'chrome'"),
                              ('collector_events', 'route', 'TEXT'),
+                             ('collector_events', 'saved_entries', 'INT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),

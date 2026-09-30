@@ -52,11 +52,11 @@ test('following filters and balanced overview are explicit request parameters', 
   const {MapModel} = require('../web/map-model.js');
   const model = new MapModel({fetchJson: async () => ({rev:1,nodes:[],clusters:[]})});
   const rect = {x0:0,y0:0,x1:1,y1:1};
-  assert.equal(model.params(rect).get('overview'),'1');
+  assert.equal(model.params(rect).get('cohort'),'1');
   model.follow = 'not_following';
   assert.equal(model.params(rect).get('follow'),'not_following');
   assert.equal(model.filtersActive,1);
-  model.mode = 'fit'; assert.equal(model.params(rect).has('overview'),true);
+  model.mode = 'fit'; assert.equal(model.params(rect).has('cohort'),true);
 });
 test('unprepared fallback cannot claim an unsupported following filter', async () => {
   const {MapModel} = require('../web/map-model.js'); let requests=0;
@@ -91,11 +91,10 @@ test('dense photo bodies win over a neighboring expanded click target', () => {
   const hit=MapView.prototype.pick.call({touch:false,displayMarks:{nodes:[left,right],groups:[]}},17,0);
   assert.equal(hit.it.d.id,2);
 });
-test('panning during mode relocation prevents the late reply from flying the camera', async () => {
-  const {MapModel}=require('../web/map-model.js');let resolve;
-  const model=new MapModel({fetchJson:()=>new Promise(r=>resolve=r),reduced:true});model.setSize(1000,700);
-  model.selected={id:1,handle:'test',x:.5,y:.5};model.setMode('fit');model.pan(80,0);model.pause(true);
-  const center=model.cam.cx;
-  resolve({results:[{id:1,handle:'test',positions:{fit:{x:.9,y:.9}}}]});await Promise.resolve();await Promise.resolve();
-  assert.equal(model.cam.cx,center);assert.equal(model.flight,null);
+test('changing display mode retains selected person and camera without relocation requests', () => {
+  const {MapModel}=require('../web/map-model.js');let requests=0;
+  const model=new MapModel({fetchJson:()=>requests++,reduced:true});model.setSize(1000,700);
+  model.selected={id:1,handle:'test',x:.5,y:.5};model.cam.set(.3,.6,2);
+  const camera=model.cam.state();model.setMode('fit');
+  assert.equal(requests,0);assert.deepEqual(model.cam.state(),camera);assert.equal(model.selected.id,1);
 });

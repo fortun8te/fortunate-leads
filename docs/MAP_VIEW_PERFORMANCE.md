@@ -260,3 +260,13 @@ the 23 whose handles were not sources. Search now checks the prepared layout's
 indexed profile IDs alongside existing graph/source presence. All 24 exact-handle
 searches returned their prepared positions. The focused marked/unmarked regression
 and 25 map/search tests passed. [Sanitized actual-data presence evidence](benchmarks/map-real-disconnected-search.json).
+
+### Stable page renderer, 1 October 2026
+
+The current UI uses explicit pages, not viewport-dependent samples. Every loaded person is drawn; zoom changes magnification only. The user rejected the intermediate hexagonal packing, which was replaced with deterministic irregular radial packing. Views and size choices keep the page and camera.
+
+A full HTTP walk over the saved-data preview visited all 111,698 non-owner people in 112 pages of up to 1,000, without duplicates or omissions. Median request time was 19.13 ms, maximum 70.76 ms. This was a warm local test, not a cold-disk bound. [Raw page verification](benchmarks/map-cohort-real-20261001.json).
+
+Browser checks loaded all 1,001 portraits including the owner into a bounded 1,024-entry cache, with six concurrent loads. Zoom from 1 to 1.6 preserved exact membership and API request count; an observed draw took 3.4 ms. Final 500-person irregular layouts fit at 1440×1000 and 1280×800 without horizontal overflow. Geometry tests cover all 250/500/1,000 members, photo non-overlap and viewport fit. These browser figures are observations on this Mac, not frame-time guarantees.
+
+The earlier ten-million spatial benchmarks above remain historical evidence. They do not verify physical ten-million performance of the new stable-page path.

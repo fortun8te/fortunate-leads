@@ -792,6 +792,8 @@ def status_of(row, now, conn=None):
         return 'paused'
     if full_cooldown(row, now):
         return 'cooldown'
+    if row['state'] == 'network_wait':
+        return 'connection_error'
     if conn is not None and conn.execute(
             "SELECT 1 FROM jobs WHERE state='leased' AND lane=? AND leased_until>? LIMIT 1",
             (row['lane_id'], iso(now))).fetchone():
@@ -820,7 +822,7 @@ def out(conn, row, now, include_lists=True):
             'paused': bool(row['paused']), 'is_main': bool(row['is_main']), 'first_seen': row['first_seen'],
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
-            'healthy': healthy(row, now), 'cooldown_until': full_cooldown(row, now),
+            'healthy': healthy(row, now) and row['state'] != 'network_wait', 'cooldown_until': full_cooldown(row, now),
             'list_endpoint_until': follower_route_wait(conn, row, now),
             'cool': {'list': list_wait_until(row, now),
                      'profile': row['profile_cool_until'] if later(row['profile_cool_until'], now) else None},

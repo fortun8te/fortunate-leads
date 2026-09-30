@@ -318,3 +318,20 @@ test('stagesView: the widget rows for the three workspace stages', () => {
   assert.equal(FL.stagesView(ctl, T0)[2].word, 'running · 3/min · 42/h');
   assert.deepEqual(FL.stagesView(null, T0), []);
 });
+
+test('network backoff is shown as connection trouble even while a job lease is retained', () => {
+  const st = FL.fresh();
+  FL.backoff(st, T0, 'net');
+  const out = FL.statusOf(st, {job: {id: 1}}, T0 + 1000);
+  assert.equal(out.state, 'network_wait');
+  assert.match(out.text, /connection trouble.*Retrying/);
+  assert.doesNotMatch(out.text, /Scraping/);
+  assert.equal(FL.statusOf(st, {job: {id: 1}, serverPaused:true}, T0).state, 'paused');
+  assert.equal(FL.statusOf(st, {budgetDone:true}, T0).text, 'Daily budget reached');
+  assert.equal(FL.statusOf(st, {stages:{list:false,profile:false}}, T0).state, 'paused');
+  st.hold = {code: 'challenge', message: 'Complete the security check'};
+  assert.match(FL.statusOf(st, {job: {id: 1}}, T0).text, /security check/);
+  st.hold = null;
+  FL.succeeded(st);
+  assert.equal(FL.statusOf(st, {job: {id: 1}}, T0 + 60000).state, 'running');
+});

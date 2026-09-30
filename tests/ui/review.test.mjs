@@ -58,3 +58,12 @@ test('outdated review failure cannot hide a newer successful result', async () =
   assert.equal(q.rows[0].id,8);
   assert.equal(q.renders,1);
 });
+
+
+test('profile checks distinguish queued work and website failures without exposing raw errors',()=>{
+ const c=base();vm.runInContext(section('function profileCheckSummary(', 'const Q ='),c);
+ assert.equal(c.profileCheckSummary({bio:{state:'pending'},site:{error:'HTTP 503 traceback'}}),'Profile read queued. Website unavailable.');
+ assert.equal(c.profileCheckSummary({bio:{state:'held'}}),'Waiting for collection to resume.');
+ assert.equal(c.profileCheckSummary({bio:{state:'fresh'},site:{title:'Shop'},reused:true}),'Profile up to date. Website up to date.');
+ assert.equal(c.profileCheckSummary({bio:{state:'unavailable'}}),'Profile unavailable.');
+});

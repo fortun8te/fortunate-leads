@@ -34,7 +34,7 @@ test('scraper separates active work from incomplete and capped list coverage',()
   assert.match(lists,/60 left in active lists/);
   assert.match(lists,/2 incomplete lists \(about 140 entries missing\)/);
   assert.match(lists,/1 capped list/);
-  assert.match(lists,/Active lists: about 2 h left/);
+  assert.doesNotMatch(lists,/Active lists: about 2 h left/); // Legacy historical rates are not a current-run ETA.
   assert.doesNotMatch(lists,/bar-p|people collected|Each extra Instagram account/);
   assert.match(c.$('#now').innerHTML,/list entries saved so far/);
   delete c.S.sc.progress.lists.incomplete_lists;

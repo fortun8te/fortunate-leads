@@ -64,12 +64,13 @@
     if (v.stale) return 'No update from the extension. Reload it in chrome://extensions.';
     let t = String(v.text || '');
     if (/^Needs attention/.test(t)) return t.replace(/^Needs attention:\s*/, '');
+    if (v.state === 'network_wait') return t || 'Retrying the Instagram connection';
     if (v.job) return (v.key === 'run' ? 'Reading ' : 'Next: ') + v.job;
     t = t.split(' · ').pop();
     return t || 'Idle';
   }
   function render() {
-    const v = view, online = !!v && !v.stale && (v.key === 'run' || v.key === 'wait');
+    const v = view, online = !!v && !v.stale && v.state !== 'network_wait' && (v.key === 'run' || v.key === 'wait');
     $('dot').className = $('pdot').className = 'dot' + (online ? ' on' : '');
     const today = (v && v.today) || {};
     $('ptext').textContent = online ? n(today.people) + ' today' : v && v.key === 'stop' && /Paused/.test(v.text || '') ? 'Paused' : 'Leads';

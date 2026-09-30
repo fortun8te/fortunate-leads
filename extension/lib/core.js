@@ -508,6 +508,10 @@
     const pausedStages = [stages.list === false ? 'Followers paused' : null,
       stages.profile === false ? 'Bios paused' : null].filter(Boolean);
     if (pausedStages.length === 2) return { state: 'paused', text: 'Followers and bios paused in workspace', badge: '‖', key: 'stop' };
+    if (st.streak?.net > 0) {
+      const seconds = Math.max(0, Math.ceil(((st.nextAt || 0) - now) / 1e3));
+      return { state: 'network_wait', text: seconds ? 'Instagram connection trouble. Retrying in ' + seconds + 's' : 'Retrying the Instagram connection', badge: '!', key: 'wait' };
+    }
     const pre = [pausedStages.join(' · ') || null, issue ? listIssueText : null,
       lc ? 'Instagram list limit until ' + t(st.cool.list.until) : null,
       pc ? 'Bios cooling until ' + t(st.cool.profile.until) : null].filter(Boolean).join(' · ');

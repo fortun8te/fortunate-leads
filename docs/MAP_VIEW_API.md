@@ -1,10 +1,34 @@
 # Map view API
 
-Contract for the Connections map at any scale (target: 10 million people). The map asks for a
-rectangle of a precomputed layout and gets back at most `budget` individual people, ranked by
-importance, plus aggregated bubbles for everyone else in that rectangle. Nothing is thrown away:
-zooming in reveals the next-ranked people. The older `/api/map`, `/api/map-overview` and
-`/api/connections` endpoints are unchanged.
+The current Connections UI requests stable pages of people with `cohort=1`.
+Zoom and pan only magnify that page; they do not fetch or reveal a different set of people.
+Previous/Next, filters and search reach the rest of the database. Browser memory and drawing
+are bounded independently of the total database size.
+
+The spatial rectangle API is retained for compatibility and is documented below. The current
+UI does not use its zoom-dependent aggregation. The older `/api/map`, `/api/map-overview` and
+`/api/connections` endpoints are unchanged. Ten million people remains the storage target;
+current physical benchmark limits are in [performance](MAP_VIEW_PERFORMANCE.md).
+
+## Stable pages used by the UI
+
+Request `/api/map/view?mode=closeness&cohort=1&budget=500` with the normal filters.
+The UI offers 250, 500 or 1,000 people per page. All four viewing modes retain those people,
+their positions and the camera; the selected size metric changes their radius.
+
+- `cohort=1` uses indexed rank/person seeks and caps the page at 1,000 people.
+- `after` is the opaque JSON string returned as `next_cursor`; encode it as a query parameter.
+- `next_cursor:null` means there is no next page. The client retains its previous cursors.
+- `cohort_reset:true` means the layout revision changed and the response starts at page one.
+- `total` and `world_total` count matching people excluding the owner, who is rendered separately.
+- `clusters` and `groups` are empty. `hidden` counts matching people on other pages, not bubbles
+  waiting to appear on zoom. The spatial cluster-count invariant below applies only to spatial requests.
+
+The client packs each page into deterministic, irregular positions around the owner, ordered
+outward by recorded connection evidence. Distance is an ordering, not a literal social distance.
+The original evidence coordinates remain available on each client node. Every loaded person
+is drawn; no collision culling or count chips replace people. Search can replace one member
+with the requested person and centre that selection without increasing the loaded page size.
 
 All coordinates are normalized: x and y are in `[0,1]`, origin top-left, y grows downward.
 The world always includes `{"w":1,"h":1}`. All current modes also return

@@ -74,7 +74,7 @@ test('refreshing retained filtered rows fetches from zero and renders No matches
   const select = (name) => { if (!nodes.has(name)) nodes.set(name, {style:{},classList:{toggle(){}},scrollTop:0,clientHeight:800,innerHTML:'',setAttribute(){},querySelector:()=>null,contains:()=>false});return nodes.get(name); };
   const urls = [];
   const context = vm.createContext({
-    S:state,PAGE:100,$:select,document:{activeElement:null},CSS:{escape:String},LeadWorkflow:globalThis.LeadWorkflow,URLSearchParams,
+    S:state,PAGE:100,ROW_CHIPS:2,$:select,document:{activeElement:null},CSS:{escape:String},LeadWorkflow:globalThis.LeadWorkflow,URLSearchParams,
     api:{get:async(url)=>{urls.push(url);return {rows:[],total:0};}},
     toQuery:()=>new URLSearchParams('follow_up=due'), rowH:()=>64, plural:(n)=>String(n), int:String,
     renderBulk(){}, exporting:false, rowHTML:()=>'<div>Old row</div>', filterCount:()=>1, offlineSince:null,

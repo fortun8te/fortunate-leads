@@ -1,0 +1,11 @@
+{
+  "people_excluding_owner": 111698,
+  "pages": 112,
+  "page_limit": 1000,
+  "unique_complete": true,
+  "http_median_ms": 19.13,
+  "http_max_ms": 70.76,
+  "fixture": "saved-data preview",
+  "scope": "all",
+  "date": "2026-10-01"
+}

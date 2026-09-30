@@ -53,3 +53,27 @@ test('shared Instagram pause explains its retry time without promising completio
  assert.match(ctx.collectionCoverageHTML({...sc,paused:true,stages:[{id:'lists',paused:true,active:true,state:'stopping',stop_acknowledged:false},{id:'bios',paused:true,stop_acknowledged:true}]}),/Stopping.*current request/);
  assert.match(ctx.collectionCoverageHTML({...sc,paused:true,stages:[{id:'lists',paused:true,stop_acknowledged:true},{id:'bios',paused:true,stop_acknowledged:true}]}),/Stopped/);
 });
+
+
+test('queue summary scopes the ETA and separates unknown and limited lists',()=>{
+ const html=c.collectionCoverageHTML({collection:{finished:4,pending:7,limited:2,needs_review:1,unknown_lists:3,open_ended:true,eta:{scope:'known_lists',low_minutes:20,high_minutes:35}},progress:{bios:{left:80}}});
+ assert.match(html,/4 finished · 7 queued · 2 limited · 1 need review/);
+ assert.match(html,/Known lists: about 20 min–35 min/);
+ assert.match(html,/3 list sizes unknown/);
+ assert.match(html,/Auto-discovery on/);
+ assert.doesNotMatch(html,/Local AI|Choose AI|all.*finished|complete at/);
+ const stopped=c.collectionCoverageHTML({paused:true,collection:{finished:4,pending:7,eta:{scope:'current_queue',low_minutes:20,high_minutes:35}}});
+ assert.doesNotMatch(stopped,/about 20|35 min/);
+});
+
+
+test('list filters use completion categories consistently including stopped trials',()=>{
+ const elements=new Map();
+ const $=key=>{if(!elements.has(key))elements.set(key,{innerHTML:'',textContent:'',contains:()=>false});return elements.get(key)};
+ const ctx=vm.createContext({SET:{localProcessing:null},backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> '',collectionReason:()=> 'Waiting',mountCollectionTargets:()=>{},$,S:{sc:{ext:{online:true},lists:[{seed:'stopped',direction:'following',state:'paused',completion:'blocked',saved_entries:20,expected:30},{seed:'waiting',direction:'following',state:'queued',completion:'waiting',saved_entries:0,expected:null},{seed:'done',direction:'following',state:'done',completion:'complete',saved_entries:30,expected:30}],progress:{lists:{},bios:{},qualify:{}}}},document:{activeElement:null},listFilter:'all',listsShown:10,LIST_STATE:{},ST_LABEL:{},int:String,esc:String,ucf:String,left:String,ago:String,backIn:String,eta:()=>null});
+ vm.runInContext(source.slice(source.indexOf('function renderScraper()'),source.indexOf('let listsShown =')),ctx);
+ ctx.renderScraper();
+ assert.match($('#lists-f').innerHTML,/In queue <span class="num">1<\/span>/);
+ assert.match($('#lists-f').innerHTML,/Complete <span class="num">1<\/span>/);
+ assert.match($('#lists-f').innerHTML,/Incomplete <span class="num">1<\/span>/);
+});

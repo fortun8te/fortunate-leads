@@ -13,11 +13,11 @@ test('ten-million-person demo keeps viewport replies bounded in every layout', (
     assert.ok(reply.nodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y)));
   }
 });
-test('map requests only the viewport and explicit map filters', () => {
+test('map requests a stable whole-database page and explicit filters', () => {
   const map = new MapModel();
   map.scope = 'leads'; map.minFit = 'good'; map.status = 'client';
   const q = map.params({ x0: .2, y0: .3, x1: .4, y1: .5 });
   assert.equal(q.get('scope'), 'leads'); assert.equal(q.get('min_fit'), 'good'); assert.equal(q.get('status'), 'client');
-  assert.equal(q.get('x0'), '.2'.replace(/^\./, '0.')); assert.ok(Number(q.get('budget')) <= 1500);
+  assert.equal(q.get('x0'), '0'); assert.equal(q.get('cohort'),'1'); assert.ok(Number(q.get('budget')) <= 1500);
   assert.equal(q.has('tags'), false);
 });

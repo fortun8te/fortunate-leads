@@ -1,6 +1,7 @@
 """Viewport results agree with exhaustive layout rows, without live data."""
 import json
 import random
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -267,6 +268,51 @@ class MapViewTests(unittest.TestCase):
         self.assertEqual(sum(b['count'] for b in result['clusters']), result['hidden'])
         self.assertIn(result['world']['me']['id'], {n['id'] for n in result['nodes']})
         self.assertTrue(all((n['x']-.5)**2+(n['y']-.5)**2 <= .47**2+1e-6 for n in result['nodes']))
+
+    def test_cohort_cursor_visits_every_matching_person_once_and_excludes_owner(self):
+        with MV.reader(self.path, 'closeness') as store:
+            owner = (store.meta('plan', {}) or {}).get('owner_id', 0)
+            mask = MV.Query({'scope':['all']}).mask
+            expected = [row[0] for row in sorted(store.conn.execute('SELECT person_id,rk,cls FROM mp'), key=lambda row: (-row[1],row[0]))
+                        if row[0] != owner and (mask >> row[2]) & 1]
+        seen=[]; after=''
+        while True:
+            result=self.view({'scope':['all'],'cohort':['1'],'budget':['500'],'after':[after]})
+            self.assertLessEqual(len(result['nodes']),500)
+            self.assertEqual(result['clusters'],[])
+            self.assertEqual(result['total'],len(expected))
+            seen.extend(n['id'] for n in result['nodes'])
+            after=result['next_cursor']
+            if not after: break
+        self.assertEqual(seen,expected)
+
+    def test_cohort_cursor_from_another_revision_restarts_instead_of_skipping(self):
+        first=self.view({'scope':['all'],'cohort':['1'],'budget':['250']})
+        after=json.loads(first['next_cursor']);after[2]='old-revision'
+        again=self.view({'scope':['all'],'cohort':['1'],'budget':['250'],'after':[json.dumps(after)]})
+        self.assertTrue(again['cohort_reset'])
+        self.assertEqual([n['id'] for n in first['nodes']],[n['id'] for n in again['nodes']])
+
+    def test_late_cohort_cursor_seeks_past_large_rank_ties_with_bounded_work(self):
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.executescript(ML.SCHEMA)
+        conn.executemany('INSERT INTO mp VALUES(?,?,?,?,?,?,?,?,?)',
+                         ((pid, 0, 0, .5 if pid <= 100000 else .4, 0, 0, 0, 0, 0)
+                          for pid in range(1, 100101)))
+        calls = 0
+        def guard():
+            nonlocal calls
+            calls += 1
+            return int(calls > 20)
+        conn.set_progress_handler(guard, 1000)
+        first = MV._cohort_class_rows(conn, 0, .5, 90000, 90005, 50)
+        self.assertEqual([r[0] for r in first], [pid for pid in range(90001, 90052) if pid != 90005])
+        calls = 0
+        boundary = MV._cohort_class_rows(conn, 0, .5, 99980, 99985, 50)
+        self.assertEqual([r[0] for r in boundary],
+                         [pid for pid in range(99981, 100001) if pid != 99985] + list(range(100001, 100032)))
+        conn.set_progress_handler(None, 0)
 
     def test_follow_direction_uses_observation_and_explicit_absence_only(self):
         path = Path(self.temp.name) / 'directions.sqlite'

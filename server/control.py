@@ -120,6 +120,8 @@ def lane_wait(conn, row, kind, now):
         return 'Instagram asked us to slow down, resting', int((u - now).total_seconds())
     ready = (db.get_setting(conn, 'ext_ready') or {}).get(row['lane_id']) or {}
     u = utc(ready.get(kind)) if ready.get(kind) else None
+    if row['state'] == 'network_wait':
+        return 'Instagram connection trouble, retrying safely', max(0, int((u - now).total_seconds())) if u else None
     if u and u > now:
         sec = int((u - now).total_seconds())
         return 'Waiting between requests', sec
@@ -175,7 +177,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
     able = [a for a in accts if a['online'] and not a['paused'] and (a['role'] or 'both') in role_ok]
     working = [a for a in able if a['job'] and a['job']['kind'] == kind
-               and not lane_blocked(rows[a['lane_id']], kind, now)]
+               and not lane_blocked(rows[a['lane_id']], kind, now) and a.get('state') != 'network_wait']
     if not accts or not any(a['online'] for a in accts):
         return dict(out, state='waiting' if queue else 'idle', now=f'No Instagram account is online. {queue:,} jobs waiting. Open Chrome with the extension.')
     if not able:
@@ -210,6 +212,8 @@ def account_out(conn, a, row, now, all_paused):
     if a['hold']:
         why, sec = lane_wait(conn, row, 'list', now)
         return dict(base, state='waiting', wait={'why': why, 'seconds': sec}, now=why + '.')
+    if a.get('state') == 'network_wait':
+        return dict(base, state='waiting', now='Instagram connection trouble. Retrying safely; progress is saved.')
     if a['job']:
         j = a['job']
         if lane_blocked(row, j['kind'], now):

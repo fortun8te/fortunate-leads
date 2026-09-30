@@ -70,8 +70,21 @@ test('stale status blocks changes and the summary counts selected lists', async 
   s.ctx.S.scStale = true;
   s.ctx.syncSeed();
   assert.equal(s.node('#seed-start').disabled, true);
-  assert.equal(s.node('#seed-add').disabled, true);
   assert.equal(s.node('#seed-n').textContent, '2 profiles · 2 lists');
   await s.ctx.submitSeed(true);
   assert.equal(calls, 0);
+});
+
+
+test('one primary button adds without restarting while collection is already on', async () => {
+  const paths = [];
+  const s = setup(async path => { paths.push(path); return {queued: 2}; });
+  s.ctx.S.sc = {paused: false, stages: [{id: 'lists', paused: false}]};
+  s.ctx.syncSeed();
+  assert.equal(s.node('#seed-start').textContent, 'Add profiles');
+  await s.node('#seed-start').onclick();
+  assert.deepEqual(paths, ['/api/scraper/seeds']);
+  s.ctx.S.sc.paused = true;
+  s.ctx.syncSeed();
+  assert.equal(s.node('#seed-start').textContent, 'Start collecting');
 });

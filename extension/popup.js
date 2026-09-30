@@ -29,6 +29,7 @@ function render(v) {
   const parts = text.split(' · ');
   let label = parts.pop(), detail = parts.join(' · ');
   if (key === 'wait' && v.nextAt) label = secs(v.nextAt) ? 'Waiting ' + secs(v.nextAt) + 's' : 'Scraping';
+  if (v.state === 'network_wait') { label = 'Connection trouble'; detail = text; }
   if (/^Needs attention/.test(text)) { label = 'Needs attention'; detail = text.replace(/^Needs attention:\s*/, ''); }
   $('state').textContent = label || LABEL[key];
   $('detail').textContent = detail;

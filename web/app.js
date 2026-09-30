@@ -408,11 +408,27 @@ function syncLook() {
 $('#set-theme').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyTheme(b.dataset.v); };
 $('#set-density').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) applyDensity(b.dataset.v); };
 const narrow = () => window.innerWidth <= 900;
+let detailHidFilters = false;
+function setFilterRail(visible) {
+  S.side = visible;
+  $('#view-work').classList.toggle('work-noside', !visible);
+  syncFilterToggle();
+}
+function fitDetailLayout() {
+  if (S.view === 'leads' && S.open && S.side && !narrow() && window.innerWidth <= 1480) {
+    detailHidFilters = true;
+    setFilterRail(false);
+  }
+}
+function restoreDetailLayout() {
+  if (detailHidFilters) setFilterRail(true);
+  detailHidFilters = false;
+}
 function toggleSide() {
   if (narrow()) { setDrawer(!$('#filters').classList.contains('show')); return; }
-  S.side = !S.side;
-  $('#view-work').classList.toggle('work-noside', !S.side);
-  syncFilterToggle(); renderRows(); M.resize();
+  detailHidFilters = false;
+  setFilterRail(!S.side);
+  renderRows(); M.resize();
 }
 function syncFilterToggle() {
   $('#filters-btn').setAttribute('aria-expanded', String(narrow() ? $('#filters').classList.contains('show') : S.side));
@@ -965,8 +981,8 @@ function followUpChip(f) {
 }
 // Keep the saved classification and owner tags visible, with remaining evidence available on hover.
 const ROW_CHIPS = 2;
-function rowChips(r) {
-  const tags = rowTagSelection(r, ROW_CHIPS);
+function rowChips(r, limit = ROW_CHIPS) {
+  const tags = rowTagSelection(r, limit);
   return tags.shown.map((t) => tagChip(t)).join('') + (tags.hidden.length ? `<span class="more" title="${esc(tags.hidden.map((t) => t.tag).join(' · '))}">+${tags.hidden.length}</span>` : '');
 }
 function leadConnectionLines(r) {
@@ -1003,13 +1019,14 @@ function rowHTML(r, i, h) {
     <div class="c-sel">${avatar(r.pic, r.name || r.handle)}</div>
     <div class="who"><div class="l1"><button class="lead-open" aria-label="Open @${esc(r.handle)}"><b>${esc(named ? r.name : '@' + r.handle)}</b>${named ? `<span class="handle">@${esc(r.handle)}</span>` : ''}</button>${igLink(r.handle)}${noteIcon(r.note)}${followUpChip(r.follow_up)}</div><div class="why">${rowConnectionHTML(r)}<span>${whyHTML(r)}</span></div>
       <div class="row-meta"><span class="c-st-m">${statHTML(r.status)}</span><span class="num muted">${fmt(r.followers)} followers</span></div></div>
-    <div class="tags c-tags">${rowChips(r)}</div>
+    <div class="tags c-tags">${rowChips(r, S.rowTagLimit)}</div>
     <span class="num r fol c-fol">${fmt(r.followers)}</span>
     <div class="c-fit">${rowFitHTML(r)}</div>
     <span class="c-st">${statHTML(r.status)}</span>
   </div>`;
 }
 function renderRows() {
+  S.rowTagLimit = $('#pane-leads').clientWidth <= 860 ? 1 : ROW_CHIPS;
   const active = document.activeElement;
   const activeRow = active?.closest('#rows .row');
   const focusId = activeRow?.dataset.personId;
@@ -1115,6 +1132,7 @@ async function openDetail(id, { keyboard = false } = {}) {
   if (S.open && S.open !== id) noteQueue.flush(S.open).catch(() => {});
   detailAccess.open();
   S.open = id;
+  fitDetailLayout();
   const base = S.rows.find((r) => r.id === id);
   const node = M.byId.get('p:' + id);
   S.person = base ? { ...base, loading: true } : node ? { id, handle: node.handle, name: node.name, followers: node.followers, lists: node.lists, status: node.status, tags: [], loading: true } : { id, loading: true, handle: '', tags: [] };
@@ -1155,6 +1173,7 @@ function closeDetail() {
   if (S.open) noteQueue.flush(S.open).catch(() => {});
   S.open = null; S.person = null;
   $('#detail').hidden = true;
+  restoreDetailLayout();
   M.focus = null;
   renderRows(); M.resize();
   detailAccess.close();
@@ -1195,7 +1214,7 @@ function websiteEvidence(site) {
   const tags = !site.stale && Array.isArray(site.tags) ? site.tags.filter((t) => typeof t === 'string') : [];
   return `<section class="ql-site"><div class="ql-sh"><b>${site.summary_source === 'page_excerpt' ? 'From website' : 'Website evidence'}</b>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(site.title || url)}</a>` : ''}${site.at ? `<em>Checked ${esc(site.at.slice(0, 10))}</em>` : ''}</div>
     ${site.stale ? '<p class="muted">Older website evidence. Check the site again before using these claims.</p>' : `${site.summary ? `<p>${esc(site.summary)}</p>` : ''}${tags.length ? `<div class="ql-facts">${tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}`}
-    ${site.error ? `<p class="muted">${esc(ucf(site.error))}</p>` : ''}</section>`;
+    ${site.error ? `<details class="ql-site-error"><summary>Website unavailable</summary><p class="muted">${esc(ucf(site.error))}</p></details>` : ''}</section>`;
 }
 const evidenceOf = (v) => (Array.isArray(v?.evidence) ? v.evidence : []).filter((q) => typeof q === 'string' && q.trim());
 const detailViewState = new Map();
@@ -2001,16 +2020,16 @@ const T = {
       if (!list.length) return '';
       list = [...list].sort((a, b) => levelOrder[tagImportance(a)] - levelOrder[tagImportance(b)] || Number(!!tagTone(b)) - Number(!!tagTone(a)) || b.total - a.total || a.tag.localeCompare(b.tag));
       const limit = this.more?.[key] || (q ? 50 : key === 'via' ? 8 : 16);
-      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3>${key === 'fit' ? '<span class="tg-eyebrow">Start here</span>' : `<span class="num muted">${list.length}</span>`}</div>
+      return `<section class="tg-sec ${cls}"><div class="tg-ch"><h3>${esc(title)}</h3><span class="num muted">${list.length}</span></div>
         <div class="tg-chips">${list.slice(0, limit).map(chip).join('')}${list.length > limit ? `<button class="tchip more" data-tmore="${key}">+${list.length - limit} more</button>` : ''}</div>
         ${note ? `<p class="tg-section-note">${esc(note)}</p>` : ''}</section>`;
     };
     const inGroup = key => rows.filter(t => category(t) === key);
     const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Scraping'], ['other','Other']]
       .map(([key,title]) => sec(key,title,inGroup(key))).join('');
-    $('#tg-groups').innerHTML = sec('fit', 'Best prospects', fit, 'tg-top', 'Exceptional fit is a label you add to a rare opportunity. Blue reflects the saved assessment.')
-      + `<div class="tg-main">${sec('business', 'Business signals', inGroup('business'))}${sec('review', 'Needs review', inGroup('review'), '', 'Exclusions stay quiet. Amber means a decision is needed.')}</div>`
-      + (context ? `<div class="tg-context"><div class="tg-context-heading"><h3>Everything else</h3><span>Useful context, without the noise.</span></div><div class="tg-rest">${context}</div></div>` : '')
+    $('#tg-groups').innerHTML = sec('fit', 'Best prospects', fit, 'tg-top', 'Exceptional fit is added by you. Other fit tags come from saved checks.')
+      + `<div class="tg-main">${sec('business', 'Business signals', inGroup('business'))}${sec('review', 'Needs review', inGroup('review'))}</div>`
+      + (context ? `<div class="tg-context"><div class="tg-context-heading"><h3>Other tags</h3></div><div class="tg-rest">${context}</div></div>` : '')
       + (!rows.length && !fit.length ? '<p class="muted tg-empty">No matching tags.</p>' : '');
   },
   syncRen() {
@@ -2243,7 +2262,7 @@ function renderScraper() {
   const listWhen = S.scStale ? 'Last known progress' : listsDone ? 'Done' : listPaused ? 'Paused' : listHeld ? collectionReason(listStage.reason_code || listStage.wait?.why, 'Waiting')
     : L.left === 0 && incompleteLists ? 'Incomplete lists need review'
     : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No rows returned this minute'
-    : L.left > 0 && eta(L.eta_h) ? `Active lists: ${eta(L.eta_h)} left` : run ? 'Reading now' : offline || 'Waiting';
+    : sc.collection?.eta ? `${sc.collection.eta.scope === 'known_lists' ? 'Known lists' : 'Current queue'}: ${eta(sc.collection.eta.low_minutes / 60)}–${eta(sc.collection.eta.high_minutes / 60).replace('about ', '')}` : sc.collection?.message || (run ? 'Reading now' : offline || 'Waiting');
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')}`
     + (B.per_day ? ` · workspace cap ${int(B.per_day)} a day` : ' · no workspace cap');
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
@@ -2267,7 +2286,7 @@ function renderScraper() {
     ['Today', `${int(tl)} list pages${bl ? ` of ${int(bl)}` : ' (no cap)'}, ${int(tp)} bios${bp ? ` of ${int(bp)}` : ' (no cap)'}`],
     ['Status', x.last_error ? collectionReason(x.last_error, 'Check the connected account') : 'No errors'],
   ].map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('');
-  const groups = { all: ls, active: ls.filter((l) => l.state === 'running' || l.state === 'queued'), done: ls.filter((l) => l.completion === 'complete'), issues: ls.filter((l) => ['partial', 'unverified', 'blocked'].includes(l.completion) || ['error', 'private', 'paused', 'partial'].includes(l.state)) };
+  const groups = { all: ls, active: ls.filter((l) => ['waiting', 'collecting'].includes(l.completion) || !l.completion && ['running', 'queued'].includes(l.state)), done: ls.filter((l) => l.completion === 'complete'), issues: ls.filter((l) => ['partial', 'unverified', 'blocked'].includes(l.completion) || !l.completion && ['error', 'private', 'paused', 'partial'].includes(l.state)) };
   const focusedListFilter = $('#lists-f').contains(document.activeElement) ? document.activeElement.dataset.v : null;
   $('#lists-f').innerHTML = Object.entries(groups).map(([k, v]) => `<button data-v="${k}" aria-pressed="${listFilter === k}" class="${listFilter === k ? 'on' : ''}">${({all:'All',active:'In queue',done:'Complete',issues:'Incomplete'})[k]} <span class="num">${v.length}</span></button>`).join('');
   if (focusedListFilter) $(`#lists-f [data-v="${focusedListFilter}"]`)?.focus({ preventScroll: true });
@@ -2335,21 +2354,20 @@ function parseHandles(s) {
 let seedAdding = false;
 let seedAction = '';
 const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v);
+const seedCollectionRunning = () => !!S.sc && !S.sc.paused && S.sc.stages?.find(stage => stage.id === 'lists')?.paused === false;
 function syncSeed() {
   const n = parseHandles($('#seed-in').value).length;
   const directions = seedDirs();
   $('#seed-n').textContent = n ? `${plural(n, 'profile')} · ${plural(n * directions.length, 'list')}` : '';
   const unavailable = seedAdding || !n || !directions.length || !!S.scStale;
-  $('#seed-add').disabled = unavailable;
   $('#seed-start').disabled = unavailable;
   $('#seed-in').disabled = seedAdding;
-  $('#seed-add').textContent = seedAdding && seedAction === 'queue' ? 'Adding…' : 'Add to queue';
-  $('#seed-start').textContent = seedAdding && seedAction === 'start' ? 'Starting…' : 'Start collection';
+  $('#seed-start').textContent = seedAdding ? seedAction === 'start' ? 'Starting…' : 'Adding…' : seedCollectionRunning() ? 'Add profiles' : 'Start collecting';
   $$('#seed-dir button').forEach(b => { b.disabled = seedAdding; b.setAttribute('aria-pressed', String(b.classList.contains('on'))); });
 }
 $('#seed-in').addEventListener('input', syncSeed);
 $('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); syncSeed(); } });
-async function submitSeed(start = false) {
+async function submitSeed(start = true) {
   const handles = parseHandles($('#seed-in').value), directions = seedDirs();
   if (seedAdding || S.scStale || !handles.length || !directions.length) return;
   seedAdding = true; seedAction = start ? 'start' : 'queue'; syncSeed();
@@ -2359,8 +2377,8 @@ async function submitSeed(start = false) {
       $('#seed-feedback').textContent = 'Profiles are queued. Could not confirm collection started. Check status and try again.';
       loadScraper(); return;
     }
-    const message = start ? 'Collection is on. Waiting lists continue from saved progress.'
-      : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue. Collection controls are above.` : 'Those lists are already queued.';
+    const message = start ? 'Collection is on. Progress is saved automatically.'
+      : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue.` : 'Those lists are already queued.';
     $('#seed-feedback').textContent = message;
     toast(message);
     window.dispatchEvent(new Event('fl:control-changed'));
@@ -2368,12 +2386,11 @@ async function submitSeed(start = false) {
   } catch (e) { $('#seed-feedback').textContent = start ? "Couldn't start collection. Your input is kept. Try again." : "Couldn't add these lists. Your input is kept. Try again."; }
   finally { seedAdding = false; seedAction = ''; syncSeed(); }
 }
-$('#seed-add').onclick = () => submitSeed(false);
-$('#seed-start').onclick = () => submitSeed(true);
+$('#seed-start').onclick = () => submitSeed(!seedCollectionRunning());
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
-const ST_LABEL = { running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
-const ST_DOT = { running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
+const ST_LABEL = { connection_error: 'Connection trouble', running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
+const ST_DOT = { connection_error: 'hollow', running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
 const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
 const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false, starting: false };
 
@@ -2411,6 +2428,7 @@ function accountAccess(a) {
   if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
   if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
+  if (a.status === 'connection_error') return {label:'Connection trouble', detail:'Check Instagram in this Chrome profile. Retries keep your saved progress.', kind:'wait'};
   const instagramWait = a.cooldown_until && Date.parse(a.cooldown_until) > Date.now();
   if (a.list_endpoint_until && Date.parse(a.list_endpoint_until) > Date.now()) return {
     label: 'Follower lists paused',
@@ -2561,7 +2579,6 @@ function mountCollectionTargets() {
   if (!collectionTargetHomes) {
     $('#seed-in').placeholder = '@handle or instagram.com/handle, one per line';
     $('#seed-in').setAttribute('aria-label', 'Target profile handles or Instagram links');
-    $('#seed-add').textContent = 'Add to queue';
     collectionTargetHomes = [form, table].map(node => {
       const home = document.createComment('collection targets');
       node.before(home);
@@ -2574,7 +2591,7 @@ function mountCollectionTargets() {
     workspace.id = 'acc-targets';
     workspace.className = 'collection-targets';
     workspace.setAttribute('aria-label', 'Scrape profiles');
-    workspace.innerHTML = '<header class="collection-target-heading"><div><h2>Scrape profiles</h2><p class="muted">Paste Instagram handles or links. Choose which lists to save.</p></div><button class="btn" id="acc-target-add">Add profiles</button></header>';
+    workspace.innerHTML = '<header class="collection-target-heading"><h2>Collect from profiles</h2></header>';
     $('#acc-coverage').after(workspace);
     const suggestions = document.createElement('section');
     suggestions.id = 'collection-suggestions';
@@ -2588,10 +2605,6 @@ function mountCollectionTargets() {
       if (button && !button.disabled) addSuggestedTarget(button.dataset.suggestedHandle);
     });
     renderCollectionSuggestions();
-    workspace.querySelector('#acc-target-add').onclick = () => {
-      form.scrollIntoView({block:'center', behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
-      $('#seed-in').focus({preventScroll:true});
-    };
   }
   if (S.view === 'accounts') {
     for (const {node} of collectionTargetHomes) if (node.parentNode !== workspace) workspace.append(node);
@@ -2605,7 +2618,7 @@ function mountCollectionTargets() {
 
 function collectionCoverageHTML(sc) {
   if (!sc) return '';
-  const lists = sc.coverage?.lists, bios = sc.progress?.bios;
+  const lists = sc.coverage?.lists, bios = sc.progress?.bios, queue = sc.collection;
   const stages = sc.stages || sc.control?.stages || [];
   const held = stages.find(stage => stage.wait?.scope === 'workspace');
   const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
@@ -2622,9 +2635,19 @@ function collectionCoverageHTML(sc) {
   const until = held?.wait?.until;
   const resumes = !pausedByUser && until && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.now()
     ? ` · Retries automatically at ${new Date(until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}. Progress is saved.` : '';
-  const active = (sc.lists || []).filter(list => ['queued','running'].includes(list.state) && list.completion !== 'complete');
-  const progress = sc.progress?.lists;
-  const estimate = state === 'Scraping' && active.length && active.every(list => Number.isFinite(list.expected ?? list.total)) && progress?.per_minute > 0 && progress?.left > 0 && Number.isFinite(progress?.eta_h) && progress.eta_h > 0 ? ` · Active queue: ${eta(progress.eta_h)} left` : '';
+  const estimate = queue?.eta && !pausedByUser && !held ? (() => {
+    const minutes = value => value < 60 ? `${Math.ceil(value)} min` : value < 2880 ? `${Math.ceil(value / 60)} h` : `${Math.ceil(value / 1440)} days`;
+    return `${queue.eta.scope === 'known_lists' ? 'Known lists' : 'Current queue'}: about ${minutes(queue.eta.low_minutes)}–${minutes(queue.eta.high_minutes)}`;
+  })() : '';
+  if (queue) {
+    const parts = [`${int(queue.finished)} finished`, `${int(queue.pending)} queued`];
+    if (queue.limited) parts.push(`${int(queue.limited)} limited`);
+    if (queue.partial > (queue.limited || 0)) parts.push(`${int(queue.partial - (queue.limited || 0))} partial`);
+    if (queue.needs_review) parts.push(`${int(queue.needs_review)} need review`);
+    const timing = pausedByUser || held || activity.stopping ? state + resumes : estimate || queue.message;
+    const unknown = queue.unknown_lists ? ` · ${int(queue.unknown_lists)} list sizes unknown` : '';
+    return `<div class="collection-summary"><span><b>${parts.map(esc).join(' · ')}</b></span><span>${esc(timing)}${esc(unknown)}</span>${queue.open_ended ? '<span class="muted">Auto-discovery on</span>' : ''}<span>${bios?.left != null ? `${int(bios.left)} bios queued` : 'Counting bios'}</span></div>`;
+  }
   const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
   const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting${bios.failed ? ` · ${int(bios.failed)} need retry` : ''}`;
   const speed = bios?.per_minute == null ? '' : ` · ${int(bios.per_minute)} bios read this minute`;
@@ -2824,7 +2847,7 @@ async function loadSettings() {
   if (!SET.health) checkHealth();
   loadScout();
 }
-const PROCESSING_LABELS = { R: 'Rules', RLAI: 'Rules + local AI', RLEAI: 'Rules + local + external AI' };
+const PROCESSING_LABELS = { R: 'Rules only', RLAI: 'Local AI', RLEAI: 'External AI' };
 async function loadProcessingStatus() {
   if (SET.processingLoading || SET.modeBusy || SET.localBusy) return;
   SET.processingLoading = true;
@@ -2855,7 +2878,8 @@ function backgroundAIState(local = SET.localProcessing) {
 function backgroundAIControlsHTML() {
   const local = SET.localProcessing;
   if (!local?.enabled) return '';
-  return `<span class="background-ai-inline"><span>Background AI · ${esc(SET.localBusy ? 'Saving…' : backgroundAIState(local))}</span><button class="btn" type="button" data-local-ai-toggle ${SET.localBusy || SET.modeBusy ? 'disabled' : ''}>${local.paused ? 'Resume' : 'Pause'}</button></span>`;
+  const stopping = local.paused && local.stop_acknowledged !== true;
+  return `<span class="background-ai-inline"><span>Background AI · ${esc(SET.localBusy ? 'Saving…' : backgroundAIState(local))}</span><button class="btn" type="button" data-local-ai-toggle ${SET.localBusy || SET.modeBusy || stopping ? 'disabled' : ''}>${stopping ? 'Stopping…' : local.paused ? 'Resume' : 'Pause'}</button></span>`;
 }
 function localProcessingSummary() {
   const local = SET.localProcessing;
@@ -2872,7 +2896,7 @@ function localProcessingSummary() {
 function renderCheckingMode() {
   const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];
   const status = $('#set-mode-status');
-  if (status) status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Refresh to try again.';
+  if (status) { status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Refresh to try again.'; status.hidden = !!code && !SET.modeBusy; }
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === code);
     button.setAttribute('aria-pressed', String(button.dataset.mode === code));
@@ -2882,7 +2906,7 @@ function renderCheckingMode() {
   const summary = $('#set-mode-models');
   if (summary) {
     const model = SET.localProcessing?.model || 'K2 3.7B';
-    summary.textContent = mode === 'external' ? `${model} + Laya are included. External research: ${SET.scout?.model || 'choose a model below'}. Deep dive is optional.` : mode === 'local' ? `${model} · Laya ranking hints · K2 on your selected computer` : '';
+    summary.textContent = mode === 'external' ? `${model} · Laya · External review: ${SET.scout?.model || 'choose a model below'}` : mode === 'local' ? `${model} · Laya` : '';
     summary.hidden = !mode || mode === 'rules';
   }
   const progress = $('#set-local-progress');
@@ -2900,12 +2924,12 @@ function renderCheckingMode() {
   if (background) background.hidden = mode === 'rules';
   const state = $('#local-ai-state'), toggle = $('#local-ai-toggle'), help = $('#local-ai-help');
   if (state) state.textContent = SET.localBusy ? 'Saving…' : backgroundAIState(local);
-  if (toggle) { toggle.textContent = local?.paused ? 'Resume' : 'Pause'; toggle.disabled = SET.localBusy || SET.modeBusy || !local || !local.enabled; }
-  if (help) help.textContent = local?.paused ? local.stop_acknowledged === true ? 'Local work has stopped. Your queue is saved; rules and scraping continue.' : 'Finishing current local work. Your queue is saved.' : 'Local engines wait when this Mac needs resources. K2 can use your selected computer.';
+  if (toggle) { const stopping = local?.paused && local.stop_acknowledged !== true; toggle.textContent = stopping ? 'Stopping…' : local?.paused ? 'Resume' : 'Pause'; toggle.disabled = SET.localBusy || SET.modeBusy || !local || !local.enabled || stopping; }
+  if (help) help.textContent = local?.paused ? local.stop_acknowledged === true ? 'Queue saved. Collection continues.' : 'Finishing the current check.' : 'Uses saved profiles on your selected computer.';
 }
 async function toggleBackgroundAI() {
   const current = SET.localProcessing;
-  if (!current || !current.enabled || SET.localBusy || SET.modeBusy) return;
+  if (!current || !current.enabled || SET.localBusy || SET.modeBusy || current.paused && current.stop_acknowledged !== true) return;
   SET.localBusy = true; SET.localStatusVersion = (SET.localStatusVersion || 0) + 1; renderCheckingMode();
   try {
     const result = await api.post('/api/local-processing', {paused: !current.paused});
@@ -3151,6 +3175,13 @@ function qualificationConnections(r) {
   const row = (line) => `<li>${esc(line)}</li>`;
   return `<ul class="ql-connections">${lines.map(row).join('')}</ul>`;
 }
+function profileCheckSummary(result) {
+  const bio = result.bio?.state;
+  const parts = [bio === 'pending' ? 'Profile read queued.' : bio === 'held' ? 'Waiting for collection to resume.' : bio === 'unavailable' ? 'Profile unavailable.' : bio === 'fresh' ? 'Profile up to date.' : 'Profile checked.'];
+  if (result.site?.error) parts.push('Website unavailable.');
+  else if (result.site && (result.site.title || result.site.summary || Object.values(result.site.signals || {}).some(Boolean))) parts.push(result.reused ? 'Website up to date.' : 'Website checked.');
+  return parts.join(' ');
+}
 const Q = {
   view: 'ai', q: '', sort: 'score', rows: [], total: 0, sum: null, busy: new Set(), gen: 0, loadError: null, failedMore: false,
   async show() { await this.load(); },
@@ -3200,7 +3231,7 @@ const Q = {
       ${ev.length || siteHTML ? `<div class="ql-evidence">${ev.length ? `<ul class="evidence">${ev.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${siteHTML}</div>` : ''}
       <div class="ql-acts"><button class="btn solid" data-open="${r.id}">Open person</button>
         <a class="btn ghost ql-instagram" href="https://www.instagram.com/${encodeURIComponent(r.handle)}/" target="_blank" rel="noopener">Instagram ↗</a>
-        <span class="grow"></span><button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Find more'}</button></div>
+        <span class="grow"></span><button class="btn ghost" data-deep="${r.id}" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : 'Check profile'}</button></div>
       ${r.deeper_result ? `<p class="ql-result ${r.deeper_result.state === 'error' ? 'bad' : 'muted'}" role="status">${esc(r.deeper_result.note)}</p>` : ''}
     </article>`;
   },
@@ -3225,11 +3256,12 @@ const Q = {
     try {
       const d = await api.post(`/api/qual/${id}/deeper`);
       const r = this.rows.find((x) => x.id === id);
-      if (r) { if (d.site) r.site = d.site; r.deeper_result = {state:d.state, note:d.note || 'Check complete'}; }
-      toast(d.note || 'Check complete');
+      const note = profileCheckSummary(d);
+      if (r) { if (d.site) r.site = d.site; r.deeper_result = {state:d.state, note}; }
+      toast(note);
     } catch (e) {
       const r = this.rows.find((x) => x.id === id);
-      const message = e.message || 'Could not check this profile';
+      const message = "Couldn't check this profile. Try again.";
       if (r) r.deeper_result = {state:'error',note:message};
       toast(message);
     }
@@ -3254,7 +3286,7 @@ $('#ql-list').addEventListener('click', (e) => {
   if (e.target.closest('[data-ql-retry]')) return Q.load(Q.failedMore);
   const d = e.target.closest('[data-deep]'); if (d) return Q.deeper(+d.dataset.deep);
   const o = e.target.closest('[data-open]');
-  if (o) { const r = Q.rows.find((x) => x.id === +o.dataset.open); S.f = emptyFilter(); S.f.q = r ? r.handle : ''; $('#q').value = S.f.q; S.view = 'leads'; filtersChanged(); setView('leads'); openDetail(+o.dataset.open); }
+  if (o) { setView('leads'); setURL(true); openDetail(+o.dataset.open); }
 });
 
 // ---------- map ----------

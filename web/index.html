@@ -137,7 +137,7 @@
     <section class="view" id="view-qual">
       <div class="ql">
         <header class="ph">
-          <div class="ph-t"><h1>Review</h1><p>Check saved bios and supporting evidence.</p></div>
+          <div class="ph-t"><h1>Review</h1></div>
           <div class="ph-a"><button class="btn" id="ql-toggle">Checking mode</button></div>
         </header>
         <div class="ql-prog" id="ql-prog"></div>
@@ -156,7 +156,7 @@
     <section class="view" id="view-tags">
       <div class="tg">
         <header class="ph">
-          <div class="ph-t"><h1>Tags</h1><p>Find your best prospects. Keep the details organized.</p></div>
+          <div class="ph-t"><h1>Tags</h1></div>
           <div class="ph-a"><input class="input" id="tg-q" aria-label="Find a tag" type="search" placeholder="Find a tag" autocomplete="off" spellcheck="false"></div>
         </header>
         <div class="tg-groups" id="tg-groups"></div>
@@ -205,10 +205,9 @@
               <div class="seg" id="seed-dir" aria-label="Lists to collect"><button data-v="followers" class="on" aria-pressed="true">Followers</button><button data-v="following" class="on" aria-pressed="true">Following</button></div>
               <div class="grow"></div>
               <span class="muted num" id="seed-n" aria-live="polite"></span>
-              <button class="btn" id="seed-add" disabled>Add to queue</button>
-              <button class="btn solid" id="seed-start" disabled>Start collection</button>
+              <button class="btn solid" id="seed-start" disabled>Start collecting</button>
             </div>
-            <p class="muted" id="seed-feedback" role="status">Choose the lists above. Stop keeps your saved progress.</p>
+            <p class="muted" id="seed-feedback" role="status"></p>
           </div>
         </div>
         <div class="panel grow-panel">
@@ -253,38 +252,37 @@
       <div class="scr settings-page">
         <header class="ph"><div class="ph-t"><h1>Settings</h1></div></header>
         <section class="sg settings-mode">
-          <div class="sg-h"><h2>Checking mode</h2><p>Scraping runs separately. Each mode adds to the previous one.</p></div>
+          <div class="sg-h"><h2>Qualification</h2><p>Choose how saved profiles are checked.</p></div>
           <div class="checking-content">
-            <div class="checking-options" id="set-mode" aria-label="Checking mode">
+            <div class="checking-options" id="set-mode" aria-label="Qualification method">
               <button class="checking-option" data-mode="R" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Rules</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Basic profile checks</span>
-                <span class="checking-description">Checks saved bios, links and tags against your lead criteria.</span>
-                <span class="checking-scope">No AI models. Automatic web research stays off.</span>
+                <span class="checking-heading"><b>Rules only</b><i aria-hidden="true"></i></span>
+                <span class="checking-description">Rank saved bios, links and tags.</span>
+                <span class="checking-scope">No AI.</span>
               </button>
               <button class="checking-option" data-mode="RLAI" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Rules + local AI</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Everything in Rules, plus</span>
-                <span class="checking-description"><strong>Laya</strong> adds ranking hints. <strong>K2 3.7B</strong> reads your notes and checks saved bios for business fit.</span>
-                <span class="checking-scope">K2 runs on this Mac or your LAN computer. External AI stays off.</span>
+                <span class="checking-heading"><b>Local AI</b><i aria-hidden="true"></i></span>
+                <span class="checking-description">Add bio and note checks on your computer.</span>
+                <span class="checking-scope">Includes rules. No external AI.</span>
               </button>
               <button class="checking-option" data-mode="RLEAI" aria-pressed="false" disabled>
-                <span class="checking-heading"><b>Rules + local + external AI</b><i aria-hidden="true"></i></span>
-                <span class="checking-purpose">Everything in local AI, plus</span>
-                <span class="checking-description">External review for profiles that need more research, using your selected model.</span>
-                <span class="checking-scope">May use credits. Web research is a separate option.</span>
+                <span class="checking-heading"><b>External AI</b><i aria-hidden="true"></i></span>
+                <span class="checking-description">Add online review when local checks need more evidence.</span>
+                <span class="checking-scope">Shares selected profiles. May use credits.</span>
               </button>
             </div>
             <p class="mode-status muted" id="set-mode-status" role="status" aria-live="polite">Loading checking mode…</p>
-            <p class="checking-note">Relationship suggestions need your confirmation. Notes can inform K2 business-fit checks on the computer selected below.</p>
             <p class="checking-models" id="set-mode-models"></p>
-            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Local engines wait when this Mac needs resources. K2 can use your selected computer.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
+            <div class="background-ai" id="background-ai"><div><b>Background AI <span id="local-ai-state" role="status"></span></b><p id="local-ai-help">Uses saved profiles on your selected computer.</p></div><button class="btn" id="local-ai-toggle" disabled>Pause</button></div>
             <p class="checking-models" id="set-local-progress" role="status"></p>
             <div id="set-local-activity" class="local-activity" aria-live="polite"></div>
           </div>
         </section>
+        <details class="settings-setup" id="local-setup">
+          <summary><b>Local AI setup</b></summary>
+          <div class="settings-setup-body">
         <section class="sg k2-connection-settings" aria-labelledby="k2-connection-heading">
-          <div class="sg-h"><h2 id="k2-connection-heading">K2 computer</h2><p>Choose where K2 checks saved bios and notes. Exclude K2 in the engine panel before changing computers. Saving or testing does not start work.</p></div>
+          <div class="sg-h"><h2 id="k2-connection-heading">K2 computer</h2><p>Turn off bio checks in Activity before changing computers.</p></div>
           <div class="card">
             <form id="k2-connection-form" class="k2-connection-form" novalidate>
               <div class="seg" role="group" aria-label="K2 computer location"><button type="button" data-k2-location="this_mac" aria-pressed="false">This Mac</button><button type="button" data-k2-location="other_pc" aria-pressed="false">Other PC (LAN)</button></div>
@@ -293,6 +291,8 @@
             </form>
           </div>
         </section>
+          </div>
+        </details>
         <section class="sg">
           <div class="sg-h"><h2>Appearance</h2></div>
           <div class="card">
@@ -301,14 +301,14 @@
           </div>
         </section>
         <details class="settings-setup" id="external-setup">
-          <summary><span><b>External AI setup</b><small>Profile review, model choice and optional web research</small></span></summary>
+          <summary><b>External AI setup</b></summary>
           <div class="settings-setup-body">
             <section class="sg legacy-processing-settings" hidden>
               <div class="sg-h"><h2>Automatic start</h2></div>
               <div class="card"><div class="set-row"><div><b>After collection finishes</b><span class="muted">Applies only when External AI is selected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div></div>
             </section>
             <section class="sg">
-              <div class="sg-h"><h2>External research</h2><p>In RLEAI, Hermes reviews cases the local model flags for more research. Choose its model below. Deeper web research is optional.</p></div>
+              <div class="sg-h"><h2>External research</h2><p>Choose the model for profiles that need more evidence.</p></div>
               <div class="card" id="set-scout"><div class="set-row muted" role="status">Loading research settings…</div></div>
             </section>
             <section class="sg legacy-processing-settings" hidden>
@@ -335,7 +335,7 @@
           </div>
         </details>
         <details class="settings-setup" id="advanced-setup">
-          <summary><span><b>Advanced settings</b><small>Account protection and processing preferences</small></span></summary>
+          <summary><b>Advanced settings</b></summary>
           <div class="settings-setup-body">
             <section class="sg">
               <div class="sg-h"><h2>Account protection</h2><p>Daily request caps and your main account’s share of list collection. Existing Instagram holds still apply.</p></div>

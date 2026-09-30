@@ -18,13 +18,17 @@ test('read-only suggestions never queue; explicit Add preserves supplied directi
  release();await add;
  await c.addSuggestedTarget('brand');assert.equal(posts,1,'stale read must not resurface the target just added');
 });
-test('coverage only gives ETA for a progressing complete-known active queue',()=>{
- const ctx=vm.createContext({int:String,esc:String,backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> 'K2 status',eta:h=>`${h} h`});
+test('coverage uses the measured server range, never legacy historical ETA',()=>{
+ const ctx=vm.createContext({int:String,esc:String,backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> 'K2 status'});
  vm.runInContext(source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()')),ctx);
- const snapshot={lists:[{state:'running',expected:100,saved_entries:50}],coverage:{lists:{saved_entries:50,known_targets:1,expected_entries:100,unknown_targets:0,partial_lists:0}},stages:[{id:'lists',state:'running',paused:false}],progress:{lists:{left:50,eta_h:2,per_minute:3}}};
- assert.match(ctx.collectionCoverageHTML(snapshot),/Active queue: 2 h left/);
- assert.match(ctx.collectionCoverageHTML({...snapshot,coverage:{lists:{...snapshot.coverage.lists,partial_lists:73,unknown_targets:1}},lists:[...snapshot.lists,{state:'partial',expected:null}]}),/Active queue: 2 h left/);
- for(const override of [{paused:true},{progress:{lists:{left:50,eta_h:2,per_minute:0}}},{lists:[{state:'running',expected:null}]}])assert.doesNotMatch(ctx.collectionCoverageHTML({...snapshot,...override}),/Active queue:/);
+ const snapshot={collection:{finished:0,pending:1,unknown_lists:0,eta:{scope:'current_queue',low_minutes:90,high_minutes:180}},stages:[{id:'lists',state:'running',paused:false}],progress:{lists:{left:50,eta_h:2,per_minute:3}}};
+ assert.match(ctx.collectionCoverageHTML(snapshot),/Current queue: about 2 h–3 h/);
+ const subset={...snapshot,collection:{...snapshot.collection,unknown_lists:4,eta:{...snapshot.collection.eta,scope:'known_lists'}}};
+ assert.match(ctx.collectionCoverageHTML(subset),/Known lists: about 2 h–3 h/);
+ assert.match(ctx.collectionCoverageHTML(subset),/4 list sizes unknown/);
+ for(const override of [{paused:true},{collection:{...snapshot.collection,eta:null,message:'Measuring current pace'}},{collection:undefined}]) {
+   assert.doesNotMatch(ctx.collectionCoverageHTML({...snapshot,...override}),/Current queue:|Active queue:/);
+ }
 });
 
 

@@ -179,7 +179,7 @@ test('Tags overview keeps the Figma groups directly visible', () => {
   const best = html.match(/<section class="tg-sec tg-top">([\s\S]*?)<\/section>/)[1];
   assert.deepEqual([...best.matchAll(/data-go="([^"]+)"/g)].map(m=>m[1]), ['Exceptional fit','AI: Top fit','Fit: strong','Fit: good']);
   assert.equal([...best.matchAll(/<b class="num">0<\/b>/g)].length, 4);
-  assert.match(html, /Business signals[\s\S]*Needs review[\s\S]*Everything else[\s\S]*Products/);
+  assert.match(html, /Business signals[\s\S]*Needs review[\s\S]*Other tags[\s\S]*Products/);
   assert.match(html, /tchip t-niche/);
   assert.doesNotMatch(html, /<details/);
   assert.match(html, /tchip t-flag[^>]*>\<span\>Too big/);

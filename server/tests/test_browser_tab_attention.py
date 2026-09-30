@@ -56,3 +56,21 @@ class BrowserTabAttentionTests(Base):
             'state': 'idle', 'hold': None, 'tab': 'tab_challenge'})
         self.assertEqual(code, 200)
         self.assertEqual(self.account()['hold'], 'challenge')
+
+    def test_network_retry_is_visible_instead_of_a_retained_job_being_called_active(self):
+        self.beat(tab='ok')
+        pid = db.upsert_person(self.conn, {'ig_id': '7', 'handle': 'retry.bio'})
+        self.conn.commit()
+        self.call(f'/api/person/{pid}/read', {})
+        self.call('/api/ext/next?lane=checked-lane&ig_id=101&handle=checked.account&kinds=profile')
+        code, _ = self.call('/api/ext/heartbeat', {'lane_id': 'checked-lane',
+            'account': {'ig_id': '101', 'handle': 'checked.account'}, 'version': '3.9.29',
+            'state': 'network_wait', 'hold': None, 'tab': 'ok', 'text': 'Retrying the Instagram connection'})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.account()['status'], 'connection_error')
+        self.assertFalse(self.account()['healthy'])
+        body = self.call('/api/control')[1]
+        self.assertEqual(next(a for a in body['accounts'] if a['lane_id'] == 'checked-lane')['state'], 'waiting')
+        self.assertNotEqual(next(stage for stage in body['stages'] if stage['id'] == 'bios')['state'], 'running')
+        self.beat(tab='ok', text='Ready')
+        self.assertNotEqual(self.account()['status'], 'connection_error')

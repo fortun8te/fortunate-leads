@@ -105,3 +105,23 @@ test('modest owner portrait keeps its fixed identity caption clear', () => {
     assert.ok(Math.hypot(mark.x-x,mark.y-y)>mark.r);
   }
 });
+
+test('stable cohorts draw every member at every zoom without collision culling',()=>{
+ const {cohortLayout,displayPlan,Camera,Scene,followRing}=require('../web/map-core.js');
+ for(const count of [250,500,1000]) {
+  const people=Array.from({length:count},(_,i)=>({id:i+1,closeness:i/count,rank:i/count,followers:i*1000}));
+  const nodes=cohortLayout(people,{id:0,x:.5,y:.5});
+  assert.ok(new Set(nodes.slice(0,-1).map(n=>n.y.toFixed(6))).size>count*.9,'organic placement has no repeated lattice rows');
+  assert.deepEqual(cohortLayout(people,{id:0,x:.5,y:.5}),nodes,'placement is deterministic');
+  const scene=new Scene();scene.apply({nodes,clusters:[]},0,{instant:true});
+  const cam=new Camera();cam.resize(1092,665);
+  const before=displayPlan(scene,cam,[],null,null,0);
+  assert.equal(before.nodes.length,count+1);assert.equal(before.groups.length,0);
+  for(const n of before.nodes){assert.ok(n.x-n.r>=0&&n.x+n.r<=cam.w);assert.ok(n.y-n.r>=0&&n.y+n.r<cam.h-32);}
+  const members=before.nodes.filter(n=>n.it.d.id!==0);
+  for(let i=0;i<members.length;i++)for(let j=i+1;j<members.length;j++)assert.ok(Math.hypot(members[i].x-members[j].x,members[i].y-members[j].y)>members[i].r+members[j].r);
+  const ids=before.nodes.map(n=>n.it.d.id);cam.set(.65,.3,4);
+  assert.deepEqual(displayPlan(scene,cam,[],null,null,0).nodes.map(n=>n.it.d.id),ids);
+ }
+ assert.equal(followRing({status:'client'}),'unknown');assert.equal(followRing({followed:true}),'outgoing');assert.equal(followRing({follows_me:true}),'incoming');assert.equal(followRing({followed:true,follows_me:true}),'mutual');
+});

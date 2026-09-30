@@ -31,6 +31,7 @@ import mobile_collector  # noqa: E402
 import control  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
+import collection_progress  # noqa: E402
 import map_scale  # noqa: E402
 import map_layout  # noqa: E402
 import map_view  # noqa: E402
@@ -565,6 +566,7 @@ def _ext_list_page(conn, q, b):
         (job['id'], next_cursor)).fetchone())))
     if job:
         db.start_list_run(conn, job['id'], seed, direction)
+        previous_members = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?', (job['id'],)).fetchone()[0]
         valid_users = all(isinstance(u, dict) and isinstance(u.get('handle'), str)
                           and db.norm_handle(u['handle']) and '~' not in db.norm_handle(u['handle'])
                           for u in b.get('users', []))
@@ -644,10 +646,10 @@ def _ext_list_page(conn, q, b):
         clear_caches()
     if job:
         conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,'
-                     'http_status,requested_count,returned_count,new_links) VALUES(NULL,?,?,?,?,?,?,?,?,?,?)',
+                     'http_status,requested_count,returned_count,new_links,saved_entries) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?)',
                      (ts, lane, job['id'], 'list', direction, 'page',
                       metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 200),
-                      len(users), new_links))
+                      len(users), new_links, max(0, received - previous_members)))
     trial_stopped = False
     if job and error and trial_event_identity_matches(conn, job, q, b):
         trial_stopped = bool(stop_following_trial(conn, error, ts))
@@ -2012,6 +2014,7 @@ def api_scraper(conn, q, b):
             'llm': api_llm(conn, q, b),
             'soak': soak(conn, now), 'progress': progress(conn, accts),
             'coverage': {'lists': coverage, 'local': local_coverage(conn)},
+            'collection': collection_progress.summary(conn, lists, accts, now),
             'stages': stages,
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': lists,
@@ -2179,15 +2182,16 @@ def list_coverage(conn):
         elif row['state'] == 'partial':
             completion = 'partial'
             reason = list_completion_reason(row['error']) or 'Only part of this list was saved.'
-        elif row['state'] in ('private', 'error'):
+        elif row['state'] in ('private', 'error', 'paused'):
             completion = 'blocked'
-            reason = list_completion_reason(row['error']) or ('Access to this list was denied.' if row['state'] == 'private' else 'Collection stopped with an error.')
+            reason = list_completion_reason(row['error']) or {'private': 'Access to this list was denied.', 'paused': 'This list is stopped. Review it before retrying.'}.get(row['state'], 'Collection stopped with an error.')
         elif row['state'] == 'running':
             completion, reason = 'collecting', None
         else:
             completion, reason = 'waiting', None
         item = {'seed': row['seed'], 'direction': row['direction'], 'state': row['state'],
                 'received': row['received'], 'total': row['total'], 'updated_at': row['updated_at'],
+                'run_job_id': row['run_job_id'],
                 'error': row['error'], 'saved_entries': saved, 'saved_current_run': tracked,
                 'saved_source': 'tracked_run' if tracked is not None else 'legacy_unverified',
                 'expected': expected, 'expected_source': source,

@@ -116,7 +116,7 @@ button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
 .followup-chip.due { color: var(--caution); }
 
 #pane-leads .tags { display: flex; flex-wrap: nowrap; gap: var(--s1); align-items: center; overflow: hidden; max-height: none; padding: 0; }
-#pane-leads .tags .tag { max-width: 150px; height: 24px; min-height: 24px; padding: 1px 8px; font-size: 12px; flex: 0 1 auto; }
+#pane-leads .tags .tag { min-width: 0; max-width: 150px; height: 24px; min-height: 24px; padding: 1px 8px; font-size: 12px; flex: 0 1 auto; }
 #pane-leads .tags .tag-icon { width: 14px; height: 14px; flex-basis: 14px; }
 #pane-leads .tags .owner-follow { --chip-fg: var(--fg2); cursor: default; }
 #pane-leads .fol { text-align: right; justify-self: end; font-size: 13px; font-weight: 400; color: var(--fg3); }
@@ -152,21 +152,15 @@ button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
 :root[data-density="compact"] #pane-leads .who { align-content: center; }
 :root[data-density="compact"] #pane-leads { --av: 32px; }
 
-/* A squeezed list keeps its evidence below the name instead of losing the tags. */
+/* Keep connection evidence under the name when the detail panel is open. */
 @container (max-width: 860px) {
-  #pane-leads { --cols: var(--av) minmax(0, 1fr) 56px 40px 108px; }
-  #pane-leads .thead .c-tags { display: none; }
-  #pane-leads .row .c-tags { position: absolute; left: calc(var(--pad) + var(--av) + var(--s4)); right: calc(var(--pad) + 56px + 40px + 108px + 3 * var(--s4)); bottom: 8px; display: flex; }
-  #pane-leads .row .who { align-self: start; padding-top: 8px; }
-  #pane-leads .why { display: none; }
-  :root[data-density="compact"] #pane-leads .row .who { padding-top: 2px; }
-  :root[data-density="compact"] #pane-leads .row .c-tags { bottom: 4px; }
+  #pane-leads { --cols: var(--av) minmax(0, 1fr) minmax(0, 120px) 48px 32px 92px; }
+  #pane-leads .thead, #pane-leads .row { column-gap: var(--s3); }
   :root[data-density="compact"] #pane-leads .tags .tag { height: 20px; min-height: 20px; font-size: 11px; }
 }
 @container (max-width: 560px) {
-  #pane-leads { --cols: var(--av) minmax(0, 1fr) 40px 100px; }
+  #pane-leads { --cols: var(--av) minmax(0, 1fr) minmax(0, 80px) 32px 92px; }
   #pane-leads .thead .c-fol, #pane-leads .row .c-fol { display: none; }
-  #pane-leads .row .c-tags { right: calc(var(--pad) + 40px + 100px + 2 * var(--s4)); }
 }
 @media (max-width: 760px) {
   :root { --row: 108px; }
@@ -270,7 +264,7 @@ button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
 .d-head .who { flex: 1; min-width: 0; display: grid; gap: 1px; overflow-wrap: anywhere; }
 .d-head .who b { display: block; font-size: 17px; line-height: 22px; font-weight: 600; letter-spacing: -.01em; white-space: normal; }
 .d-head .who > span { display: block; color: var(--fg3); font-size: 13px; line-height: 18px; }
-.d-role { margin-left: var(--s2); font-style: normal; color: var(--fg4); }
+.d-role { display: inline-block; margin-left: var(--s2); font-style: normal; color: var(--fg4); white-space: nowrap; }
 .d-tools { display: flex; align-items: center; gap: 2px; flex: none; }
 .d-icon, .d-close { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: var(--rad-ctl); color: var(--fg3); font-size: 20px; line-height: 1; transition: background-color .12s var(--ease-out), color .12s; }
 .d-close { margin-left: auto; }

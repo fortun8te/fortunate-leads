@@ -38,6 +38,15 @@ class CoverageProgressTest(unittest.TestCase):
             'requested_count': 25,
         })
 
+    def test_stopped_trial_needs_review_and_is_not_counted_in_the_pending_queue(self):
+        self.conn.execute("UPDATE lists SET state='paused',error='Following page trial stopped' WHERE seed='target'")
+        self.conn.commit()
+        rows, coverage = server.list_coverage(self.conn)
+        self.assertEqual(rows[0]['completion'], 'blocked')
+        self.assertEqual((coverage['active_lists'], coverage['blocked_lists']), (0, 1))
+        summary = server.collection_progress.summary(self.conn, rows, [])
+        self.assertEqual((summary['pending'], summary['needs_review']), (0, 1))
+
     def test_2500_followers_complete_after_all_pages_and_midrun_handoff(self):
         lane = 'lane-a'
         first_job = None

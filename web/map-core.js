@@ -192,7 +192,8 @@
 
   /* ---------- Encodings ---------- */
   const RADIUS = { strong: 19, good: 16, weak: 12.5, unread: 10 };
-  const hasRing = (n) => !!(n.follows_me || n.rel === 'follows' || n.rel === 'mutual' || n.status === 'client');
+  const followRing = n => n.followed && n.follows_me ? 'mutual' : n.followed ? 'outgoing' : n.follows_me ? 'incoming' : 'unknown';
+  const hasRing = n => followRing(n) !== 'unknown';
   // Which palette slot a person takes in a mode. 'a' is the one accent. Slots 0-5 are neutral tones.
   function toneFor(mode, n) {
     if (mode === 'seeds') return n.status && n.status !== 'no' ? 'a' : 't' + ((n.cluster | 0) % 6);
@@ -214,17 +215,20 @@
     equal:'Every person has the same portrait size.'
   };
   const radiusFor = (n, k, size = 'followers') => {
-    const base = size === 'equal' ? 9 : size === 'connections' ? clamp(7 + 2*Math.sqrt(Math.max(0,+n.source_count||0)),8,14) : size === 'fit' ? ({strong:14,good:11.5,weak:9,unread:8}[n.fit]||8) : n.followers == null ? 8 : clamp(7+1.15*Math.log10(1+Math.max(0,+n.followers||0)),8,15);
-    return base * clamp(.85+.15*Math.sqrt(k),.85,1.35);
+    let base = 8;
+    if (size === 'equal') base = 9;
+    else if (size === 'connections') base = clamp(7 + 2 * Math.sqrt(Math.max(0, +n.source_count || 0)), 8, 14);
+    else if (size === 'fit') base = { strong: 14, good: 11.5, weak: 9, unread: 8 }[n.fit] || 8;
+    else if (n.followers != null) base = clamp(7 + 1.15 * Math.log10(1 + Math.max(0, +n.followers || 0)), 8, 15);
+    return base * clamp(.85 + .15 * Math.sqrt(k), .85, 1.35);
   };
-  const distanceKey = { g: 'centre', t: 'Distance bands show recorded connection evidence in every mode. Positions within each band spread people for readability; a follow is not a personal relationship.', s: 'Distance: evidence' };
-  const fitSizeKey = { g: 'size', t: 'Larger portraits mean a stronger saved fit assessment. Numbered chips represent grouped people; click one to explore.', s: 'Size: fit' };
-  const LEGENDS = {
-    closeness: [distanceKey, fitSizeKey, { g: 'accent', t: 'Bright rims mark people in your pipeline. Group numbers count people.', s: 'Rim: pipeline' }],
-    fit: [distanceKey, fitSizeKey, { g: 'accent', t: 'Bright rims highlight strong fit. Position stays the same as Network.', s: 'Rim: strong fit' }],
-    seeds: [distanceKey, { g: 'size', t: 'Larger portraits appear in more distinct collected source audiences. Size does not indicate friendship or an introduction.', s: 'Size: sources' }, { g: 'accent', t: 'Bright rims mark people in your pipeline. Source audiences determine community labels.', s: 'Rim: pipeline' }],
-    status: [distanceKey, { g: 'size', t: 'Portraits have equal size, with status highlighted through color and priority. Numbered chips count grouped people.', s: 'Size: equal' }, { g: 'accent', t: 'Bright rims highlight people marked Talking or Client. Position stays the same as Network.', s: 'Rim: talking / client' }]
+  const distanceKey = { g: 'centre', t: 'Closer portraits have stronger recorded network evidence. Positions are evenly spaced for readability; distance is an ordering, not a measure of friendship.', s: 'Distance: evidence' };
+  const fitSizeKey = { g: 'size', t: 'Larger portraits mean a stronger saved fit assessment. All people in this page stay visible; zoom only magnifies them.', s: 'Size: fit' };
+  const ringKey = {
+    g: 'follow', s: 'Solid: you · Dashed: them',
+    t: 'Solid: you follow them. Dashed: they follow you. Both: mutual. No ring: no recorded follow evidence.'
   };
+  const LEGENDS = Object.fromEntries(MODES.map(m => [m.id, [distanceKey, fitSizeKey, ringKey]]));
   const closenessWords = (c) => c >= 0.75 ? 'strong network evidence' : c >= 0.5 ? 'some network evidence' : c >= 0.25 ? 'limited network evidence' : 'little network evidence';
   // One line on why this person is on your map, from what the map knows.
   function whyLine(n, seedLabel) {
@@ -237,8 +241,69 @@
     return s;
   }
 
+  function cohortLayout(people, owner) {
+    const members = people.filter(n => String(n.id) !== String(owner?.id));
+    members.sort((a, b) => (b.closeness || 0) - (a.closeness || 0)
+      || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
+    if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
+    const candidates = [];
+    let seed = 0x6d2b79f5;
+    const random = () => {
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+      return (seed >>> 0) / 4294967296;
+    };
+    for (let i = 0; i < Math.max(200, members.length * 18); i++) {
+      const radius = .46 * Math.sqrt(random()), angle = random() * Math.PI * 2;
+      const x = radius * Math.cos(angle), y = radius * Math.sin(angle);
+      if (radius < .078 || Math.abs(x) < .075 && y > 0 && y < .115) continue;
+      candidates.push({ x: .5 + x, y: .5 + y, r: radius });
+    }
+    candidates.sort((a, b) => a.r - b.r);
+    let step = Math.min(.075, .72 / Math.sqrt(Math.max(1, members.length)));
+    let slots;
+    // Static radial packing: neighbouring cells keep collision checks bounded.
+    // A fixed seed gives the same page the same organic positions on every visit.
+    for (;;) {
+      slots = [];
+      const cells = new Map();
+      for (const point of candidates) {
+        const cx = Math.floor(point.x / step), cy = Math.floor(point.y / step);
+        let overlaps = false;
+        for (let dy = -1; dy <= 1 && !overlaps; dy++) {
+          for (let dx = -1; dx <= 1 && !overlaps; dx++) {
+            const nearby = cells.get(`${cx + dx}:${cy + dy}`) || [];
+            overlaps = nearby.some(other => Math.hypot(point.x - other.x, point.y - other.y) < step);
+          }
+        }
+        if (overlaps) continue;
+        slots.push(point);
+        const key = `${cx}:${cy}`;
+        if (!cells.has(key)) cells.set(key, []);
+        cells.get(key).push(point);
+        if (slots.length === members.length) break;
+      }
+      if (slots.length >= members.length) break;
+      step *= .94;
+    }
+    const nodes = members.map((n, i) => ({ ...n, evidenceX: n.x, evidenceY: n.y,
+      x: slots[i].x, y: slots[i].y, cohort: true, spacing: step }));
+    if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: step });
+    return nodes;
+  }
+
   // Select what can be read at this scale. Screen collisions never alter world coordinates.
   function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null, mode = 'closeness', size = 'followers') {
+    if (scene.nodes.some(it => it.d.cohort)) {
+      const scale = cam.scale / Math.max(1, cam.k);
+      const nodes = scene.nodes.filter(it => it.ta !== 0).map(it => {
+        const [x, y] = cam.toScreen(it.x, it.y);
+        const owner = String(it.d.id) === String(ownerId);
+        const radiusScale = Math.min(1, it.d.spacing * scale * .49 / 15);
+        const r = owner ? 24 * cam.k : radiusFor(it.d, 1, size) * radiusScale * cam.k;
+        return { kind: 'n', it, x, y, r };
+      });
+      return { nodes, groups: [] };
+    }
     const inside = (x, y, pad = 20) => x >= pad && y >= pad && x <= cam.w - pad && y <= cam.h - cam.inset.bottom - pad;
     const occupied = [], summaries = new Map(), nodeMarks = [];
     const guideByLabel = new Map(guides.map(g => [g.label, g]));
@@ -312,7 +377,7 @@
   // Only saved local photos are eligible. Cap decoded images and in-flight requests;
   // drawing thousands of records must never enqueue thousands of image downloads.
   class PortraitCache {
-    constructor({createImage, normalize = null, changed = () => {}, max = 512, concurrency = 6} = {}) {
+    constructor({createImage, normalize = null, changed = () => {}, max = 1024, concurrency = 6} = {}) {
       this.createImage = createImage; this.normalize = normalize; this.changed = changed; this.max = max;
       this.concurrency = concurrency; this.entries = new Map(); this.queue = []; this.active = 0;
     }
@@ -378,7 +443,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

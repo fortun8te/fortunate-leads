@@ -1,12 +1,10 @@
-/* Map model: state and data flow for the Connections map, with no DOM.
- * Requests go out by viewport (debounced, stale ones aborted), answers are cached by
- * revision, the scene crossfades between them, and the camera glides. The view
- * (map-view.js) paints this model and forwards input; tests drive it with the
- * synthetic world in map-world.js as the server. */
+/* Map model: stable pages, explicit filtering and selection, and a local camera.
+ * Zoom and pan never change page membership. Server cursors advance only through
+ * the page controls; size and display mode are local presentation choices. */
 (function (root) {
   'use strict';
   const Core = root.MapCore || (typeof require === 'function' ? require('./map-core.js') : null);
-  const { Camera, Flight, Scene, Cache, Latest, snapRect, viewQuery, debounceMax, clamp, K_MAX } = Core;
+  const { Camera, Flight, Scene, Cache, Latest, snapRect, viewQuery, debounceMax, clamp, K_MAX, cohortLayout } = Core;
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
 
@@ -42,6 +40,7 @@
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
+      this.density = 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
       this.size = 'followers'; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.flight = null; this.goal = null; this.vel = null;
@@ -53,25 +52,26 @@
     on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
     emit(what) { for (const fn of this.listeners) fn(what); }
     setSize(w, h) { this.cam.resize(w, h); }
-    get budget() { return this.budgetOverride ? clamp(Math.round(this.budgetOverride), 250, 1500) : clamp(Math.round(this.cam.w * this.cam.h / 2000 * (1 + 2 * PAD) ** 2), 250, 1500); }
+    get budget() { return this.density; }
     get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0) + (this.follow !== 'all' ? 1 : 0); }
 
     /* ----- loading ----- */
-    params(rect, cam = this.cam) { return viewQuery(rect, { mode: this.mode, budget: this.budget, scope: this.scope, minFit: this.minFit, status: this.status, q: this.q, follow: this.follow, overview: cam.k < 2.5 }); }
-    // Does what we hold already answer the current view? Then panning costs nothing.
-    needsLoad() {
-      if (!this.loaded) return true;
-      if (this.fallback) return false;
-      const r = this.cam.rect(0), L = this.loaded.rect;
-      if (r.x0 < L.x0 || r.y0 < L.y0 || r.x1 > L.x1 || r.y1 > L.y1) return true;
-      return Math.abs(Math.log(this.cam.k / this.loaded.k)) > 0.3;
+    params() {
+      const p = viewQuery({ x0: 0, y0: 0, x1: 1, y1: 1 }, {
+        mode: 'closeness', budget: this.budget, scope: this.scope, minFit: this.minFit,
+        status: this.status, q: this.q, follow: this.follow
+      });
+      p.set('cohort', '1');
+      if (this.cursor) p.set('after', this.cursor);
+      return p;
     }
+    needsLoad() { return !this.loaded; }
     // While a flight is under way toward a view we already asked for, do not ask for the places in between.
     moved() { if (this.paused) return; if (!this.hold && this.needsLoad()) this.schedule(); this.emit('camera'); }
     async load(opt = {}) {
       if (this.paused) return;
       const cam = opt.cam ? Object.assign(new Camera(), this.cam, { ...opt.cam }) : this.cam;
-      const rect = snapRect(cam.rect(PAD)), params = this.params(rect, cam), key = params.toString();
+      const rect = {x0:0,y0:0,x1:1,y1:1}, params = this.params(), key = params.toString();
       this.schedule.cancel();
       const cached = !opt.force && this.cache.get(key);
       if (cached) { this.stats.cacheHits++; this.viewReq.cancel(); this.pending = 0; this.emit('busy'); this.loaded = { rect, k: cam.k }; this.apply(cached, { rect, k: cam.k }); return; }
@@ -114,19 +114,24 @@
     }
     apply(resp, at) {
       const previousRev = this.rev;
-      const nodes = resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), clusters = (resp.clusters || []).map(cleanCluster).filter(Boolean);
+      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me), clusters = [];
+      this.nextCursor = resp.next_cursor || null; this.cohort = true;
+      if (resp.cohort_reset) {
+        this.cursor = ''; this.pages = ['']; this.pageIndex = 0;
+      }
       this.fallback = !!resp.fallback; this.sampled = resp.sampled || 0;
       this.rev = resp.rev == null ? null : String(resp.rev);
       this.total = finite(+resp.total) ? +resp.total : nodes.length;
       this.worldTotal = resp.world_total != null && finite(+resp.world_total) ? +resp.world_total : this.total;
       this.shown = finite(+resp.shown) ? +resp.shown : nodes.length;
       this.hidden = finite(+resp.hidden) ? +resp.hidden : clusters.reduce((a, c) => a + c.count, 0);
-      this.world = { ...(resp.world || {}) };
+      this.world = { ...(resp.world || {}), cohort: true };
       if (!this.world.guides && Array.isArray(resp.groups)) this.world.guides = resp.groups.map((g) => ({ ...g, type: this.mode === 'status' ? 'lane' : 'island' }));
       this.seedList = resp.seeds || this.seedList || [];
       this.stale = null;
-      const morph = this.reduced ? 0 : this.morph; this.morph = 0;
-      this.scene.apply({ nodes, clusters }, this.now(), { morph, instant: this.reduced });
+      this.morph = 0;
+      this.scene.clear();
+      this.scene.apply({ nodes, clusters }, this.now(), { morph: 0, instant: true });
       if (this.selected) {
         const current = nodes.find((n) => String(n.id) === String(this.selected.id));
         if (current) this.selected = current;
@@ -140,41 +145,41 @@
     }
     setPhase(p) { if (this.phase !== p) { this.phase = p; this.emit('phase'); } }
     retry() { this.stale = null; this.load({ force: true }); }
-    // Called on an interval; a changed revision means new data, so refetch the current view.
-    poll() { if (this.paused || this.phase === 'loading') return; this.load({ force: true }); }
-    pause(on) { this.paused = !!on; if (on) { this.schedule.cancel(); this.viewReq.cancel(); this.edgeReq.cancel(); this.searchReq.cancel(); this.locateReq.cancel(); this.pending = 0; this.hold = false; this.emit('busy'); } else this.load(); }
+    poll() { /* A visible page stays stable until the user explicitly changes it. */ }
+    pause(on) { this.paused = !!on; if (on) { this.schedule.cancel(); this.viewReq.cancel(); this.edgeReq.cancel(); this.searchReq.cancel(); this.locateReq.cancel(); this.pending = 0; this.hold = false; this.emit('busy'); } else if (!this.loaded) this.load(); }
 
     /* ----- modes and filters ----- */
     setMode(mode) {
-      if (this.fallback || mode === this.mode) return;
-      const keep = this.selected;
-      this.viewReq.cancel(); this.pending=0; this.hold=false; this.loaded=null;
-      this.mode = mode; this.morph = 720; this.edges = null; this.edgeReq.cancel();
-      this.emit('mode');
-      const target = { cx: 0.5, cy: 0.5, k: 1 };
-      if (keep) { this.locate(keep); return; }
-      this.flyTo(target, 520);
-      this.load({ cam: target });
+      if (mode === this.mode) return;
+      this.mode=mode; this.emit('mode'); this.emit('scene');
     }
-    // The same person in the new layout: ask where they are now, then follow them.
-    async locate(person) {
-      const mode = this.mode, k = Math.max(this.cam.k, 1), ticket = this.locateReq.begin();
-      try {
-        const r = await this.fetchJson(`/api/map/search?q=${encodeURIComponent(person.handle)}&mode=${mode}`, { signal: ticket.signal });
-        if (!ticket.live() || mode !== this.mode) return;
-        const hit = (r.results || []).map(n => cleanNode(n, mode)).find((n) => n && String(n.id) === String(person.id));
-        if (hit) { this.selected = { ...person, ...hit }; this.scene.pin(this.selected); const t = { cx: hit.x, cy: hit.y, k }; this.flyTo(t, 560); this.load({ cam: t }); this.emit('selection'); this.loadEdges(this.selected); return; }
-      } catch (_) { /* fall through to the whole map */ }
-      if (!ticket.live() || mode !== this.mode) return;
-      this.deselect(); this.flyTo({ cx: 0.5, cy: 0.5, k: 1 }, 520); this.load({ cam: { cx: 0.5, cy: 0.5, k: 1 } });
+    async browse(direction) {
+      if (this.pending || direction > 0 && !this.nextCursor || direction < 0 && this.pageIndex === 0) return;
+      const previous = { cursor: this.cursor, pages: [...this.pages], pageIndex: this.pageIndex, loaded: this.loaded };
+      const applied = this.stats.applied;
+      if (direction > 0) {
+        this.pages[++this.pageIndex] = this.nextCursor;
+        this.pages.length = this.pageIndex + 1;
+      } else this.pageIndex--;
+      this.cursor = this.pages[this.pageIndex];
+      this.deselect(); this.loaded = null;
+      await this.load();
+      if (this.stats.applied === applied) { Object.assign(this, previous); this.emit('scene'); }
+    }
+    setDensity(n) {
+      if (![250, 500, 1000].includes(+n) || +n === this.density) return;
+      this.density = +n; this.deselect(); this.resetPages(); this.load();
+    }
+    resetPages() {
+      this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null; this.loaded = null;
     }
     setFilters(f) {
       const next = { scope: f.scope ?? this.scope, minFit: f.minFit ?? this.minFit, status: f.status ?? this.status, follow: f.follow ?? this.follow };
       if (next.scope === this.scope && next.minFit === this.minFit && next.status === this.status && next.follow === this.follow) return;
-      Object.assign(this, next); this.morph = 0;
+      Object.assign(this, next); this.deselect(); this.resetPages(); this.morph = 0;
       this.emit('filters'); this.load();
     }
-    setQuery(q) { if (q === this.q) return; this.q = q; this.load(); }
+    setQuery(q) { if (q === this.q) return; this.q = q; this.resetPages(); this.load(); }
 
     /* ----- selection and lines ----- */
     select(n) {
@@ -208,8 +213,8 @@
       for (const e of (r.nodes || [])) { const c = cleanNode(e); if (c) byId.set(String(c.id), c); }
       const place = (id) => {
         if (String(id) === String(n.id)) return { x: n.x, y: n.y, node: n };
-        const known = byId.get(String(id)); if (known) return { x: known.x, y: known.y, node: known };
         const it = this.scene.get(id); if (it) return { x: it.d.x, y: it.d.y, node: it.d };
+        const known = byId.get(String(id)); if (known && !this.cohort) return { x: known.x, y: known.y, node: known };
         if (String(id) === '0' && this.world.me) return { x: this.world.me.x, y: this.world.me.y, node: null };
         return null;
       };
@@ -217,15 +222,18 @@
       for (const e of (r.edges || r.links || [])) {
         const s = e.source ?? e.from ?? e.a, t = e.target ?? e.to ?? e.b;
         if (s == null || t == null) continue;
-        const other = String(s) === String(n.id) ? t : s;
-        const a = place(s), b = place(t);
-        if (!a || !b) continue;
         if (String(s) !== String(n.id) && String(t) !== String(n.id)) continue;
+        const other = String(s) === String(n.id) ? t : s;
         const rawKind = e.kind || e.type || 'follows';
         const kind = rawKind === 'follow' ? 'follows' : rawKind;
+        const source = byId.get(String(other)) || this.scene.get(other)?.d;
+        if (kind === 'follows' && source?.source && !seen.has(String(other))) {
+          seen.add(String(other)); seeds.push(source);
+        }
+        const a = place(s), b = place(t);
+        if (!a || !b) continue;
         lines.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, kind, other: String(other) });
-        const o = place(other);
-        if (kind === 'follows' && o && o.node && o.node.source && !seen.has(String(other))) { seen.add(String(other)); seeds.push(o.node); }
+
       }
       return { id: n.id, state: 'ready', lines, seeds };
     }
@@ -245,13 +253,23 @@
       if (!ticket.live()) return null;
       return (this.fallback ? overview(r).nodes : r.results || []).map(n => cleanNode(n, this.mode)).filter(Boolean);
     }
-    // Where to zoom so this person shows as an individual: enough that the server's budget covers the area.
-    kFor(n) { if (this.fallback) return Math.max(1, Math.min(this.cam.k, 4)); return clamp(Math.max(this.cam.k, Math.sqrt(Math.max(1, this.total) / Math.max(1, this.budget / 2.2)) * 1.1), 1, K_MAX); }
-    goTo(n, opt = {}) {
-      const person = cleanNode(n); if (!person) return;
-      this.select(person);
-      const t = { cx: person.x, cy: person.y, k: opt.k || this.kFor(person) };
-      this.flyTo(t, opt.ms || 900); this.load({ cam: t });
+    kFor() { return Math.max(1,this.cam.k); }
+    goTo(n) {
+      const person = cleanNode(n);
+      if (!person) return;
+      const existing = this.scene.get(person.id);
+      if (existing) this.select(existing.d);
+      else {
+        const members = this.scene.nodes.map(it => it.d).filter(it => String(it.id) !== String(this.world.me?.id));
+        if (members.length >= this.density) members.pop();
+        members.push(person);
+        const nodes = cohortLayout(members, this.world.me);
+        this.scene.clear();
+        this.scene.apply({ nodes, clusters: [] }, this.now(), { instant: true });
+        this.select(nodes.find(it => String(it.id) === String(person.id)));
+        this.emit('scene');
+      }
+      if (this.selected) this.flyTo({ cx: this.selected.x, cy: this.selected.y, k: this.cam.k }, 450);
     }
 
     /* ----- camera ----- */
@@ -261,7 +279,7 @@
       this.flight = new Flight(this.cam.state(), target, this.now(), ms);
       this.emit('camera');
     }
-    fit() { this.flyTo({ cx: 0.5, cy: 0.5, k: 1 }, 600); this.load({ cam: { cx: 0.5, cy: 0.5, k: 1 } }); }
+    fit() { this.flyTo({ cx:0.5,cy:0.5,k:1 },600); }
     pan(dx, dy) { this.interruptCamera(); this.cam.panBy(dx, dy); this.moved(); }
     release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
     setSizeEncoding(size) { if (!Core.SIZE_OPTIONS.some(o=>o.id===size) || size === this.size) return; this.size=size; this.emit('size'); }

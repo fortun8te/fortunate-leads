@@ -12,22 +12,32 @@
     if (!r.ok) { const err = new Error(r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : 'The map could not be read.'); err.status = r.status; throw err; }
     return r.json();
   }
+  function saveClassification(id, action, body) {
+    return serializeMutation(async () => {
+      if (typeof invalidatePersonRead === 'function') invalidatePersonRead(id);
+      await api.post(`/api/person/${encodeURIComponent(id)}/${action}`, body);
+      const person = await api.get('/api/person/' + encodeURIComponent(id));
+      if (typeof patchRow === 'function') {
+        patchRow(id, { status: person.status, tags: person.tags, manual_tags: person.manual_tags });
+      }
+      return person;
+    });
+  }
   const host = {
     fetchJson,
     statuses: STATUSES,
     openList: () => setView('leads'),
     toast: (text) => toast(text),
     // Same route the review list uses to jump to a person.
-    openLead(id, handle) {
-      S.f = emptyFilter(); S.f.q = handle || ''; $('#q').value = S.f.q;
-      S.view = 'leads'; filtersChanged(); setView('leads'); openDetail(id);
+    openLead(id) {
+      setView('leads');
+      setURL(true);
+      openDetail(id);
     },
     person: (id) => api.get('/api/person/' + encodeURIComponent(id)),
-    async setStatus(id, status) {
-      const r = await api.post(`/api/person/${encodeURIComponent(id)}/mark`, { status });
-      if (typeof patchRow === 'function') patchRow(id, { status: r.status ?? status });
-      return r;
-    },
+    setStatus: (id, status) => saveClassification(id, 'mark', { status }),
+    tags: () => api.get('/api/tags'),
+    editTags: (id, add, remove) => saveClassification(id, 'tags', { add, remove }),
     // If_match makes a stale note fail with a conflict instead of overwriting someone else's edit.
     saveNote: (id, note, rev) => api.post(`/api/person/${encodeURIComponent(id)}/mark`, { note, if_match: rev ?? '' })
   };

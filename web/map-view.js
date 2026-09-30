@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
+  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, followRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -176,7 +176,7 @@
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
       if (me) this.portraits.get(me.pic);
-      let photoBudget = 480;
+      let photoBudget = 1001;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
@@ -187,21 +187,22 @@
       if (me) {
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(x, y, 29, 0, TAU); ctx.stroke();
-        this.paintPortrait(ctx, P, me, x, y, 24, true, true);
+
+        this.paintPortrait(ctx, P, me, x, y, 24*k, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
-        ownerCaption = { x, y: y + 33, text };
+        ownerCaption = { x, y: y + 29*k + 10, text };
         lab.block([x-width/2-4, y+31, x+width/2+4, y+50]);
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
-      if (edges && edges.state === 'ready') for (const n of edges.seeds) {
-        const x = sx(n.x), y = sy(n.y); ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
+      if (edges && edges.state === 'ready') for (const n of edges.seeds.filter(n=>m.scene.get(n.id))) {
+        const placed=m.scene.get(n.id)?.d || n;
+        const x = sx(placed.x), y = sy(placed.y); ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
         ctx.strokeStyle = P.bg; ctx.lineWidth = 1.5; ctx.stroke();
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
-        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = me && sel.id === me.id ? 24 : radiusFor(sel, k, m.size);
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = plan.nodes.find(mark=>String(mark.it.d.id)===String(sel.id))?.r || radiusFor(sel, k, m.size);
         ctx.strokeStyle = P.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke();
         this.paintPortrait(ctx, P, sel, x, y, r, true);
         if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
@@ -250,12 +251,28 @@
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(initials(person), x, y+.5);
       }
       ctx.restore(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU);
-      ctx.strokeStyle = owner ? P.fg : P.tones[toneFor(this.model.mode, person)]; ctx.lineWidth = owner ? 2.5 : hasRing(person) ? 2.2 : 1.2; ctx.stroke();
+      const ring = followRing(person);
+      ctx.strokeStyle = P.fg3;
+      ctx.lineWidth = owner ? 1 : .85;
+      ctx.globalAlpha = owner ? .6 : .55;
+      if (owner || ring !== 'unknown') {
+        ctx.setLineDash(!owner && ring === 'incoming' ? [2, 3] : []);
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+      if (!owner && ring === 'mutual') {
+        ctx.beginPath(); ctx.arc(x, y, Math.max(2, radius - 2.5), 0, TAU);
+        ctx.setLineDash([2, 3]); ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 1;
+      if (!owner && person.status && person.status !== 'no') {
+        ctx.beginPath(); ctx.arc(x + radius * .5, y + radius * .5, Math.min(2, radius * .2), 0, TAU);
+        ctx.fillStyle = P.tones[toneFor(this.model.mode, person)]; ctx.fill();
+      }
       ctx.textAlign = 'left';
     }
 
     paintGuides(ctx, P, m, cam, S, sx, sy, want) {
-      if (m.world.layout === 'network_disk') return;
+      if (m.world.cohort || m.world.layout === 'network_disk') return;
       const guides = (m.world && m.world.guides) || [];
       const W = cam.w, H = cam.h;
       ctx.lineWidth = 1; ctx.strokeStyle = P.line2; ctx.fillStyle = P.line2;
@@ -546,6 +563,19 @@
     /* ---------- static DOM ---------- */
     buildStatic() {
       const r = this.r;
+      this.density = h('select', { 'aria-label': 'People per page' },
+        ...[250, 500, 1000].map(n => h('option', { value: n, text: `${int(n)} people` })));
+      this.density.value = this.model.density;
+      this.previous = h('button', { type: 'button', text: 'Previous', 'aria-label': 'Previous people' });
+      this.next = h('button', { type: 'button', text: 'Next', 'aria-label': 'Next people' });
+      this.pageLabel = h('span', { text: 'Page 1' });
+      this.pager = h('div', { class: 'mv-pager' }, this.density, this.previous, this.pageLabel, this.next);
+      r.canvasBox.append(this.pager);
+      this.density.addEventListener('change', () => this.model.setDensity(this.density.value));
+      this.previous.addEventListener('click', () => this.model.browse(-1));
+      this.next.addEventListener('click', () => this.model.browse(1));
+      r.fit.setAttribute('aria-label', 'Show this page');
+      r.fit.title = 'Show this page';
       r.size?.replaceChildren(...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
       if (r.size) r.size.value=this.model.size;
       r.modes.replaceChildren(...MODES.map((x) => h('button', { type: 'button', role: 'radio', 'data-mode': x.id, 'aria-checked': 'false', tabindex: '-1' },
@@ -573,6 +603,7 @@
         const svg = (inner) => { const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 20 14'); s.setAttribute('width', '20'); s.setAttribute('height', '14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = inner; return s; };
         switch (g) {
           case 'size': return svg('<circle cx="4" cy="7" r="1.8" class="k-f"/><circle cx="10" cy="7" r="2.8" class="k-f"/><circle cx="16.4" cy="7" r="3.6" class="k-f"/>');
+          case 'follow': return svg('<circle cx="5" cy="7" r="3.5" class="k-r"/><circle cx="15" cy="7" r="3.5" class="k-r" stroke-dasharray="2 2"/>');
           case 'accent': return svg('<circle cx="10" cy="7" r="3.6" class="k-a"/>');
           case 'ring': return svg('<circle cx="10" cy="7" r="2.6" class="k-f"/><circle cx="10" cy="7" r="5.4" class="k-s"/>');
           case 'bubble': return svg('<circle cx="10" cy="7" r="6" class="k-b"/>');
@@ -591,15 +622,26 @@
       const m = this.model, el = this.r.count;
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
-      const visible = this.displayMarks;
-      el.textContent = visible ? `${int(visible.nodes.length)} people · ${int(visible.groups.length)} groups · ${int(m.total)} in view / ${int(m.worldTotal || m.total)} total` : `${int(m.total)} people`;
-      el.title = `${int(m.total)} matching people in this view. Counts group people who are not drawn individually. Click a group to explore, or Show everyone to return.`;
+      const count=m.scene.nodes.filter(n=>String(n.d.id)!==String(m.world.me?.id)).length;
+      el.textContent=`${int(count)} shown · ${int(m.total)} matching people`;
+      el.title='Zoom magnifies this same page. Use Next, search, or filters to see other people.';
+      if (this.pager) {
+        this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
+        this.next.disabled = m.pending > 0 || !m.nextCursor;
+        this.density.disabled = m.pending > 0;
+        this.pageLabel.textContent = `Page ${m.pageIndex + 1}`;
+      }
       if (!announce) return;
       clearTimeout(this.annT); this.annT = setTimeout(() => this.announce(el.textContent + '.'), 900);
     }
     announce(t) { this.r.live.textContent = ''; setTimeout(() => { this.r.live.textContent = t; }, 30); }
     renderBusy() {
       const el = this.r.progress, m = this.model;
+      if (this.pager) {
+        this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
+        this.next.disabled = m.pending > 0 || !m.nextCursor;
+        this.density.disabled = m.pending > 0;
+      }
       clearTimeout(this.busyTimer);
       if (m.pending > 0 && m.phase === 'ready') this.busyTimer = setTimeout(() => { el.hidden = false; }, 380); else el.hidden = true;
       this.r.canvasBox.setAttribute('aria-busy', String(m.pending > 0));
@@ -635,13 +677,10 @@
       if (!n) { this.cardId = null; this.noteRead = (this.noteRead || 0) + 1; card.hidden = true; card.replaceChildren(); this.r.pane.classList.remove('has-card'); this.note = null; this.measure(false); this.r.canvasBox.style.removeProperty('--sheet'); return; }
       const same = this.cardId === n.id;
       this.cardId = n.id; this.note = null; this.noteRead = (this.noteRead || 0) + 1; this.r.pane.classList.add('has-card');
-      const seed = (m.seedList || [])[n.cluster]; const seedLabel = seed ? '@' + (seed.handle || seed) : '';
-      const label = n.lead ? 'Open lead' : 'Open profile';
-      const why = n.reason || whyLine(n, seedLabel);
       card.hidden = false;
-      const facts = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Status', n.status ? SLABEL(n.status) : 'No status']];
+      const facts = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Network', Core.closenessWords(n.closeness||0)]];
       if (n.source_count != null) facts.push(['Collected audiences', int(n.source_count)]);
-      if (typeof n.closeness === 'number') facts.push(['Network evidence', Core.closenessWords(n.closeness).replace(' to you', '').replace(/^./, (c) => c.toUpperCase())]);
+
       if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
       if (n.follows_me) facts.push(['Follows you', 'Recorded']);
       const avatar = h('span', { class: 'mv-av', 'aria-hidden': 'true', text: initials(n) });
@@ -655,17 +694,31 @@
           avatar,
           h('div', { class: 'mv-who' }, h('b', { text: n.name || '@' + n.handle }), h('span', { text: '@' + n.handle })),
           h('button', { type: 'button', class: 'mv-x', 'data-act': 'close', 'aria-label': 'Close details', title: 'Close (esc)', text: '×' })),
-        h('p', { class: 'mv-why', text: why }),
+        h('label', { class: 'mv-quick-status' }, h('span', { text: 'Status' }),
+          h('select', { 'aria-label': 'Lead status' }, h('option', { value: '', text: 'No status' }),
+            this.host.statuses.map(status => h('option', { value: status, text: SLABEL(status) })))),
+        h('section', { class: 'mv-tags' },
+          h('h4', { text: 'Tags' }), h('div', { class: 'mv-tag-chips' }),
+          h('form', { class: 'mv-tag-form' },
+            h('input', { class: 'input', placeholder: 'Add a tag', list: 'mv-tag-options', 'aria-label': 'Add a tag', maxlength: 100 }),
+            h('datalist', { id: 'mv-tag-options' }), h('button', { class: 'btn', type: 'submit', text: 'Add' })),
+          h('p', { class: 'mv-tag-feedback', role: 'status' })),
         h('dl', { class: 'mv-facts' }, facts.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
-        h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Seen in seed audiences' }), h('ul', { class: 'mv-chips', id: 'mv-chips' })),
+        h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Recorded sources' }), h('ul', { class: 'mv-chips', id: 'mv-chips' })),
         h('div', { class: 'mv-actions' },
-          h('button', { type: 'button', class: 'btn solid', 'data-act': 'open', text: label }),
-          h('button', { type: 'button', class: 'btn', 'data-act': 'note', 'aria-expanded': 'false', text: 'Add note' }),
-          h('button', { type: 'button', class: 'btn', 'data-act': 'status', 'aria-expanded': 'false', text: 'Set status' })),
-        h('div', { class: 'mv-status', hidden: true, role: 'group', 'aria-label': 'Set status' },
-          this.host.statuses.map((s, i) => h('button', { type: 'button', class: 'mv-s' + (n.status === s ? ' on' : ''), 'data-s': s, 'aria-pressed': String(n.status === s) }, h('span', { text: SLABEL(s) }), h('kbd', { text: String(i + 1) }))),
-          n.status ? h('button', { type: 'button', class: 'mv-s', 'data-s': '', text: 'Clear status' }) : null),
+          h('button', { type: 'button', class: 'btn', 'data-act': 'open', text: 'Full profile' }),
+          h('button', { type: 'button', class: 'btn', 'data-act': 'note', 'aria-expanded': 'false', text: 'Note' })),
         h('div', { class: 'mv-note', hidden: true }));
+      const statusSelect = card.querySelector('.mv-quick-status select');
+      statusSelect.value = n.status || '';
+      statusSelect.addEventListener('change', () => this.setStatus(n, statusSelect.value || null));
+      const tagForm = card.querySelector('.mv-tag-form');
+      tagForm.addEventListener('submit', event => {
+        event.preventDefault();
+        const input = tagForm.querySelector('input');
+        if (input.value.trim()) this.editTag(n, input.value.trim(), false);
+      });
+      this.loadTags(n);
       if (!same) card.scrollTop = 0;
       this.renderSeeds();
       // A sheet on a phone changes what "centre" means; recompute the inset.
@@ -674,19 +727,18 @@
     }
     updateCardFacts() {
       const n = this.model.selected;
-      const status = this.r.card.querySelector('.mv-facts div:nth-child(2) dd');
-      if (status) status.textContent = n.status ? SLABEL(n.status) : 'No status';
-      for (const b of this.r.card.querySelectorAll('[data-s]')) { const on = (n.status || '') === b.dataset.s; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); }
+      const status = this.r.card.querySelector('.mv-quick-status select');
+      if (status) status.value=n.status||'';
     }
     renderSeeds() {
       const ul = this.r.card.querySelector('#mv-chips'), e = this.model.edges, n = this.model.selected;
       if (!ul || !n) return;
       ul.replaceChildren();
-      if (!e || e.id !== n.id || e.state === 'loading') { ul.append(h('li', { class: 'mv-note-line', text: 'Checking seeds…' })); return; }
-      if (e.state === 'error') { ul.append(h('li', { class: 'mv-note-line', text: 'Couldn’t load seeds.' })); return; }
+      if (!e || e.id !== n.id || e.state === 'loading') { ul.append(h('li', { class: 'mv-note-line', text: 'Loading…' })); return; }
+      if (e.state === 'error') { ul.append(h('li', { class: 'mv-note-line', text: 'Couldn’t load connections.' })); return; }
       if (e.overview) { ul.append(h('li', { class: 'mv-note-line', text: 'Use Compare profiles to see recorded follow paths.' })); return; }
-      if (!e.seeds.length) { ul.append(h('li', { class: 'mv-note-line', text: 'Not linked to a seed yet.' })); return; }
-      this.r.card.querySelector('.mv-seeds h4').textContent = `Seen in ${plural(e.seeds.length, 'seed audience')}`;
+      if (!e.seeds.length) { ul.append(h('li', { class: 'mv-note-line', text: 'No recorded source path yet.' })); return; }
+      this.r.card.querySelector('.mv-seeds h4').textContent = `${plural(e.seeds.length, 'recorded source')}`;
       for (const s of e.seeds.slice(0, 8)) ul.append(h('li', {}, h('button', { type: 'button', class: 'mv-chip', 'data-goto': s.id, title: 'Show on the map', text: '@' + s.handle })));
     }
     cardClick(e) {
@@ -696,9 +748,7 @@
       if (go) { const it = m.edges?.seeds.find((s) => String(s.id) === go.dataset.goto); if (it) m.goTo(it, { k: Math.max(m.cam.k, 4) }); return; }
       if (act === 'close') { m.deselect(); this.canvas.focus({ preventScroll: true }); }
       else if (act === 'open') this.host.openLead(n.id, n.handle);
-      else if (act === 'status') { const box = card.querySelector('.mv-status'), on = box.hidden; box.hidden = !on; e.target.closest('[data-act]').setAttribute('aria-expanded', String(on)); if (on) box.querySelector('button')?.focus(); }
       else if (act === 'note') this.toggleNote(e.target.closest('[data-act]'));
-      const s = e.target.closest('[data-s]'); if (s) this.setStatus(n, s.dataset.s || null);
       if (e.target.closest('[data-note="save"]')) this.saveNote();
       if (e.target.closest('[data-note="cancel"]')) { card.querySelector('.mv-note').hidden = true; card.querySelector('[data-act="note"]').setAttribute('aria-expanded', 'false'); }
     }
@@ -706,11 +756,75 @@
       this.statusWrites ||= new Map();
       if (this.statusWrites.has(n.id)) return;
       this.statusWrites.set(n.id, true);
-      const before = n.status || null;
+      const before = this.model.scene.get(n.id)?.d.status || n.status || null;
+      const control = this.r.card.querySelector('.mv-quick-status select');
+      if (control) control.disabled = true;
       this.model.patchStatus(n.id, status);
-      try { await this.host.setStatus(n.id, status); this.host.toast(status ? `Marked ${SLABEL(status).toLowerCase()}` : 'Status cleared'); }
-      catch (_) { this.model.patchStatus(n.id, before); this.host.toast('Couldn’t save. Try again.'); }
-      finally { this.statusWrites.delete(n.id); }
+      try {
+        const saved = await this.host.setStatus(n.id, status);
+        this.model.patchStatus(n.id, saved.status ?? status);
+        this.host.toast(status ? `Marked ${SLABEL(status).toLowerCase()}` : 'Status cleared');
+      } catch (_) {
+        this.model.patchStatus(n.id, before);
+        this.host.toast('Couldn’t save. Try again.');
+      } finally {
+        this.statusWrites.delete(n.id);
+        if (control?.isConnected) control.disabled = false;
+      }
+    }
+    async loadTags(n) {
+      const box = this.r.card.querySelector('.mv-tags');
+      if (!box) return;
+      const version = box._readVersion = (box._readVersion || 0) + 1;
+      const feedback = box.querySelector('.mv-tag-feedback');
+      feedback.textContent = 'Loading tags…';
+      try {
+        const person = await this.host.person(n.id);
+        if (this.model.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
+        this.paintTags(n, person, box);
+        feedback.textContent = '';
+        if (this.host.tags) {
+          const tags = await this.host.tags();
+          if (box.isConnected) {
+            const names = [...new Set(tags.map(t => t.tag))];
+            box.querySelector('datalist').replaceChildren(...names.map(tag => h('option', { value: tag })));
+          }
+        }
+      } catch (_) {
+        if (box.isConnected) feedback.textContent = 'Couldn’t load tags. Reopen this profile to retry.';
+      }
+    }
+    paintTags(n, person, box) {
+      const tags = person.manual_tags || [];
+      box.querySelector('.mv-tag-chips').replaceChildren(...tags.map(tag => {
+        const button = h('button', { type: 'button', class: 'mv-chip', text: tag + ' ×', 'aria-label': 'Remove ' + tag });
+        button.addEventListener('click', () => this.editTag(n, tag, true));
+        return button;
+      }));
+    }
+    async editTag(n, tag, remove) {
+      if (this.tagSaving) return;
+      const box = this.r.card.querySelector('.mv-tags');
+      if (!box) return;
+      box._readVersion = (box._readVersion || 0) + 1;
+      this.tagSaving = true;
+      for (const el of box.querySelectorAll('input,button')) el.disabled = true;
+      const feedback = box.querySelector('.mv-tag-feedback');
+      feedback.textContent = 'Saving…';
+      try {
+        const person = await this.host.editTags(n.id, remove ? [] : [tag], remove ? [tag] : []);
+        if (this.model.selected?.id === n.id && box.isConnected) {
+          this.paintTags(n, person, box);
+          if (person.status !== undefined) this.model.patchStatus(n.id, person.status);
+          box.querySelector('input').value = '';
+          feedback.textContent = 'Saved';
+        }
+      } catch (_) {
+        if (box.isConnected) feedback.textContent = 'Couldn’t save. Try again.';
+      } finally {
+        this.tagSaving = false;
+        for (const el of box.querySelectorAll('input,button')) el.disabled = false;
+      }
     }
     async toggleNote(btn) {
       const box = this.r.card.querySelector('.mv-note'), n = this.model.selected;

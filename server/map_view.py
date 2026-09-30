@@ -250,11 +250,22 @@ class Query:
         if overview not in ('0', '1', ''):
             raise ValueError('overview must be 0 or 1')
         self.overview = overview == '1'
+        self.cohort = q.get('cohort', ['0'])[0] == '1'
+        self.after = None
+        raw_after = q.get('after', [''])[0]
+        if raw_after:
+            try:
+                rank, pid, revision = json.loads(raw_after)
+                if not math.isfinite(float(rank)) or not isinstance(pid, int) or pid < 0 or not isinstance(revision, str):
+                    raise ValueError()
+                self.after = (float(rank), pid, revision)
+            except (ValueError, TypeError):
+                raise ValueError('after must be a rank and person cursor') from None
         self.mask = class_mask(self.mode, self.scope, self.min_fit, self.codes, self.follow)
 
     def key(self):
         return json.dumps([self.mode, list(self.rect), self.budget, self.scope, self.min_fit,
-                           self.status_text, self.text.lower(), self.follow, self.overview], separators=(',', ':'))
+                           self.status_text, self.text.lower(), self.follow, self.overview, self.cohort, self.after], separators=(',', ':'))
 
 
 def _etag(store, query):
@@ -530,6 +541,8 @@ def view(conn, db_path, q, if_none_match=None, cache=True):
 
 def _view(conn, db_path, store, query):
     mode, mask, budget = store.mode, query.mask, query.budget
+    if query.cohort and not query.text:
+        return _cohort_view(conn, store, query)
     depth = choose_depth(*query.rect)
     capped = False
     wt = world_total(store, mask)
@@ -560,6 +573,47 @@ def _view(conn, db_path, store, query):
     x0, y0, x1, y1 = rect
     inside = [g for g in store.groups() if x0 <= g['x'] <= x1 and y0 <= g['y'] <= y1]
     return _response(store, query, rect, nodes, bubbles, inside, total, wt, capped)
+
+
+def _cohort_class_rows(conn, cls, rank, pid, owner, limit):
+    # Separate seeks let the index skip both rank and person ID. A combined OR
+    # predicate scans all preceding IDs when many people share the same rank.
+    rows = list(conn.execute(
+        'SELECT * FROM mp WHERE cls=? AND rk=? AND person_id>? AND person_id<>? '
+        'ORDER BY person_id LIMIT ?', (cls, rank, pid, owner, limit)))
+    remaining = limit - len(rows)
+    if remaining:
+        rows.extend(conn.execute(
+            'SELECT * FROM mp WHERE cls=? AND rk<? AND person_id<>? '
+            'ORDER BY rk DESC,person_id LIMIT ?', (cls, rank, owner, remaining)))
+    return rows
+
+
+def _cohort_view(conn, store, query):
+    """Read one stable rank page using bounded seeks in existing class indexes."""
+    budget = min(query.budget, 1000)
+    revision = str(store.build_id) + ":" + str(store.rev)
+    reset = bool(query.after and query.after[2] != revision)
+    rank, pid = query.after[:2] if query.after and not reset else (1e100, 0)
+    owner = (store.meta('plan', {}) or {}).get('owner_id') or 0
+    rows = []
+    classes = [cls for cls, in store.conn.execute('SELECT DISTINCT cls FROM agg WHERE depth=1')
+               if (query.mask >> cls) & 1]
+    for cls in classes:
+        rows.extend(_cohort_class_rows(store.conn, cls, rank, pid, owner, budget + 1))
+    rows.sort(key=lambda row: (-row[3], row[0]))
+    more = len(rows) > budget
+    rows = rows[:budget]
+    people = _people(conn, [r[0] for r in rows])
+    total = world_total(store, query.mask)
+    own = store.conn.execute('SELECT cls FROM mp WHERE person_id=?', (owner,)).fetchone()
+    if own and (query.mask >> own[0]) & 1: total -= 1
+    result = _response(store, query, (0., 0., 1., 1.),
+                       [_node(r, people, store.mode) for r in rows], [], [], total, total, False)
+    result['cohort'] = True
+    result['cohort_reset'] = reset
+    result['next_cursor'] = json.dumps([rows[-1][3], rows[-1][0], revision]) if more and rows else None
+    return result
 
 
 def _overview_rows(store, ranked, groups, depth, mask, budget):
