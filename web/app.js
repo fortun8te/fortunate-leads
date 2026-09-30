@@ -2544,10 +2544,14 @@ function collectionCoverageHTML(sc) {
   const stages = sc.stages || sc.control?.stages || [];
   const held = stages.find(stage => stage.wait?.scope === 'workspace');
   const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
-  const activity = sc.control?.collection;
+  const activity = sc.control?.collection || {
+    stopping: collectionStages.some(stage => stage.state === 'stopping' || stage.paused && stage.active),
+    stop_acknowledged: collectionStages.length === 2 && collectionStages.every(stage => stage.stop_acknowledged === true)
+      ? true : collectionStages.some(stage => stage.stop_acknowledged === false) ? false : undefined,
+  };
   const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
   const state = activity?.stopping ? 'Stopping. Waiting for the current request to finish'
-    : pausedByUser ? activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Stopped'
+    : pausedByUser ? activity?.stop_acknowledged === true ? 'Stopped' : activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Paused by you'
     : held ? collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
     : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
   const until = held?.wait?.until;

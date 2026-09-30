@@ -1,5 +1,16 @@
 # Handoff — 30 September 2026
 
+## Laptop photo network and workflow revision, 30 September 2026
+
+The map now fills one owner-centred circular disk with cached profile-photo bubbles instead of separate sparse audience circles. Network, Fit, Sources and Status views share bounded loading, exact group counts and follow-direction filters. Missing follow evidence is explicitly unknown. The owner's current saved lists do not establish complete outgoing coverage, so the UI cannot honestly claim every person not followed yet.
+
+Collection entry now offers Followers/Following scope, Add to queue and explicit Start collection above the connected-account list. Stop/Continue preserves saved checkpoints and reports actual request activity. Qualification has independent progress and Stop/Continue controls; waiting work is labelled Waiting rather than Running. Rules-only mode remains explicit. No collection pacing or AI authority was expanded.
+
+Validation: **1,152 backend tests passed, two existing skips; 463 frontend/extension tests passed; 82 collection simulator checks passed across eight simulated hours**. Laptop browser review used a consistent copy of 111,699 saved people and cached photos. All four current layouts were tested at one million synthetic people; the ten-million measurement belongs to the earlier layout and is not a claim for this exact revision. See [current measurements and limits](MAP_VIEW_PERFORMANCE.md).
+
+Port 8880 is an isolated saved-data preview with no background collectors. Its edits stay in the copy. The existing live service on port 8777 remains on its earlier build; pushing main does not restart or deploy that service. Prepare derived layouts and indexes on a consistent copy before rollout.
+
+
 
 ## Feedback revision, 30 September 2026
 

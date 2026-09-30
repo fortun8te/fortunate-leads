@@ -47,4 +47,9 @@ test('shared Instagram pause explains its retry time without promising completio
  assert.doesNotMatch(html,/finished at|complete at|left/);
  const manual=ctx.collectionCoverageHTML({...sc,paused:true});
  assert.match(manual,/Paused by you/);assert.doesNotMatch(manual,/Retries automatically/);
+ assert.match(ctx.collectionCoverageHTML({...sc,paused:true,control:{collection:{stopping:true,stop_acknowledged:false}}}),/Stopping.*current request/);
+ assert.match(ctx.collectionCoverageHTML({...sc,paused:true,control:{collection:{stop_acknowledged:false}}}),/Checking the last request/);
+ assert.match(ctx.collectionCoverageHTML({...sc,paused:true,control:{collection:{stop_acknowledged:true}}}),/Stopped/);
+ assert.match(ctx.collectionCoverageHTML({...sc,paused:true,stages:[{id:'lists',paused:true,active:true,state:'stopping',stop_acknowledged:false},{id:'bios',paused:true,stop_acknowledged:true}]}),/Stopping.*current request/);
+ assert.match(ctx.collectionCoverageHTML({...sc,paused:true,stages:[{id:'lists',paused:true,stop_acknowledged:true},{id:'bios',paused:true,stop_acknowledged:true}]}),/Stopped/);
 });

@@ -1,0 +1,36 @@
+{
+  "stage": "build",
+  "path": "../scale/sun-1m/synthetic.sqlite",
+  "requested_people": 1000001,
+  "layout_schema": 5,
+  "layout_source_sha256": "b62d6910aa0fbb66d9736e6547194d3a9de8c8f54a47f85634bc644e8a4c0308",
+  "build": {
+    "seconds": 118.8,
+    "modes": [
+      {
+        "mode": "closeness",
+        "people": 1000001,
+        "seconds": 25.94
+      },
+      {
+        "mode": "fit",
+        "people": 1000001,
+        "seconds": 29.39
+      },
+      {
+        "mode": "seeds",
+        "people": 1000001,
+        "seconds": 30.87
+      },
+      {
+        "mode": "status",
+        "people": 1000001,
+        "seconds": 32.56
+      }
+    ]
+  },
+  "elapsed_seconds": 119.01,
+  "peak_rss_bytes": 574816256,
+  "disk_bytes": 1286393088,
+  "disk_free_bytes": 21130153984
+}

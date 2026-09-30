@@ -2,7 +2,25 @@
 
 The viewport API reads precomputed layouts. It sends at most 1,500 people plus aggregated bubbles;
 zooming requests a new rectangle. Existing pair comparison remains independent of this display budget.
-The measurements below distinguish preparation, indexed requests and browser drawing. The earlier 100k and million-person map samples used the pre-feedback audience arrangement. The current default restores the owner-centred network concept; its separate ten-million-person measurement is recorded below.
+The measurements distinguish preparation, indexed requests and browser drawing. The current schema-5 photo network has a fresh million-person measurement below. Older measurements are historical; the ten-million run used the earlier schema-4 geometry.
+
+## Current photo network, schema 5
+
+The owner stays at the centre of one circular network disk. Source audiences receive angular space proportional to their membership. Broad distance bands describe saved connection evidence; spacing within an audience exists for readability. Cached profile photos load progressively; absent photos use initials. Unknown follow direction stays unknown, including when the owner's outgoing list has not been collected completely.
+
+A fresh fixture contains **1,000,001 physical synthetic people**. Generation took 15.90 seconds; all four layouts built in **119.01 seconds**, peaking at **548 MiB process RSS**. Source, four layouts and prepared projections occupied **1.26 GiB**. The separate request process peaked at **514 MiB RSS**. Warm whole-world requests across all modes took **4.9–7.0 ms**; first requests took **115–170 ms**. Warm zoom/pan took **7.9–16.3 ms** and maximum-budget requests **13.3–17.0 ms**. Filtered zoom samples ranged from **0.36–45.18 ms**. These are local samples, not latency guarantees.
+
+Overview requests mix ranked people with spatial coverage within the same bounded budget. Independent SQL checks verified all six follow filters and conserved every matching person through individual nodes and aggregate counts. The fixture's absent outgoing evidence correctly produces no claimed following, mutual or not-following results. Warm overview/direction samples took approximately **1–18 ms**. Prepared Score/Fit lead pages returned exact independently checked first-100 orderings in **28–83 ms**. Prepared default tags took **1.18 ms first** and **0.13–0.19 ms warm**.
+
+On the consistent **111,699-person saved-data copy**, laptop checks covered four viewing modes, follow filters, profile selection and returning to overview. Actual photos and aggregate counts were visually checked at 1440×1000 and 1280×800. Rendered people plus group counts equal the full matching population even when collisions prevent an individual photo from being drawn. The cache retains at most **160 resized images**, loads **four concurrently**, and paints at most **140 photos per frame**. Warm canvas drawing measured **1.4 ms median / 1.8 ms p95** separately from API latency.
+
+**This exact schema-5 geometry has not been benchmarked at ten million.** The older default layout's ten-million results below validate the bounded storage/query approach at that size, but do not establish ten-million performance for every current mode, photo view, dense filter distribution or active collector.
+
+Synthetic evidence: [fixture](benchmarks/map-photo-1m-fixture.json), [four-layout build](benchmarks/map-photo-1m-build.json), [requests](benchmarks/map-photo-1m-requests.json), [overview and direction oracle](benchmarks/map-photo-1m-directions.json). Generated large fixture databases can be removed after retaining these measurements; they are not application data.
+
+## Historical measurements
+
+The following measurements precede the current photo network unless otherwise stated.
 
 ## Synthetic measurement, 30 September 2026
 
@@ -78,7 +96,7 @@ Equal-rank cases do not scan/sort the whole population in the whole-world reques
 
 ### Ten-million run and reproduction
 
-The current schema-4 **default owner-centred layout** completed on **10,000,001 actual synthetic
+The earlier schema-4 **default owner-centred layout** completed on **10,000,001 actual synthetic
 people**, 11,628,537 edges and 11,609,490 distinct source memberships. Fixture generation took
 914.95 seconds. Default layout preparation took **1,354.02 seconds (22.6 minutes)**, with peak RSS
 **485,900,288 bytes (463 MiB)**. This includes the first build, not ongoing interactive work.
@@ -86,12 +104,12 @@ Only the default mode was built at this size; the other three modes remain unver
 The fixture includes all profiles with graph membership, so the subsequent zero-edge inclusion fix
 does not change its layout rows. Raw evidence retains the build and request source hashes.
 
-A separate current-code request process peaked at **348,651,520 bytes (333 MiB)**. Source, default
+A separate request process for that earlier revision peaked at **348,651,520 bytes (333 MiB)**. Source, default
 layout and prepared lead indexes occupied **9,088,486,631 bytes (8.46 GiB)**. These are retained
 file sizes and per-process RSS, not free disk requirements or whole-machine memory guarantees.
 The benchmark checks for at least 8 GiB free before loading fixture batches and preserves its database.
 
-| Current default case | First sample (ms) | Later four samples (ms) | People / aggregate bubbles | Bytes |
+| Earlier schema-4 default case | First sample (ms) | Later four samples (ms) | People / aggregate bubbles | Bytes |
 | --- | ---: | --- | ---: | ---: |
 | Whole world | 442.24 | 5.07–6.05 | 600 / 20 | 110,131 |
 | Qualified | 231.44 | 4.99–7.05 | 600 / 20 | 106,500 |

@@ -71,11 +71,12 @@ test('compact shared controls show resource waiting and pause without changing m
  assert.match(h.ctx.backgroundAIControlsHTML(),/Background AI · Paused.*>Resume/s);
 });
 
-test('active inference and normal pacing are not shown as resource pauses',()=>{
+test('active inference stays running while normal pacing reports waiting',()=>{
  const h=harness();
  const base={enabled:true,ready:true,state:'working'};
  assert.equal(h.ctx.backgroundAIState({...base,runtime:{resources:{allowed:false,busy:true}}}),'Running');
- assert.equal(h.ctx.backgroundAIState({...base,state:'ready',runtime:{resources:{allowed:false,busy:false,retry_in:2}}}),'Running');
+ assert.equal(h.ctx.backgroundAIState({...base,state:'ready',runtime:{resources:{allowed:false,busy:false,retry_in:2}}}),'Waiting');
+ assert.equal(h.ctx.backgroundAIState({...base,state:'waiting',runtime:{resources:{allowed:true,busy:false}}}),'Waiting');
  assert.equal(h.ctx.backgroundAIState({...base,runtime:{resources:{allowed:false,busy:false,thermal_limited:true}}}),'Waiting for Mac');
  assert.equal(h.ctx.backgroundAIState({...base,runtime:{resources:{allowed:false,busy:false,error:'Unable to read pressure'}}}),'Waiting for Mac');
 });

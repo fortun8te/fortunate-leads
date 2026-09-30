@@ -1,0 +1,12 @@
+{
+  "stage": "fixture",
+  "path": "../scale/sun-1m/synthetic.sqlite",
+  "requested_people": 1000001,
+  "layout_schema": 5,
+  "layout_source_sha256": "b62d6910aa0fbb66d9736e6547194d3a9de8c8f54a47f85634bc644e8a4c0308",
+  "fixture_seconds": 15.9,
+  "elapsed_seconds": 15.9,
+  "peak_rss_bytes": 333987840,
+  "disk_bytes": 696823808,
+  "disk_free_bytes": 21202698240
+}

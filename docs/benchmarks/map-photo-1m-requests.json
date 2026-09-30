@@ -1,0 +1,503 @@
+{
+  "stage": "requests",
+  "path": "../scale/sun-1m/synthetic.sqlite",
+  "requested_people": 1000001,
+  "layout_schema": 5,
+  "layout_source_sha256": "b62d6910aa0fbb66d9736e6547194d3a9de8c8f54a47f85634bc644e8a4c0308",
+  "requests": {
+    "counts": {
+      "people": 1000001,
+      "edges": 1162823,
+      "map_seed_member": 1160917
+    },
+    "closeness": {
+      "world": {
+        "samples_ms": [
+          169.98,
+          7.04,
+          6.88
+        ],
+        "bytes": 169151,
+        "nodes": 600,
+        "groups": 88,
+        "total": 998334,
+        "hidden": 997734
+      },
+      "qualified": {
+        "samples_ms": [
+          117.19,
+          6.31,
+          6.4
+        ],
+        "bytes": 166324,
+        "nodes": 600,
+        "groups": 91,
+        "total": 27623,
+        "hidden": 27023
+      },
+      "clients": {
+        "samples_ms": [
+          17.65,
+          5.82,
+          6.01
+        ],
+        "bytes": 160570,
+        "nodes": 600,
+        "groups": 6,
+        "total": 1666,
+        "hidden": 1066
+      },
+      "zoom": {
+        "samples_ms": [
+          118.84,
+          12.17,
+          10.95
+        ],
+        "bytes": 163598,
+        "nodes": 600,
+        "groups": 114,
+        "total": 6817,
+        "hidden": 6217
+      },
+      "pan": {
+        "samples_ms": [
+          23.43,
+          11.44,
+          10.99
+        ],
+        "bytes": 163957,
+        "nodes": 600,
+        "groups": 118,
+        "total": 4964,
+        "hidden": 4364
+      },
+      "maximum": {
+        "samples_ms": [
+          87.9,
+          14.51,
+          14.43
+        ],
+        "bytes": 398218,
+        "nodes": 1500,
+        "groups": 88,
+        "total": 998334,
+        "hidden": 996834
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          51.29,
+          27.19,
+          28.11
+        ],
+        "bytes": 157321,
+        "nodes": 600,
+        "groups": 60,
+        "total": 3790,
+        "hidden": 3190
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          36.63,
+          20.1,
+          22.31
+        ],
+        "bytes": 106847,
+        "nodes": 416,
+        "groups": 0,
+        "total": 416,
+        "hidden": 0
+      }
+    },
+    "fit": {
+      "world": {
+        "samples_ms": [
+          126.03,
+          6.06,
+          6.37
+        ],
+        "bytes": 153925,
+        "nodes": 600,
+        "groups": 49,
+        "total": 998334,
+        "hidden": 997734
+      },
+      "qualified": {
+        "samples_ms": [
+          6.13,
+          5.39,
+          6.26
+        ],
+        "bytes": 149973,
+        "nodes": 600,
+        "groups": 6,
+        "total": 27623,
+        "hidden": 27023
+      },
+      "clients": {
+        "samples_ms": [
+          71.49,
+          5.18,
+          5.24
+        ],
+        "bytes": 153820,
+        "nodes": 600,
+        "groups": 11,
+        "total": 1666,
+        "hidden": 1066
+      },
+      "zoom": {
+        "samples_ms": [
+          144.74,
+          11.24,
+          11.5
+        ],
+        "bytes": 151863,
+        "nodes": 600,
+        "groups": 24,
+        "total": 3941,
+        "hidden": 3341
+      },
+      "pan": {
+        "samples_ms": [
+          30.7,
+          10.19,
+          9.76
+        ],
+        "bytes": 151242,
+        "nodes": 600,
+        "groups": 18,
+        "total": 2689,
+        "hidden": 2089
+      },
+      "maximum": {
+        "samples_ms": [
+          81.46,
+          13.82,
+          13.3
+        ],
+        "bytes": 376579,
+        "nodes": 1500,
+        "groups": 49,
+        "total": 998334,
+        "hidden": 996834
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          23.8,
+          16.58,
+          17.41
+        ],
+        "bytes": 153396,
+        "nodes": 600,
+        "groups": 39,
+        "total": 27046,
+        "hidden": 26446
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          0.41,
+          0.45,
+          0.36
+        ],
+        "bytes": 902,
+        "nodes": 0,
+        "groups": 0,
+        "total": 0,
+        "hidden": 0
+      }
+    },
+    "seeds": {
+      "world": {
+        "samples_ms": [
+          115.28,
+          6.45,
+          6.17
+        ],
+        "bytes": 164432,
+        "nodes": 600,
+        "groups": 100,
+        "total": 998334,
+        "hidden": 997734
+      },
+      "qualified": {
+        "samples_ms": [
+          79.66,
+          5.47,
+          5.56
+        ],
+        "bytes": 153219,
+        "nodes": 600,
+        "groups": 11,
+        "total": 27623,
+        "hidden": 27023
+      },
+      "clients": {
+        "samples_ms": [
+          24.39,
+          4.87,
+          5.5
+        ],
+        "bytes": 155028,
+        "nodes": 600,
+        "groups": 3,
+        "total": 1666,
+        "hidden": 1066
+      },
+      "zoom": {
+        "samples_ms": [
+          109.34,
+          9.35,
+          8.28
+        ],
+        "bytes": 154203,
+        "nodes": 600,
+        "groups": 25,
+        "total": 26614,
+        "hidden": 26014
+      },
+      "pan": {
+        "samples_ms": [
+          42.98,
+          8.18,
+          7.91
+        ],
+        "bytes": 154674,
+        "nodes": 600,
+        "groups": 29,
+        "total": 32353,
+        "hidden": 31753
+      },
+      "maximum": {
+        "samples_ms": [
+          58.55,
+          13.81,
+          13.74
+        ],
+        "bytes": 392954,
+        "nodes": 1500,
+        "groups": 99,
+        "total": 998334,
+        "hidden": 996834
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          123.58,
+          36.93,
+          38.26
+        ],
+        "bytes": 151956,
+        "nodes": 600,
+        "groups": 14,
+        "total": 9504,
+        "hidden": 8904
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          53.83,
+          45.05,
+          45.18
+        ],
+        "bytes": 153890,
+        "nodes": 600,
+        "groups": 8,
+        "total": 1016,
+        "hidden": 416
+      }
+    },
+    "status": {
+      "world": {
+        "samples_ms": [
+          123.94,
+          5.59,
+          5.84
+        ],
+        "bytes": 157414,
+        "nodes": 600,
+        "groups": 48,
+        "total": 1000001,
+        "hidden": 999401
+      },
+      "qualified": {
+        "samples_ms": [
+          89.6,
+          6.03,
+          6.36
+        ],
+        "bytes": 151769,
+        "nodes": 600,
+        "groups": 24,
+        "total": 27623,
+        "hidden": 27023
+      },
+      "clients": {
+        "samples_ms": [
+          10.04,
+          4.93,
+          5.16
+        ],
+        "bytes": 153306,
+        "nodes": 600,
+        "groups": 4,
+        "total": 1666,
+        "hidden": 1066
+      },
+      "zoom": {
+        "samples_ms": [
+          109.23,
+          16.05,
+          16.32
+        ],
+        "bytes": 159853,
+        "nodes": 600,
+        "groups": 99,
+        "total": 109084,
+        "hidden": 108484
+      },
+      "pan": {
+        "samples_ms": [
+          30.07,
+          13.68,
+          13.18
+        ],
+        "bytes": 160989,
+        "nodes": 600,
+        "groups": 110,
+        "total": 122601,
+        "hidden": 122001
+      },
+      "maximum": {
+        "samples_ms": [
+          63.07,
+          15.79,
+          17.02
+        ],
+        "bytes": 385062,
+        "nodes": 1500,
+        "groups": 48,
+        "total": 1000001,
+        "hidden": 998501
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          48.07,
+          35.55,
+          36.24
+        ],
+        "bytes": 159844,
+        "nodes": 600,
+        "groups": 103,
+        "total": 12015,
+        "hidden": 11415
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          1.08,
+          1.14,
+          1.01
+        ],
+        "bytes": 902,
+        "nodes": 0,
+        "groups": 0,
+        "total": 0,
+        "hidden": 0
+      }
+    },
+    "leads": {
+      "0": {
+        "milliseconds": 83.2,
+        "rows": 50,
+        "total": 998333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 35.78,
+        "rows": 50,
+        "total": 998333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "leads_fit": {
+      "0": {
+        "milliseconds": 33.87,
+        "rows": 50,
+        "total": 998333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 28.15,
+        "rows": 50,
+        "total": 998333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "initial_view": {
+      "tag_facets": {
+        "samples_ms": [
+          1.18,
+          0.19,
+          0.13
+        ],
+        "payload": [
+          {
+            "tag": "Fit: strong",
+            "source": "auto",
+            "grp": "signal",
+            "count": 27623,
+            "total": 27623
+          },
+          {
+            "tag": "Fit: good",
+            "source": "auto",
+            "grp": "signal",
+            "count": 22276,
+            "total": 22276
+          }
+        ]
+      },
+      "counts": {
+        "samples_ms": [
+          0.16,
+          0.11,
+          0.1
+        ],
+        "payload": {
+          "hot": 0,
+          "warm": 0,
+          "cold": 0,
+          "unread": 900003,
+          "interested": 1667,
+          "contacted": 1667,
+          "talking": 1667,
+          "spoke_before": 1666,
+          "client": 1666,
+          "no": 1667,
+          "none": 990000,
+          "open": 998333,
+          "maybe": 98330,
+          "total": 1000001,
+          "with_bio": 0
+        }
+      }
+    },
+    "search_user000123": {
+      "milliseconds": 2.02,
+      "results": 20
+    },
+    "search_Person 123": {
+      "milliseconds": 808.57,
+      "results": 20
+    },
+    "search_src00": {
+      "milliseconds": 10.91,
+      "results": 1
+    }
+  },
+  "elapsed_seconds": 4.96,
+  "peak_rss_bytes": 539312128,
+  "disk_bytes": 1348575240,
+  "disk_free_bytes": 19467010048
+}
