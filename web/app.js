@@ -2339,9 +2339,10 @@ function accountRow(a) {
     <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
       <span class="grow"></span><button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
+    <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
     <div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <details class="adv acc-more"><summary>Account settings</summary>
-    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small>${b.list ? `<div class="bar-p run" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}</div>
+    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small></div>
     <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
 
@@ -3550,9 +3551,15 @@ const M = {
   status(t) {
     const c = this.ctx; if (!c) return;
     c.clearRect(0, 0, this.w, this.h);
-    c.fillStyle = css('--fg3'); c.font = '14px ' + css('--sans'); c.textAlign = 'left';
-    c.fillText(t, 16, 28);
+    const box = $('#map-state');
+    if (!box) { c.fillStyle = css('--fg3'); c.font = '14px ' + css('--sans'); c.textAlign = 'left'; c.fillText(t, 16, 28); return; }
+    const fail = /offline|could not|missing/i.test(t), empty = /^No people/.test(t);
+    const detail = /offline/i.test(t) ? 'The map will return when the connection does.' : fail ? 'Check your connection, then try again.' : empty ? 'Try removing a filter or search.' : 'Placing people by shared lists.';
+    box.dataset.kind = fail ? 'error' : empty ? 'empty' : 'loading';
+    box.innerHTML = `${fail || empty ? '' : '<i class="map-spin" aria-hidden="true"></i>'}<b>${esc(fail || empty ? t : 'Loading the map')}</b><p>${detail}</p>${fail ? '<button class="btn" id="map-retry" type="button">Try again</button>' : ''}`;
+    box.hidden = false;
   },
+  clearStatus() { const box = $('#map-state'); if (box && !box.hidden) box.hidden = true; },
   bounds(list) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of list) { x0 = Math.min(x0, n.x - n.r); y0 = Math.min(y0, n.y - n.r); x1 = Math.max(x1, n.x + n.r); y1 = Math.max(y1, n.y + n.r + (n.kind === 'seed' ? 22 : 0)); }
@@ -3641,6 +3648,7 @@ const M = {
     const k = this.k;
     c.clearRect(0, 0, this.w, this.h);
     if (!this.nodes.length) { $('#map-points').hidden = true; if ($('#map-render-status')) $('#map-render-status').hidden = true; this.status(this.loaded ? 'No people match these filters' : 'Loading'); return; }
+    this.clearStatus();
     c.save(); c.translate(this.x, this.y); c.scale(k, k);
     const hd = this.hood();
     const match = this.matchSet;

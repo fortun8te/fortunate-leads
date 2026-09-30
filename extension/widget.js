@@ -9,34 +9,36 @@
   root.innerHTML = `<style>
 :host { all: initial; }
 * { box-sizing: border-box; margin: 0; }
-.w { font: 12px/1.4 Inter, -apple-system, system-ui, sans-serif; color: #ededed; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
-.pill { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 10px; border-radius: 999px; border: 1px solid #333;
-  background: #161616; color: #ededed; font: inherit; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
-.pill:hover { background: #1f1f1f; }
-.card { width: 304px; border: 1px solid #333; border-radius: 12px; background: #161616; padding: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+.w { font: 12px/1.4 Inter, -apple-system, system-ui, sans-serif; color: #ece9e4; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+.pill { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 10px; border-radius: 999px; border: 1px solid #34312e;
+  background: #191817; color: #ece9e4; font: inherit; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+.pill, .btn, .sbtn, .x { transition: background-color .16s, border-color .16s, color .16s; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.pill:hover { background: #211f1e; }
+.card { width: 304px; border: 1px solid #34312e; border-radius: 12px; background: #191817; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
 .top { display: flex; align-items: center; gap: 8px; }
 .name { flex: 1; font-weight: 600; font-size: 13px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #5a5a5a; flex: none; }
-.dot.on { background: #22c55e; }
-.x { border: 0; background: none; color: #8a8a8a; font: 16px/1 inherit; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
-.x:hover { color: #ededed; background: #262626; }
-.now { color: #bdbdbd; margin: 8px 0 10px; min-height: 17px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #77726b; flex: none; }
+.dot.on { background: #ece9e4; box-shadow: 0 0 0 3px rgba(236,233,228,.16); }
+.x { border: 0; background: none; color: #9b968e; font: 16px/1 inherit; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.x:hover { color: #ece9e4; background: #2b2927; }
+.now { color: #bab5ae; margin: 8px 0 10px; min-height: 17px; }
 .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
-.nums div { background: #1f1f1f; border-radius: 8px; padding: 6px 8px; }
+.nums div { background: #211f1e; border-radius: 8px; padding: 6px 8px; }
 .nums b { display: block; font-size: 14px; font-weight: 600; }
-.nums span { color: #8a8a8a; font-size: 11px; }
+.nums span { color: #9b968e; font-size: 11px; }
 .row { display: flex; gap: 6px; }
-.btn { flex: 1; white-space: nowrap; height: 28px; border-radius: 8px; border: 1px solid #333; background: #1f1f1f; color: #ededed; font: inherit; cursor: pointer; }
-.btn:hover { background: #2a2a2a; }
+.btn { flex: 1; white-space: nowrap; height: 28px; border-radius: 8px; border: 1px solid #34312e; background: #211f1e; color: #ece9e4; font: inherit; cursor: pointer; }
+.btn:hover { background: #34312e; }
 .stages { display: grid; gap: 4px; margin-bottom: 10px; }
-.stage { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 0 8px; background: #1f1f1f; border-radius: 8px; }
+.stage { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px 0 8px; background: #211f1e; border-radius: 8px; }
 .stage b { font-weight: 600; width: 34px; }
-.stage .word { flex: 1; color: #a3a3a3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stage.paused .word { color: #707070; }
-.sbtn { height: 22px; padding: 0 9px; border-radius: 999px; border: 1px solid #333; background: #262626; color: #ededed; font: inherit; cursor: pointer; }
-.sbtn:hover { border-color: #707070; }
+.stage .word { flex: 1; color: #bab5ae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage.paused .word { color: #918c84; }
+.sbtn { height: 22px; padding: 0 9px; border-radius: 999px; border: 1px solid #34312e; background: #2b2927; color: #ece9e4; font: inherit; cursor: pointer; }
+.sbtn:hover { border-color: #918c84; }
 .sbtn:disabled { opacity: .5; cursor: wait; }
-.lbl { color: #8a8a8a; font-size: 11px; margin-bottom: 4px; }
+.lbl { color: #9b968e; font-size: 11px; margin-bottom: 4px; }
 [hidden] { display: none !important; }
 </style>
 <div class="w">

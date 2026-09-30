@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="start.css">
   <link rel="stylesheet" href="polish.css">
   <link rel="stylesheet" href="workflow.css">
+  <link rel="stylesheet" href="shell.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -102,6 +103,7 @@
             <div id="map-overview" class="map-overview" hidden></div>
             <canvas id="map-points" aria-hidden="true" hidden></canvas>
             <canvas id="canvas" role="img" aria-label="Connection map. Open Leads for an accessible list of people and their recorded connections."></canvas>
+            <div class="map-state" id="map-state" role="status" aria-live="polite" hidden></div>
             <div class="hover" id="hover" hidden></div>
             <div class="zoom"><button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button></div>
             <label class="map-density" for="map-density"><select class="select" id="map-density" aria-label="People shown on map"><option value="400">400 people</option><option value="1000">1,000 people</option><option value="3000">3,000 people</option><option value="10000">10,000 people</option><option value="30000">30,000 people</option><option value="100000">100,000 people</option><option value="0">All saved · overview</option></select></label>
@@ -396,5 +398,6 @@
 <script src="controls.js"></script>
 <script src="start.js"></script>
 <script src="k2-connection.js"></script>
+<script src="shell.js"></script>
 </body>
 </html>
