@@ -7,17 +7,23 @@ The synthetic grid preview was rejected. The revised default map puts Michael in
 
 Restored the earlier tag hierarchy and icons, with visible evidence chips on phones and correct virtualized row heights. Setup and Review now disclose failed refreshes and offer Retry instead of presenting stale results as current.
 
-Ordinary Fit/Score lead pages and unfiltered counts now have exact maintained indexes and summaries. Existing databases need explicit preparation on a copy first; see [LEAD_SCALE.md](LEAD_SCALE.md). Ten-million map and page measurements are being completed separately. No live data or collection pacing was changed.
+Ordinary Fit/Score lead pages and unfiltered counts now have exact maintained indexes and summaries. Page hydration uses person-first source membership lookups. Default tag facets use a separately prepared exact projection; filtered requests retain the original query. Existing databases require explicit preparation on a consistent copy first; see [LEAD_SCALE.md](LEAD_SCALE.md).
 
-## Current continuation, 30 September 2026
+## Current validation scope
 
-Recovered the unfinished Claude map/API/UI work and integrated it with the already merged cloud fixes. Connections now uses compact audience groups, progressive detail, four viewing modes, filters, search and selected-profile evidence. Collection uses Start, Stop and Continue with saved-progress and waiting states. Legacy map panels, unused rendering assets and redundant refreshes were removed.
+The full backend suite passed 1,135 tests (two existing skips). A final focused
+21-test tag suite covered the later readiness guards and interrupted preparation.
+The frontend suite passed 445 tests. The collection simulation passed all 82
+checks over eight simulated hours, including outages, restart recovery and cooldowns.
+These use isolated copied or synthetic data; no live Instagram soak was performed.
 
-The viewport map limits each response to 1,500 people and aggregated counts. A real synthetic 1,000,001-person fixture was built and queried across all four modes; see [measured performance and limits](MAP_VIEW_PERFORMANCE.md). The 10,000,001-person fixture is still in progress. Do not claim that ten-million scale or collection under that load has been validated.
+The current default owner-centred map was built and queried on a retained fixture containing 10,000,001 synthetic people. Warm whole-world requests took 5–6 ms, zoom/pan 9–14 ms and filtered zoom 133–143 ms, with slower first requests. The first layout build took 22.6 minutes and peaked at 463 MiB process RSS. Only the default mode is measured at ten million; the other three modes, broader tag density, rare filters and ongoing collection at that size need separate validation. See [measured performance and limits](MAP_VIEW_PERFORMANCE.md).
 
-For rollout, use [MAP_VIEW_API.md](MAP_VIEW_API.md) to prepare layouts explicitly on a database copy first. This continuation changed no live database, collection pacing or running service. The unprepared-map fallback remains available. Backups preserve source data; layouts are derived and rebuilt separately.
+On the actual 111,699-person saved-data copy, all four current layouts were built and browser checks covered desktop/phone, both themes, tags, lead rows/detail, profile selection, group expansion and return to overview. This preview uses copied data without background collection; changes there do not update the live database. The live service remains on its earlier build on port 8777.
 
-Visual checks used isolated synthetic previews, including desktop and 390-pixel mobile. The JavaScript suite passed 438 tests; collection simulation passed 82 checks over eight simulated hours. Server results and lead-list timing evidence are recorded in the continuation commit and performance documents. Earlier sections below describe historical functionality and validation.
+Recovered the unfinished Claude map/API/UI work and integrated it with the already merged cloud fixes. Collection has Start, Stop and Continue with saved-progress and waiting states. Legacy map panels, unused rendering assets and redundant refreshes were removed. No live service, collection pacing or AI authority was changed.
+
+For rollout, prepare layouts and indexes explicitly on a consistent database copy first using [MAP_VIEW_API.md](MAP_VIEW_API.md) and [LEAD_SCALE.md](LEAD_SCALE.md). The original query fallback remains usable on unprepared databases. Backups preserve source data; layouts are derived and rebuilt separately. Earlier sections below describe historical functionality and validation.
 
 Current update, 27 September 2026: bulk selection/editing, saved views and in-app CSV exports have been removed. Individual relationship, tag and note edits remain. Existing saved-view data and workspace backups are preserved. References to those removed features below describe the earlier implementation. See [CONTRACT.md](CONTRACT.md) for current APIs.
 

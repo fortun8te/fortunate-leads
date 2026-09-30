@@ -2,7 +2,7 @@
 
 The viewport API reads precomputed layouts. It sends at most 1,500 people plus aggregated bubbles;
 zooming requests a new rectangle. Existing pair comparison remains independent of this display budget.
-The measurements below distinguish preparation, indexed requests and browser drawing. The earlier 100k and million-person map samples used the pre-feedback audience arrangement. The current default restores the owner-centred network concept; its separate ten-million-person measurement is recorded when complete.
+The measurements below distinguish preparation, indexed requests and browser drawing. The earlier 100k and million-person map samples used the pre-feedback audience arrangement. The current default restores the owner-centred network concept; its separate ten-million-person measurement is recorded below.
 
 ## Synthetic measurement, 30 September 2026
 
@@ -148,3 +148,47 @@ A thin-ID sort followed by hydration of only the selected page preserves all lea
 The revised owner-centred default was built on a consistent copy of 111,699 saved people. All four current layouts built in 7.41 seconds after the zero-connection inclusion fix. Desktop and 390-pixel phone checks used that copy, including profile clicks, group expansion and return to the overview. The canvas with 728 loaded people painted in a measured 0.9 ms median and 1.3 ms p95. This browser drawing sample is separate from query/network latency and whole-system resource usage.
 
 Ordinary lead pages and unfiltered counts now have explicit maintained indexes; preparation and current measurements are in [LEAD_SCALE.md](LEAD_SCALE.md). Default tag facets no longer materialize every person ID. On the actual copy, identical facet results took 331 ms initially and 275–288 ms afterward, against 996 ms for the earlier query. On the million-person synthetic fixture, the initial new query took 1,679 ms and warm samples 134–183 ms, against 3,922 ms previously. These fixtures differ in tag density; their timings do not predict every ten-million database.
+
+### Source feedback hydration follow-up
+
+The source-yield lookup now uses the marked person's membership index instead of
+scanning entire source audiences. Exact complete responses matched the original
+implementation on the actual copy and ten-million fixture for both Fit/Score
+first and second pages. Ten-million warm pages were mostly 272–317 ms, against
+399–552 ms previously, with occasional 472/727 ms spikes. This is a measured
+improvement, not a worst-case latency bound; explicit feedback aggregation still
+follows the marked population. See [lead scale evidence](LEAD_SCALE.md).
+
+### Prepared default tag facets follow-up
+
+The earlier 17,276 ms tag measurement above is retained as baseline. A new exact
+prepared projection answers the default tag request from small transactional
+facet totals. On this ten-million fixture, preparation took 7.93 seconds and
+reads took 3.59 ms initially, then 0.093–0.220 ms. The independent original-query
+oracle matched exactly; that separate legacy query took 30.62 seconds. The
+benchmark process peaked at 90.8 MiB RSS. The actual-data copy retained 157
+facet summaries and read them in 3.95 ms initially, then 0.50–0.60 ms. Filtered
+requests retain the original SQL relation and need separate latency validation.
+
+A transactional sample of 100 new profiles with verdict, tag and workflow mark
+took 70.0 ms with prepared maintenance and 45.2 ms without it on the ten-million
+fixture. Per-person refresh query plans use indexed searches. Existing databases
+are not backfilled automatically. See [preparation and exact semantics](LEAD_SCALE.md)
+and [ten-million raw evidence](benchmarks/tag-facets-10m-prepared.json).
+
+### Combined requests after lead and tag fixes
+
+A separate current-code run verified exact top-100 Fit/Score orderings and lead
+total again. Map budgets and aggregate counts remained exact. Warm world
+requests took 5.1–5.6 ms, zoom/pan 8.5–12.4 ms and filtered zoom 122.8–146.6 ms.
+First map samples reached 484.5 ms. Score first/second pages took 683.9/315.5 ms;
+Fit took 322.5/332.8 ms. Tags took 2.43 ms initially and 0.12–0.21 ms afterward;
+counts took 0.10–0.17 ms. Process RSS peaked at 373 MiB and retained files
+occupied 8.50 GiB after tag preparation.
+
+The same prefix-search sample took 14,663.7 ms, compared with 1,447 ms in the
+earlier process. This remains an unresolved latency concern; fast map drawing
+and prepared default facets do not establish uniformly fast search. Bounded
+name search took 36.6 ms. Disk cache was not flushed and other local validation
+was running. [Complete final request samples](benchmarks/map-10m-final-requests.json)
+preserve this limitation and the successful correctness checks.

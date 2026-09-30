@@ -1,0 +1,209 @@
+{
+  "stage": "requests",
+  "path": "../scale/10m/synthetic.sqlite",
+  "requested_people": 10000001,
+  "layout_schema": 4,
+  "layout_source_sha256": "77be4ce3bcbe2e76cc77e3179c2283d91c0b4daca54006c5adffc26c747545c7",
+  "requests": {
+    "counts": {
+      "people": 10000001,
+      "edges": 11628537,
+      "map_seed_member": 11609490
+    },
+    "closeness": {
+      "world": {
+        "samples_ms": [
+          300.33,
+          5.56,
+          5.07
+        ],
+        "bytes": 110131,
+        "nodes": 600,
+        "groups": 20,
+        "total": 9983334,
+        "hidden": 9982734
+      },
+      "qualified": {
+        "samples_ms": [
+          217.24,
+          5.23,
+          5.06
+        ],
+        "bytes": 106500,
+        "nodes": 600,
+        "groups": 20,
+        "total": 276238,
+        "hidden": 275638
+      },
+      "clients": {
+        "samples_ms": [
+          6.11,
+          4.79,
+          5.05
+        ],
+        "bytes": 108509,
+        "nodes": 600,
+        "groups": 4,
+        "total": 16666,
+        "hidden": 16066
+      },
+      "zoom": {
+        "samples_ms": [
+          473.37,
+          8.54,
+          8.87
+        ],
+        "bytes": 105343,
+        "nodes": 600,
+        "groups": 10,
+        "total": 50845,
+        "hidden": 50245
+      },
+      "pan": {
+        "samples_ms": [
+          217.61,
+          12.32,
+          12.43
+        ],
+        "bytes": 105005,
+        "nodes": 600,
+        "groups": 4,
+        "total": 6220,
+        "hidden": 5620
+      },
+      "maximum": {
+        "samples_ms": [
+          296.97,
+          13.55,
+          14.29
+        ],
+        "bytes": 270159,
+        "nodes": 1500,
+        "groups": 20,
+        "total": 9983334,
+        "hidden": 9981834
+      },
+      "qualified_zoom": {
+        "samples_ms": [
+          484.53,
+          122.82,
+          132.05
+        ],
+        "bytes": 108480,
+        "nodes": 600,
+        "groups": 41,
+        "total": 35097,
+        "hidden": 34497
+      },
+      "clients_zoom": {
+        "samples_ms": [
+          233.28,
+          141.06,
+          146.56
+        ],
+        "bytes": 108742,
+        "nodes": 600,
+        "groups": 9,
+        "total": 7049,
+        "hidden": 6449
+      }
+    },
+    "leads": {
+      "0": {
+        "milliseconds": 683.89,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 315.46,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "leads_fit": {
+      "0": {
+        "milliseconds": 322.46,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 50,
+        "fixture_oracle_checked": true
+      },
+      "50": {
+        "milliseconds": 332.81,
+        "rows": 50,
+        "total": 9983333,
+        "next_offset": 100,
+        "fixture_oracle_checked": true
+      }
+    },
+    "initial_view": {
+      "tag_facets": {
+        "samples_ms": [
+          2.43,
+          0.21,
+          0.12
+        ],
+        "payload": [
+          {
+            "tag": "Fit: strong",
+            "source": "auto",
+            "grp": "signal",
+            "count": 276238,
+            "total": 276238
+          },
+          {
+            "tag": "Fit: good",
+            "source": "auto",
+            "grp": "signal",
+            "count": 222770,
+            "total": 222770
+          }
+        ]
+      },
+      "counts": {
+        "samples_ms": [
+          0.17,
+          0.11,
+          0.1
+        ],
+        "payload": {
+          "hot": 0,
+          "warm": 0,
+          "cold": 0,
+          "unread": 9000003,
+          "interested": 16667,
+          "contacted": 16667,
+          "talking": 16667,
+          "spoke_before": 16666,
+          "client": 16666,
+          "no": 16667,
+          "none": 9900000,
+          "open": 9983333,
+          "maybe": 983330,
+          "total": 10000001,
+          "with_bio": 0
+        }
+      }
+    },
+    "search_user000123": {
+      "milliseconds": 14663.71,
+      "results": 20
+    },
+    "search_Person 123": {
+      "milliseconds": 36.55,
+      "results": 20
+    },
+    "search_src00": {
+      "milliseconds": 27.76,
+      "results": 1
+    }
+  },
+  "elapsed_seconds": 29.95,
+  "peak_rss_bytes": 391069696,
+  "disk_bytes": 9128879217,
+  "disk_free_bytes": 22793711616
+}
