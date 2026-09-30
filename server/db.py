@@ -381,6 +381,8 @@ def init(path):
     init_map_person_degree(conn)
     import lead_rank
     lead_rank.ensure(conn)
+    import tag_facets
+    tag_facets.ensure(conn)
     init_map_membership_revision(conn)
     ensure_map_layout_dirty(conn)
     # Revisions catch edits that counts/timestamps cannot distinguish, including

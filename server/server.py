@@ -1247,6 +1247,11 @@ def api_tags(conn, q, b):
 def tag_facets(conn, q):
     """Per-tag counts for the filtered set and overall, including current fit labels."""
     where, args = lead_filter(q)
+    if where == ["coalesce(m.status,'')!='no'"] and not args:
+        import tag_facets as prepared_tag_facets
+        prepared = prepared_tag_facets.default(conn)
+        if prepared is not None:
+            return prepared
     counts, totals = {}, {}
     # Group each branch separately so SQLite can retain the stored-tag covering
     # index instead of materializing the entire tag relation before filtering.
