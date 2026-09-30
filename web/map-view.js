@@ -577,7 +577,7 @@
           default: return svg('');
         }
       };
-      box.replaceChildren(...rows.map((row) => h('li', {}, h('button', { type: 'button', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
+      box.replaceChildren(...rows.map((row) => h('li', {}, h('span', { tabindex: '0', role: 'note', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
       this.measureHud(); this.invalidate();
     }
     renderCount(announce = true) {
