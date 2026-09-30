@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing } = Core;
+  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, displayPlan } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -78,14 +78,16 @@
       const box = this.r.canvasBox, w = box.clientWidth, h = box.clientHeight;
       if (!w || !h) return;
       const dpr = Math.min(root.devicePixelRatio || 1, 2), cam = this.model.cam;
-      if (w === cam.w && h === cam.h && dpr === this.dpr && !first) return;
+      const narrow = root.matchMedia('(max-width: 760px)').matches, sheet = this.r.card.hidden || !narrow ? 0 : this.r.card.offsetHeight;
+      if (w === cam.w && h === cam.h && dpr === this.dpr && cam.inset.bottom === sheet && !first) return;
       const keep = cam.toWorld(0, 0), had = this.sized;
       this.dpr = dpr; this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr);
       this.model.setSize(w, h);
       if (had) cam.lock(keep[0], keep[1], 0, 0, cam.k);
       this.sized = true;
-      const narrow = root.matchMedia('(max-width: 760px)').matches, sheet = this.r.card.hidden || !narrow ? 0 : this.r.card.offsetHeight;
+      const priorSheet = cam.inset.bottom;
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
+      if (priorSheet !== sheet && this.model.selected) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
       const legend = this.r.hud.getBoundingClientRect(), stage = box.getBoundingClientRect();
       this.hud = { x0: legend.left - stage.left - 8, y0: legend.top - stage.top - 8, x1: legend.right - stage.left + 8, y1: legend.bottom - stage.top + 8 };
       if (this.model.needsLoad() && this.shown && !this.comparing) this.model.schedule();
@@ -139,33 +141,26 @@
       const sel = m.selected, edges = m.edges && sel && m.edges.id === sel.id ? m.edges : null;
       const dim = edges && edges.state === 'ready' ? 0.5 : 1;
 
-      // Bubbles: groups of people that do not fit as individuals at this zoom.
-      const maxC = m.scene.maxCluster, hovered = this.hover;
-      ctx.lineWidth = 1;
-      const bubbles = [];
-      for (const it of m.scene.clusters) {
-        const x = sx(it.x), y = sy(it.y);
-        const r = 9 + 30 * Math.sqrt(it.d.count / maxC);
-        if (x < -r || y < -r || x > W + r || y > H + r) continue;
-        bubbles.push({ it, x, y, r });
-        ctx.globalAlpha = it.a * (edges ? 0.6 : 1);
-        ctx.fillStyle = P.bg2; ctx.strokeStyle = hovered && hovered.it === it ? P.fg3 : P.line3;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
-        if (r >= 14) {
-          ctx.globalAlpha = it.a; ctx.fillStyle = P.fg2; ctx.font = font(500, 11); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText(compact(it.d.count), x, y + 0.5);
-          lab.block([x - r, y - r, x + r, y + r]);
-        }
+      const hovered = this.hover;
+      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud);
+      const bubbles = plan.groups;
+      for (const b of bubbles) {
+        const { x, y, r, it } = b, on = hovered && hovered.it.d.id === it.d.id;
+        ctx.globalAlpha = edges ? .65 : 1;
+        ctx.fillStyle = on ? P.bg2 : P.bg1; ctx.strokeStyle = on ? P.fg3 : P.line3; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(x - 19, y - 13, 38, 26, 7); ctx.fill(); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.fillStyle = P.fg2; ctx.font = font(600, 11); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(compact(it.d.count), x, y + .5);
+        lab.block([x - 22, y - 16, x + 22, y + 16]);
       }
       ctx.globalAlpha = 1; ctx.textAlign = 'left';
-
       // Lines for the selected person, under the dots.
       if (edges && edges.state === 'ready') this.paintEdges(ctx, P, edges, sx, sy, now, sel);
 
       // People. Opaque ones are batched by tone; fading ones draw one by one.
       const k = cam.k, mode = m.mode, batches = new Map(), rings = [], fading = [];
-      for (const it of m.scene.nodes) {
-        const d = it.d, x = sx(it.x), y = sy(it.y);
+      for (const mark of plan.nodes) {
+        const { it, x, y } = mark, d = it.d;
         if (x < -14 || y < -14 || x > W + 14 || y > H + 14) continue;
         const r = radiusFor(d, k), tone = toneFor(mode, d);
         if (it.a < 0.98) { fading.push([x, y, r, tone, it.a]); if (hasRing(d)) rings.push([x, y, r, it.a]); continue; }
@@ -211,23 +206,25 @@
       }
 
       // Labels. Bubbles first (which community is this), then the best-ranked people.
-      let nb = 0;
+      let nb = 0; const labelledGroups = new Set();
       for (const b of bubbles) {
-        if (b.r < 17 || b.it.a < 0.6 || !b.it.d.label) continue;
-        want.push({ key: 'c:' + b.it.d.id, text: b.it.d.label, x: b.x, y: b.y, r: b.r, w: 500, prefer: 'bottom' });
-        if (++nb >= 12) break;
+        if (!b.it.d.label || labelledGroups.has(b.it.d.label)) continue;
+        labelledGroups.add(b.it.d.label);
+        want.push({ key: 'c:' + b.it.d.id, text: b.it.d.label.replace(/^(Around |Audience of )/, ''), x: b.x, y: b.y, r: b.r, w: 500, prefer: 'bottom' });
+        if (++nb >= 14) break;
       }
-      const maxPeople = clamp(Math.round(W * H / 30000 * (k < 4 ? 0.7 : 1.4)), 6, 64);
+      const maxPeople = clamp(Math.round(W * H / 55000 * Math.min(k, 2)), 3, 22);
       let np = 0;
-      for (let i = m.scene.nodes.length - 1; i >= 0 && np < maxPeople; i--) {
-        const it = m.scene.nodes[i], d = it.d;
-        if (it.a < 0.9 || (sel && d.id === sel.id)) continue;
+      for (let i = 0; i < plan.nodes.length && np < maxPeople; i++) {
+        const it = plan.nodes[i].it, d = it.d;
+        if (it.a < 0.9 || (me && d.id === me.id) || (sel && d.id === sel.id)) continue;
         const x = sx(it.x), y = sy(it.y);
         if (x < 8 || y < 8 || x > W - 8 || y > H - 8) continue;
         want.push({ key: 'n:' + d.id, text: d.name || '@' + d.handle, x, y, r: radiusFor(d, k) + 1, w: 500, dimmed: !!edges });
         np++;
       }
       this.paintLabels(ctx, P, lab, want, dt);
+      this.renderCount(false);
       return this.labelsBusy;
     }
     paintGuides(ctx, P, m, cam, S, sx, sy, want) {
@@ -246,11 +243,6 @@
           const ty = y - r, gy = clamp(ty, 22, H - 22);
           if (ty > 0 && ty < H && x > 30 && x < W - 30) want.push({ key: 'g:' + g.label, text: g.label, x, y: ty, r: 0, w: 500, guide: true, prefer: 'top' });
           else if (ty <= 0 && x > -1) { /* off-screen: no label */ }
-        } else if (g.type === 'island') {
-          const x = sx(g.x), y = sy(g.y), r = g.r * S;
-          if (r < 5 || x + r < 0 || x - r > W || y + r < 0 || y - r > H) continue;
-          ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
-          if (r > 14) want.push({ key: 'g:' + g.label, text: g.label, x, y: y - r, r: 0, w: 500, guide: true, prefer: 'top', prio: g.weight || 0 });
         } else if (g.type === 'lane') {
           const x = sx(g.x), y = sy(g.y);
           if (x > -40 && x < W + 40) want.push({ key: 'g:' + g.label, text: g.label, x, y: Math.max(y, 12), r: 0, w: 600, guide: true, prefer: 'bottom', noPill: true });
@@ -306,7 +298,8 @@
       }
       let busy = false;
       for (const [key, e] of this.labelA) {
-        const target = seen.has(key) ? 1 : 0;
+        if (!seen.has(key)) { this.labelA.delete(key); continue; }
+        const target = 1;
         if (e.a !== target) { e.a += (target - e.a) * fade; if (Math.abs(target - e.a) < 0.02) e.a = target; else busy = true; }
         if (e.a === 0 && target === 0) { this.labelA.delete(key); continue; }
         ctx.globalAlpha = e.a * (e.dimmed ? 0.6 : 1); ctx.font = e.f;
@@ -318,23 +311,10 @@
 
     /* ---------- picking ---------- */
     pick(px, py) {
-      const m = this.model, cam = m.cam, S = cam.scale, mx = cam.mid[0], my = cam.mid[1], k = cam.k;
-      let best = null, bd = Infinity;
+      const plan = this.displayMarks; if (!plan) return null;
       const reach = this.touch ? 16 : 9;
-      for (let i = m.scene.nodes.length - 1; i >= 0; i--) {
-        const it = m.scene.nodes[i]; if (it.a < 0.4) continue;
-        const x = (it.x - cam.cx) * S + mx, y = (it.y - cam.cy) * S + my, dx = x - px, dy = y - py;
-        if (dx > reach + 8 || dx < -reach - 8 || dy > reach + 8 || dy < -reach - 8) continue;
-        const r = radiusFor(it.d, k), d = Math.hypot(dx, dy), lim = Math.max(r + 3, reach);
-        if (d <= lim && d - r < bd) { bd = d - r; best = { kind: 'n', it, x, y, r }; }
-      }
-      if (best) return best;
-      const maxC = m.scene.maxCluster;
-      for (const it of m.scene.clusters) {
-        if (it.a < 0.4) continue;
-        const x = (it.x - cam.cx) * S + mx, y = (it.y - cam.cy) * S + my, r = 9 + 30 * Math.sqrt(it.d.count / maxC);
-        if (Math.hypot(x - px, y - py) <= r) return { kind: 'c', it, x, y, r };
-      }
+      for (const mark of plan.groups) if (Math.abs(mark.x - px) <= 22 && Math.abs(mark.y - py) <= 17) return mark;
+      for (const mark of plan.nodes) if (Math.hypot(mark.x - px, mark.y - py) <= Math.max(mark.r + 3, reach)) return mark;
       return null;
     }
 
@@ -434,7 +414,7 @@
         if (e.target.closest('[data-act="clear"]')) m.setFilters({ scope: 'all', minFit: '', status: '' });
       });
       this.r.stale.addEventListener('click', () => m.retry());
-      if (root.ResizeObserver) new ResizeObserver(() => this.measure(false)).observe(this.r.canvasBox);
+      if (root.ResizeObserver) { const observer = new ResizeObserver(() => this.measure(false)); observer.observe(this.r.canvasBox); observer.observe(this.r.card); }
       root.addEventListener('online', () => { if (this.shown && (m.phase === 'offline' || m.phase === 'error' || m.stale)) m.retry(); });
       new MutationObserver(() => { this.readPalette(); this.renderLegend(); this.invalidate(); }).observe(doc.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
       if (root.matchMedia) root.matchMedia('(prefers-reduced-motion: reduce)').addEventListener?.('change', (e) => { m.reduced = e.matches; });
@@ -453,7 +433,7 @@
     }
     hoverAt(x, y, e) {
       const hit = this.pick(x, y), prev = this.hover;
-      const same = hit && prev && hit.it === prev.it;
+      const same = hit && prev && hit.it.d.id === prev.it.d.id;
       this.hover = hit;
       this.canvas.style.cursor = hit ? 'pointer' : '';
       if (!hit) { this.hideTip(); if (prev) this.invalidate(); return; }
@@ -466,7 +446,7 @@
       const tip = this.r.tip, d = hit.it.d;
       tip.replaceChildren();
       if (hit.kind === 'c') {
-        tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? `Mostly ${d.label}. ` : '') + 'Click to zoom in.' }));
+        tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? d.label.replace(/^(Around |Audience of )/, '') + '. ' : '') + 'Click to explore this group.' }));
       } else {
         tip.append(h('b', { text: d.name || '@' + d.handle }), h('span', { text: '@' + d.handle }),
           h('span', { text: `${FIT_LABEL[d.fit] || ''} fit${d.status ? ' · ' + SLABEL(d.status) : ''}` }));
@@ -475,6 +455,7 @@
     }
     hideTip() { this.r.tip.hidden = true; }
     activate(hit) {
+      this.hover = null; this.hideTip();
       const m = this.model;
       if (!hit) { m.deselect(); return; }
       if (hit.kind === 'c') { const [wx, wy] = [hit.it.x, hit.it.y]; m.flyTo({ cx: wx, cy: wy, k: clamp(m.cam.k * 3.4, 1, Core.K_MAX) }, 700); m.load({ cam: { cx: wx, cy: wy, k: clamp(m.cam.k * 3.4, 1, Core.K_MAX) } }); return; }
@@ -564,12 +545,14 @@
       };
       box.replaceChildren(...rows.map((row) => h('li', {}, glyph(row.g), h('span', { class: 'l-long', text: row.t }), h('span', { class: 'l-short', text: row.s || row.t }))));
     }
-    renderCount() {
+    renderCount(announce = true) {
       const m = this.model, el = this.r.count;
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
-      el.textContent = `${int(m.shown)} ${m.shown === 1 ? 'person' : 'people'} shown of ${int(m.total)}`;
+      const visible = this.displayMarks;
+      el.textContent = visible ? `${int(visible.nodes.length)} people · ${int(visible.groups.length)} groups · ${int(m.total)} total` : `${int(m.total)} people`;
       el.title = m.hidden ? `${int(m.hidden)} more in this view are grouped into bubbles. Zoom in to see them.` : 'Everyone in this view is shown.';
+      if (!announce) return;
       clearTimeout(this.annT); this.annT = setTimeout(() => this.announce(el.textContent + '.'), 900);
     }
     announce(t) { this.r.live.textContent = ''; setTimeout(() => { this.r.live.textContent = t; }, 30); }
@@ -590,7 +573,7 @@
       const copy = {
         unprepared: ['Map layout is not prepared yet', 'Your leads are available in the list. Prepare the map locally to explore connections here.'],
         building: ['Preparing the map', 'Your leads are available while the layout is being prepared.'],
-        loading: ['Loading the map', 'Placing people by how close they are to you.'],
+        loading: ['Loading the map', 'Grouping people by recorded audiences.'],
         offline: ['You’re offline', 'The map returns when the connection does.'],
         error: ['Couldn’t load the map', 'Check your connection, then try again.'],
         empty: [m.fallback ? 'No one in this sample matches' : 'No one matches these filters', m.filtersActive ? 'Try clearing a filter.' : 'Nobody is on the map yet. Collect a follower list to fill it.']
@@ -615,7 +598,7 @@
       const why = n.reason || whyLine(n, seedLabel);
       card.hidden = false;
       const facts = [['Fit', FIT_LABEL[n.fit] || 'Unknown'], ['Status', n.status ? SLABEL(n.status) : 'No status']];
-      if (typeof n.closeness === 'number') facts.push(['Closeness', Core.closenessWords(n.closeness).replace(' to you', '').replace(/^./, (c) => c.toUpperCase())]);
+      if (typeof n.closeness === 'number') facts.push(['Network evidence', Core.closenessWords(n.closeness).replace(' to you', '').replace(/^./, (c) => c.toUpperCase())]);
       if (n.follows_me) facts.push(['Follows you', 'Yes']);
       card.replaceChildren(
         h('div', { class: 'mv-c-head' },

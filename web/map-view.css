@@ -64,8 +64,8 @@
 @keyframes mv-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* ---------- Key and count ---------- */
-.mv-hud { position: absolute; left: var(--s3); bottom: var(--s3); z-index: 2; display: grid; gap: 6px; width: 252px; max-width: calc(100% - 72px); pointer-events: none; }
-.mv-legend { display: grid; gap: 7px; margin: 0; padding: 10px 12px; list-style: none; background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
+.mv-hud { position: absolute; left: var(--s3); bottom: var(--s3); z-index: 2; display: grid; gap: 6px; width: 232px; max-width: calc(100% - 72px); pointer-events: none; }
+.mv-legend { display: grid; gap: 8px; margin: 0; padding: 10px 12px; list-style: none; background: var(--bg1); border: 1px solid var(--line); border-radius: var(--r); }
 .mv-legend li { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--fs-xs); line-height: 1.4; color: var(--fg2); }
 .mv-legend svg { flex: none; margin-top: 1px; fill: none; stroke: none; }
 .mv-legend .l-short { display: none; }
@@ -148,3 +148,7 @@
   .mv-progress::after { width: 100%; opacity: .35; }
   .mv-skel i { opacity: .7; }
 }
+
+/* Counts and zoom hints stay secondary to the audience markers. */
+.mv-shown { line-height: 1.5; font-variant-numeric: tabular-nums; }
+.mv-hud { gap: 8px; }
