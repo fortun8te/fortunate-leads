@@ -299,8 +299,15 @@ def stop_benchmark(conn, body):
         if request and (not expired(request.get('until')) or request.get('lane') != cfg.get('lane_id') or
                         request.get('token') != inflight.get('token')):
             raise ValueError('A current or unrelated Instagram request remains. Collection stays stopped.')
-        if attention and (not isinstance(attention, dict) or attention.get('lane') != cfg.get('lane_id')):
-            raise ValueError('Another account needs attention. Review that account separately.')
+        if attention:
+            try:
+                attention_at = utc(attention.get('at')) if isinstance(attention, dict) else None
+            except (TypeError, ValueError, AttributeError):
+                attention_at = None
+            if (not isinstance(attention, dict) or attention.get('lane') != cfg.get('lane_id') or
+                    attention.get('message') != 'Benchmark request did not confirm completion.' or
+                    not attention_at or not inflight or attention_at.timestamp() < inflight['at']):
+                raise ValueError('An unrelated safety warning needs review. Collection stays stopped.')
         review = {'at': iso(now), 'lane': cfg.get('lane_id'), 'outcome': 'abandoned_unconfirmed',
                   'checked_account_tab': True, 'request': request or None, 'inflight': inflight or None,
                   'attention': attention}

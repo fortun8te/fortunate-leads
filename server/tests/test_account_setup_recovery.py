@@ -18,7 +18,7 @@ class SetupRecoveryTest(Base):
                                 'token': 'expired-token', 'kind': 'list'}, 'queue': [], 'next_at': now - 90}
         db.set_setting(self.conn, 'raw_edge_benchmark', self.cfg)
         db.set_setting(self.conn, 'instagram_request_gate', self.gate)
-        db.set_setting(self.conn, 'instagram_request_attention', {'lane': 'old-lane', 'message': 'Unconfirmed benchmark'})
+        db.set_setting(self.conn, 'instagram_request_attention', {'lane': 'old-lane', 'at': datetime.now(timezone.utc).isoformat(), 'message': 'Benchmark request did not confirm completion.'})
         self.conn.commit()
 
     def test_setup_reports_main_connection_separately_from_benchmark_and_pause(self):
@@ -68,13 +68,30 @@ class SetupRecoveryTest(Base):
         self.assertEqual(self.call('/api/control', {'stage':'collection','action':'resume'})[0],400)
         self.assertFalse(db.get_setting(self.conn,'qualify'))
 
+    def test_review_then_resume_hands_out_the_existing_saved_cursor(self):
+        self.call('/api/scraper/seeds', {'handles': ['brand'], 'directions': ['following']})
+        self.conn.execute("UPDATE lists SET cursor='resume-cursor',received=42")
+        self.conn.commit()
+        job_id = self.conn.execute("SELECT id FROM jobs WHERE kind='list'").fetchone()[0]
+        self.seed_benchmark()
+        endpoint = '/api/ext/next?lane=alternate&ig_id=99&handle=alternate&kinds=list'
+        blocked = self.call(endpoint)[1]
+        self.assertIsNone(blocked['job'])
+        self.assertEqual(blocked['reason'], 'benchmark_exclusive')
+        self.assertEqual(self.call('/api/control', {'action':'stop_benchmark','checked_account_tab':True})[0],200)
+        self.assertEqual(self.call('/api/control', {'stage':'collection','action':'resume'})[0],200)
+        job = self.call(endpoint)[1]['job']
+        self.assertEqual((job['id'],job['cursor'],job['received']),(job_id,'resume-cursor',42))
+
     def test_review_requires_expiry_explicit_check_and_matching_request(self):
-        cases = [('unchecked',False,False),('active',True,True),('unrelated',False,True),('invalid',False,True)]
+        cases = [('unchecked',False,False),('active',True,True),('unrelated',False,True),('invalid',False,True),('same_lane_warning',False,True)]
         for case, active, checked in cases:
             with self.subTest(case=case):
                 self.seed_benchmark(active)
                 if case=='unrelated':
                     self.gate['active']['token']='another-token'
+                if case=='same_lane_warning':
+                    db.set_setting(self.conn,'instagram_request_attention', {'lane':'old-lane','at':datetime.now(timezone.utc).isoformat(),'message':'Instagram security check waiting.'})
                 if case=='invalid':
                     self.gate['active']['until']='bad-time'
                 db.set_setting(self.conn,'instagram_request_gate',self.gate)
