@@ -24,7 +24,9 @@ Michael authorized applying these changes to the live service, reloading extensi
 
 ## Validation and next work
 
-The latest focused checks cover spatial count conservation, retained top-ranked profiles, saved follower counts, drag cancellation, background profile startup, and security-page recovery. Full-suite results and live rollout evidence accompany this session's delivery.
+The final backend suite passed 1,173 tests with two existing skips; all 482 frontend and extension checks passed. The collection simulation passed all 82 checks across eight simulated hours, including outages, worker restarts, login holds and cooldowns. Focused checks cover spatial count conservation, retained top-ranked profiles, saved follower counts, drag cancellation, background profile startup and security-page recovery.
+
+The update was applied to the live service and all three extensions reported version 3.9.28. Background startup was configured and invoked for all three verified profiles. The two healthy accounts resumed from saved progress. At delivery, @dihfluencer remained on Instagram's human-verification page and was correctly marked as needing attention. AI stayed off. Live browser review showed 260 bubbles and 259 loaded portraits for 114,726 represented people; these counts change as collection proceeds.
 
 The exact current photo overview still needs a physical ten-million-person run, broad rare-filter measurements and a long collection soak at that size. A completely cold Chrome launch after logout/reboot has not been physically tested; startup behavior is covered by tests and Chromium's documented startup path. Do not present those as completed checks.
 
