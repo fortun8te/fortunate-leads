@@ -140,14 +140,23 @@
       const dim = edges && edges.state === 'ready' ? 0.5 : 1;
 
       const hovered = this.hover;
-      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud);
+      const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.mode === 'closeness' ? m.world.me?.id : null);
       const bubbles = plan.groups;
+      const network = m.mode === 'closeness' && (m.world.guides || []).some(g => g.label === 'Direct connections');
+      const spheres = network && cam.k < 2.5;
+      const largestGroup = Math.max(1, ...bubbles.map(b => b.it.d.count));
       for (const b of bubbles) {
-        const { x, y, r, it } = b, on = hovered && hovered.it.d.id === it.d.id;
+        const { x, y, it } = b, on = hovered && hovered.it.d.id === it.d.id;
+        const guide = (m.world.guides || []).find(g => g.label === it.d.label);
         ctx.globalAlpha = edges ? .65 : 1;
         ctx.fillStyle = on ? P.bg2 : P.bg1; ctx.strokeStyle = on ? P.fg3 : P.line3; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.roundRect(x - 19, y - 13, 38, 26, 7); ctx.fill(); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.fillStyle = P.fg2; ctx.font = font(600, 11); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.beginPath();
+        if (spheres) {
+          b.r = Math.min((guide?.r || .12) * S, 28 + 52 * Math.sqrt(it.d.count / largestGroup));
+          ctx.arc(x, y, Math.max(20, b.r), 0, TAU);
+        } else ctx.roundRect(x - 19, y - 13, 38, 26, 7);
+        ctx.fill(); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.fillStyle = P.fg; ctx.font = font(600, spheres ? 15 : 11); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(compact(it.d.count), x, y + .5);
         lab.block([x - 22, y - 16, x + 22, y + 16]);
       }
@@ -182,9 +191,10 @@
       const me = m.world && m.world.me && mode === 'closeness' ? m.world.me : null;
       if (me) {
         const x = sx(me.x), y = sy(me.y);
+        if (network && cam.k < 2.5) { ctx.fillStyle = P.bg2; ctx.strokeStyle = P.fg3; ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(x, y, Math.max(22, Math.min(30, S * .035)), 0, TAU); ctx.fill(); ctx.stroke(); }
         ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, TAU); ctx.fill();
         ctx.strokeStyle = P.fg; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.stroke();
-        want.unshift({ key: 'me', text: 'You', x, y, r: 10, w: 600, prefer: 'bottom', strong: true });
+        want.unshift({ key: 'me', text: 'You · ' + (me.name || '@' + me.handle), x, y, r: network && cam.k < 2.5 ? 30 : 10, w: 600, prefer: 'bottom', strong: true });
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
@@ -208,18 +218,19 @@
       for (const b of bubbles) {
         if (!b.it.d.label || labelledGroups.has(b.it.d.label)) continue;
         labelledGroups.add(b.it.d.label);
-        want.push({ key: 'c:' + b.it.d.id, text: b.it.d.label.replace(/^(Around |Audience of )/, ''), x: b.x, y: b.y, r: b.r, w: 500, prefer: 'bottom' });
+        want.push({ key: 'c:' + b.it.d.id, text: b.it.d.label.replace(/^(Around |Audience of )/, ''), x: b.x, y: spheres ? b.y - b.r - 12 : b.y, r: spheres ? 0 : b.r, w: 600, prefer: spheres ? 'top' : 'bottom', prio: 100 });
         if (++nb >= 14) break;
       }
-      const maxPeople = clamp(Math.round(W * H / 55000 * Math.min(k, 2)), 3, 22);
-      let np = 0;
+      const maxPeople = clamp(Math.round(W * H / 55000 * Math.min(k, 2)), 3, 20);
+      let np = 0; const peoplePerGroup = new Map();
       for (let i = 0; i < plan.nodes.length && np < maxPeople; i++) {
         const it = plan.nodes[i].it, d = it.d;
         if (it.a < 0.9 || (me && d.id === me.id) || (sel && d.id === sel.id)) continue;
+        if (spheres && (peoplePerGroup.get(d.cluster) || 0) >= 3) continue;
         const x = sx(it.x), y = sy(it.y);
         if (x < 8 || y < 8 || x > W - 8 || y > H - 8) continue;
         want.push({ key: 'n:' + d.id, text: d.name || '@' + d.handle, x, y, r: radiusFor(d, k) + 1, w: 500, dimmed: !!edges });
-        np++;
+        np++; peoplePerGroup.set(d.cluster, (peoplePerGroup.get(d.cluster) || 0) + 1);
       }
       this.paintLabels(ctx, P, lab, want, dt);
       this.renderCount(false);
@@ -311,8 +322,8 @@
     pick(px, py) {
       const plan = this.displayMarks; if (!plan) return null;
       const reach = this.touch ? 16 : 9;
-      for (const mark of plan.groups) if (Math.abs(mark.x - px) <= 22 && Math.abs(mark.y - py) <= 17) return mark;
       for (const mark of plan.nodes) if (Math.hypot(mark.x - px, mark.y - py) <= Math.max(mark.r + 3, reach)) return mark;
+      for (const mark of plan.groups) if (Math.hypot(mark.x - px, mark.y - py) <= Math.max(22, mark.r)) return mark;
       return null;
     }
 
@@ -548,8 +559,8 @@
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
       const visible = this.displayMarks;
-      el.textContent = visible ? `${int(visible.nodes.length)} people · ${int(visible.groups.length)} groups · ${int(m.total)} total` : `${int(m.total)} people`;
-      el.title = m.hidden ? `${int(m.hidden)} more in this view are grouped into bubbles. Zoom in to see them.` : 'Everyone in this view is shown.';
+      el.textContent = visible ? `${int(visible.nodes.length)} people · ${int(visible.groups.length)} groups · ${int(m.total)} in view / ${int(m.worldTotal || m.total)} total` : `${int(m.total)} people`;
+      el.title = `${int(m.total)} matching people in this view. Counts group people who are not drawn individually. Click a group to explore, or Show everyone to return.`;
       if (!announce) return;
       clearTimeout(this.annT); this.annT = setTimeout(() => this.announce(el.textContent + '.'), 900);
     }

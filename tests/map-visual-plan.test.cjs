@@ -39,3 +39,14 @@ test('phone plan fits available screen and leaves the open details sheet clear',
   assert.ok(plan.nodes.every(n => n.x >= 8 && n.x <= 382 && n.y <= 392));
   assert.ok(plan.groups.every(n => n.x >= 20 && n.x <= 370 && n.y <= 380));
 });
+
+test('network overview always keeps owner visible and bounds exploration', () => {
+  const {cam, scene} = fixture();
+  const guides = [{id: 0, label: 'Direct connections', x: .35, y: .4}];
+  scene.nodes[0].d.rank = 0;
+  const plan = displayPlan(scene, cam, guides, null, null, 0);
+  assert.ok(plan.nodes.some(n => n.it.d.id === 0));
+  assert.ok(plan.nodes.length <= 20);
+  cam.set(.5, .5, 1000);
+  assert.equal(cam.k, 6);
+});

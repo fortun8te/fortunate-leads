@@ -39,7 +39,7 @@ SEED_CLUSTERS = 160                           # seeds: one cluster per source, b
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -223,20 +223,41 @@ def _owner_handle(conn):
                         "(lower(handle)='fortun8te') DESC,handle LIMIT 1),'fortun8te')").fetchone()[0]
 
 
-def audience_grid(count):
-    """Separated audience cells across a compact square, including overflow and owner groups."""
-    cols = math.ceil(math.sqrt(count))
-    rows = math.ceil(count / cols)
-    dx, dy = 0.82 / cols, 0.82 / rows
-    centres = []
-    for index in range(count):
-        row, col = divmod(index, cols)
-        row_count = min(cols, count - row * cols)
-        offset = (cols - row_count) / 2
-        centres.append([round(0.09 + (col + offset + 0.5) * dx, 6),
-                        round(0.09 + (row + 0.5) * dy, 6), round(0.38 * min(dx, dy), 6)])
-    centres.sort(key=lambda c: ((c[0] - 0.5)**2 + (c[1] - 0.5)**2, c[1], c[0]))
-    return centres
+NETWORK_LABELS = ('Direct connections', 'Known sources', 'Shared audiences', 'Other collected', 'You')
+# Sphere centre distance encodes a discrete recorded-evidence category.
+# Positions within a sphere spread its members for readability, not friendship strength.
+NETWORK_CENTRES = ((0.57, 0.378756, 0.068), (0.375, 0.716506, 0.095),
+                   (0.208558, 0.32473, 0.115), (0.839119, 0.586591, 0.115),
+                   (0.5, 0.5, 0.035))
+
+
+def network_group(F, ctx):
+    pid, deg, score, fit, code, me, seeds, src, fam, rel = F
+    if pid == ctx.owner_id:
+        return 4
+    if me or fam or rel or code in (3, 4, 5):
+        return 0
+    others = [s for s in seeds if s != ctx.owner]
+    if any(s in ctx.known_sources for s in others):
+        return 1
+    if len(others) >= 2:
+        return 2
+    return 3
+
+
+def known_source_handles(conn, handles):
+    known = []
+    for handle in handles:
+        row = conn.execute('SELECT m.status,oc.relationships FROM people p LEFT JOIN marks m ON m.person_id=p.id '
+                           'LEFT JOIN owner_context oc ON oc.person_id=p.id WHERE p.handle=?', (handle,)).fetchone()
+        if row:
+            try:
+                relationships = json.loads(row[1] or '[]')
+            except (ValueError, TypeError):
+                relationships = []
+            if row[0] == 'client' or relationships:
+                known.append(handle)
+    return known
 
 
 def make_plan(conn):
@@ -245,11 +266,10 @@ def make_plan(conn):
     rows = conn.execute('SELECT seed,degree FROM map_seed_degree ORDER BY degree DESC,seed').fetchall()
     sources = [(r[0].lower(), r[1]) for r in rows if r[0].lower() != owner]
     classes = source_classes(conn, [h for h, _ in sources])
-    total = conn.execute('SELECT count(*) FROM map_person_degree').fetchone()[0]
+    total = conn.execute('SELECT count(*) FROM people').fetchone()[0]
     comm = [h for h, _ in sources[:COMMUNITIES]]
     seed_list = sources[:SEED_CLUSTERS]
-    # Audience groups fill the viewport; distance from Michael has no spatial meaning.
-    audience_centres = audience_grid(len(comm) + 2)
+    known_sources = known_source_handles(conn, [h for h, _ in sources])
     # seeds mode: a sunflower of source centres, biggest in the middle
     biggest = max([n for _, n in seed_list] or [1])
     centres = []
@@ -269,7 +289,7 @@ def make_plan(conn):
     owner_id = row[0] if row else 0
     plan = {'id': hashlib.sha1(f'{time.time()}-{os.getpid()}'.encode()).hexdigest()[:10],
             'made_at': db.now(), 'owner': owner, 'owner_id': owner_id, 'people': total, 'src': src,
-            'comm': comm, 'audience_centres': audience_centres,
+            'comm': comm, 'network_centres': NETWORK_CENTRES, 'known_sources': known_sources,
             'seed_list': [h for h, _ in seed_list], 'centres': centres, 'source_ids': source_ids}
     return plan
 
@@ -284,6 +304,8 @@ class Ctx:
         self.src = {h: (v[1], v[2], v[3]) for h, v in plan['src'].items()}
         self.k_other = len(plan['comm'])
         self.k_me = self.k_other + 1
+        self.network_centres = plan.get('network_centres')
+        self.known_sources = set(plan.get('known_sources', []))
         self.audience_centres = plan.get('audience_centres')
         # Keep an older active layout consistent until an explicit rebuild replaces it.
         self.wedges = (plan['wedges'] + [plan['wedge_other'], plan['wedge_me']]) if 'wedges' in plan else []
@@ -294,6 +316,9 @@ class Ctx:
         """Label anchors for the renderer: [{id,label,x,y,r}]."""
         out = []
         if mode == 'closeness':
+            if self.network_centres:
+                return [{'id': k, 'label': NETWORK_LABELS[k], 'x': p[0], 'y': p[1], 'r': p[2]}
+                        for k, p in enumerate(self.network_centres)]
             for k in range(self.k_me + 1):
                 label = ('Audience of @' + self.plan['comm'][k] if k < self.k_other else
                          'Other audiences' if k == self.k_other else 'Connected to you')
@@ -356,10 +381,12 @@ def load_features(conn, ctx, ids=None, lo=None, hi=None):
                                               f'WHERE p.id IN ({",".join("?" * len(ids))})', args)}
     else:
         sources = {i for i in ctx.plan['source_ids'] if lo <= i < hi}
-    present = set(degree) | sources
-    if present:
-        slots = ','.join('?' * len(present))
-        present &= {r[0] for r in conn.execute(f'SELECT id FROM people WHERE id IN ({slots})', list(present))} if ids is not None else {r[0] for r in conn.execute('SELECT id FROM people WHERE id>=? AND id<?', (lo, hi))}
+    # Every saved person belongs in the map, even without collected edges.
+    if ids is not None:
+        slots = ','.join('?' * len(ids))
+        present = {r[0] for r in conn.execute(f'SELECT id FROM people WHERE id IN ({slots})', list(ids))}
+    else:
+        present = {r[0] for r in conn.execute('SELECT id FROM people WHERE id>=? AND id<?', (lo, hi))}
     if not present:
         return {}
     seeds = {}
@@ -470,7 +497,16 @@ def layout_row(mode, F, ctx, c=None):
     others = [s for s in seeds if s != owner]
     u1, u2, u3 = uniforms(pid, MODES.index(mode))
     if mode == 'closeness':
-        if ctx.audience_centres:
+        if ctx.network_centres:
+            k = network_group(F, ctx)
+            cx, cy, radius = ctx.network_centres[k]
+            if pid == ctx.owner_id:
+                x, y = 0.5, 0.5
+            else:
+                r = radius * math.sqrt(u2) * 0.94
+                theta = TWO_PI * u1
+                x, y = cx + r * math.cos(theta), cy + r * math.sin(theta)
+        elif ctx.audience_centres:
             # Assign the smallest recorded source audience, with a stable tie break.
             # This is a display grouping, not a claim of personal familiarity.
             recorded = [s for s in others if s in ctx.src and ctx.src[s][1] >= 0]
@@ -661,8 +697,7 @@ def build_mode(db_path, mode, plan, chunk=100_000, progress=None):
     try:
         phase = meta_get(conn, 'phase')
         if phase == 'load':
-            hi_id = src.execute('SELECT coalesce(max(person_id),0) FROM map_person_degree').fetchone()[0]
-            hi_id = max([hi_id] + list(plan['source_ids']))
+            hi_id = src.execute('SELECT coalesce(max(id),0) FROM people').fetchone()[0]
             lo = meta_get(conn, 'cursor', 0)
             done = conn.execute('SELECT count(*) FROM mp').fetchone()[0]
             while lo <= hi_id:
@@ -929,7 +964,10 @@ def check_plan(db_path, main=None):
         owner = _owner_handle(main).lower()
         seeds = [r[0].lower() for r in main.execute('SELECT seed FROM map_seed_degree')]
         classes = source_classes(main, [s for s in seeds if s != owner])
-        changed = [h for h, c in classes.items() if h in plan['src'] and plan['src'][h][1] != c]
+        known = known_source_handles(main, classes)
+        membership_changed = set(known) ^ set(plan.get('known_sources', []))
+        changed = sorted({h for h, c in classes.items() if h in plan['src'] and plan['src'][h][1] != c} |
+                         {h for h in membership_changed if h in plan['src']})
         added = [h for h in classes if h not in plan['src']]
         requeued = 0
         for handle in changed:
@@ -945,6 +983,7 @@ def check_plan(db_path, main=None):
                         stored = meta_get(s, 'plan')
                         for handle in changed:
                             stored['src'][handle][1] = classes[handle]
+                        stored['known_sources'] = sorted(known)
                         meta_set(s, 'plan', stored)
                     finally:
                         s.close()

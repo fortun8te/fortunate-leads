@@ -19,14 +19,14 @@
   const easeInOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
 
   const MODES = [
-    { id: 'closeness', label: 'Audiences', short: 'Audiences' },
+    { id: 'closeness', label: 'Network', short: 'Network' },
     { id: 'fit', label: 'Fit', short: 'Fit' },
     { id: 'seeds', label: 'Sources', short: 'Sources' },
     { id: 'status', label: 'Status', short: 'Status' }
   ];
   const FIT_LABEL = { strong: 'Strong', good: 'Good', weak: 'Weak', unread: 'Not read yet' };
   const STATUS_LABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', spoke_before: 'Spoke before', client: 'Client', no: 'Not a fit' };
-  const K_MIN = 0.55, K_MAX = 2400;
+  const K_MIN = 0.55, K_MAX = 6;
 
   /* ---------- Camera ---------- */
   // The world is the unit square. At k = 1 the whole square fits the shorter side.
@@ -208,26 +208,26 @@
   // Plain-words key per mode. Each row has a glyph the view draws and a sentence.
   const LEGENDS = {
     closeness: [
-      { g: 'island', t: 'Groups share collected audiences.', s: 'Shared audiences' },
+      { g: 'centre', t: 'You are in the middle. Closer groups have stronger recorded evidence.', s: 'Closer: more evidence' },
       { g: 'accent', t: 'Blue dots are people in your pipeline.', s: 'Blue: pipeline' },
-      { g: 'bubble', t: 'Click a count to explore that group.', s: 'Click a count to explore' }
+      { g: 'bubble', t: 'Counts group people. Bigger dots have a stronger fit.', s: 'Count: people · dot size: fit' }
     ],
     fit: [
-      { g: 'axis', t: 'Further right is a stronger fit. Rows group seed audiences.', s: 'Right: stronger fit' },
+      { g: 'axis', t: 'Groups show strong, good, weak or unread fit.', s: 'Groups: fit' },
       { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is a strong fit.', s: 'Blue: strong fit' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
       { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
     ],
     seeds: [
-      { g: 'island', t: 'Each island groups people seen in the same seed lists.', s: 'Island: one seed' },
+      { g: 'island', t: 'Groups show the collected source audiences.', s: 'Groups: source audiences' },
       { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is someone in your pipeline.', s: 'Blue: pipeline' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
       { g: 'bubble', t: 'A count groups people nearby. Click to explore.', s: 'Click a count to explore' }
     ],
     status: [
-      { g: 'lanes', t: 'Columns are where people are in your pipeline.', s: 'Columns: pipeline' },
+      { g: 'lanes', t: 'Groups show where people are in your pipeline.', s: 'Groups: pipeline' },
       { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' },
       { g: 'accent', t: 'Blue is talking or a client.', s: 'Blue: talking, client' },
       { g: 'ring', t: 'Ring: follows you, or a client.', s: 'Ring: follows you' },
@@ -247,7 +247,7 @@
   }
 
   // Select what can be read at this scale. Screen collisions never alter world coordinates.
-  function displayPlan(scene, cam, guides = [], selected = null, blocked = null) {
+  function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null) {
     const inside = (x, y, pad = 20) => x >= pad && y >= pad && x <= cam.w - pad && y <= cam.h - cam.inset.bottom - pad;
     const occupied = [], summaries = new Map(), nodeMarks = [];
     const guideByLabel = new Map(guides.map(g => [g.label, g]));
@@ -265,9 +265,10 @@
       add(it.d.label || 'People nearby', it.d.count, it.x, it.y);
     }
     const overlaps = (x, y, r) => occupied.some(p => Math.hypot(x - p.x, y - p.y) < r + p.r + 7) || (blocked && x + r > blocked.x0 && x - r < blocked.x1 && y + r > blocked.y0 && y - r < blocked.y1);
-    const limit = Math.round(clamp(cam.w * cam.h / 18000 * Math.min(8, cam.k), 18, 420));
+    const network = guides.some(g => g.label === 'Direct connections');
+    const limit = Math.round(clamp(cam.w * cam.h / (network && overview ? 45000 : 18000) * Math.min(8, cam.k), network && overview ? 10 : 18, network && overview ? 20 : 420));
     const candidates = scene.nodes.filter(it => it.a >= .3 && it.ta !== 0).slice().sort((a, b) => {
-      const score = it => (selected && String(it.d.id) === String(selected.id) ? 1e6 : 0) + (it.d.source ? 10000 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) + (it.d.rank || 0);
+      const score = it => (((selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId)) ? 1e6 : 0) + (it.d.source ? 40 : 0) + (it.d.status && it.d.status !== 'no' ? 1000 : 0) + (hasRing(it.d) ? 100 : 0) + (it.d.rank || 0);
       return score(b) - score(a) || String(a.d.id).localeCompare(String(b.d.id));
     });
     // Summary anchors are reserved first so individual dots cannot cover their counts.
@@ -286,7 +287,7 @@
     for (const it of candidates) {
       const [x, y] = cam.toScreen(it.x, it.y), r = radiusFor(it.d, cam.k);
       if (!inside(x, y, 8)) continue;
-      const pinned = selected && String(it.d.id) === String(selected.id);
+      const pinned = (selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId);
       if (!pinned && (nodeMarks.length >= limit || overlaps(x, y, r))) {
         const guide = guideById.get(String(it.d.cluster));
         const label = guide?.label || 'People nearby';
