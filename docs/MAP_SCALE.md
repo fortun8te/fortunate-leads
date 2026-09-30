@@ -25,7 +25,7 @@ The original uncached 400-person stages took 268/116 ms at 100k, 2,869/1,356 ms 
 
 The broad 10,000-person overview remains bounded, but is heavier: one measured 5M cold request took 4.85 seconds and returned 6.77 MB compact JSON with 10,000 people and 19,901 links. A true all-edges canvas remains outside this endpoint's contract.
 
-The separate `/api/connections` pair comparison still loads full endpoint neighborhoods. On these same fixtures, comparing two high-degree source handles took 179 ms and 76 MB process RSS at 100k edges, 2.13 seconds and 458 MB at 1M, and 8.96 seconds and 1.61 GB at 5M. The 5M case found 83,333 candidates but returned only 20 and about 40 KB JSON. This is a remaining working-memory limit of `server/connection_graph.py`; the overview summaries cannot replace its historical, directed identity evidence without changing comparison semantics.
+Historical measurement before the pair-comparison optimization: `/api/connections` loaded full endpoint neighborhoods. On these same fixtures, comparing two high-degree source handles took 179 ms and 76 MB process RSS at 100k edges, 2.13 seconds and 458 MB at 1M, and 8.96 seconds and 1.61 GB at 5M. The 5M case found 83,333 candidates but returned only 20 and about 40 KB JSON. This was addressed by the later SQL-staged comparison in `connection_compare_performance.md`. Its separate measurements preserve historical directed evidence; the numbers above are not current comparison performance.
 
 ## Migration and write cost
 

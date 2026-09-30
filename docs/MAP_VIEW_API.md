@@ -16,7 +16,7 @@ The world is always `{"w":1,"h":1}`.
 | `mode` | `closeness` (default), `fit`, `seeds` or `status`. Anything else is a 400. |
 | `x0,y0,x1,y1` | Requested rectangle. Default `0,0,1,1`. Values outside `[0,1]` are clamped. `x0<x1` and `y0<y1` are required (400 otherwise). |
 | `budget` | Maximum individual people. Default 600, clamped to 50..1500. |
-| `scope` | `leads` or `all`. Default `leads` (`all` in `status` mode, so "not a fit" is visible). `leads` leaves out people marked "not a fit" and people whose fit is below 45. |
+| `scope` | `leads` or `all`. Default `leads` (`all` in `status` mode, so "not a fit" is visible). `leads` leaves out people marked "not a fit" and people with a known fit below 45. Unread people remain available until qualified. |
 | `min_fit` | 0..100. Only people with a qualification fit at or above it. Snapped **down** to 0, 25, 45, 60, 70 or 85; the value used comes back in `filters.min_fit`. Unread people have no fit and never pass. |
 | `status` | Comma list of `interested, contacted, talking, spoke_before, client, no, none`, or `all`. Absent means everything except `no` (in `status` mode: everything). |
 | `q` | Handle or name text. Restricts the population to matches (see Search limits). `total` counts matches, capped at 2,000 (`filters.q_capped`). |
@@ -166,3 +166,8 @@ review. Once the server starts with prepared layouts, its maintenance worker app
 Missing layouts report `ready:false, layout.building:false`; the UI should call this unprepared.
 The edge response also includes `nodes` for positioned endpoints and accepts `mode`.
 The view includes `world.me` only when the owner has an existing, positioned person record.
+
+Layouts are derived data. Database and workspace backups preserve the people and recorded evidence,
+but do not include the `<db>.map/` directory. After restoring a database, prepare new layouts with
+the commands above. The bounded overview remains usable before preparation. Do not copy layout
+files from a different database snapshot, because their person IDs and revision may differ.
