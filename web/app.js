@@ -2486,18 +2486,33 @@ function accountRow(a) {
 // Suggestions use saved evidence; discovery adds one target only when the queue is empty.
 const collectionSuggestions = {items:[], loadedAt:0, loading:false, busy:new Set(), added:new Set(), error:'', enabled:null, history:[]};
 function collectionSuggestionsHTML(items, busy = new Set()) {
-  return items.map(item => {
+  return items.slice(0,3).map(item => {
     const directions = (item.directions || []).filter(d => ['followers','following'].includes(d));
     if (!/^[a-z0-9._]{1,30}$/i.test(item.handle || '') || !directions.length) return '';
-    const what = directions.length === 2 ? 'Followers + following' : directions[0] === 'followers' ? 'Followers' : 'Following';
-    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><small>${esc(what)} · ${esc(item.reason || 'Matches your saved leads')}</small></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to scraping"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button><button class="btn ghost" data-discovery-hide="${esc(item.handle)}" aria-label="Skip @${esc(item.handle)}">Skip</button></div>`;
+    const what = directions.length === 2 ? 'Both lists' : directions[0] === 'followers' ? 'Followers' : 'Following';
+    const reason = item.reason || 'Matches your saved leads';
+    const labels = {'Marked as your client':'Client','You are already talking':'Talking','Marked as interested':'Interested','Personal connection recorded by you':'Recorded connection','Good fit recorded by you':'Saved fit','Strong saved business fit':'Strong fit','Good saved business fit':'Good fit'};
+    const why = labels[reason.split(' · ')[0]] || 'Saved match';
+    const followers = Number.isFinite(item.followers) ? ` · ${item.followers.toLocaleString('en-US',{notation:'compact',maximumFractionDigits:1})} followers` : '';
+    const sources = Number.isFinite(item.observed_sources) && item.observed_sources > 0 ? ` · ${item.observed_sources} source accounts` : '';
+    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><details class="suggestion-evidence"><summary>${esc(what)} · ${esc(why)}${esc(followers + sources)}</summary><p>${esc(reason)}</p></details></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to scraping"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button><button class="btn ghost" data-discovery-hide="${esc(item.handle)}" aria-label="Skip @${esc(item.handle)}"${busy.has(item.handle) ? ' disabled' : ''}>Skip</button></div>`;
   }).join('');
 }
 function renderCollectionSuggestions() {
   const box = $('#collection-suggestions');
   if (!box) return;
   const state = collectionSuggestions;
-  box.innerHTML = `<div class="collection-suggestion-heading"><div><h3>Suggested next</h3><p class="muted">${state.enabled ? 'Reads fresh following lists when your added lists have no ready work. Up to two discovery targets wait at once.' : 'Based on your labels, business fit and saved connections.'}</p></div><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}</button></div>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Looking through saved profiles…' : 'New suggestions appear as profiles are checked.'}</p>`}${state.history.filter(row => row.state === 'queued').slice(0,2).map(row => `<p class="muted discovery-recent">Added automatically · @${esc(row.handle)} · ${esc(row.reason)}</p>`).join('')}`;
+  const open = box.querySelector('.suggested-accounts')?.open || false;
+  const focused = box.contains(document.activeElement) ? document.activeElement : null;
+  const focusHandle = focused?.dataset.suggestedHandle || focused?.dataset.discoveryHide;
+  const focusAction = focused?.matches('.suggested-accounts > summary') ? 'disclosure' : focused?.hasAttribute('data-discovery-toggle') ? 'toggle' : focused?.dataset.suggestedHandle ? 'add' : focused?.dataset.discoveryHide ? 'skip' : null;
+  box.innerHTML = `<details class="suggested-accounts" ${open ? 'open' : ''}><summary>Suggested accounts <span class="muted">${state.enabled === null ? '' : `Auto-discover ${state.enabled ? 'on' : 'off'}`}</span></summary><div class="collection-suggestion-heading"><p class="muted">Suggested from saved connections</p><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : `Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}`}</button></div>${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Checking saved profiles…' : 'No suggestions yet.'}</p>`}</details>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}`;
+  if (focusAction) {
+    const selector = focusAction === 'disclosure' ? '.suggested-accounts > summary' : focusAction === 'toggle' ? '[data-discovery-toggle]' : focusAction === 'add' ? `[data-suggested-handle="${focusHandle}"]` : `[data-discovery-hide="${focusHandle}"]`;
+    const action = box.querySelector(selector);
+    if (action && !action.disabled) action.focus({preventScroll:true});
+    else box.querySelector('.suggested-accounts > summary')?.focus({preventScroll:true});
+  }
 }
 async function loadCollectionSuggestions(force = false) {
   const state = collectionSuggestions;

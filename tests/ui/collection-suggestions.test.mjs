@@ -8,7 +8,7 @@ const c=vm.createContext({$:()=>null,esc:x=>String(x).replaceAll('<','&lt;'),toa
 vm.runInContext(suggestionCode,c);
 test('suggestions describe directions, escape text, and omit invalid targets',()=>{
  const html=c.collectionSuggestionsHTML([{handle:'brand',directions:['followers'],reason:'<custom>'},{handle:'../bad',directions:['following']},{handle:'empty',directions:[]}]);
- assert.match(html,/@brand/);assert.match(html,/Followers · &lt;custom>/);assert.doesNotMatch(html,/\.\.\/bad|@empty|<custom>/);
+ assert.match(html,/@brand/);assert.match(html,/Followers · Saved match/);assert.match(html,/&lt;custom>/);assert.doesNotMatch(html,/\.\.\/bad|@empty|<custom>/);
 });
 test('read-only suggestions never queue; explicit Add preserves supplied directions and ignores repeat clicks',async()=>{
  let posts=0,release;
@@ -25,4 +25,42 @@ test('coverage only gives ETA for a progressing complete-known active queue',()=
  assert.match(ctx.collectionCoverageHTML(snapshot),/Active queue: 2 h left/);
  assert.match(ctx.collectionCoverageHTML({...snapshot,coverage:{lists:{...snapshot.coverage.lists,partial_lists:73,unknown_targets:1}},lists:[...snapshot.lists,{state:'partial',expected:null}]}),/Active queue: 2 h left/);
  for(const override of [{paused:true},{progress:{lists:{left:50,eta_h:2,per_minute:0}}},{lists:[{state:'running',expected:null}]}])assert.doesNotMatch(ctx.collectionCoverageHTML({...snapshot,...override}),/Active queue:/);
+});
+
+
+test('suggested accounts starts closed, keeps errors visible, and preserves disclosure state',()=>{
+ const box={innerHTML:'',querySelector:()=>null,contains:()=>false};
+ const ctx=vm.createContext({$:()=>box,document:{activeElement:null},esc:String,Date,toast(){},loadScraper(){}});
+ vm.runInContext(suggestionCode,ctx);
+ vm.runInContext("collectionSuggestions.enabled=true;collectionSuggestions.items=[{handle:'a',directions:['following'],reason:'Marked as your client'}];collectionSuggestions.history=[{handle:'old',state:'queued',reason:'Verbose old reason'}];renderCollectionSuggestions()",ctx);
+ assert.match(box.innerHTML,/<details class="suggested-accounts" >/);
+ assert.match(box.innerHTML,/Suggested accounts/);
+ assert.match(box.innerHTML,/Auto-discover on/);
+ assert.doesNotMatch(box.innerHTML,/Verbose old reason|Added automatically|Suggested next/);
+ box.querySelector=selector=>selector==='.suggested-accounts'?{open:true}:null;
+ vm.runInContext("collectionSuggestions.error='Could not save discovery settings. Try again.';collectionSuggestions.saving=true;renderCollectionSuggestions()",ctx);
+ assert.match(box.innerHTML,/<details class="suggested-accounts" open>/);
+ assert.match(box.innerHTML,/disabled>Saving…/);
+ assert.match(box.innerHTML,/<\/details><p class="muted" role="status">Could not save/);
+});
+
+test('compact reasons keep factual scope and full evidence available without a log',()=>{
+ const items=[{handle:'client',directions:['followers','following'],reason:'Marked as your client · 20,955 followers on saved profile',followers:20955,observed_sources:5},{handle:'known',directions:['following'],reason:'Personal connection recorded by you'},{handle:'fit',directions:['following'],reason:'Strong saved business fit'},{handle:'fourth',directions:['following'],reason:'Good saved business fit'}];
+ const html=c.collectionSuggestionsHTML(items,new Set(['client']));
+ assert.match(html,/Both lists · Client · 21K followers · 5 source accounts/);
+ assert.match(html,/Following · Recorded connection/);
+ assert.match(html,/Following · Strong fit/);
+ assert.match(html,/Marked as your client · 20,955 followers on saved profile/);
+ assert.match(html,/disabled>Adding…/);
+ assert.match(html,/data-discovery-hide="client"[^>]* disabled/);
+ assert.doesNotMatch(html,/@fourth/);
+});
+
+test('failed Add keeps the suggested account available and reports the failure',async()=>{
+ const ctx=vm.createContext({$:()=>null,esc:String,Date,toast(){},loadScraper(){},api:{post:async()=>{throw Error('offline')}}});
+ vm.runInContext(suggestionCode,ctx);
+ vm.runInContext("collectionSuggestions.items=[{handle:'brand',directions:['following']}];",ctx);
+ await ctx.addSuggestedTarget('brand');
+ const state=vm.runInContext('({items:collectionSuggestions.items,error:collectionSuggestions.error,busy:collectionSuggestions.busy.size})',ctx);
+ assert.equal(state.items[0].handle,'brand');assert.equal(state.busy,0);assert.equal(state.error,"Couldn't add @brand. Try again.");
 });

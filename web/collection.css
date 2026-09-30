@@ -23,21 +23,21 @@
  .collection-targets #seed-panel .row-flex { flex-wrap:wrap; }
 }
 #view-accounts .ph-t p { max-width:520px; }
-#collection-suggestions { margin:16px 0 20px; padding:0 2px; }
-.collection-suggestion-heading { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
-.collection-suggestion-heading h3 { font-size:13px; margin:0; }
-.collection-suggestion-heading span,#collection-suggestions p { font-size:12px; }
-.collection-suggestions-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 20px; }
-.collection-suggestion { display:flex; align-items:center; gap:12px; padding:8px 0; min-width:0; }
+#collection-suggestions { margin:12px 0; padding:0 2px; }
+.suggested-accounts > summary { display:list-item; padding:8px 0; cursor:pointer; font-size:13px; color:var(--fg2); }
+.suggested-accounts > summary > span { margin-left:10px; font-size:11px; }
+.collection-suggestion-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+.collection-suggestion-heading p { margin:0; }
+#collection-suggestions p { font-size:12px; }
+.collection-suggestions-grid { display:grid; grid-template-columns:1fr; }
+.collection-suggestion { display:flex; align-items:center; gap:10px; padding:8px 0; min-width:0; border-top:1px solid var(--line); }
 .collection-suggestion > div { min-width:0; flex:1; }
-.collection-suggestion b,.collection-suggestion small { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.collection-suggestion b { font-weight:500; }
-.collection-suggestion small { color:var(--fg3); font-size:11px; margin-top:3px; }
+.collection-suggestion b { display:block; font-weight:500; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.suggestion-evidence { color:var(--fg3); font-size:11px; margin-top:3px; }
+.suggestion-evidence > summary { cursor:pointer; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.suggestion-evidence p { margin:6px 0 0; line-height:1.5; }
 .collection-suggestion .btn { flex-shrink:0; }
-@media(max-width:600px) {
- .collection-suggestions-grid { grid-template-columns:1fr; }
- .collection-suggestion-heading { gap:6px; flex-wrap:wrap; }
-}
+.suggested-accounts summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
 @media(max-width:600px) {
  .collection-targets #lists-f { display:flex; flex-wrap:wrap; max-width:100%; gap:2px; }
  .collection-targets #lists-f button { flex:0 0 auto; }
