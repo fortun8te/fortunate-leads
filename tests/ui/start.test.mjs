@@ -62,3 +62,36 @@ test('mock backend answers the onboarding and start routes with the real shape',
   assert.equal(started.queued, 2);
   assert.equal(started.started, true);
 });
+
+function liveStart() {
+  const listeners = {}, messages = [];
+  const body = { innerHTML: '' }, input = { value: '@glowbrand.co' }, error = { textContent: '', hidden: true };
+  const root = { classList: { contains: () => true }, querySelector: selector => ({ '#st-body': body, '#st-in': input, '#st-err': error, '#st-form': {} })[selector],
+    addEventListener: (name, handler) => { listeners[name] = handler; } };
+  const nodes = { 'view-start': root, 'tab-start': {}, 'n-start': {} };
+  const data = { ready: false, open: 1, blocking: 1, steps: [], flow: { state: 'idle', people: 0, bios: 0, ranked: 0, lists: [], headline: 'Ready' } };
+  const document = { hidden: false, activeElement: null, getElementById: id => nodes[id], querySelector: () => ({}), addEventListener() {} };
+  const window = { parseHandles: () => ['glowbrand.co'], toast: msg => messages.push(msg), addEventListener() {}, dispatchEvent() {} };
+  const context = vm.createContext({ window, document, location: { hash: '#/start' }, parseHandles: window.parseHandles, toast: window.toast,
+    setTimeout() {}, clearTimeout() {}, Event,
+    fetch: async (_url, options) => options?.method === 'POST' ? { ok: false, json: async () => ({ error: 'lease_429_internal' }) } : { ok: true, json: async () => data } });
+  vm.runInContext(read('start.js'), context);
+  return { window, listeners, messages, body, input, error };
+}
+
+test('failed start keeps the entered handle and gives actionable feedback without raw diagnostics', async () => {
+  const h = liveStart();
+  await h.window.Start.refresh();
+  await h.listeners.submit({ target: { id: 'st-form' }, preventDefault() {} });
+  assert.match(h.body.innerHTML, /id="st-in" value="@glowbrand.co"/);
+  assert.equal(h.error.textContent, "Couldn't start collection. Try again.");
+  assert.equal(h.error.hidden, false);
+  assert.doesNotMatch(h.error.textContent, /lease|429/);
+});
+
+test('an optional setup save failure is reported instead of silently disappearing', async () => {
+  const h = liveStart();
+  await h.window.Start.refresh();
+  await h.listeners.click({ target: { closest: selector => selector === '[data-st-skip]' ? { dataset: { stSkip: 'ai' } } : null } });
+  assert.deepEqual(h.messages, ["Couldn't save setup. Try again."]);
+});

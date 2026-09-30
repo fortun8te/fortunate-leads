@@ -16,8 +16,8 @@ test('expanded connections retain direction and the date of each current observa
     { seed: 'fortun8te', direction: 'following', observed_at: '2026-09-16T12:00:00Z' },
     { seed: 'fortun8te', direction: 'followers', observed_at: '2026-09-25T12:00:00Z' },
   ], []);
-  assert.match(html, /@fortun8te followed them · <time datetime="2026-09-16">Seen 2026-09-16<\/time>/);
-  assert.match(html, /They followed @fortun8te · <time datetime="2026-09-25">Seen 2026-09-25<\/time>/);
+  assert.match(html, /@fortun8te followed them\. <time datetime="2026-09-16">Seen Sep 16<\/time>/);
+  assert.match(html, /They followed @fortun8te\. <time datetime="2026-09-25">Seen Sep 25<\/time>/);
 });
 
 test('earlier evidence remains inspectable with absence and unverified dates', () => {
@@ -27,9 +27,9 @@ test('earlier evidence remains inspectable with absence and unverified dates', (
   ]);
   assert.match(html, /No recent list evidence/);
   assert.match(html, /Earlier observations/);
-  assert.match(html, /Not found when checked 2026-09-27/);
-  assert.match(html, /First seen 2026-09-20/);
-  assert.match(html, /Previously seen 2026-09-18/);
+  assert.match(html, /Not found when checked Sep 27/);
+  assert.match(html, /First seen Sep 20/);
+  assert.match(html, /Previously seen Sep 18/);
   assert.match(html, /not reverified/);
 });
 

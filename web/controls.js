@@ -4,7 +4,8 @@
   window.__flControls = true;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const POLL_MS = 5000, DEADLINE_MS = 9000;
-  const names = {k2:'K2', laya:'Laya'};
+  // The strip speaks in plain words. Model names stay in Settings.
+  const names = {k2:'Bio checks', laya:'Ranking hints'};
   let control = null, engines = null, local = null, controlError = false, engineError = false;
   let error = '', busy = '', open = false, pollPromise = null, timer = 0, revision = 0;
   const el = document.createElement('div');
@@ -37,7 +38,7 @@
     if (id === 'k2' && local && !engineError && !modeOff) {
       const active = local.progress?.active?.handle;
       const queue = Number(local.queue || 0), notes = Number(local.notes_pending || 0), reviewed = Number(local.reviewed || 0);
-      detail = `${active ? `Checking @${active} · ` : ''}${reviewed.toLocaleString()} bios reviewed · ${queue.toLocaleString()} waiting${notes ? ` · ${notes.toLocaleString()} notes waiting` : ''}${detail && item.state === 'waiting' ? ` · ${detail}` : ''}`;
+      detail = `${active ? `Checking @${active}. ` : ''}${reviewed.toLocaleString()} bios reviewed, ${queue.toLocaleString()} waiting${notes ? `, ${notes.toLocaleString()} ${notes === 1 ? 'note' : 'notes'} waiting` : ''}.${detail && item.state === 'waiting' ? ` ${detail}` : ''}`;
     }
     return {label, detail, enabled:!!item.enabled, available:true, modeOff, item};
   }
@@ -50,23 +51,40 @@
     const until = wait?.until && Number.isFinite(Date.parse(wait.until)) ? ` until ${new Date(wait.until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : '';
     const state = controlError || collection.length !== 2 ? 'Unknown' : attention ? 'Needs attention' : paused ? collection.some(stage => stage.active || stage.state === 'stopping') ? 'Stopping' : 'Off' : wait ? `Waiting${until}` : collection.some(stage => stage.state === 'running') ? 'Running' : collection.some(stage => stage.state === 'waiting') ? 'Waiting' : 'On';
     const progress = control?.collection?.progress || collection.find(stage => stage.progress)?.progress;
-    const detail = attention || (progress?.description || progress?.summary || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Collection of saved list jobs and bios.');
+    const detail = attention || (progress?.description || progress?.summary || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
     return {state, detail, paused, available:!controlError && collection.length === 2};
   }
+  // One calm word for the whole strip. Details live in the popover.
+  const OVERALL = {collecting:'Collecting', paused:'Paused', needs:'Needs you', waiting:'Waiting', checking:'Checking', unavailable:'Status unavailable'};
+  function overallState(scrape) {
+    if (!control && !controlError) return 'checking';
+    if (!scrape.available) return 'unavailable';
+    if (scrape.state === 'Needs attention') return 'needs';
+    if (scrape.paused) return 'paused';
+    if (/^Waiting/.test(scrape.state) && scrape.state !== 'Waiting') return 'waiting';
+    return 'collecting';
+  }
+  const collectionWord = scrape => ({Running:'Running', On:'Ready', Off:'Paused', 'Needs attention':'Needs you'})[scrape.state] || scrape.state;
+  const SUMMARY_ICON = '<svg class="ic fl-ctl-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M4 6.5l4 4 4-4"/></svg>';
   function render() {
     mount();
     const focus = el.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
     const scroll = el.querySelector('.fl-ctl-panel')?.scrollTop || 0;
     const scrape = scraping(), k2 = engineState('k2'), laya = engineState('laya');
-    const states = [scrape.state, laya.label, k2.label];
-    const overall = states.includes('Needs attention') ? 'Needs attention' : states.includes('Stopping') ? 'Stopping' : states.includes('Running') ? 'Running' : states.includes('Waiting') ? 'Waiting' : states.every(state => state === 'Off' || state === 'Off in R mode' || state === 'Paused') ? 'Off' : 'Ready';
-    const mode = ({R:'Rules',RLAI:'Rules + local AI',RLEAI:'Rules + local + external AI'})[engines?.processing?.mode || control?.processing?.mode] || 'Mode unavailable';
+    const overall = overallState(scrape);
+    const mode = ({R:'Rules only',RLAI:'Rules and local AI',RLEAI:'Rules, local and external AI'})[engines?.processing?.mode || control?.processing?.mode] || 'Mode unavailable';
+    const dot = state => `<span class="fl-state-dot" data-state="${esc(state)}" aria-hidden="true"></span>`;
     const engineRow = (id, state) => {
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
-      return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong><span class="fl-state-dot" data-state="${esc(state.item?.state || 'unknown')}"></span>${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id]}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
+      return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(state.item?.state || 'unknown')}${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id].toLowerCase()}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
     };
-    const short = state => state === 'Off in R mode' ? 'Off' : state;
-    el.innerHTML = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel"><span class="fl-state-dot" data-state="${esc(overall.toLowerCase())}"></span><span>Engines</span><b>${esc(overall)}</b><span aria-hidden="true" class="fl-ctl-chevron"></span></button><div class="fl-ctl-inline"><span>Scraping <b>${esc(scrape.state)}</b></span><span>Laya <b>${esc(short(laya.label))}</b></span><span>K2 <b>${esc(short(k2.label))}</b></span></div><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" ${busy || !scrape.available ? 'disabled' : ''}>${busy === 'collection' ? 'Saving…' : scrape.paused ? 'Start scraping' : 'Pause scraping'}</button></div><div class="fl-ctl-panel" id="fl-engine-panel" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>What is running</b><span>${esc(mode)}</span></div><div class="fl-engine-row"><div class="fl-engine-copy"><strong><span class="fl-state-dot" data-state="${esc(scrape.state.toLowerCase())}"></span>Scraping <span class="fl-engine-state">${esc(scrape.state)}</span></strong><small>${esc(scrape.detail)}</small></div><a href="#/accounts">View progress</a></div>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Laya adds ranking hints. K2 checks saved bios and your notes for business fit.</span><a href="#/settings">Mode and K2 setup</a></div>${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || 'Some statuses could not be confirmed. Retrying…')}</p>` : ''}</div>`;
+    const action = busy === 'collection' ? 'Saving…' : scrape.paused ? 'Resume' : 'Pause';
+    const wait = scrape.paused ? 'Resume collection' : 'Pause collection';
+    el.innerHTML = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="grow"></span><button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${scrape.paused ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available ? 'disabled' : ''}>${action}</button></div>`
+      + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>What is running</b><span>${esc(mode)}</span></div>`
+      + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(overall === 'needs' ? 'needs' : scrape.paused ? 'paused' : scrape.state.toLowerCase())}Collection <span class="fl-engine-state">${esc(collectionWord(scrape))}</span></strong><small>${esc(scrape.detail)}</small></div><a href="#/accounts">View progress</a></div>`
+      + `${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Bio checks read saved bios and your notes for business fit. Ranking hints reorder people using what is already saved.</span><a href="#/settings">Checking mode and setup</a></div>`
+      + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     el.querySelector('.fl-ctl-panel').scrollTop = scroll;
     if (focus) el.querySelector(`[data-focus="${focus}"]`)?.focus({preventScroll:true});
   }
@@ -93,7 +111,7 @@
       else { if (!result.engines?.[target] || result.engines[target].enabled !== body.enabled) throw new Error('Unconfirmed'); engines = result; engineError = false; }
       render();
       window.dispatchEvent(new Event('fl:control-changed'));
-    } catch { error = `Could not confirm ${target === 'collection' ? 'scraping' : names[target]} change. Check status and try again.`; }
+    } catch { error = `Couldn't confirm ${target === 'collection' ? 'collection' : names[target].toLowerCase()} change. Check status and try again.`; }
     finally { busy = ''; render(); await poll(true); }
   }
   el.addEventListener('click', event => {

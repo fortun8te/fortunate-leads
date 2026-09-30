@@ -2,19 +2,10 @@
    Rules: flat surfaces, one blue accent, amber only for "needs a look", 4/8 spacing. */
 
 /* Flat tags: no gradients, no glow. */
-.tag[data-importance="exceptional"], .tchip[data-importance="exceptional"],
-.tag[data-importance="priority"], .tchip[data-importance="priority"] { box-shadow: none; }
-.tag[data-importance="exceptional"], .tchip[data-importance="exceptional"] { --tag-fill: var(--tag-exceptional-bottom); }
-.tag[data-importance="priority"], .tchip[data-importance="priority"] { --tag-fill: var(--tag-priority-bottom); }
 
 /* Positive signals read as quiet neutral chips; colour is kept for the one thing that matters. */
-.tag[data-tone="positive"], .tchip[data-tone="positive"] {
-  --tag-fill: var(--bg2); --tag-border: var(--line3); --tag-text: var(--fg);
-}
 
 /* Fit score: a soft tint, not a second solid blue pill next to "Strong fit". */
-.lpane .row-fit.f-strong { background: var(--t-possible); color: var(--t-possible-ink); }
-.lpane .row-fit.f-good { background: none; box-shadow: inset 0 0 0 1px var(--line2); color: var(--fg2); }
 
 /* Bigger hit area for the small open-on-Instagram icon without moving anything. */
 .ig { position: relative; }
@@ -30,8 +21,8 @@
 .ql-list { margin-inline: 0; }
 
 /* Touch and pointer targets: small text controls get a 44px-tall hit area. */
-.lead-open, .ql-profile a, .account-collection-link, #view-accounts summary { position: relative; }
-.lead-open::after, .ql-profile a::after, .account-collection-link::after, #view-accounts summary::after {
+.ql-profile a, .account-collection-link, #view-accounts summary { position: relative; }
+.ql-profile a::after, .account-collection-link::after, #view-accounts summary::after {
   content: ""; position: absolute; inset: -12px -4px;
 }
 
@@ -49,7 +40,7 @@
 button:not(.tag):not(.tchip):not(.tok):not(.ck), summary, select, .toggle,
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 32px !important; }
 textarea { min-height: 32px; }
-.seg button::after, .tag::before, .tchip::before { content: ""; position: absolute; inset: -3px 0; }
+.seg button::after { content: ""; position: absolute; inset: -3px 0; }
 .seg button::after { content: none; }
 summary { align-content: center; }
 #pane-map .map-search { min-height: 34px; }
@@ -57,11 +48,7 @@ summary { align-content: center; }
   button:not(.tag):not(.tchip):not(.tok):not(.ck), summary, select, .toggle,
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]) { min-height: 44px !important; }
   #pane-map .map-search { min-height: 44px; }
-  .tag::before, .tchip::before { inset: -8px 0; }
-  .lead-open::after { inset: -12px -8px; }
+
 }
 
 /* "Not a business fit" is a real action: give it hover, underline and a proper target. */
-.relationship-not-fit { min-height: 32px; display: inline-flex; align-items: center; text-underline-offset: 3px; }
-.relationship-not-fit:hover { color: var(--fg); text-decoration: underline; }
-@media (max-width: 760px) { .relationship-not-fit { min-height: 44px; } }

@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="polish.css">
   <link rel="stylesheet" href="workflow.css">
   <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="refine.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -42,7 +43,7 @@
 
   <div class="app">
   <div class="strip">
-    <div class="offline" id="offline" role="status" aria-live="polite" hidden>Server offline <span class="num" id="offline-t"></span></div>
+    <div class="offline" id="offline" role="status" aria-live="polite" hidden>Can't reach the server. Retrying. <span class="num" id="offline-t"></span></div>
     <div class="status" id="status" aria-label="Collection status and controls">
       <div id="stage-controls"></div>
     </div>
@@ -54,7 +55,7 @@
       <div class="scrim" id="scrim" hidden></div>
       <div class="pane">
         <header class="ph ph-work">
-          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span><span class="lead-load-count num" id="work-loaded"></span></div></div>
+          <div class="ph-t"><div class="ph-title"><h1 id="work-h">Leads</h1><span class="view-count num" id="work-count" aria-live="polite"></span></div></div>
         </header>
         <div class="qbar">
           <button class="btn fbtn" id="filters-btn" aria-controls="filters" aria-expanded="false" title="Show or hide filters ([)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg><span>Filters</span><span class="num" id="fbtn-n"></span></button>
@@ -77,7 +78,7 @@
         <div class="lpane" id="pane-leads">
           <div class="thead">
             <span class="c-sel" aria-hidden="true"></span>
-            <span>Lead</span><span class="c-tags">Tags</span><span class="r c-fol">Followers</span><span class="c-fit-head">Fit</span><span class="c-st">Relationship</span>
+            <span>Lead</span><span class="c-tags"></span><span class="r c-fol">Followers</span><span class="c-fit-head">Fit</span><span class="c-st">Status</span>
           </div>
           <div class="scroll" id="scroll"><div class="vspace" id="rows"></div></div>
         </div>
@@ -350,38 +351,52 @@
 </div>
 <datalist id="tag-dl"></datalist>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-<div class="help" id="help" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden><div>
-  <button class="help-close" id="help-close" type="button" aria-label="Close keyboard shortcuts">&times;</button>
-  <h3 id="help-title">Keyboard shortcuts</h3>
-  <h4>List</h4>
-  <span><kbd>j</kbd> <kbd>k</kbd></span><span>Next / previous</span>
-  <span><kbd>enter</kbd></span><span>Open detail</span>
-  <span><kbd>1</kbd>–<kbd>5</kbd> <kbd>0</kbd></span><span>Interested, contacted, talking, spoke before, not a fit; 0 clears</span>
-  <span><kbd>t</kbd></span><span>Add label to lead</span>
-  <span><kbd>s</kbd></span><span>Set status (menu)</span>
-  <span><kbd>n</kbd></span><span>Write a note</span>
-  <span><kbd>m</kbd></span><span>Next step in the pipeline</span>
-  <span><kbd>o</kbd></span><span>Open on Instagram</span>
-  <h4>Filter</h4>
-  <span><kbd>/</kbd></span><span>Search</span>
-  <span>priority:strong</span><span>Strong, good, weak or unread priority tier</span>
-  <span><kbd>#</kbd></span><span>Filter by tag</span>
-  <span>Click</span><span>Tag: include or clear</span>
-  <span><kbd>shift</kbd> click</span><span>Any of</span>
-  <span><kbd>alt</kbd> click</span><span>None of</span>
-  <span><kbd>backspace</kbd></span><span>Edit last filter token</span>
-  <span><kbd>c</kbd></span><span>Clear filters</span>
-  <span><kbd>[</kbd></span><span>Toggle filter sidebar</span>
-  <h4>Map</h4>
-  <span><kbd>f</kbd></span><span>Zoom to fit</span>
-  <span><kbd>+</kbd> <kbd>-</kbd></span><span>Zoom</span>
-  <span><kbd>l</kbd></span><span>Labels</span>
-  <span><kbd>n</kbd></span><span>Next search match</span>
-  <h4>General</h4>
-  <span><kbd>g</kbd> <kbd>l</kbd> <kbd>m</kbd> <kbd>t</kbd> <kbd>s</kbd> <kbd>a</kbd> <kbd>,</kbd></span><span>Leads, map, tags, scraper, accounts, settings</span>
-  <span><kbd>d</kbd></span><span>Density</span>
-  <span><kbd>esc</kbd></span><span>Close, clear selection</span>
+<div class="help" id="help" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden><div class="help-card">
+  <header class="help-head"><h2 id="help-title">Keyboard shortcuts</h2><button class="help-close" id="help-close" type="button" aria-label="Close keyboard shortcuts"><svg class="ic" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></header>
+  <div class="help-cols">
+    <section><h3>Leads</h3><dl>
+      <div><dt><kbd>j</kbd><kbd>k</kbd></dt><dd>Next and previous lead</dd></div>
+      <div><dt><kbd>enter</kbd></dt><dd>Open details</dd></div>
+      <div><dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd></dt><dd>Interested, contacted, talking, spoke before, not a fit</dd></div>
+      <div><dt><kbd>0</kbd></dt><dd>Clear the status</dd></div>
+      <div><dt><kbd>s</kbd></dt><dd>Choose a status</dd></div>
+      <div><dt><kbd>m</kbd></dt><dd>Move to the next status</dd></div>
+      <div><dt><kbd>n</kbd></dt><dd>Write a note</dd></div>
+      <div><dt><kbd>t</kbd></dt><dd>Add a tag</dd></div>
+      <div><dt><kbd>o</kbd></dt><dd>Open on Instagram</dd></div>
+    </dl></section>
+    <section><h3>Review</h3><dl>
+      <div><dt><kbd>y</kbd><kbd aria-label="right arrow"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></kbd></dt><dd>Yes, mark interested</dd></div>
+      <div><dt><kbd>n</kbd><kbd aria-label="left arrow"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg></kbd></dt><dd>No, not a fit</dd></div>
+      <div><dt><kbd>l</kbd><kbd aria-label="down arrow"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M4 9l4 4 4-4"/></svg></kbd></dt><dd>Later, see them again tomorrow</dd></div>
+      <div><dt><kbd>z</kbd></dt><dd>Undo the last choice</dd></div>
+      <div><dt><kbd>enter</kbd></dt><dd>Open the lead</dd></div>
+    </dl></section>
+    <section><h3>Filter</h3><dl>
+      <div><dt><kbd>/</kbd></dt><dd>Search</dd></div>
+      <div><dt><kbd>#</kbd></dt><dd>Filter by tag</dd></div>
+      <div><dt>Click</dt><dd>Include a tag, or clear it</dd></div>
+      <div><dt><kbd>shift</kbd> click</dt><dd>Any of these tags</dd></div>
+      <div><dt><kbd>alt</kbd> click</dt><dd>None of these tags</dd></div>
+      <div><dt><kbd>backspace</kbd></dt><dd>Edit the last filter</dd></div>
+      <div><dt><kbd>c</kbd></dt><dd>Clear filters</dd></div>
+      <div><dt><kbd>[</kbd></dt><dd>Show or hide the filter list</dd></div>
+    </dl></section>
+    <section><h3>Connections</h3><dl>
+      <div><dt><kbd>f</kbd></dt><dd>Fit the map to the screen</dd></div>
+      <div><dt><kbd>+</kbd><kbd>-</kbd></dt><dd>Zoom</dd></div>
+      <div><dt><kbd>l</kbd></dt><dd>Show or hide labels</dd></div>
+      <div><dt><kbd>n</kbd></dt><dd>Next search match</dd></div>
+    </dl></section>
+    <section><h3>Anywhere</h3><dl>
+      <div><dt><kbd>g</kbd> then <kbd>l</kbd> <kbd>m</kbd> <kbd>q</kbd> <kbd>t</kbd> <kbd>s</kbd> <kbd>a</kbd> <kbd>,</kbd></dt><dd>Go to leads, map, review, tags, scraper, accounts or settings</dd></div>
+      <div><dt><kbd>d</kbd></dt><dd>Switch row density</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>Show or hide this list</dd></div>
+      <div><dt><kbd>esc</kbd></dt><dd>Close, or clear the selection</dd></div>
+    </dl></section>
+  </div>
 </div></div>
+<script src="icons.js"></script>
 <script src="vendor/d3-dispatch.min.js"></script>
 <script src="vendor/d3-timer.min.js"></script>
 <script src="vendor/d3-quadtree.min.js"></script>

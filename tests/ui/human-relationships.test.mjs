@@ -15,7 +15,7 @@ test('history and familiarity do not invent a conversation stage',()=>{
  assert.match(html,/d-relationship-client[^>]*aria-pressed="true"/);
  assert.match(html,/d-relationship-worked_with[^>]*aria-pressed="true"/);
  assert.doesNotMatch(html,/d-status-client/);
- assert.match(html,/How well\? · Optional/);
+ assert.match(html,/How well\? <em>Optional<\/em>/);
  assert.doesNotMatch(html,/data-familiarity="[^"]+" aria-pressed="true"/);
  assert.match(html,/d-status-spoke_before/);
 });

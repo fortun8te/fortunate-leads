@@ -37,10 +37,10 @@ async function ready() {const h=harness();h.respond(0,collection());h.respond(1,
 
 test('initial control state keeps scraping action and per-engine statuses visible', async () => {
   const h=await ready();
-  assert.match(h.el.innerHTML,/Scraping <b>Off<\/b>/);
-  assert.match(h.el.innerHTML,/Laya <b>Off<\/b>/);
-  assert.match(h.el.innerHTML,/K2 <b>Off<\/b>/);
-  assert.match(h.el.innerHTML,/Start scraping/);
+  assert.match(h.el.innerHTML,/fl-ctl-word">Paused/);
+  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
+  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Off in R mode<\/span>/);
+  assert.match(h.el.innerHTML,/Resume collection/);
   assert.match(h.el.innerHTML,/aria-expanded="false"/);
 });
 
@@ -49,10 +49,10 @@ test('panel opens without changing mode and offers independent engine actions', 
   assert.match(h.el.innerHTML,/aria-expanded="true"/);
   assert.match(h.el.innerHTML,/data-engine="laya"/);
   assert.match(h.el.innerHTML,/data-engine="k2"/);
-  assert.match(h.el.innerHTML,/Laya adds ranking hints/);
+  assert.match(h.el.innerHTML,/Ranking hints reorder people/);
   h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'waiting',active:false,ready:true,reason:'Waiting for work.',stop_acknowledged:false}}}));h.respond(4,{reviewed:4,queue:2,notes_pending:1,progress:{active:{handle:'someone'}}});await settle();
   assert.match(h.el.innerHTML,/Checking @someone/);
-  assert.match(h.el.innerHTML,/4 bios reviewed · 2 waiting · 1 notes waiting/);
+  assert.match(h.el.innerHTML,/4 bios reviewed, 2 waiting, 1 note waiting/);
 });
 
 test('K2 action waits for backend confirmation and leaves mode unchanged', async () => {
@@ -73,9 +73,9 @@ test('stopping remains visible until the backend acknowledges the stop', async (
   const h=harness();h.respond(0,collection());
   const stopping=engines({processing:{mode:'RLAI'},paused:true,engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'stopping',active:true,ready:true,reason:'Finishing the current request.',stop_acknowledged:false}}});
   h.respond(1,stopping);await settle();
-  assert.match(h.el.innerHTML,/K2 <b>Stopping<\/b>/);
+  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Stopping<\/span>/);
   h.poll();h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},paused:true,engines:{...stopping.engines,k2:{...stopping.engines.k2,state:'off',active:false,stop_acknowledged:true}}}));await settle();
-  assert.match(h.el.innerHTML,/K2 <b>Paused<\/b>/);
+  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Paused<\/span>/);
 });
 
 test('polling is single flight and a failed engine read disables its actions', async () => {
@@ -83,16 +83,16 @@ test('polling is single flight and a failed engine read disables its actions', a
   assert.equal(h.requests.length,4,'only one pair of status requests is pending');
   h.respond(2,collection());h.fail(3);await settle();
   h.click(button=>button.dataset.focus==='panel');
-  assert.match(h.el.innerHTML,/K2 <b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Unknown<\/span>/);
   assert.equal(h.buttons.find(button=>button.dataset.engine==='k2').disabled,true);
-  assert.match(h.el.innerHTML,/Some statuses could not be confirmed/);
+  assert.match(h.el.innerHTML,/Some statuses couldn&#39;t be confirmed/);
 });
 
 test('an incomplete collection snapshot locks the scraping action', async () => {
   const h=harness();
   const incomplete=collection(false);incomplete.stages=incomplete.stages.filter(stage=>stage.id!=='bios');
   h.respond(0,incomplete);h.respond(1,engines());await settle();
-  assert.match(h.el.innerHTML,/Scraping <b>Unknown<\/b>/);
+  assert.match(h.el.innerHTML,/fl-ctl-word">Status unavailable/);
   assert.equal(h.buttons.find(button=>button.dataset.stage==='collection').disabled,true);
 });
 
@@ -103,12 +103,12 @@ test('a slow status response cannot undo a confirmed scraping pause', async () =
   const post=h.requests.find(request=>request.url==='/api/control' && request.options?.method==='POST');
   assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'resume'});
   post.resolve({ok:true,status:200,json:async()=>collection(false)});await settle();
-  assert.match(h.el.innerHTML,/Pause scraping/);
+  assert.match(h.el.innerHTML,/Pause collection/);
   h.respond(2,collection(true));h.respond(3,engines());await settle();
-  assert.match(h.el.innerHTML,/Pause scraping/);
+  assert.match(h.el.innerHTML,/Pause collection/);
   const latest=h.requests.length;
   h.respond(latest-2,collection(false));h.respond(latest-1,engines());await settle();
-  assert.match(h.el.innerHTML,/Pause scraping/);
+  assert.match(h.el.innerHTML,/Pause collection/);
 });
 
 test('a failed engine change reports the error and keeps the last confirmed state', async () => {
@@ -116,6 +116,6 @@ test('a failed engine change reports the error and keeps the last confirmed stat
   h.click(button=>button.dataset.engine==='laya');
   const post=h.requests.find(request=>request.url==='/api/engines' && request.options?.method==='POST');
   post.reject(new Error('offline'));await settle();
-  assert.match(h.el.innerHTML,/Could not confirm Laya change/);
-  assert.match(h.el.innerHTML,/Laya <b>Off<\/b>/);
+  assert.match(h.el.innerHTML,/Couldn&#39;t confirm ranking hints change/);
+  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
 });

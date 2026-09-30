@@ -38,7 +38,7 @@
 
   if (typeof document === 'undefined' || !document.getElementById('view-start')) return;
   const root = document.getElementById('view-start'), tab = document.getElementById('tab-start');
-  const St = { data: null, leads: [], timer: 0, busy: false, error: false, landed: false };
+  const St = { data: null, leads: [], timer: 0, busy: false, error: false, landed: false, input: '' };
 
   function render() {
     const d = St.data;
@@ -48,7 +48,7 @@
       <section class="panel st-flow"><div class="p-body">
         <div><h2>Find leads from an account</h2>
         <p class="muted">Paste a brand or competitor your customers follow. We read who follows it and who it follows, at Instagram's safe pace.</p></div>
-        <form class="st-form" id="st-form"><input class="input" id="st-in" aria-label="Instagram handle or link" placeholder="@handle or instagram.com/handle" autocomplete="off" spellcheck="false">
+        <form class="st-form" id="st-form"><input class="input" id="st-in" value="${E(St.input)}" aria-label="Instagram handle or link" placeholder="@handle or instagram.com/handle" autocomplete="off" spellcheck="false">
           <button class="btn solid" id="st-go" ${St.busy ? 'disabled' : ''}>${St.busy ? 'Starting…' : 'Start'}</button>
           ${going || paused ? `<button type="button" class="btn" id="st-pause">${paused ? 'Resume' : 'Pause'}</button>` : ''}</form>
         <p class="st-err muted" id="st-err" role="alert" hidden></p>
@@ -57,6 +57,7 @@
       <section class="panel"><div class="p-head"><h3>Setup</h3><span class="muted">${d.ready ? 'Everything needed is in place.' : `${d.blocking} thing${d.blocking === 1 ? '' : 's'} to fix before collecting.`}</span></div>
         <ul class="st-steps">${d.steps.map(stepHTML).join('')}</ul></section>`;
   }
+  root.addEventListener('input', (e) => { if (e.target.id === 'st-in') St.input = e.target.value; });
   function badge() {
     const d = St.data;
     const show = !!d && d.open > 0;
@@ -92,32 +93,33 @@
   async function post(url, body) {
     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || (r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : 'The request did not go through. Try again.'));
+    if (!r.ok) throw new Error('Request failed');
     return j;
   }
   root.addEventListener('submit', async (e) => {
     if (e.target.id !== 'st-form') return;
     e.preventDefault();
-    const handles = window.parseHandles ? parseHandles(root.querySelector('#st-in').value) : [];
+    St.input = root.querySelector('#st-in').value;
+    const handles = window.parseHandles ? parseHandles(St.input) : [];
     const err = root.querySelector('#st-err');
     if (!handles.length) { err.textContent = 'That does not look like an Instagram handle or link.'; err.hidden = false; return; }
     err.hidden = true; St.busy = true; render();
     try {
       const r = await post('/api/start', { handles });
-      if (window.toast) toast(r.started ? (r.queued ? 'Started. Lists collect at a safe pace.' : 'Already queued. Collection is on.') : (r.note || 'Queued'));
+      if (window.toast) toast(r.started ? (r.queued ? 'Started. Lists collect at a safe pace.' : 'Already queued. Collection is on.') : 'Lists queued. Check collection status before starting.');
       window.dispatchEvent(new Event('fl:control-changed'));
       St.busy = false; await refresh(); render();
-    } catch (x) { St.busy = false; render(); const e2 = root.querySelector('#st-err'); e2.textContent = x.message; e2.hidden = false; }
+    } catch (x) { St.busy = false; render(); const e2 = root.querySelector('#st-err'); e2.textContent = "Couldn't start collection. Try again."; e2.hidden = false; }
   });
   root.addEventListener('click', async (e) => {
     const t = e.target;
     if (t.closest('#st-pause')) {
       const paused = St.data?.flow.state === 'paused';
-      try { await post('/api/control', { stage: 'collection', action: paused ? 'resume' : 'pause' }); window.dispatchEvent(new Event('fl:control-changed')); } catch (x) { if (window.toast) toast(x.message); }
+      try { await post('/api/control', { stage: 'collection', action: paused ? 'resume' : 'pause' }); window.dispatchEvent(new Event('fl:control-changed')); } catch (x) { if (window.toast) toast(paused ? "Couldn't resume collection. Try again." : "Couldn't pause collection. Try again."); }
       refresh(); return;
     }
     const skip = t.closest('[data-st-skip]');
-    if (skip) { try { await post('/api/onboarding', { skip: skip.dataset.stSkip }); } catch (x) { /* ignore */ } refresh(); return; }
+    if (skip) { try { await post('/api/onboarding', { skip: skip.dataset.stSkip }); } catch (x) { if (window.toast) toast("Couldn't save setup. Try again."); } refresh(); return; }
     const copy = t.closest('[data-st-copy]');
     if (copy) { if (window.copyText) copyText(copy.dataset.stCopy, copy); return; }
     if (t.closest('[data-st-wizard]')) { location.hash = '#/accounts'; setTimeout(() => document.getElementById('acc-add')?.click(), 50); }

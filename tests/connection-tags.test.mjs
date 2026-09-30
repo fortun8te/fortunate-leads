@@ -16,11 +16,13 @@ function mount(tags = [mention]) {
   const nodes = { '#q': query, '#suggest': suggestions, '#detail': detail };
   const person = { id: 42, handle: 'mention_only', bio: 'Made with @owner', tags, lists: 0, edges: [] };
   const context = vm.createContext({
+    icon: () => '', ring: () => '', rowFitHTML: () => '', statusChoicesHTML: () => '', knowThemHTML: () => '',
     document: { activeElement: query }, $: selector => nodes[selector],
     store: { get: (_key, fallback) => fallback, set() {} },
     S: { person, tagList: tags }, M: {}, ORDER: { auto: 2, manual: 0 }, GORDER: { source: 0 },
     STATUSES: [], SDESC: {}, FIT_LABEL: {}, TIER_FIT: {},
     isViaTag: tag => tag.startsWith('via @'), lists: row => row.lists || 0,
+    int: String,
     esc: value => String(value ?? ''), fmt: value => String(value ?? ''),
     plural: (n, word) => `${n} ${word}s`, avatar: () => '', igLink: () => '', safeUrl: () => null,
     swatch: () => '', tagTok: tag => `#"${tag}"`, words: value => [value],
@@ -55,7 +57,7 @@ test('mention-only profiles show a factual mention with no inferred follow or fa
 
 test('a mention remains visible alongside a separately observed follow', () => {
   const ui = mount([mention, { tag: 'follows you' }, { tag: 'Instagram link' }]);
-  assert.equal(vm.runInContext('youLink(S.person)', ui.context), 'Follows you · Mentions you');
+  assert.equal(vm.runInContext('youLink(S.person)', ui.context), 'Follows you. Mentions you');
 });
 
 test('detail shows the automatic mention tag and preserves manual source tags', () => {
@@ -64,7 +66,7 @@ test('detail shows the automatic mention tag and preserves manual source tags', 
   // Each tag renders once; the manual one carries its remove button.
   assert.deepEqual([...ui.renderedTags].sort(), ['Already know them', 'mentions you'].sort());
   assert.match(ui.detail.innerHTML, /data-rmtag="Already know them"/);
-  assert.match(ui.detail.innerHTML, /class="d-sec d-connection-summary">Mentions you/);
+  assert.match(ui.detail.innerHTML, /class="d-connection-summary">Mentions you/);
   assert.equal(ui.person.edges.length, 0);
 });
 
