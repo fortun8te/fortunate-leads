@@ -377,6 +377,8 @@ def init(path):
         mark_network_dirty(conn, (r[0] for r in conn.execute("SELECT DISTINCT person_id FROM edges")))
         conn.execute("INSERT INTO settings(key,value) VALUES('edge_evidence_legacy_v1','true')")
     init_map_person_degree(conn)
+    import lead_rank
+    lead_rank.ensure(conn)
     init_map_membership_revision(conn)
     ensure_map_layout_dirty(conn)
     # Revisions catch edits that counts/timestamps cannot distinguish, including

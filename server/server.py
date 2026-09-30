@@ -1219,10 +1219,16 @@ def api_leads(conn, q, b):
         # the full ranking sort; hydrate only the selected profiles afterward.
         count_from = ('FROM people p LEFT JOIN marks m ON m.person_id=p.id'
                       if where == ["coalesce(m.status,'')!='no'"] and not args else PEOPLE_FROM)
-        total = conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
-        picked = conn.execute(f'SELECT p.id, {LISTS} AS lists {PEOPLE_FROM}{sql_where} '
-                              f'ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
-        ids = [row['id'] for row in picked]
+        import lead_rank
+        indexed = (lead_rank.page(conn, sort, limit, offset)
+                   if where == ["coalesce(m.status,'')!='no'"] and not args else None)
+        if indexed is not None:
+            total, ids = indexed
+        else:
+            total = conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
+            picked = conn.execute(f'SELECT p.id, {LISTS} AS lists {PEOPLE_FROM}{sql_where} '
+                                  f'ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+            ids = [row['id'] for row in picked]
         if ids:
             placeholders = ','.join('?' for _ in ids)
             by_id = {row['id']: row for row in conn.execute(f'{LEAD_SQL} WHERE p.id IN ({placeholders})', ids)}
@@ -1269,6 +1275,11 @@ def api_counts(conn, q, b):
 def counts(conn, q):
     """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible).
     none = unmarked, open = everyone but 'no'; total / with_bio: everyone in the database."""
+    import lead_rank
+    if not any(values[0].strip() for values in q.values() if values):
+        indexed = lead_rank.counts(conn, STATUSES)
+        if indexed is not None:
+            return indexed
     out = dict.fromkeys(('hot', 'warm', 'cold', 'unread', *STATUSES, 'none', 'open'), 0)
     where, args = lead_filter({k: v for k, v in q.items() if k != 'tier'})
     out.update(conn.execute(f"SELECT coalesce(v.tier,'unread'), count(*) {PEOPLE_FROM} WHERE {' AND '.join([NOT_ME] + where)} "
