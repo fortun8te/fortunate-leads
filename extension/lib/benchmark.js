@@ -74,7 +74,8 @@
       classified?.reason || rawWarning ||
       (task.cursor && task.cursor === page.next_cursor ? 'cursor_repeated' : null) || (page.limited ? 'limited' : null);
     return { rows: page.users, next_cursor: page.next_cursor, has_more: page.has_more ?? !!page.next_cursor, reported_has_more: page.has_more,
-      status: warning ? (res.error || (res.redirect ? 'redirect' : classified?.code) || 'pagination_warning') : 'ok', terminal_warning: warning || null, actual_http_requests: res.actual_http_requests ?? null,
+      status: warning ? (res.error || (res.redirect ? 'redirect' : classified?.code) || (page.limited ? 'target_cap' : 'pagination_warning')) : 'ok', terminal_warning: warning || null, actual_http_requests: res.actual_http_requests ?? null,
+      target_limited: page.limited === true, raw_returned_count: Array.isArray(json?.users) ? json.users.length : 0, reason_flags: page.limited ? ['should_limit_list_of_followers'] : [],
       http_status: res.status || 0, retry_after: res.retryAfter || null, duration_ms: res.duration_ms ?? null, fetch_dispatches: res.fetch_dispatches ?? null,
       uncertain: !!res.uncertain, transport_completed: !res.uncertain && [0, 1].includes(res.actual_http_requests), observed_viewer_id: res.observed_viewer_id || null };
   }
