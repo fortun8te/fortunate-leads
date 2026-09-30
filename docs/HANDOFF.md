@@ -1,4 +1,15 @@
-# Handoff — through 2026-09-26
+# Handoff — 30 September 2026
+
+
+## Current continuation, 30 September 2026
+
+Recovered the unfinished Claude map/API/UI work and integrated it with the already merged cloud fixes. Connections now uses compact audience groups, progressive detail, four viewing modes, filters, search and selected-profile evidence. Collection uses Start, Stop and Continue with saved-progress and waiting states. Legacy map panels, unused rendering assets and redundant refreshes were removed.
+
+The viewport map limits each response to 1,500 people and aggregated counts. A real synthetic 1,000,001-person fixture was built and queried across all four modes; see [measured performance and limits](MAP_VIEW_PERFORMANCE.md). The 10,000,001-person fixture is still in progress. Do not claim that ten-million scale or collection under that load has been validated.
+
+For rollout, use [MAP_VIEW_API.md](MAP_VIEW_API.md) to prepare layouts explicitly on a database copy first. This continuation changed no live database, collection pacing or running service. The unprepared-map fallback remains available. Backups preserve source data; layouts are derived and rebuilt separately.
+
+Visual checks used isolated synthetic previews, including desktop and 390-pixel mobile. The JavaScript suite passed 438 tests; collection simulation passed 82 checks over eight simulated hours. Server results and lead-list timing evidence are recorded in the continuation commit and performance documents. Earlier sections below describe historical functionality and validation.
 
 Current update, 27 September 2026: bulk selection/editing, saved views and in-app CSV exports have been removed. Individual relationship, tag and note edits remain. Existing saved-view data and workspace backups are preserved. References to those removed features below describe the earlier implementation. See [CONTRACT.md](CONTRACT.md) for current APIs.
 
