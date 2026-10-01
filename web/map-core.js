@@ -225,11 +225,7 @@
   };
   const distanceKey = { g: 'centre', t: 'Closer portraits have stronger recorded network evidence. Positions are evenly spaced for readability; distance is an ordering, not a measure of friendship.', s: 'Distance: evidence' };
   const fitSizeKey = { g: 'size', t: 'Larger portraits mean a stronger saved fit assessment. All people in this page stay visible; zoom only magnifies them.', s: 'Size: fit' };
-  const ringKey = {
-    g: 'follow', s: 'Solid: you · Dashed: them',
-    t: 'Solid: you follow them. Dashed: they follow you. Both: mutual. No ring: no recorded follow evidence.'
-  };
-  const LEGENDS = Object.fromEntries(MODES.map(m => [m.id, [distanceKey, fitSizeKey, ringKey]]));
+  const LEGENDS = Object.fromEntries(MODES.map(m => [m.id, [distanceKey, fitSizeKey]]));
   const closenessWords = (c) => c >= 0.75 ? 'strong network evidence' : c >= 0.5 ? 'some network evidence' : c >= 0.25 ? 'limited network evidence' : 'little network evidence';
   // One line on why this person is on your map, from what the map knows.
   function whyLine(n, seedLabel) {

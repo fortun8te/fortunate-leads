@@ -84,7 +84,7 @@ test('mode encodings preserve circle geometry and use truthful sizes', () => {
     assert.deepEqual(scene.nodes.map(n=>[n.x,n.y]),before);
     assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,12);
     assert.equal(LEGENDS[mode][0].s,'Distance: evidence');
-    assert.equal(LEGENDS[mode].length,3);
+    assert.equal(LEGENDS[mode].length,2);
   }
 });
 test('Fit and Sources preserve mode priority instead of forcing pipeline people first', () => {

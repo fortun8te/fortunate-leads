@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, followRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
+  const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, radiusFor, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -195,22 +195,18 @@
         lab.block([x-width/2-4, y+OWNER_RADIUS*k+7, x+width/2+4, y+OWNER_RADIUS*k+25]);
       }
 
-      // Endpoints of the selected person's lines, then the selection ring.
+      // Label the selected person's recorded sources.
       if (edges && edges.state === 'ready') for (const n of edges.seeds.filter(n=>m.scene.get(n.id))) {
         const placed=m.scene.get(n.id) || n;
-        const x = sx(placed.x), y = sy(placed.y); ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
-        ctx.strokeStyle = P.bg; ctx.lineWidth = 1.5; ctx.stroke();
+        const x = sx(placed.x), y = sy(placed.y);
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
         const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = plan.nodes.find(mark=>String(mark.it.d.id)===String(sel.id))?.r || radiusFor(sel, k, m.size);
-        ctx.strokeStyle = P.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke();
         this.paintPortrait(ctx, P, sel, x, y, r, true);
         if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
       }
-      if (hovered && hovered.it && hovered.kind === 'n' && hovered.it.d !== sel) {
-        ctx.strokeStyle = P.fg; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(hovered.x, hovered.y, hovered.r + 4, 0, TAU); ctx.stroke();
-      }
+
 
       // Labels. Bubbles first (which community is this), then the best-ranked people.
       let nb = 0; const labelledGroups = new Set();
@@ -251,24 +247,7 @@
         ctx.fillStyle = owner ? P.fg : P.fg2; ctx.font = `${owner ? 600 : 500} ${Math.round(radius * .67)}px ${P.sans}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(initials(person), x, y+.5);
       }
-      ctx.restore(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU);
-      const ring = followRing(person);
-      ctx.strokeStyle = P.fg3;
-      ctx.lineWidth = owner ? 1 : .85;
-      ctx.globalAlpha = owner ? .6 : .55;
-      if (owner || ring !== 'unknown') {
-        ctx.setLineDash(!owner && ring === 'incoming' ? [2, 3] : []);
-        ctx.stroke(); ctx.setLineDash([]);
-      }
-      if (!owner && ring === 'mutual') {
-        ctx.beginPath(); ctx.arc(x, y, Math.max(2, radius - 2.5), 0, TAU);
-        ctx.setLineDash([2, 3]); ctx.stroke(); ctx.setLineDash([]);
-      }
-      ctx.globalAlpha = 1;
-      if (!owner && person.status && person.status !== 'no') {
-        ctx.beginPath(); ctx.arc(x + radius * .5, y + radius * .5, Math.min(2, radius * .2), 0, TAU);
-        ctx.fillStyle = P.tones[toneFor(this.model.mode, person)]; ctx.fill();
-      }
+      ctx.restore();
       ctx.textAlign = 'left';
     }
 
