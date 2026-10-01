@@ -2,9 +2,15 @@
 
 Updated 1 October 2026. This file describes the current implementation. Earlier iterations and their validation remain in Git history.
 
-## Tiled connection map, 1 October 2026
+## Current default: compact portrait map
 
-The default map uses a prepared binary-tile snapshot when available, WebGPU with WebGL2 fallback, recorded shortest follow paths for distance, logarithmic follower sizing, a small owner portrait and progressive photo detail. It opens on the inner neighborhood. Search locates a saved handle; ordinary selection preserves camera and canvas size. Tags use the Leads presentation. Explicit selected-person connections use subtle outgoing dashed and incoming solid lines. Unsupported alternate views and filters are hidden on this full-network path; they remain available in the paged fallback.
+Michael rejected the large automatic universe view after visual review. The default now uses the established compact portrait map with 500, 1,000 or 3,000 people, a fixed independent owner bubble, modest follower sizing, and recorded connection lines on selection. Large saved count preferences reset to 500. Search and pagination still reach the full database. The universe implementation and snapshots remain available in source but are not selected by the app UI; do not re-enable them without Michael asking. Three later GPU glitch fixes and layout experiments are saved only in the integration working tree. Collection and DALI work remain deferred.
+
+The restored UI passed 589 frontend checks. An isolated real-data review verified the 500-person circle and four recorded lines immediately on selecting a person.
+
+## Earlier tiled connection map, 1 October 2026
+
+The earlier experiment uses a prepared binary-tile snapshot when available, WebGPU with WebGL2 fallback, recorded shortest follow paths for distance, logarithmic follower sizing, a small owner portrait and progressive photo detail. It opens on the inner neighborhood. Search locates a saved handle; ordinary selection preserves camera and canvas size. Tags use the Leads presentation. Explicit selected-person connections use subtle outgoing dashed and incoming solid lines. Unsupported alternate views and filters are hidden on this full-network path; they remain available in the paged fallback.
 
 Read [MAP_UNIVERSE_API.md](MAP_UNIVERSE_API.md) for snapshot preparation, source provenance and HTTP/binary contracts. `server/map_universe.py` owns offline graph preparation and indexed tile selection. `web/map-universe.js` owns bounded loading/picking, `web/map-universe-gpu.js` owns instanced graphics/portrait caching, and `web/map-universe-model.js` connects it to existing map controls. Existing map modules remain the fallback and own the profile card.
 

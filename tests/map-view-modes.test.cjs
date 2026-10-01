@@ -40,12 +40,12 @@ test('invalid or retired saved modes return to My network',()=>{
  }
  assert.equal(new MapModel({viewMode:'shared'}).size,'connections');
 });
-test('connection drawing is explicit and resets when selection changes',()=>{
+test('selecting a person immediately shows their recorded connections',()=>{
  const model=new MapModel({fetchJson:()=>new Promise(()=>{})});
  model.scene.apply({nodes,clusters:[]},0,{instant:true});
- model.select(nodes[0]);assert.equal(model.connectionsVisible,false);
+ model.select(nodes[0]);assert.equal(model.connectionsVisible,true);
  model.setConnectionsVisible(true);assert.equal(model.connectionsVisible,true);
- model.select(nodes[1]);assert.equal(model.connectionsVisible,false);
+ model.select(nodes[1]);assert.equal(model.connectionsVisible,true);
  model.setConnectionsVisible(true);model.deselect();assert.equal(model.connectionsVisible,false);
  model.setConnectionsVisible(true);assert.equal(model.connectionsVisible,false);
 });
@@ -72,4 +72,8 @@ test('explicit large-map search makes the selected portrait readable without red
  model.cam.set(.5,.5,100);model.goTo(person);assert.equal(model.cam.k,100);
  model.scene.get(person.id).d.portraitRadius=1e-10;model.cam.set(.5,.5,1);
  model.goTo(person);assert.equal(model.cam.k,128,'tiny portraits respect maximum zoom');
+});
+
+test('portrait map accepts the bounded 3000-person option',()=>{
+ const model=new MapModel({density:3000});assert.equal(model.budget,3000);
 });

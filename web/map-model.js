@@ -44,7 +44,7 @@
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(1); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
-      this.density = [250,500,1000,10000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
+      this.density = [250,500,1000,3000,10000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
       this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = VIEW_MODES.find(mode => mode.id === this.viewMode).size; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.connectionsVisible = false; this.flight = null; this.goal = null; this.vel = null;
@@ -212,7 +212,7 @@
       if (this.stats.applied === applied) { Object.assign(this, previous); this.emit('scene'); }
     }
     setDensity(n) {
-      if (![250, 500, 1000, 10000, 50000, 200000].includes(+n) || +n === this.density) return;
+      if (![250, 500, 1000, 3000, 10000, 50000, 200000].includes(+n) || +n === this.density) return;
       this.density = +n; this.emit('density'); this.deselect(); this.resetPages(); this.load();
     }
     resetPages() {
@@ -231,7 +231,7 @@
     select(n) {
       this.locateReq.cancel();
       if (!n) return this.deselect();
-      this.connectionsVisible = false; this.selected = n; this.scene.pin(n); this.emit('selection');
+      this.connectionsVisible = true; this.selected = n; this.scene.pin(n); this.emit('selection');
       this.loadEdges(n);
     }
     deselect() {

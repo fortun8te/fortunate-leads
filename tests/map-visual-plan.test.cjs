@@ -125,3 +125,9 @@ test('stable cohorts draw every member at every zoom without collision culling',
  }
  assert.equal(followRing({status:'client'}),'unknown');assert.equal(followRing({followed:true}),'outgoing');assert.equal(followRing({follows_me:true}),'incoming');assert.equal(followRing({followed:true,follows_me:true}),'mutual');
 });
+
+test('follower sizing has one third of the former radius spread',()=>{
+ const core=require('../web/map-core.js');
+ assert.equal(core.radiusFor({followers:1000000},1)-core.radiusFor({followers:0},1),7);
+ assert.equal(core.radiusFor({followers:null},1),14);
+});

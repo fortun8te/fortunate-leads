@@ -24,7 +24,7 @@
     if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
-  const savedDensity = () => { try { return root.localStorage?.getItem('fortunate.map.count'); } catch (_) { return null; } };
+  const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000].includes(n)?n:500; } catch (_) { return 500; } };
   const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
@@ -86,12 +86,13 @@
     constructor(refs, host) {
       this.r = refs; this.host = host;
       this.canvas = refs.canvas; this.ctx = this.canvas.getContext('2d');
-      const Model = root.UniverseMapModel || MapModel;
+      const Model = MapModel;
       this.model = new Model({
         container: refs.canvasBox,
         fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
+      this.model.cam.set(.5,.5,1.2);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
       this.portraits = new PortraitCache({ createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
@@ -701,7 +702,7 @@
     buildStatic() {
       const r = this.r;
       this.density = h('select', { 'aria-label': 'People per page' },
-        ...[250, 500, 1000, 10000, 50000, 200000].map(n => h('option', { value: n, text: `${int(n)} people` })));
+        ...[500, 1000, 3000].map(n => h('option', { value: n, text: `${int(n)} people` })));
       this.density.value = this.model.density;
       this.previous = h('button', { type: 'button', text: 'Previous', 'aria-label': 'Previous people' });
       this.next = h('button', { type: 'button', text: 'Next', 'aria-label': 'Next people' });

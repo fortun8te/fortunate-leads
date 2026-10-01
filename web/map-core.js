@@ -242,11 +242,11 @@
     equal:'Every person has the same bubble size.'
   };
   const radiusFor = (n, k, size = 'followers') => {
-    let base = 7;
+    let base = 14;
     if (size === 'equal') base = 14;
     else if (size === 'connections') base = clamp(7 + 6 * Math.sqrt(Math.max(0, +n.source_count || 0)), 7, 28);
     else if (size === 'fit') base = { strong: 24, good: 16, weak: 10, unread: 7 }[n.fit] || 7;
-    else if (n.followers != null) base = 7 + 21 * Math.pow(clamp((Math.log10(1 + Math.max(0, +n.followers || 0)) - 2) / 4, 0, 1), 2);
+    else if (n.followers != null) base = 14 + 7 * Math.pow(clamp((Math.log10(1 + Math.max(0, +n.followers || 0)) - 2) / 4, 0, 1), 2);
     return base * clamp(.85 + .15 * Math.sqrt(k), .85, 1.35);
   };
   const distanceKey = { g: 'centre', t: 'Closer portraits have stronger recorded network evidence. Positions are evenly spaced for readability; distance is an ordering, not a measure of friendship.', s: 'Distance: evidence' };
