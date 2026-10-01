@@ -55,7 +55,7 @@ def read_config(repo):
 def connectable(conn, profile):
     row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (profile['lane_id'],)).fetchone()
     return bool(row and str(row['ig_id']) == profile['ig_id'] and row['collection_backend'] == 'chrome'
-                and not row['hold'] and accounts.isolation_allows(conn, row))
+                and not row['hold'] and not accounts.collection_protected(conn, row) and accounts.isolation_allows(conn, row))
 
 
 def wanted(conn, profile):
@@ -180,8 +180,9 @@ def _selected(repo, conn, body):
         if len(profiles) != len(selected):
             raise ValueError('A selected account has no saved Chrome profile. Check account setup.')
     else:
-        profiles = [profile for profile in profiles if conn.execute(
-            'SELECT 1 FROM accounts WHERE lane_id=? AND paused=0', (profile['lane_id'],)).fetchone()]
+        profiles = [profile for profile in profiles if (row := conn.execute(
+            'SELECT * FROM accounts WHERE lane_id=? AND paused=0', (profile['lane_id'],)).fetchone())
+            and not accounts.collection_protected(conn, row)]
     if not profiles:
         raise ValueError('No saved Chrome profiles are configured. Check account setup.')
     if any(not connectable(conn, profile) for profile in profiles):

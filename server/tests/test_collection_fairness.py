@@ -95,13 +95,14 @@ class ExperimentEligibilityTest(unittest.TestCase):
         for version, identity, main, expected in (
                 ('3.9.17','101',0,self.small),
                 ('3.9.21','999',0,self.small),
-                ('3.9.21','101',1,self.small),
+                ('3.9.21','101',1,None),
                 ('3.9.20','101',0,self.small),
                 ('3.9.21','101',0,self.large)):
             with self.subTest(version=version,identity=identity,main=main):
                 self.conn.execute('UPDATE accounts SET version=?,ig_id=?,is_main=? WHERE lane_id=?',
                                   (version,identity,main,'lane'))
-                self.assertEqual(self.pick(('list',))['id'],expected)
+                job = self.pick(('list',))
+                self.assertEqual(job['id'] if job else None, expected)
 
     def test_private_experiment_is_not_reopened_as_unpinned_work(self):
         self.conn.execute("UPDATE jobs SET experiment_viewer_ig_id='999',page_size=100,state='done' WHERE id=?",(self.large,))

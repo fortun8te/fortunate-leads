@@ -194,13 +194,14 @@ class CollectionIntegrityTest(unittest.TestCase):
                          ('leased', 'lane-b', 'new-token'))
 
     def test_new_list_account_keeps_main_accounts_in_flight_page(self):
-        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('me',1)")
         db.queue_list(self.conn, 'seed', 'following')
         self.conn.commit()
         main = {'lane': ['lane-a'], 'handle': ['me'], 'ig_id': ['101']}
         other = {'lane': ['lane-b'], 'handle': ['other'], 'ig_id': ['102']}
         first = server.ext_next(self.conn, main, {'version': '3.9.17'})['job']
         self.assertEqual(first['seed'], 'seed')
+        self.conn.execute("UPDATE accounts SET is_main=1 WHERE lane_id='lane-a'")
+        self.conn.commit()
 
         # A second account changes who gets future list work. The page already
         # in flight must still be accepted under the original lease token.

@@ -60,7 +60,7 @@ for (const [theme, t] of Object.entries({dark, light})) {
 
 test('map explains its display limit and provides a textual alternative', () => {
   assert.match(html, /id="map-q"[^>]*aria-label="Find a person on the map"/);
-  assert.match(html, /id="map-size"[^>]*aria-label="Bubble size"/);
+  assert.match(html, /id="map-size"[^>]*aria-label="Map view"/);
   assert.match(html, /id="map-follow-filter"[^>]*aria-label="Show connections"/);
   assert.match(html, /id="map-shown"/);
   assert.match(html, /<canvas[^>]*aria-label="[^"]*Open Leads/);

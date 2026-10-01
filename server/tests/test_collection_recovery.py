@@ -61,16 +61,24 @@ class RecoveryTest(lanes.Base):
         self.assertIsNone(self.nxt('a','profile')['job'])
         self.assertEqual(self.nxt('b','profile')['job']['handle'],'someone')
 
-    def test_cached_main_bio_released_when_alternate_connects(self):
-        self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
+    def test_cached_main_bio_is_blocked_and_keeps_lease_until_expiry(self):
         self.conn.execute("INSERT INTO jobs(kind,handle,priority) VALUES('profile','someone',100)")
         self.conn.commit()
-        job = self.nxt('a','profile')['job']  # Main-only setup remains usable.
+        job = self.nxt('a','profile')['job']
+        self.conn.execute("UPDATE accounts SET is_main=1 WHERE lane_id='lane-a'")
+        self.conn.commit()
         self.post('b', '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         out = self.post('a','/api/ext/request',{'action':'acquire','kind':'profile',
                         'job_id':job['id'],'lease_token':job['lease_token']})[1]
         self.assertFalse(out['granted'])
-        self.assertTrue(out['stale'])
+        self.assertIsNone(self.nxt('b','profile')['job'])
+        self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE id=?", (job['id'],))
+        self.conn.commit()
+        self.assertIsNone(self.nxt('b','profile')['job'])
+        # Expired profile reads keep their existing retry delay.
+        self.assertIsNotNone(self.conn.execute('SELECT retry_not_before FROM jobs WHERE id=?', (job['id'],)).fetchone()[0])
+        self.conn.execute("UPDATE jobs SET retry_not_before='2000-01-01' WHERE id=?", (job['id'],))
+        self.conn.commit()
         self.assertEqual(self.nxt('b','profile')['job']['handle'],'someone')
 
     def test_historical_route_wait_hands_saved_cursor_to_healthy_viewer(self):

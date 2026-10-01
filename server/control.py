@@ -151,10 +151,7 @@ def active_request(conn, now):
 
 
 def reserved(conn, row, kind):
-    if not row['is_main']:
-        return False
-    return (accounts.list_share(conn, accounts.rows(conn)) <= 0 if kind == 'list'
-            else accounts.main_bios_reserved(conn, row))
+    return accounts.collection_protected(conn, row)
 
 
 def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
@@ -196,7 +193,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         return dict(out, state='running', now=f"{a['name']} is reading {what}{more}.")
     if not queue:
         return dict(out, state='idle', now='No collection work waiting.')
-    able = [a for a in able if not reserved(conn, rows[a['lane_id']], kind) or a['job'] and a['job']['kind'] == kind]
+    able = [a for a in able if not reserved(conn, rows[a['lane_id']], kind)]
     if not able:
         return dict(out, state='waiting', now='Your main account is reserved. Waiting for an alternate account.')
     waits = [(w, a) for a in able for w in [lane_wait(conn, rows[a['lane_id']], kind, now)] if w]
@@ -210,13 +207,15 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
 def account_out(conn, a, row, now, all_paused):
     request = active_request(conn, now)
     active = request.get('lane') == a['lane_id']
-    base = {'active': active, 'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
+    base = {'collection_protected': accounts.collection_protected(conn, row), 'active': active, 'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
             'status': a['status'] if active or a['status'] != 'running' else 'online', 'hour': a['hour'], 'today': a['today'], 'wait': None,
             'budget': a['budget'], 'hold': a['hold'], 'job': a['job']}
     if active:
-        stopping = a['paused'] or stage_paused(conn, 'lists' if request.get('kind') == 'list' else 'bios')
+        stopping = base['collection_protected'] or a['paused'] or stage_paused(conn, 'lists' if request.get('kind') == 'list' else 'bios')
         return dict(base, state='stopping' if stopping else 'running',
                     now='Finishing the current Instagram request.' if stopping else 'Reading an Instagram list.' if request.get('kind') == 'list' else 'Reading an Instagram profile.')
+    if base['collection_protected']:
+        return dict(base, state='idle', reason_code='main_reserved', now='Personal use only. Automated collection is disabled.')
     if a['paused']:
         return dict(base, state='paused', now='Paused by you.')
     if not a['online']:
@@ -371,7 +370,7 @@ def apply(conn, b):
                 raise ValueError('Each selected account needs its existing lane and Instagram identity.')
             row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (selection.get('lane_id'),)).fetchone()
             if (not row or not row['ig_id'] or selection.get('ig_id') != row['ig_id'] or row['lane_id'] in allowed
-                    or row['ig_id'] in allowed.values() or accounts.warning_for(conn, row) or row['hold']
+                    or row['ig_id'] in allowed.values() or accounts.collection_protected(conn, row) or accounts.warning_for(conn, row) or row['hold']
                     or not row['last_seen'] or now - utc(row['last_seen']) > accounts.RELEASE_AFTER
                     or row['state'] == 'network_wait' or row['collection_backend'] != 'chrome'
                     or tuple(int(v) for v in str(row['version'] or '0').split('.') if v.isdigit()) < (3, 9, 30)

@@ -384,21 +384,14 @@ class LaneTest(Base):
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
         self.seeds('s1')
-        got = self.nxt('a', 'list')['job']              # Michael's own account, alone: auto main, but still reads lists
-        self.assertEqual(got['kind'], 'list')
-        self.assertTrue(self.call('/api/accounts')[1]['accounts'][0]['is_main'])
-        self.assertIn('Your main account is the only one online, so it reads lists too — add a second account to protect it',
-                      [x['text'] for x in self.call('/api/accounts')[1]['alerts']])
-        self.assertIsNone(self.nxt('b', 'list')['job'])  # the main account's in-flight page keeps its lease
-        self.assertEqual(self.page('a', got, 2, 'c1')[1]['received'], 2)
-        jb = self.nxt('b', 'list')['job']                 # then the second account resumes at the saved cursor
-        self.assertEqual((jb['kind'], jb['cursor'], jb['received']), ('list', 'c1', 2))
+        self.assertIsNone(self.nxt('a', 'list,profile')['job'])
+        main = self.call('/api/accounts')[1]['accounts'][0]
+        self.assertTrue(main['is_main'])
+        self.assertTrue(main['collection_protected'])
+        self.assertEqual(self.nxt('b', 'list')['job']['kind'], 'list')
+        self.assertIsNone(self.nxt('a', 'list,profile')['job'])
+        self.call('/api/accounts/lane-b', {'role': 'bios'})
         self.assertIsNone(self.nxt('a', 'list')['job'])
-        self.assertIsNone(self.nxt('a', 'list,profile')['job'])   # main is reserved for ordinary bios too
-        self.call('/api/accounts/lane-b', {'role': 'bios'})   # nobody else takes lists: the main account does again
-        self.conn.execute("UPDATE jobs SET leased_until='2000-01-01' WHERE kind='list'")
-        self.conn.commit()
-        self.assertEqual(self.nxt('a', 'list')['job']['kind'], 'list')
 
     def test_main_stays_reserved_when_alts_reach_their_budget(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
@@ -446,7 +439,7 @@ class LaneTest(Base):
         saved = self.conn.execute("SELECT cursor,received FROM lists WHERE seed='target'").fetchone()
         self.assertEqual(tuple(saved), ('next', 25))
 
-    def test_main_access_fallback_requires_denials_from_offline_alts_too(self):
+    def test_main_never_falls_back_to_private_lists_denied_to_alternates(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
         for who in ('a', 'b', 'c'):
@@ -458,9 +451,9 @@ class LaneTest(Base):
         self.assertIsNone(self.nxt('a', 'list')['job'])
         self.conn.execute("INSERT INTO list_private_denials VALUES('target','followers','103',?)", (db.now(),))
         self.conn.commit()
-        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 'target')
+        self.assertIsNone(self.nxt('a', 'list')['job'])
 
-    def test_main_stays_reserved_with_offline_alt_but_explicit_share_is_respected(self):
+    def test_main_stays_reserved_even_with_legacy_explicit_share(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")
         self.conn.commit()
         for who in ('a', 'b'):
@@ -471,7 +464,7 @@ class LaneTest(Base):
         alerts = [x['text'] for x in self.call('/api/accounts')[1]['alerts']]
         self.assertIn('Your main account is reserved. Reconnect an alternate to continue lists.', alerts)
         self.call('/api/settings/accounts', {'main_list_share': 0.1})
-        self.assertEqual(self.nxt('a', 'list')['job']['seed'], 'target')
+        self.assertIsNone(self.nxt('a', 'list')['job'])
 
     def test_main_daily_budget_applies_to_access_fallback(self):
         self.conn.execute("INSERT INTO seeds(handle,is_me) VALUES('acct.a',1)")

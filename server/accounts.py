@@ -6,8 +6,8 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
   - a list sticks to the lane that started it (`lists.lane`) while that lane is healthy: seen within 10 min, not
     logged out / challenged, not paused and not in a list cooldown. Otherwise the list is released (`prev_lane` kept)
     and the next lane resumes it from the saved cursor;
-  - role lists|bios|both filters the job kinds; a main account (is_main) gets bios only (or lists up to
-    `main_list_share` of the last hour's pages) while alternates are configured for lists; with no alternates, it takes lists too.
+  - role lists|bios|both filters alternate accounts. Main accounts are excluded from automated collection,
+    including duplicate Chrome lanes for their Instagram identity.
 """
 import json
 import secrets
@@ -85,6 +85,18 @@ def account_from(q, b):
 
 def is_me(conn, handle):
     return bool(handle) and bool(conn.execute('SELECT 1 FROM seeds WHERE is_me=1 AND handle=?', (handle,)).fetchone())
+
+
+def collection_protected(conn, row):
+    """Main accounts are for personal use, never automated collection."""
+    if row is None:
+        return False
+    if row['is_main'] or is_me(conn, row['handle']):
+        return True
+    return bool(row['ig_id'] and (
+        conn.execute('SELECT 1 FROM accounts WHERE ig_id=? AND is_main=1 LIMIT 1', (row['ig_id'],)).fetchone()
+        or conn.execute('SELECT 1 FROM people p JOIN seeds s ON s.handle=p.handle '
+                        'WHERE p.ig_id=? AND s.is_me=1 LIMIT 1', (row['ig_id'],)).fetchone()))
 
 
 def local_day(value=None):
@@ -212,7 +224,7 @@ def budget_of(conn, row):
 
 
 def paused_for(conn, row):
-    return bool(db.get_setting(conn, 'paused')) or bool(row and (row['paused'] or not isolation_allows(conn, row)))
+    return bool(db.get_setting(conn, 'paused')) or bool(row and (row['paused'] or collection_protected(conn, row) or not isolation_allows(conn, row)))
 
 
 # ---------- health, release, handoff ----------
@@ -341,7 +353,7 @@ def list_share(conn, rows):
 
 def keeps_lists(conn, row, now, share=0.0):
     """Healthy and allowed to work lists (role, main-account protection)."""
-    return healthy(row, now) and identity_owner(conn, row, now) and not identity_cooling(conn, row, 'list', now) \
+    return not collection_protected(conn, row) and healthy(row, now) and identity_owner(conn, row, now) and not identity_cooling(conn, row, 'list', now) \
         and list_budget_left(conn, row, now) and (row['role'] or 'both') in ('lists', 'both') \
         and (not row['is_main'] or share > 0)
 
@@ -360,7 +372,7 @@ def viewer_may_access_list(conn, row, seed, direction):
 
 def eligible_for_list(conn, row, seed, direction, now):
     """The viewer can take this list right now."""
-    return healthy(row, now) and identity_owner(conn, row, now) and role_allows(row, 'list') \
+    return not collection_protected(conn, row) and healthy(row, now) and identity_owner(conn, row, now) and role_allows(row, 'list') \
         and not identity_cooling(conn, row, 'list', now) \
         and not (direction == 'followers' and follower_route_wait(conn, row, now)) \
         and list_budget_left(conn, row, now) and viewer_may_access_list(
@@ -474,7 +486,7 @@ def note_handoff(conn, seed, direction, frm, to, why):
 # ---------- leasing ----------
 
 def kinds_for(conn, row, kinds, now):
-    if identity_handoff_pending(conn, row, now):
+    if collection_protected(conn, row) or identity_handoff_pending(conn, row, now):
         return []
     role = row['role'] if row['role'] in ROLES else 'both'
     allowed = {'lists': ['list'], 'bios': ['profile'], 'both': ['list', 'profile']}[role]
@@ -643,7 +655,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     ok = [r['lane_id'] for r in accts if eligible(r) and (not r['is_main'] or share > 0)]
     okm = ','.join('?' * len(ok)) or "''"
     row = next((r for r in accts if r['lane_id'] == lane), None)
-    if not row or identity_handoff_pending(conn, row, now):
+    if not row or collection_protected(conn, row) or identity_handoff_pending(conn, row, now):
         return None
     kinds = [kind for kind in kinds if role_allows(row, kind) and owner(row)
              and not (kind == 'profile' and main_bios_reserved(conn, row))]
@@ -837,7 +849,7 @@ def out(conn, row, now, include_lists=True):
     own_budget = jload(row['budget'])
     return {'lane_id': row['lane_id'], 'ig_id': row['ig_id'], 'handle': row['handle'], 'label': row['label'], 'name': name_of(row),
             'role': row['role'], 'budget': budget_of(conn, row), 'budget_custom': isinstance(own_budget, dict),
-            'paused': bool(row['paused']), 'is_main': bool(row['is_main']), 'first_seen': row['first_seen'],
+            'paused': bool(row['paused']), 'is_main': bool(row['is_main']), 'collection_protected': collection_protected(conn, row), 'first_seen': row['first_seen'],
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
             'healthy': healthy(row, now) and row['state'] != 'network_wait', 'cooldown_until': full_cooldown(row, now),
@@ -913,12 +925,9 @@ def alerts(conn, now=None, accts=None):
     live = [a for a in accts if a['online'] and not a['paused'] and not a['hold']]
     if queued and live and not any(a['role'] in ('lists', 'both') for a in live):
         out_.append({'level': 'warn', 'lane_id': None, 'text': 'No online account takes lists — set one to lists or both'})
-    elif queued and live and not any(a['role'] in ('lists', 'both') and not a['is_main'] for a in live) \
-            and not float(db.get_setting(conn, 'main_list_share') or 0):
+    elif queued and live and not any(a['role'] in ('lists', 'both') and not a['collection_protected'] for a in live):
         out_.append({'level': 'info', 'lane_id': None,
-                     'text': ('Your main account is reserved. Reconnect an alternate to continue lists.'
-                              if any(not a['is_main'] and a['role'] in ('lists', 'both') for a in accts)
-                              else 'Your main account is the only one online, so it reads lists too — add a second account to protect it')})
+                     'text': 'Your main account is reserved. Reconnect an alternate to continue lists.'})
     return out_
 
 
@@ -1029,7 +1038,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
             key = (candidate, request_kind)
             if key not in eligibility:
                 row = live.get(candidate)
-                eligibility[key] = bool(row is not None and isolation_allows(conn, row) and request_kind in allowed
+                eligibility[key] = bool(row is not None and not collection_protected(conn, row) and isolation_allows(conn, row) and request_kind in allowed
                                         and role_allows(row, request_kind)
                                         and not (request_kind == 'profile' and main_bios_reserved(conn, row))
                                         and identity_owner(conn, row, now)

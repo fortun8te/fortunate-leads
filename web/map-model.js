@@ -7,6 +7,10 @@
   const { Camera, Flight, Scene, Cache, Latest, snapRect, viewQuery, debounceMax, clamp, K_MAX, cohortLayout } = Core;
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
+  const VIEW_MODES = [
+    { id: 'network', label: 'My network', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger recorded connection evidence; larger means more saved followers.' },
+    { id: 'shared', label: 'Shared audiences', size: 'connections', distance: 'Collected source audiences', description: 'Profiles seen in more collected source audiences are larger and closer. Shared audiences are not mutual friends.' }
+  ];
 
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
   // Trust the shape, not the server: keep only people with a place on the map.
@@ -41,9 +45,9 @@
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
       this.density = 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
-      this.size = 'followers'; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
+      this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = VIEW_MODES.find(mode => mode.id === this.viewMode).size; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
-      this.selected = null; this.edges = null; this.flight = null; this.goal = null; this.vel = null;
+      this.selected = null; this.edges = null; this.connectionsVisible = false; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
       this.load = this.load.bind(this);
       this.schedule = debounceMax(() => this.load(), 130, 420, o.timers);
@@ -114,7 +118,7 @@
     }
     apply(resp, at) {
       const previousRev = this.rev;
-      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size), clusters = [];
+      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size, this.viewMode), clusters = [];
       this.nextCursor = resp.next_cursor || null; this.cohort = true;
       if (resp.cohort_reset) {
         this.cursor = ''; this.pages = ['']; this.pageIndex = 0;
@@ -149,6 +153,13 @@
     pause(on) { this.paused = !!on; if (on) { this.schedule.cancel(); this.viewReq.cancel(); this.edgeReq.cancel(); this.searchReq.cancel(); this.locateReq.cancel(); this.pending = 0; this.hold = false; this.emit('busy'); } else if (!this.loaded) this.load(); }
 
     /* ----- modes and filters ----- */
+    setViewMode(id) {
+      const preset = VIEW_MODES.find(mode => mode.id === id);
+      if (!preset || (id === this.viewMode && this.size === preset.size)) return;
+      this.viewMode = id; this.size = preset.size;
+      this.repack();
+      this.emit('mode'); this.emit('size');
+    }
     setMode(mode) {
       if (mode === this.mode) return;
       this.mode=mode; this.emit('mode'); this.emit('scene');
@@ -185,14 +196,19 @@
     select(n) {
       this.locateReq.cancel();
       if (!n) return this.deselect();
-      this.selected = n; this.scene.pin(n); this.emit('selection');
+      this.connectionsVisible = false; this.selected = n; this.scene.pin(n); this.emit('selection');
       this.loadEdges(n);
     }
     deselect() {
       if (!this.selected) return false;
       this.locateReq?.cancel();
-      this.selected = null; this.edges = null; this.edgeReq.cancel(); this.scene.unpin(); this.scene.rebuild();
+      this.selected = null; this.edges = null; this.connectionsVisible = false; this.edgeReq.cancel(); this.scene.unpin(); this.scene.rebuild();
       this.emit('selection'); return true;
+    }
+    setConnectionsVisible(on) {
+      const visible = !!on && !!this.selected;
+      if (visible === this.connectionsVisible) return;
+      this.connectionsVisible = visible; this.emit('edges');
     }
     async loadEdges(n) {
       const ticket = this.edgeReq.begin(), mode = this.mode;
@@ -232,7 +248,7 @@
         }
         const a = place(s), b = place(t);
         if (!a || !b) continue;
-        lines.push({ a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, kind, other: String(other) });
+        lines.push({ a: { id: s, x: a.x, y: a.y }, b: { id: t, x: b.x, y: b.y }, kind, other: String(other) });
 
       }
       return { id: n.id, state: 'ready', lines, seeds };
@@ -263,7 +279,7 @@
         const members = this.scene.nodes.map(it => it.d).filter(it => String(it.id) !== String(this.world.me?.id));
         if (members.length >= this.density) members.pop();
         members.push(person);
-        const nodes = cohortLayout(members, this.world.me);
+        const nodes = cohortLayout(members, this.world.me, this.size, this.viewMode);
         this.scene.clear();
         this.scene.apply({ nodes, clusters: [] }, this.now(), { instant: true });
         this.select(nodes.find(it => String(it.id) === String(person.id)));
@@ -284,14 +300,14 @@
     release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
     setSizeEncoding(size) {
       if (!Core.SIZE_OPTIONS.some(o => o.id === size) || size === this.size) return;
-      this.size = size;
-      if (this.cohort) {
-        const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, size);
-        this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced ? 0 : 240, instant: true});
-        if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
-        this.emit('scene');
-      }
-      this.emit('size');
+      this.size = size; this.repack(); this.emit('size');
+    }
+    repack() {
+      if (!this.cohort) return;
+      const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, this.size, this.viewMode);
+      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced ? 0 : 240, instant: true});
+      if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
+      this.emit('scene');
     }
     interruptCamera() {
       this.locateReq.cancel(); this.flight=null; this.goal=null; this.vel=null;
@@ -331,7 +347,7 @@
     get idle() { return !this.flight && !this.goal && !this.vel && !this.scene.animating; }
   }
 
-  const api = { MapModel, cleanNode, cleanCluster, overview };
+  const api = { MapModel, cleanNode, cleanCluster, overview, VIEW_MODES };
   root.MapModel = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

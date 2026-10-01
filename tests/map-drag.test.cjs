@@ -15,7 +15,7 @@ test('portrait inspection drag leaves evidence and camera unchanged, then settle
  assert.equal(it.x,initial.x+60/model.cam.scale);assert.equal(it.y,initial.y-30/model.cam.scale);
  assert.deepEqual(it.d,initial);assert.deepEqual([model.cam.cx,model.cam.cy,model.cam.k],camera);
  view.finishNodeDrag(); assert.equal(it.dur,280);
- model.scene.step(it.t0+280,.28,false);
+ model.scene.step(it.t0+281,.281,false);
  assert.equal(it.x,initial.x);assert.equal(it.y,initial.y);assert.equal(it.dur,0);
 });
 test('cancelled or reduced-motion portrait drag restores immediately without requests', () => {
@@ -54,7 +54,7 @@ test('pointer gestures distinguish clicks, portrait dragging, empty-space pan, a
  send('pointerdown',100,100);send('pointermove',160,120);
  assert.notEqual(it.x,it.tx);assert.equal(counts().pans,0);
  send('pointerup',160,120);assert.equal(counts().activations,1);assert.equal(it.dur,280);
- model.scene.step(it.t0+280,.28,false);
+ model.scene.step(it.t0+281,.281,false);
  view.hit=null;send('pointerdown',100,100);send('pointermove',160,120);send('pointerup',160,120);
  assert.equal(counts().pans,1);
  view.hit={kind:'n',it};send('pointerdown',100,100);send('pointermove',160,120);send('pointercancel',160,120);

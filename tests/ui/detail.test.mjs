@@ -111,3 +111,11 @@ test('marking a status is optimistic, offers Undo and restores the previous stat
   toasts[0][1](); assert.equal(JSON.stringify(marks),JSON.stringify([[7,'contacted',{quiet:true}]]));
   await pending;
 });
+
+test('unclear rules evidence is not presented as a weak relationship or verified poor fit', () => {
+  const ctx=vm.createContext({fitOf:p=>p.business_fit>=70?'strong':p.business_fit>=45?'good':p.business_fit==null?'unread':'weak'});
+  vm.runInContext(source.slice(source.indexOf('function fitDescription('),source.indexOf('function fitBadge(')),ctx);
+  assert.equal(ctx.fitDescription({business_fit:34,role:'unclear',verdict:{model:'rules'}}),'DTC fit unclear');
+  assert.equal(ctx.fitDescription({business_fit:12,role:'agency',verdict:{model:'research'}}),'Low DTC fit');
+  assert.equal(ctx.fitDescription({business_fit:null}),'Not reviewed');
+});

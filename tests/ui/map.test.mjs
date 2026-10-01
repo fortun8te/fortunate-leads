@@ -218,3 +218,37 @@ test('compact tag editor focuses on reveal, preserves drafts on Escape, and keep
  await MapView.prototype.editTag.call(view,{id:1},'Founder',false);
  assert.equal(form.hidden,true);assert.equal(input.value,'');assert.equal(feedback.textContent,'Saved');assert.equal(focus.at(-1),'button');
 });
+
+test('map card merges stored relationships and manual tags without a duplicate Client', () => {
+  const { cardTags } = require('../../web/map-view.js');
+  assert.deepEqual(cardTags({ relationships: ['client', 'friend'], manual_tags: ['Client', 'Founder'] }), [
+    { label: 'Client', relationship: 'client' },
+    { label: 'Friend', relationship: 'friend' },
+    { label: 'Founder', relationship: undefined }
+  ]);
+  assert.equal(cardTags({ status: 'client' }).filter(tag => tag.relationship === 'client').length, 1);
+  assert.deepEqual(cardTags({ relationships: [], status: 'client' }), []);
+});
+
+test('map qualification distinguishes missing evidence, unclear rules and a scored estimate', () => {
+  const { cardFit } = require('../../web/map-view.js');
+  assert.equal(cardFit({ business_fit: 34 }).text, 'Not reviewed');
+  const unclear = cardFit({ business_fit: 34, verdict: { model: 'rules', role: 'unclear' } });
+  assert.equal(unclear.text, 'Unclear');
+  assert.match(unclear.detail, /Not enough evidence/);
+  const assessed = cardFit({ business_fit: 34, verdict: { model: 'rules', role: 'agency' } });
+  assert.equal(assessed.text, '34/100');
+  assert.match(assessed.detail, /Rules estimate.*physical-product/);
+  assert.equal(cardFit({ business_fit: 0, verdict: { model: 'rules', role: 'agency' } }).text, '0/100');
+});
+
+test('selected card overlays the map and keeps pipeline and connection detail closed initially', () => {
+  const css = readFileSync(new URL('../../web/map-view.css', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../web/map-view.js', import.meta.url), 'utf8');
+  const cardRule = css.match(/\.mv-card \{([^}]+)\}/)[1];
+  assert.match(cardRule, /position: absolute/);
+  assert.match(cardRule, /max-height: calc\(100% - 24px\)/);
+  assert.match(source, /h\('details', \{ class: 'mv-lead-stage' \}/);
+  assert.match(source, /h\('details', \{ class: 'mv-connections' \}/);
+  assert.match(source, /setConnectionsVisible\(connections\.open\)/);
+});

@@ -143,3 +143,14 @@ class OwnerAuthority(unittest.TestCase):
                 expected = {t['tag'] for t in owner.visible_tags(self.person(), raw)}
                 actual = {r[0] for r in self.conn.execute('SELECT t.tag FROM tags t LEFT JOIN marks tm ON tm.person_id=t.person_id WHERE ' + owner.visible_tag_sql())}
                 self.assertEqual(actual, expected, (status, source))
+
+class ClientExplanation(unittest.TestCase):
+    def test_saved_closeness_is_not_reported_as_unspecified(self):
+        result = owner.owner_recommendation({'status': 'client', 'familiarity': 'close'}, {'fit': 34})
+        self.assertIn('closely', result['reason'])
+        self.assertNotIn('unspecified', result['reason'])
+        self.assertEqual(result['fit'], 34)
+
+    def test_client_history_does_not_invent_closeness(self):
+        result = owner.owner_recommendation({'relationships': ['client']}, {'fit': 34})
+        self.assertEqual(result['reason'], 'Existing client relationship recorded by you.')

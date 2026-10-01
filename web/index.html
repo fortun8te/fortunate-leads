@@ -91,7 +91,7 @@
               <input id="map-q" type="search" role="combobox" aria-label="Find a person on the map" aria-expanded="false" aria-controls="map-search-results" aria-autocomplete="list" placeholder="Name or handle" autocomplete="off" spellcheck="false">
               <div id="map-search-results" class="mv-results" role="listbox" aria-label="Matching people" hidden></div>
             </div>
-            <label class="mv-size">Size by <select class="select" id="map-size" aria-label="Bubble size"></select></label>
+            <label class="mv-size">View <select class="select" id="map-size" aria-label="Map view"></select></label>
                 <label class="mv-size mv-follow">Show
                   <select class="select" id="map-follow-filter" aria-label="Show connections"><option value="all">Everyone</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
             <details class="mv-filters" id="map-filters">
@@ -339,10 +339,10 @@
           <summary><b>Advanced settings</b></summary>
           <div class="settings-setup-body">
             <section class="sg">
-              <div class="sg-h"><h2>Account protection</h2><p>Daily request caps and your main account’s share of list collection. Existing Instagram holds still apply.</p></div>
+              <div class="sg-h"><h2>Account protection</h2><p>Your main account stays out of automated collection. Instagram warnings stop collection.</p></div>
               <div class="card">
-                <form class="budget" id="budget" novalidate><label><span>List pages per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label><label><span>Bios per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label><button class="btn" id="b-save">Save limits</button></form>
-                <form class="budget" id="set-share-f" novalidate><label title="At 0, your main account reads bios only"><span>Main account's share of list pages, %</span><input class="input" id="set-share" type="number" min="0" max="100" inputmode="numeric"></label><button class="btn">Save share</button></form>
+                <form class="budget" id="budget" novalidate><label><span>List requests per day</span><input class="input" id="b-list" type="number" min="0" step="1" inputmode="numeric"></label><label><span>Profile requests per day</span><input class="input" id="b-profile" type="number" min="0" step="1" inputmode="numeric"></label><button class="btn" id="b-save">Save limits</button></form>
+                <p class="muted">Your main Instagram account is excluded from automated collection.</p>
               </div>
             </section>
             <section class="sg">

@@ -42,6 +42,7 @@ function mount(tags = [mention]) {
   vm.runInContext(section('function tagLabel(', 'function whyHTML('), context);
   vm.runInContext(section('let sugg =', 'function moveSuggest'), context);
   vm.runInContext(section('function leadConnectionLines(', 'function rowHTML('), context);
+  vm.runInContext(section('const HUMAN_RELATIONSHIPS =', '// Where the conversation stands.'), context);
   vm.runInContext(section('function renderDetail()', "$('#detail').addEventListener('click', async"), context);
   return { context, person, suggestions, detail, renderedTags };
 }
@@ -77,4 +78,13 @@ test('search suggests the factual mention tag while unrelated generated source t
   assert.equal(ui.suggestions.hidden, false);
   assert.match(ui.suggestions.innerHTML, /#"mentions you"/);
   assert.doesNotMatch(ui.suggestions.innerHTML, /internal mention metadata/);
+});
+
+
+test('known relationship labels render once while custom labels remain editable', () => {
+  const ui = mount([{tag:'Friend',source:'manual',grp:'relationship'},{tag:'Met at studio',source:'manual',grp:'custom'}]);
+  ui.person.relationships=['friend'];
+  vm.runInContext('renderDetail()',ui.context);
+  assert.doesNotMatch(ui.detail.innerHTML,/data-rmtag="Friend"/);
+  assert.match(ui.detail.innerHTML,/data-rmtag="Met at studio"/);
 });

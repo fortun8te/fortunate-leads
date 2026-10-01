@@ -132,6 +132,11 @@ const TIER_PRIORITY = { hot: 'high', warm: 'medium', cold: 'low', unread: 'unrea
 const isFitTag = (t) => /^Fit: /.test(t);
 const tagName = (t) => (typeof t === 'string' ? t : t.tag);
 const fitOf = (r) => r.business_fit != null ? (r.business_fit >= 70 ? 'strong' : r.business_fit >= 45 ? 'good' : 'weak') : (r.fit || 'unread');
+function fitDescription(p) {
+  const v = p.verdict || {};
+  if (v.model === 'rules' && (p.role || v.role) === 'unclear') return 'DTC fit unclear';
+  return ({strong:'Strong DTC fit',good:'Possible DTC fit',weak:'Low DTC fit',unread:'Not reviewed'})[fitOf(p)];
+}
 function fitBadge(r, cls = '') {
   const f = fitOf(r);
   const score = r.business_fit != null ? `<b>${esc(r.business_fit)}</b>` : '';
@@ -1261,7 +1266,7 @@ function renderDetail() {
   const oldEdges = (p.edge_history || []).filter((e) => e.state !== 'observed');
   const n = p.lists != null ? lists(p) : new Set(edges.map((e) => e.seed)).size;
   const tags = detailTagSelection(p);
-  const manualTags = [...tags.primary, ...tags.related].filter((t) => t.source === 'manual' && !(p.status === 'client' && /^client$/i.test(t.tag)));
+  const manualTags = [...tags.primary, ...tags.related].filter((t) => t.source === 'manual' && !humanRelationships(p).some(key => HUMAN_RELATIONSHIPS[key]?.toLowerCase() === t.tag.toLowerCase()));
   // Fit has its own ring in the summary, so verdict tags stay out of the tag list.
   const overviewTags = tags.primary.filter((t) => t.source !== 'manual' && rowTagFacet(t) !== 'verdict');
   const evidenceTags = tags.related.filter((t) => t.source !== 'manual');
@@ -1281,7 +1286,7 @@ function renderDetail() {
   const profile = detailProfileState(p);
   const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
   panel.dataset.owner = String(p.id);
-  const fitLabel = p.loading ? '' : ({ strong: 'Strong fit', good: 'Good fit', weak: 'Weak fit', unread: 'Not reviewed' })[fitOf(p)];
+  const fitLabel = p.loading ? '' : fitDescription(p);
   const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '');
   const connectionLines = leadConnectionLines({...p, edges});
   const connection = you || connectionLines.slice(0, 2).join(' · ') + (connectionLines.length > 2 ? ' +' + (connectionLines.length - 2) : '');
@@ -1300,7 +1305,7 @@ function renderDetail() {
         ${url ? `<a class="btn d-website" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Website${icon('external', 14)}</a>` : ''}
       </div>
     </section>
-    <section class="d-sec d-status-section" aria-labelledby="d-h-status"><h3 class="d-h" id="d-h-status">Status</h3>${statusChoicesHTML(p)}${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}</section>
+    <section class="d-sec d-status-section" aria-labelledby="d-h-status"><h3 class="d-h" id="d-h-status">Lead stage</h3>${statusChoicesHTML(p)}${p.owner_conflict ? `<p class="d-owner-conflict" role="status">${esc(p.owner_conflict)}</p>` : ''}</section>
     <section class="d-sec d-note-section"><h3 class="d-h"><label for="note">Note</label><span class="grow"></span><span class="d-note" id="note-st" role="status" aria-live="polite">${esc(noteStatus(p.id))}</span></h3><textarea class="input" id="note" data-id="${p.id}" aria-describedby="note-st" ${p.loading || p.failed ? 'disabled' : ''} placeholder="Add a note · @ to link">${esc(noteVal)}</textarea><div id="note-conflict" role="status">${noteConflictHTML(p.id)}</div><div id="note-insights">${noteInsightsHTML(p)}</div></section>
     ${workflowSummaryHTML(p)}
     <section class="d-sec d-labels-section" aria-labelledby="d-h-tags"><h3 class="d-h" id="d-h-tags">Tags</h3>
@@ -2427,6 +2432,7 @@ function collectionReason(value, fallback = 'Scraping paused') {
 function accountAccess(a) {
   if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
   if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
+  if (a.collection_protected || a.is_main) return {label:'Personal use only', detail:'Automated collection is blocked for this account.', kind:'quiet'};
   if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
   if (a.status === 'connection_error') return {label:'Connection trouble', detail:'Check Instagram in this Chrome profile. Retries keep your saved progress.', kind:'wait'};
   const instagramWait = a.cooldown_until && Date.parse(a.cooldown_until) > Date.now();
@@ -2469,32 +2475,32 @@ async function openInstagramAccount(lane, destination) {
 function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
-  const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
+  const protectedAccount = a.collection_protected || a.is_main;
   const budget = `${b.list ? `${int(b.list)} list requests/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} profile requests/day` : 'No cap'}`;
-  const work = a.collection_now || (a.paused ? 'Work paused' : a.collection_wait ? collectionReason(a.collection_wait, 'Scraping paused') : a.status === 'running'
+  const work = protectedAccount ? access.detail : a.collection_now || (a.paused ? 'Work paused' : a.collection_wait ? collectionReason(a.collection_wait, 'Scraping paused') : a.status === 'running'
     ? a.job ? jobText(a) : 'Waiting for a profile'
     : access.kind === 'ok' ? 'Ready' : access.detail);
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.collection_state === 'running' ? 'running' : a.collection_state ? a.online ? 'online' : 'offline' : a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
-      <span class="grow"></span>${accountInstagramHTML(a)}<button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
+    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.collection_state === 'running' ? 'running' : a.collection_state ? a.online ? 'online' : 'offline' : a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Excluded from automated collection">Main</span>' : ''}
+      <span class="grow"></span>${accountInstagramHTML(a)}${protectedAccount ? '' : `<button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button>`}</div>
     <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
     <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list requests used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
-    <div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    ${protectedAccount ? '' : `<div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`}
     <details class="adv acc-more"><summary>Account settings</summary>
     <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b><small>${esc(budget)}</small></div>
     <p class="muted acc-telemetry">${int(h.people)} list entries this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
 
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Alternates collect lists. Main is reserved for lists they cannot access, within its daily allowance."><i></i><span>Main account</span></button>
+      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Main accounts are excluded from automated collection"><i></i><span>Main account</span></button>
       <span class="grow"></span>
-      <form class="acc-bud" data-bud>
+      ${protectedAccount ? '' : `<form class="acc-bud" data-bud>
         <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">list pages/day</span></label>
         <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">bios/day</span></label>
         <button class="btn">Save</button>
-      </form>
+      </form>`}
     </div>
     <div class="acc-foot"><button class="btn ghost acc-edit" data-rename>Rename</button><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago</span>
       <span class="grow"></span>
@@ -2840,13 +2846,12 @@ $('#wiz').addEventListener('click', (e) => {
 });
 
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
-const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, share: null, dirty: false, modeBusy: false, processing: null, localProcessing: null, processingStale: true };
+const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, dirty: false, modeBusy: false, processing: null, localProcessing: null, processingStale: true };
 async function loadSettings() {
   loadBiofetch();
   await loadProcessingStatus();
-  const [llm, acc] = await Promise.allSettled([api.get('/api/llm'), api.get('/api/accounts')]);
+  const [llm] = await Promise.allSettled([api.get('/api/llm')]);
   if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
-  if (acc.status === 'fulfilled') SET.share = acc.value.main_list_share;
   renderSettings();
   if (!SET.health) checkHealth();
   loadScout();
@@ -3031,7 +3036,6 @@ function renderSettings() {
   const bL = $('#b-list'), bP = $('#b-profile'), bud = sc?.ext?.budget || {};
   if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bud.list ?? ''; bP.value = bud.profile ?? ''; }
   syncLook();
-  if (SET.share != null && document.activeElement?.id !== 'set-share') $('#set-share').value = Math.round(SET.share * 100);
   renderServices();
   const keys = (l?.providers || []).filter((p) => p.key);
   $('#set-keys-n').textContent = l ? plural(keys.length, 'key') : '';
@@ -3084,13 +3088,6 @@ $('#set-q').addEventListener('submit', async (e) => {
   const body = { workers: n('#set-workers'), llm_min: n('#set-llm-min'), bio_min: n('#set-bio-min') };
   if (Object.values(body).some(Number.isNaN)) { toast('Enter whole numbers only'); return; }
   try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
-});
-$('#set-share-f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const v = $('#set-share').value.trim();
-  if (!/^\d+$/.test(v) || +v > 100) { toast('Enter a share from 0 to 100'); return; }
-  try { const r = await api.post('/api/settings/accounts', { main_list_share: +v / 100 }); SET.share = r.main_list_share; toast(+v ? `Main account takes up to ${v} % of list pages` : 'Main account reads bios only'); document.activeElement?.blur(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
 });
 $('#set-key-f').addEventListener('submit', async (e) => {
   e.preventDefault();

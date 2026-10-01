@@ -3,7 +3,7 @@
  * copy in map-core.js. One canvas, one frame loop that sleeps when nothing moves. */
 (function (root) {
   'use strict';
-  const Core = root.MapCore, { MapModel } = root.MapModel;
+  const Core = root.MapCore, { MapModel, VIEW_MODES } = root.MapModel;
   const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, radiusFor, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
@@ -18,8 +18,43 @@
     return el;
   };
   const initials = (n) => String(n.name || n.handle || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).slice(0, 2).map((s) => s[0]).join('').toUpperCase() || '?';
+  const profileMetric = (person, shared) => {
+    const hasFollowers = person.followers != null && Number.isFinite(+person.followers) && +person.followers >= 0;
+    const hasSources = person.source_count != null && Number.isFinite(+person.source_count) && +person.source_count >= 0;
+    if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
+    return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
+  };
+  const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
+
+  const RELATIONSHIP_TAGS = {
+    client: 'Client', worked_with: 'Worked with', colleague: 'Colleague',
+    friend: 'Friend', acquaintance: 'Acquaintance'
+  };
+  function cardTags(person) {
+    const relationships = Array.isArray(person.relationships) ? person.relationships
+      : person.status === 'client' ? ['client', 'worked_with'] : [];
+    const tags = new Map();
+    for (const key of relationships) {
+      if (RELATIONSHIP_TAGS[key]) tags.set(RELATIONSHIP_TAGS[key].toLowerCase(), { label: RELATIONSHIP_TAGS[key], relationship: key });
+    }
+    for (const label of person.manual_tags || []) {
+      const key = label.toLowerCase();
+      if (!tags.has(key)) tags.set(key, { label, relationship: Object.keys(RELATIONSHIP_TAGS).find(k => RELATIONSHIP_TAGS[k].toLowerCase() === key) });
+    }
+    return [...tags.values()];
+  }
+  function cardFit(person) {
+    const verdict = person.verdict;
+    if (!verdict) return { text: 'Not reviewed', detail: 'Checks for physical-product brands.' };
+    if (verdict.model === 'rules' && verdict.role === 'unclear') {
+      return { text: 'Unclear', detail: 'Not enough evidence of a physical-product brand.' };
+    }
+    const score = person.business_fit ?? verdict.content_fit;
+    if (score == null) return { text: 'Not reviewed', detail: 'Checks for physical-product brands.' };
+    return { text: Math.round(score) + '/100', detail: (verdict.model === 'rules' ? 'Rules estimate' : 'Profile estimate') + ' for physical-product brands.' };
+  }
 
   // Turn a CSS colour into [r,g,b] using the canvas itself, so any notation works.
   function rgbOf(ctx, css, fallback) {
@@ -35,7 +70,7 @@
       this.r = refs; this.host = host;
       this.canvas = refs.canvas; this.ctx = this.canvas.getContext('2d');
       this.model = new MapModel({
-        fetchJson: (u, o) => host.fetchJson(u, o), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
+        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
@@ -61,7 +96,7 @@
       if (what === 'stale') this.renderStale();
       if (what === 'scene') this.renderStale();
       if (what === 'selection') { if (!this.model.selected || this.cardId !== this.model.selected.id) this.renderCard(); else this.updateCardFacts(); this.invalidate(); }
-      if (what === 'mode') { this.renderModes(); this.renderLegend(); this.invalidate(); }
+      if (what === 'mode') { try { root.localStorage?.setItem('fortunate.map.view', this.model.viewMode); } catch (_) {} this.renderModes(); this.renderLegend(); this.invalidate(); }
       if (what === 'filters') this.renderFilters();
     }
 
@@ -142,8 +177,8 @@
       const font = (w, px) => `${w} ${px}px ${P.sans}`;
 
       this.paintGuides(ctx, P, m, cam, S, sx, sy, want);
-      const sel = m.selected, edges = m.edges && sel && m.edges.id === sel.id ? m.edges : null;
-      const dim = edges && edges.state === 'ready' ? 0.5 : 1;
+      const sel = m.selected, edges = m.connectionsVisible && m.edges && sel && m.edges.id === sel.id ? m.edges : null;
+      const dim = 1;
 
       const hovered = this.hover;
       const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode, m.size);
@@ -303,10 +338,9 @@
     }
     paintEdges(ctx, P, edges, sx, sy, now, sel) {
       const a = clamp((now - this.edgeAt) / 260, 0, 1), reduced = this.model.reduced;
-      ctx.globalAlpha = reduced ? 1 : a;
+      ctx.globalAlpha = (reduced ? 1 : a) * .4;
       for (const l of edges.lines) {
-        const follows = l.kind === 'follows' || l.kind === 'follows_you';
-        ctx.strokeStyle = follows ? P.accent : P.fg3; ctx.lineWidth = follows ? 1.25 : 1;
+        ctx.strokeStyle = P.fg3; ctx.lineWidth = .75;
         ctx.setLineDash(l.kind === 'mutual' ? [4, 4] : []);
         const from = this.model.scene.get(l.a.id) || l.a, to = this.model.scene.get(l.b.id) || l.b;
         ctx.beginPath(); ctx.moveTo(sx(from.x), sy(from.y)); ctx.lineTo(sx(to.x), sy(to.y)); ctx.stroke();
@@ -446,7 +480,7 @@
       this.r.zoomOut.addEventListener('click', () => this.zoomCentre(1 / 1.6));
       this.r.fit.addEventListener('click', () => m.fit());
       this.r.me.addEventListener('click', () => m.world.me && m.flyTo({ cx: m.world.me.x, cy: m.world.me.y, k: Math.max(m.cam.k, 3) }, 700));
-      this.r.size?.addEventListener('change', () => m.setSizeEncoding(this.r.size.value));
+      this.r.size?.addEventListener('change', () => m.setViewMode(this.r.size.value));
       // Search.
       const input = this.r.q; let timer = 0;
       input.addEventListener('input', () => { this.closeResults(); clearTimeout(timer); timer = setTimeout(() => this.runSearch(), 160); if (!input.value.trim()) this.closeResults(); });
@@ -510,8 +544,8 @@
         tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? d.label.replace(/^(Around |Audience of )/, '') + '. ' : '') + 'Click to explore this group.' }));
       } else {
         tip.append(h('b', { text: d.name || '@' + d.handle }), h('span', { text: '@' + d.handle }),
-          h('span', { text: this.model.size === 'connections' ? `${int(d.source_count || 0)} collected source audiences` : this.model.size === 'followers' ? d.followers == null ? 'Follower count unknown' : `${int(d.followers)} followers` : this.model.size === 'equal' ? 'Equal portrait sizes' : `${FIT_LABEL[d.fit] || 'Unread'} fit` }),
-          h('span', { text: `${FIT_LABEL[d.fit] || ''} fit${d.status ? ' · ' + SLABEL(d.status) : ''}` }));
+          h('span', { text: profileMetric(d, this.model.viewMode === 'shared') }));
+        if (d.status) tip.append(h('span', { text: SLABEL(d.status) }));
       }
       tip.hidden = false;
     }
@@ -521,7 +555,7 @@
       const m = this.model;
       if (!hit) { m.deselect(); return; }
       if (hit.kind === 'c') { const [wx, wy] = [hit.it.x, hit.it.y]; m.flyTo({ cx: wx, cy: wy, k: clamp(m.cam.k * 3.4, 1, Core.K_MAX) }, 700); m.load({ cam: { cx: wx, cy: wy, k: clamp(m.cam.k * 3.4, 1, Core.K_MAX) } }); return; }
-      m.select(hit.it.d); this.ensureVisible(hit.it);
+      m.select(hit.it.d);
     }
     // Keep the chosen person clear of the edges, and above the sheet on a phone.
     ensureVisible(it) {
@@ -556,7 +590,7 @@
       else if (state === 'none') box.append(h('p', { class: 'mv-r-note', text: 'No one matches. Try a name or handle.' }));
       else if (state === 'error') box.append(h('p', { class: 'mv-r-note', text: 'Search isn’t available. Try again.' }));
       else list.forEach((n, i) => box.append(h('button', { type: 'button', role: 'option', id: 'mv-result-' + i, tabindex: '-1', 'data-i': i, 'aria-selected': String(i === this.active), class: 'mv-r' + (i === this.active ? ' on' : '') },
-        h('b', { text: '@' + n.handle }), h('span', { text: n.name || '' }), h('i', { text: FIT_LABEL[n.fit] || '' }))));
+        h('b', { text: '@' + n.handle }), h('span', { text: n.name || '' }), h('i', { text: profileMetric(n, this.model.viewMode === 'shared') }))));
     }
     moveActive(d) {
       this.active = (this.active + d + this.results.length) % this.results.length;
@@ -584,12 +618,13 @@
       this.next.addEventListener('click', () => this.model.browse(1));
       r.fit.setAttribute('aria-label', 'Show this page');
       r.fit.title = 'Show this page';
-      r.size?.replaceChildren(...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
-      if (r.size) r.size.value=this.model.size;
+      r.size?.replaceChildren(...VIEW_MODES.map(o=>h('option',{value:o.id,text:o.label})));
+      if (r.size) r.size.value=this.model.viewMode;
       this.renderModes();
       this.renderFilters();
     }
     renderModes() {
+      if (this.r.size) { this.r.size.value = this.model.viewMode; this.r.size.title = VIEW_MODES.find(mode => mode.id === this.model.viewMode)?.description || ''; }
       if (this.r.filters.follow) { this.r.filters.follow.disabled = !!this.model.fallback; this.r.filters.follow.title = this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
       this.r.me.hidden = !this.model.world.me;
     }
@@ -602,7 +637,11 @@
       this.r.filtersBtn.setAttribute('aria-label', n ? `Filters, ${plural(n, 'filter')} on` : 'Filters');
     }
     renderLegend() {
-      const rows = this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Position is not a relationship' }, { g: 'size', t: 'Bigger dot means a stronger fit.', s: 'Size: fit' }] : LEGENDS[this.model.mode] || [], box = this.r.legend;
+      const shared = this.model.viewMode === 'shared';
+      const rows = this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
+        { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: stronger connection evidence', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Distance orders the saved page by recorded network evidence, not personal familiarity.' },
+        { g: 'size', s: shared ? 'Larger: more shared audiences' : 'Larger: more followers', t: SIZE_HELP[this.model.size] }
+      ], box = this.r.legend;
       const glyph = (g) => {
         const svg = (inner) => { const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 20 14'); s.setAttribute('width', '20'); s.setAttribute('height', '14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = inner; return s; };
         switch (g) {
@@ -618,8 +657,7 @@
           default: return svg('');
         }
       };
-      const encoded = rows.map(row => row.g === 'size' ? {g:'size',s:`Size: ${SIZE_OPTIONS.find(o=>o.id===this.model.size)?.label.toLowerCase() || 'followers'}`,t:SIZE_HELP[this.model.size]} : row);
-      box.replaceChildren(...encoded.map((row) => h('li', {}, h('span', { tabindex: '0', role: 'note', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
+      box.replaceChildren(...rows.map((row) => h('li', {}, h('span', { tabindex: '0', role: 'note', class: 'mv-key', title: row.t, 'aria-label': `${row.s || row.t}. ${row.t}` }, glyph(row.g), h('span', { text: row.s || row.t })))));
       this.measureHud(); this.invalidate();
     }
     renderCount(announce = true) {
@@ -682,7 +720,7 @@
       const same = this.cardId === n.id;
       this.cardId = n.id; this.note = null; this.noteRead = (this.noteRead || 0) + 1; this.r.pane.classList.add('has-card');
       card.hidden = false;
-      const summary = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['Fit', FIT_LABEL[n.fit] || 'Unknown']];
+      const summary = [['Followers', n.followers == null ? 'Unknown' : int(n.followers)], ['DTC fit', 'Loading…']];
       const facts = [['Network', Core.closenessWords(n.closeness || 0)]];
       if (n.source_count != null) facts.push(['Sources', int(n.source_count)]);
 
@@ -699,11 +737,8 @@
           avatar,
           h('div', { class: 'mv-who' }, h('b', { text: n.name || '@' + n.handle }), h('span', { text: '@' + n.handle })),
           h('button', { type: 'button', class: 'mv-x', 'data-act': 'close', 'aria-label': 'Close details', title: 'Close (esc)', text: '×' })),
-        h('label', { class: 'mv-quick-status' }, h('span', { text: 'Status' }),
-          h('select', { 'aria-label': 'Lead status' }, h('option', { value: '', text: 'No status' }),
-            this.host.statuses.map(status => h('option', { value: status, text: SLABEL(status) })))),
         h('section', { class: 'mv-tags' },
-          h('div', { class: 'mv-tag-head' }, h('h4', { text: 'Tags' }),
+          h('div', { class: 'mv-tag-head' }, h('h4', { text: 'Relationship & tags' }),
             h('button', { type: 'button', class: 'mv-tag-add', text: 'Add tag', 'aria-expanded': 'false', 'aria-controls': 'mv-tag-form' })),
           h('div', { class: 'mv-tag-chips' }),
           h('form', { class: 'mv-tag-form', id: 'mv-tag-form', hidden: true },
@@ -711,6 +746,10 @@
             h('datalist', { id: 'mv-tag-options' }), h('button', { class: 'btn', type: 'submit', text: 'Add' })),
           h('p', { class: 'mv-tag-feedback', role: 'status' })),
         h('dl', { class: 'mv-facts mv-summary' }, summary.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
+        h('details', { class: 'mv-lead-stage' }, h('summary', { text: 'Lead stage' }),
+          h('label', { class: 'mv-quick-status' }, h('span', { text: 'Stage' }),
+            h('select', { 'aria-label': 'Lead status' }, h('option', { value: '', text: 'Not in pipeline' }),
+              this.host.statuses.filter(status => status !== 'client').map(status => h('option', { value: status, text: SLABEL(status) }))))),
         h('details', { class: 'mv-connections' }, h('summary', { text: 'Connections' }),
           h('dl', { class: 'mv-facts' }, facts.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
           h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Sources' }), h('ul', { class: 'mv-chips', id: 'mv-chips' }))),
@@ -719,8 +758,12 @@
           h('button', { type: 'button', class: 'btn', 'data-act': 'note', 'aria-expanded': 'false', text: 'Note' })),
         h('div', { class: 'mv-note', hidden: true }));
       const statusSelect = card.querySelector('.mv-quick-status select');
-      statusSelect.value = n.status || '';
+      statusSelect.value = n.status === 'client' ? '' : n.status || '';
       statusSelect.addEventListener('change', () => this.setStatus(n, statusSelect.value || null));
+      const connections = card.querySelector('.mv-connections');
+      connections.addEventListener('toggle', () => {
+        if (this.model.selected?.id === n.id) this.model.setConnectionsVisible(connections.open);
+      });
       const tagForm = card.querySelector('.mv-tag-form');
       card.querySelector('.mv-tag-add').addEventListener('click', () => this.toggleTagForm(tagForm.hidden));
       tagForm.addEventListener('keydown', event => {
@@ -743,7 +786,7 @@
     updateCardFacts() {
       const n = this.model.selected;
       const status = this.r.card.querySelector('.mv-quick-status select');
-      if (status) status.value=n.status||'';
+      if (status) status.value = n.status === 'client' ? '' : n.status || '';
     }
     renderSeeds() {
       const ul = this.r.card.querySelector('#mv-chips'), e = this.model.edges, n = this.model.selected;
@@ -808,23 +851,34 @@
         const person = await this.host.person(n.id);
         if (this.model.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
         this.paintTags(n, person, box);
+        const fit = cardFit(person);
+        const fitValue = this.r.card.querySelector('.mv-summary > div:last-child dd');
+        fitValue.textContent = fit.text;
+        fitValue.title = fit.detail;
         feedback.textContent = '';
         if (this.host.tags) {
           const tags = await this.host.tags();
           if (box.isConnected) {
-            const names = [...new Set(tags.map(t => t.tag))];
+            const names = [...new Set([...Object.values(RELATIONSHIP_TAGS), ...tags.map(t => t.tag)])];
             box.querySelector('datalist').replaceChildren(...names.map(tag => h('option', { value: tag })));
           }
         }
       } catch (_) {
-        if (box.isConnected) feedback.textContent = 'Couldn’t load tags. Reopen this profile to retry.';
+        if (this.model.selected?.id === n.id && box.isConnected) {
+          feedback.textContent = 'Couldn’t load profile details. Reopen to retry.';
+          const fitValue = this.r.card.querySelector('.mv-summary > div:last-child dd');
+          if (fitValue?.textContent === 'Loading…') fitValue.textContent = 'Unavailable';
+        }
       }
     }
     paintTags(n, person, box) {
-      const tags = person.manual_tags || [];
+      const tags = cardTags(person);
       box.querySelector('.mv-tag-chips').replaceChildren(...tags.map(tag => {
-        const button = h('button', { type: 'button', class: 'mv-chip', text: tag + ' ×', 'aria-label': 'Remove ' + tag });
-        button.addEventListener('click', () => this.editTag(n, tag, true));
+        const button = h('button', {
+          type: 'button', class: 'mv-chip' + (tag.relationship ? ' mv-relationship' : ''),
+          'data-relationship': tag.relationship, text: tag.label + ' ×', 'aria-label': 'Remove ' + tag.label
+        });
+        button.addEventListener('click', () => this.editTag(n, tag.label, true));
         return button;
       }));
     }
@@ -902,7 +956,7 @@
     return view;
   }
 
-  const api = { MapView, mount, initials };
+  const api = { MapView, mount, initials, cardTags, cardFit };
   root.MapViewModule = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

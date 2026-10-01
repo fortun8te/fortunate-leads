@@ -36,12 +36,11 @@ def summary(conn, lists, accts, now=None):
         return waiting('idle', 'Current queue finished' if lists and not out['partial'] and not out['needs_review']
                        else 'No lists waiting')
     rows = {row['lane_id']: row for row in accounts.rows(conn)}
-    share = accounts.list_share(conn, list(rows.values()))
     # ETA uses the same main-account reservation as list assignment. An idle
     # protected main cannot stand in for an offline or daily-capped alternate.
     assigned = [account for account in accts if (account['role'] or 'both') in ('lists', 'both')
                 and account['lane_id'] in rows
-                and (not rows[account['lane_id']]['is_main'] or share > 0)]
+                and not accounts.collection_protected(conn, rows[account['lane_id']])]
     online = [account for account in assigned if account['online'] and not account['paused']]
     usable = [account for account in online if not account['hold'] and account.get('status') != 'connection_error']
     ready = [account for account in usable

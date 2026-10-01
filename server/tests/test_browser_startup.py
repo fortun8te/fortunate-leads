@@ -46,6 +46,15 @@ class BrowserStartupTests(unittest.TestCase):
             self.assertEqual(len(call.args[0]), 3)
         self.assertFalse(db.get_setting(self.conn, 'paused'))
 
+    def test_main_and_duplicate_main_identity_never_launch_for_collection(self):
+        self.conn.execute("UPDATE accounts SET is_main=1 WHERE lane_id='lane0'")
+        self.conn.execute("UPDATE accounts SET ig_id='100' WHERE lane_id='lane1'")
+        self.profiles[1]['ig_id'] = '100'
+        self.write_config()
+        self.conn.commit()
+        self.assertEqual(self.run_launch()['requested'], 1)
+        self.assertEqual(self.launch.call_args.args[0][1], '--profile-directory=Profile 4')
+
     def test_no_config_or_disabled_means_no_launch(self):
         self.write_config(False)
         self.assertEqual(self.run_launch()['requested'], 0)

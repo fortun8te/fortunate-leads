@@ -238,10 +238,14 @@
     return s;
   }
 
-  function cohortLayout(people, owner, size = 'followers') {
+  function cohortLayout(people, owner, size = 'followers', distance = 'network') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
-    members.sort((a, b) => (b.closeness || 0) - (a.closeness || 0)
-      || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
+    const distanceValue = n => {
+      const value = distance === 'shared' ? n.source_count : n.closeness;
+      return value != null && Number.isFinite(+value) ? +value : -1;
+    };
+    members.sort((a, b) => distanceValue(b) - distanceValue(a)
+      || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
     const weights = members.map(n => radiusFor(n, 1, size));
     const largest = Math.max(...weights), outer = .46, centre = .06;

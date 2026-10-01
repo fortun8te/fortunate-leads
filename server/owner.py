@@ -84,7 +84,9 @@ def owner_recommendation(person, verdict):
     """Keep model business-fit evidence separate from the owner's relationship decision."""
     status = owner_status(person)
     if status == 'client':
-        return dict(verdict, reason='Existing client relationship recorded by you. Timing and closeness are unspecified.')
+        familiarity = FAMILIARITIES.get(person.get('familiarity'))
+        detail = ' You know them ' + ('well.' if person.get('familiarity') == 'know_them' else 'closely.' if person.get('familiarity') == 'close' else 'briefly.') if familiarity else ''
+        return dict(verdict, reason='Existing client relationship recorded by you.' + detail)
     if status == 'talking':
         return dict(verdict, reason='Already in conversation. Follow up on the current discussion.')
     if relationships(person):

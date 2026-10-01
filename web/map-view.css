@@ -82,7 +82,7 @@
 .mv-zoom button:active { transform: translateY(1px); }
 
 /* ---------- Person card ---------- */
-.mv-card { flex: none; width: 344px; display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4); overflow: auto; background: var(--bg1); border-left: 1px solid var(--line); animation: mv-in .22s var(--ease); }
+.mv-card { position: absolute; z-index: 6; top: 12px; right: 12px; width: 312px; max-height: calc(100% - 24px); box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4); overflow: auto; background: var(--bg1); border-left: 1px solid var(--line); animation: mv-in .22s var(--ease); }
 @keyframes mv-in { from { opacity: 0; transform: translateX(14px); } }
 .mv-c-head { display: flex; align-items: center; gap: var(--s3); }
 .mv-av { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--bg3); color: var(--fg2); font-weight: 600; letter-spacing: .02em; }
@@ -129,7 +129,7 @@
   .mv-hud { width: auto; max-width: calc(100% - 72px); }
   .mv-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; }
   .mv-legend li { align-items: center; }
-  .mv-card { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; width: auto; max-height: 56%; padding: var(--s3) var(--s4) var(--s4); border-left: 0; border-top: 1px solid var(--line2); border-radius: var(--r) var(--r) 0 0; animation-name: mv-up; }
+  .mv-card { position: absolute; z-index: 6; left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 56%; padding: var(--s3) var(--s4) var(--s4); border-left: 0; border-top: 1px solid var(--line2); border-radius: var(--r) var(--r) 0 0; animation-name: mv-up; }
   @keyframes mv-up { from { opacity: 0; transform: translateY(16px); } }
   #pane-map.has-card .mv-hud, #pane-map.has-card .mv-zoom { display: none; }
   .mv-actions .btn { flex: 1 1 auto; height: 40px; }
@@ -175,3 +175,10 @@
 .mv-connections[open] > summary::after { transform: rotate(180deg); }
 
 .mv-follow .select { width: 172px; }
+
+.mv-lead-stage { border-top: 1px solid var(--line); padding-top: 10px; }
+.mv-lead-stage > summary { color: var(--fg2); font-size: 12px; cursor: pointer; }
+.mv-lead-stage .mv-quick-status { margin: 10px 0 0; }
+.mv-relationship { color: #a5c6f5; border-color: #46618a66; background: #4778ba18; }
+.mv-relationship[data-relationship="client"] { color: #91d1b2; border-color: #4f977566; background: #4f97751c; }
+.mv-relationship:hover { color: var(--fg); border-color: var(--line3); }

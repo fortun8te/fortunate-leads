@@ -133,15 +133,15 @@ class CollectionProgressTest(unittest.TestCase):
         self.assertIsNone(out['eta'])
         self.assertIn('offline', out['message'])
 
-    def test_main_is_available_when_explicitly_shared_or_only_list_account(self):
+    def test_main_is_reserved_when_explicitly_shared_or_only_list_account(self):
         self.conn.execute("UPDATE accounts SET is_main=1 WHERE lane_id='lane'")
         self.conn.commit()
-        self.assertIsNotNone(self.summary()['eta'])
+        self.assertIsNone(self.summary()['eta'])
         self.conn.execute("INSERT INTO accounts(lane_id,ig_id,role) VALUES('offline','789','both')")
         self.conn.commit()
         self.assertIsNone(self.summary()['eta'])
         db.set_setting(self.conn, 'main_list_share', .1)
-        self.assertIsNotNone(self.summary()['eta'])
+        self.assertIsNone(self.summary()['eta'])
 
     def test_duplicate_identity_budget_and_cooldown_do_not_predict_progress(self):
         self.conn.execute("INSERT INTO accounts(lane_id,ig_id,role,paused,last_seen,budget,today) VALUES('duplicate','123','both',1,?,'{\"list\":6}','{\"list\":6}')", (accounts.iso(self.now),))
