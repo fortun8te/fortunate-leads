@@ -229,7 +229,6 @@ test('isolated collection keeps Stop visible and preserves the warned account no
   status.collection_isolation={accounts:{one:'101',two:'102'}};
   h.respond(0,status);h.respond(1,engines());await settle();
   assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);
-  assert.match(h.el.innerHTML,/warned account stays blocked/);
   assert.match(h.el.innerHTML,/This account stays blocked/);
   assert.match(h.el.innerHTML,/data-focus="warning-ack" disabled/);
   h.click(b=>b.dataset.stage==='collection');

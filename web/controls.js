@@ -62,7 +62,7 @@
     const until = wait?.until && Number.isFinite(Date.parse(wait.until)) ? ` until ${new Date(wait.until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : '';
     const state = controlError || collection.length !== 2 ? 'Unknown' : attention && !control?.collection_isolation ? 'Needs attention' : paused ? collection.some(stage => stage.active || stage.state === 'stopping') ? 'Stopping' : 'Off' : wait ? `Waiting${until}` : collection.some(stage => stage.state === 'running') ? 'Running' : collection.some(stage => stage.state === 'waiting') ? 'Waiting' : 'On';
     const progress = control?.collection?.progress || collection.find(stage => stage.progress)?.progress;
-    const detail = (control?.collection_isolation ? 'Only the two selected accounts can collect. The warned account stays blocked.' : attention) || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
+    const detail = (!control?.collection_isolation && attention) || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
     return {state, detail, paused, available:!controlError && collection.length === 2};
   }
   // One calm word for the whole strip. Details live in the popover.
