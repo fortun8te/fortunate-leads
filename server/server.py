@@ -35,6 +35,7 @@ import collection_progress  # noqa: E402
 import map_scale  # noqa: E402
 import map_layout  # noqa: E402
 import map_view  # noqa: E402
+import map_universe  # noqa: E402
 import note_mentions  # noqa: E402
 import dm_import  # noqa: E402
 import processing_progress  # noqa: E402
@@ -3026,6 +3027,7 @@ ROUTES = [
     ('POST', r'/api/llm/models', api_llm_models), ('POST', r'/api/llm/models/refresh', api_llm_models_refresh),
 ]
 import qual_api  # noqa: E402  Qualification page endpoints (web/frontend module)
+ROUTES += map_universe.routes(sys.modules[__name__])
 ROUTES += qual_api.routes(sys.modules[__name__])
 ROUTES += workflows.routes(sys.modules[__name__])
 ROUTES += dm_import.routes(sys.modules[__name__])
@@ -3143,7 +3145,8 @@ class Handler(BaseHTTPRequestHandler):
             # View queries support conditional reads without changing other APIs.
             if out.etag and out.etag in [v.strip() for v in self.headers.get('If-None-Match', '').split(',')]:
                 return self.send(304, b'', headers=out.headers)
-            return self.send(out.status, out.body, headers=out.headers)
+            return self.send(out.status, out.body, ctype=out.headers.get('Content-Type', 'application/json'),
+                             headers={k:v for k,v in out.headers.items() if k.lower() != 'content-type'})
         self.send(200, dict(out, ok=True) if with_ok else out)
 
     def image(self, pid):

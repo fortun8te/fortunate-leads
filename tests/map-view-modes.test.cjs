@@ -60,3 +60,16 @@ test('clicking a portrait selects it without moving the camera',()=>{
  MapView.prototype.activate.call(view,{kind:'n',it:{d:nodes[0]}});
  assert.equal(selected,nodes[0]);
 });
+test('explicit large-map search makes the selected portrait readable without reducing a closer view',()=>{
+ const model=new MapModel({reduced:true,fetchJson:()=>new Promise(()=>{})});
+ const person={...nodes[0],portraitRadius:.001};
+ model.scene.apply({nodes:[person],clusters:[]},0,{instant:true});model.scene.large=true;
+ model.cam.resize(1440,900);model.cam.set(.5,.5,1);
+ model.select(person);assert.equal(model.cam.k,1,'ordinary selection leaves camera fixed');
+ model.goTo(person);
+ assert.ok(Math.abs(person.portraitRadius*model.cam.scale-16)<1e-9);
+ assert.equal(model.cam.cx,person.x);assert.equal(model.cam.cy,person.y);
+ model.cam.set(.5,.5,100);model.goTo(person);assert.equal(model.cam.k,100);
+ model.scene.get(person.id).d.portraitRadius=1e-10;model.cam.set(.5,.5,1);
+ model.goTo(person);assert.equal(model.cam.k,128,'tiny portraits respect maximum zoom');
+});

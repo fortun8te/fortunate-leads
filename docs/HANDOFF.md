@@ -2,7 +2,19 @@
 
 Updated 1 October 2026. This file describes the current implementation. Earlier iterations and their validation remain in Git history.
 
-## Current product
+## Tiled connection map, 1 October 2026
+
+The default map uses a prepared binary-tile snapshot when available, WebGPU with WebGL2 fallback, recorded shortest follow paths for distance, logarithmic follower sizing, a small owner portrait and progressive photo detail. It opens on the inner neighborhood. Search locates a saved handle; ordinary selection preserves camera and canvas size. Tags use the Leads presentation. Explicit selected-person connections use subtle outgoing dashed and incoming solid lines. Unsupported alternate views and filters are hidden on this full-network path; they remain available in the paged fallback.
+
+Read [MAP_UNIVERSE_API.md](MAP_UNIVERSE_API.md) for snapshot preparation, source provenance and HTTP/binary contracts. `server/map_universe.py` owns offline graph preparation and indexed tile selection. `web/map-universe.js` owns bounded loading/picking, `web/map-universe-gpu.js` owns instanced graphics/portrait caching, and `web/map-universe-model.js` connects it to existing map controls. Existing map modules remain the fallback and own the profile card.
+
+The graph may contain millions of profiles, but the current browser limit is 250,000 resident records and 64 MiB of accounted tile buffers. Full-network coverage at coarse zoom above that limit, sustained five-million-node performance and richer filters remain follow-up work. No five-million-node stress test was run, per Michael's instruction. Offline builds must be repeated after data changes; immutable snapshots do not refresh automatically. Missing snapshots or unavailable graphics use the paged map.
+
+Isolated checks loaded 117,685 saved profiles, compiled/drew both real graphics backends, exercised profile search/portraits and checked the floating card. See [measurements](MAP_VIEW_PERFORMANCE.md) for limitations. The isolated map-only release passed 1,236 backend tests (three skipped) and all 582 frontend/extension checks. The final copy adjustment passed 61 focused UI checks. Collection simulations were not rerun after Michael stopped collection work.
+
+Collection work was stopped at Michael's request. It is saved uncommitted in the integration workspace and is not part of this map release. Do not resume its simulation, Instagram collection or DALI work without a new request. Its unresolved login-recovery simulation failure remains documented in the local integration handoff. Keep personal browser windows untouched.
+
+## Paged fallback and existing product
 
 The connection map keeps Michael at the centre of an irregular circular arrangement of photos. View offers two presets: My network uses saved followers for bubble size and recorded connection evidence for distance; Shared audiences uses distinct collected source accounts for size and distance. Shared audiences do not establish mutual friendship. Both views keep the same cohort, camera and filters, and switching only repacks that bounded page locally. The owner is 24 pixels across at default zoom. Dragging a photo temporarily moves it, then returns it to its recorded position; dragging empty space pans the map. Photos have no outlines or overlaid status dots. Selecting a person does not pan the camera or shrink the canvas. The compact detail card floats over it. Lines stay hidden until Connections is expanded, then render subtly. Search and hover show follower/source counts rather than generic fit verdicts.
 

@@ -24,6 +24,7 @@
     if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
+  const savedDensity = () => { try { return root.localStorage?.getItem('fortunate.map.count'); } catch (_) { return null; } };
   const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
@@ -44,6 +45,22 @@
       if (!tags.has(key)) tags.set(key, { label, relationship: Object.keys(RELATIONSHIP_TAGS).find(k => RELATIONSHIP_TAGS[k].toLowerCase() === key) });
     }
     return [...tags.values()];
+  }
+  // Only recorded follow lines qualify. Shared audiences never become follow paths.
+  function directedConnections(lines, selectedId) {
+    const groups = new Map(), selected = String(selectedId);
+    for (const line of lines || []) {
+      if (!['follow', 'follows', 'mutual'].includes(line.kind)) continue;
+      const from = String(line.a.id), to = String(line.b.id);
+      if (from === to || from !== selected && to !== selected) continue;
+      const outgoing = from === selected, other = outgoing ? line.b : line.a;
+      const key = String(other.id);
+      const group = groups.get(key) || { selected: outgoing ? line.a : line.b, other, outgoing: false, incoming: false };
+      if (outgoing || line.kind === 'mutual') group.outgoing = true;
+      if (!outgoing || line.kind === 'mutual') group.incoming = true;
+      groups.set(key, group);
+    }
+    return [...groups.values()];
   }
   function cardFit(person) {
     const verdict = person.verdict;
@@ -69,8 +86,10 @@
     constructor(refs, host) {
       this.r = refs; this.host = host;
       this.canvas = refs.canvas; this.ctx = this.canvas.getContext('2d');
-      this.model = new MapModel({
-        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
+      const Model = root.UniverseMapModel || MapModel;
+      this.model = new Model({
+        container: refs.canvasBox,
+        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
@@ -87,6 +106,7 @@
 
     /* ---------- model events ---------- */
     onModel(what) {
+      if (what === 'density') { try { root.localStorage?.setItem('fortunate.map.count', String(this.model.density)); } catch (_) {} }
       if (what === 'scene' || what === 'mode') this.finishNodeDrag(true);
       if (what === 'size') { this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
@@ -98,6 +118,7 @@
       if (what === 'selection') { if (!this.model.selected || this.cardId !== this.model.selected.id) this.renderCard(); else this.updateCardFacts(); this.invalidate(); }
       if (what === 'mode') { try { root.localStorage?.setItem('fortunate.map.view', this.model.viewMode); } catch (_) {} this.renderModes(); this.renderLegend(); this.invalidate(); }
       if (what === 'filters') this.renderFilters();
+      if (what === 'scene' && this.model.universe) this.canvas.style.zIndex = '1';
     }
 
     /* ---------- lifecycle ---------- */
@@ -123,7 +144,7 @@
       this.sized = true;
       const priorSheet = cam.inset.bottom;
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
-      if (priorSheet !== sheet && this.model.selected) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
+      if (priorSheet !== sheet && this.model.selected && !this.model.universe) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
       this.measureHud();
       if (this.model.needsLoad() && this.shown && !this.comparing) this.model.schedule();
       this.invalidate();
@@ -142,7 +163,7 @@
         tones: { t0: tone(0.12), t1: tone(0.26), t2: tone(0.38), t3: tone(0.5), t4: tone(0.6), t5: tone(0.68) }
       };
       this.palette.tones.a = this.palette.accent;
-      this.dark = doc.documentElement.dataset.theme !== 'light';
+      this.dark = doc.documentElement.dataset.theme !== 'light'; this.overviewRaster = null;
     }
 
     /* ---------- frame loop ---------- */
@@ -155,6 +176,7 @@
       if (this.shown && this.sized) busy = this.paint(t, dt) || busy;
       const ms = performance.now() - t0;
       this.stats.frames++; this.stats.paintMs += (ms - this.stats.paintMs) * 0.1; this.stats.maxMs = Math.max(this.stats.maxMs * 0.995, ms); this.stats.last = ms;
+      if (!this.stats.drawTimes) this.stats.drawTimes=[]; this.stats.drawTimes.push(ms); if(this.stats.drawTimes.length>240)this.stats.drawTimes.shift();
       if (busy) this.invalidate(); else this.last = 0;
     }
 
@@ -169,6 +191,7 @@
       const ctx = this.ctx, P = this.palette, m = this.model, cam = m.cam, W = cam.w, H = cam.h, S = cam.scale, mx = cam.mid[0], my = cam.mid[1];
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
+      if (m.universe) return this.paintUniverse(now, dt);
       if (!m.scene.nodes.length && !m.scene.clusters.length && !m.selected) { this.labelA.clear(); return false; }
       const sx = (x) => (x - cam.cx) * S + mx, sy = (y) => (y - cam.cy) * S + my;
       const lab = new Labeler(W, H);
@@ -182,6 +205,7 @@
 
       const hovered = this.hover;
       const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode, m.size);
+      if (plan.large) this.paintLargeOverview(ctx, P, plan);
       const bubbles = plan.groups;
       for (const mark of plan.nodes) lab.block([mark.x-mark.r-2, mark.y-mark.r-2, mark.x+mark.r+2, mark.y+mark.r+2]);
       const disk = m.world.layout === 'network_disk';
@@ -224,10 +248,11 @@
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
 
-        this.paintPortrait(ctx, P, me, x, y, OWNER_RADIUS*k, true, true);
+        const ownerRadius=m.scene.large?OWNER_RADIUS:Math.min(24,OWNER_RADIUS*k);
+        this.paintPortrait(ctx, P, me, x, y, ownerRadius, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
-        ownerCaption = { x, y: y + OWNER_RADIUS*k + 16, text };
-        lab.block([x-width/2-4, y+OWNER_RADIUS*k+7, x+width/2+4, y+OWNER_RADIUS*k+25]);
+        ownerCaption = { x, y: y + ownerRadius + 16, text };
+        lab.block([x-width/2-4, y+ownerRadius+7, x+width/2+4, y+ownerRadius+25]);
       }
 
       // Label the selected person's recorded sources.
@@ -237,11 +262,14 @@
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
       }
       if (sel) {
-        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = plan.nodes.find(mark=>String(mark.it.d.id)===String(sel.id))?.r || radiusFor(sel, k, m.size);
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = plan.nodes.find(mark=>String(mark.it.d.id)===String(sel.id))?.r || (it?.d.portraitRadius ? Math.max(2,it.d.portraitRadius*S) : radiusFor(sel, k, m.size));
         this.paintPortrait(ctx, P, sel, x, y, r, true);
-        if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || '@' + sel.handle, x, y, r: r + 6, w: 600, strong: true });
+        if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || (sel.compact ? 'Saved profile' : '@' + sel.handle), x, y, r: r + 6, w: 600, strong: true });
       }
 
+
+      const moving = this.nodeDrag || m.returningNode;
+      if (moving && m.scene.large) this.paintPortrait(ctx,P,moving.d,sx(moving.x),sy(moving.y),moving.d.portraitRadius*S,true);
 
       // Labels. Bubbles first (which community is this), then the best-ranked people.
       let nb = 0; const labelledGroups = new Set();
@@ -255,7 +283,7 @@
       let np = 0; const peoplePerGroup = new Map();
       for (let i = 0; i < plan.nodes.length && np < maxPeople; i++) {
         const it = plan.nodes[i].it, d = it.d;
-        if (it.a < 0.9 || (me && d.id === me.id) || (sel && d.id === sel.id)) continue;
+        if (d.compact || it.a < 0.9 || (me && d.id === me.id) || (sel && d.id === sel.id)) continue;
         if (network && cam.k < 2.5 && (peoplePerGroup.get(d.cluster) || 0) >= 2) continue;
         const x = sx(it.x), y = sy(it.y);
         if (x < 8 || y < 8 || x > W - 8 || y > H - 8) continue;
@@ -270,6 +298,45 @@
       }
       this.renderCount(false);
       return this.labelsBusy;
+    }
+    paintUniverse(now, dt) {
+      const m=this.model, cam=m.cam, ctx=this.ctx, P=this.palette;
+      m.universe.render(cam);
+      const sx=x=>cam.toScreen(x,0)[0], sy=y=>cam.toScreen(0,y)[1];
+      const selected=m.selected, edges=m.connectionsVisible && m.edges?.id===selected?.id?m.edges:null;
+      if(edges?.state==='ready') this.paintEdges(ctx,P,edges,sx,sy,now,selected);
+      const lab=new Labeler(cam.w,cam.h), want=[];
+      for(const person of [selected,this.hover?.it?.d]) {
+        if(!person)continue;
+        const [x,y]=cam.toScreen(person.x,person.y),r=Math.max(3,(person.portraitRadius||0)*cam.scale);
+        want.push({key:'u:'+person.id,text:person.name||'@'+person.handle,x,y,r:r+6,w:500,strong:true,prio:10});
+      }
+      this.paintLabels(ctx,P,lab,want,dt);
+      return this.labelsBusy;
+    }
+    paintLargeOverview(ctx, P, plan) {
+      const m=this.model,cam=m.cam,ownerId=String(m.world.me?.id);
+      ctx.fillStyle=P.fg3;
+      if (plan.vector) {
+        ctx.beginPath();
+        for(const mark of plan.marks) { if(String(mark.it.d.id)===ownerId)continue; ctx.moveTo(mark.x+mark.r,mark.y);ctx.arc(mark.x,mark.y,mark.r,0,TAU); }
+        ctx.fill(); return;
+      }
+      if (!this.overviewRaster || this.overviewRaster.version!==m.scene.version) {
+        const start=performance.now(),side=2048,canvas=doc.createElement('canvas');canvas.width=side;canvas.height=side;
+        const draw=canvas.getContext('2d');draw.fillStyle=P.fg3;
+        for(let offset=0;offset<m.scene.nodes.length;offset+=2048) {
+          draw.beginPath();
+          for(const it of m.scene.nodes.slice(offset,offset+2048)) {
+            if(String(it.d.id)===ownerId)continue;
+            const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
+            draw.moveTo(x+r,y);draw.arc(x,y,r,0,TAU);
+          }
+          draw.fill();
+        }
+        this.overviewRaster={canvas,version:m.scene.version};this.stats.rasterMs=performance.now()-start;
+      }
+      const [x,y]=cam.toScreen(0,0);ctx.drawImage(this.overviewRaster.canvas,x,y,cam.scale,cam.scale);
     }
     queuePortraits(nodes, owner) {
       if (owner) this.portraits.get(owner.pic);
@@ -288,7 +355,7 @@
         ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-radius, y-radius, radius*2, radius*2);
       } else {
         ctx.fillStyle = owner ? P.fg : P.fg2; ctx.font = `${owner ? 600 : 500} ${Math.round(radius * .67)}px ${P.sans}`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(initials(person), x, y+.5);
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; if (!person.compact || owner) ctx.fillText(initials(person), x, y+.5);
       }
       ctx.restore();
       ctx.textAlign = 'left';
@@ -339,11 +406,22 @@
     paintEdges(ctx, P, edges, sx, sy, now, sel) {
       const a = clamp((now - this.edgeAt) / 260, 0, 1), reduced = this.model.reduced;
       ctx.globalAlpha = (reduced ? 1 : a) * .4;
-      for (const l of edges.lines) {
+      for (const line of directedConnections(edges.lines, sel.id)) {
+        const from = this.model.scene.get(line.selected.id) || line.selected;
+        const to = this.model.scene.get(line.other.id) || line.other;
+        const x0 = sx(from.x), y0 = sy(from.y), x1 = sx(to.x), y1 = sy(to.y);
+        const length = Math.hypot(x1 - x0, y1 - y0);
+        if (!length) continue;
+        const mutual = line.incoming && line.outgoing;
+        const ox = -(y1 - y0) / length * 1.25, oy = (x1 - x0) / length * 1.25;
         ctx.strokeStyle = P.fg3; ctx.lineWidth = .75;
-        ctx.setLineDash(l.kind === 'mutual' ? [4, 4] : []);
-        const from = this.model.scene.get(l.a.id) || l.a, to = this.model.scene.get(l.b.id) || l.b;
-        ctx.beginPath(); ctx.moveTo(sx(from.x), sy(from.y)); ctx.lineTo(sx(to.x), sy(to.y)); ctx.stroke();
+        for (const outgoing of [false, true]) {
+          if (!(outgoing ? line.outgoing : line.incoming)) continue;
+          const offset = mutual ? outgoing ? 1 : -1 : 0;
+          ctx.setLineDash(outgoing ? [4, 4] : []);
+          ctx.beginPath(); ctx.moveTo(x0 + ox * offset, y0 + oy * offset);
+          ctx.lineTo(x1 + ox * offset, y1 + oy * offset); ctx.stroke();
+        }
       }
       ctx.setLineDash([]); ctx.globalAlpha = 1;
       if (a < 1 && !reduced) this.invalidate();
@@ -379,7 +457,21 @@
 
     /* ---------- picking ---------- */
     pick(px, py) {
+      if(this.model?.universe) {
+        const person=this.model.universe.pick(px,py);if(!person)return null;
+        const [x,y]=this.model.cam.toScreen(person.x,person.y);
+        return {kind:'n',it:{d:person,x:person.x,y:person.y},x,y,r:Math.max(3,(person.portraitRadius||0)*this.model.cam.scale)};
+      }
       const plan = this.displayMarks; if (!plan) return null;
+      if (plan.large && this.model.scene.spatial) {
+        const moving=this.nodeDrag||this.model.returningNode;
+        if(moving){const[x,y]=this.model.cam.toScreen(moving.x,moving.y),r=moving.d.portraitRadius*this.model.cam.scale;if(Math.hypot(px-x,py-y)<=r)return{kind:'n',it:moving,x,y,r};}
+        const cam=this.model.cam,[wx,wy]=cam.toWorld(px,py),reach=(this.touch?16:9)/cam.scale;
+        const nearby=this.model.scene.spatial.query({x0:wx-reach,y0:wy-reach,x1:wx+reach,y1:wy+reach});
+        let best=null,distance=Infinity;
+        for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?OWNER_RADIUS:it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
+        return best;
+      }
       const reach = this.touch ? 16 : 9;
       // Real photo bodies win before expanded hit targets in the dense overview.
       for (const mark of plan.nodes) if (Math.hypot(mark.x-px,mark.y-py)<=mark.r) return mark;
@@ -392,7 +484,9 @@
 
     // Dragging is a temporary inspection gesture; recorded distance stays unchanged.
     startNodeDrag(mark) {
+      if(this.model.universe)return false;
       const it = mark?.kind === 'n' && mark.it;
+      if (this.model.scene.large && mark?.r < 5) return false;
       if (!it || String(it.d.id) === String(this.model.world.me?.id)) return false;
       this.finishNodeDrag(true);
       this.nodeDrag = it; it.dur = 0; this.hover = null;
@@ -409,7 +503,7 @@
       const it = this.nodeDrag; this.nodeDrag = null;
       if (!it) return;
       if (immediate || this.model.reduced) { it.x = it.tx; it.y = it.ty; it.dur = 0; }
-      else { it.fx = it.x; it.fy = it.y; it.t0 = performance.now(); it.dur = 280; }
+      else { it.fx = it.x; it.fy = it.y; it.t0 = performance.now(); it.dur = 280; if(this.model.scene.large)this.model.returningNode=it; }
       this.invalidate();
     }
 
@@ -500,6 +594,7 @@
       f.follow?.addEventListener('change', () => m.setFilters({ follow: f.follow.value }));
       f.clear.addEventListener('click', () => { m.setFilters({ scope: 'all', minFit: '', status: '', follow: 'all' }); });
       doc.addEventListener('click', (e) => { if (this.r.filtersBox.open && !this.r.filtersBox.contains(e.target)) this.r.filtersBox.open = false; });
+      this.r.filtersBtn.addEventListener('click', (e) => { if(m.universe)e.preventDefault(); });
       this.r.filtersBox.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.r.filtersBox.open) { e.stopPropagation(); this.r.filtersBox.open = false; this.r.filtersBox.querySelector('summary').focus(); } });
       // Card, states.
       this.r.card.addEventListener('click', (e) => this.cardClick(e));
@@ -543,7 +638,7 @@
       if (hit.kind === 'c') {
         tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? d.label.replace(/^(Around |Audience of )/, '') + '. ' : '') + 'Click to explore this group.' }));
       } else {
-        tip.append(h('b', { text: d.name || '@' + d.handle }), h('span', { text: '@' + d.handle }),
+        tip.append(h('b', { text: d.name || (d.compact ? 'Saved profile' : '@' + d.handle) }), h('span', { text: d.compact ? 'Click to open' : '@' + d.handle }),
           h('span', { text: profileMetric(d, this.model.viewMode === 'shared') }));
         if (d.status) tip.append(h('span', { text: SLABEL(d.status) }));
       }
@@ -599,14 +694,14 @@
     closeResults() { this.model.searchReq.cancel(); this.r.q.removeAttribute('aria-activedescendant'); this.r.results.hidden = true; this.r.q.setAttribute('aria-expanded', 'false'); this.results = []; this.active = -1; }
     choose(n) {
       this.closeResults(); this.r.q.value = ''; this.r.q.blur();
-      this.model.goTo(n); this.canvas.focus({ preventScroll: true }); this.announce(`Selected ${n.name || '@' + n.handle}.`);
+      this.model.goTo(n); this.canvas.focus({ preventScroll: true }); this.announce(n.compact ? 'Loading selected profile.' : `Selected ${n.name || '@' + n.handle}.`);
     }
 
     /* ---------- static DOM ---------- */
     buildStatic() {
       const r = this.r;
       this.density = h('select', { 'aria-label': 'People per page' },
-        ...[250, 500, 1000].map(n => h('option', { value: n, text: `${int(n)} people` })));
+        ...[250, 500, 1000, 10000, 50000, 200000].map(n => h('option', { value: n, text: `${int(n)} people` })));
       this.density.value = this.model.density;
       this.previous = h('button', { type: 'button', text: 'Previous', 'aria-label': 'Previous people' });
       this.next = h('button', { type: 'button', text: 'Next', 'aria-label': 'Next people' });
@@ -624,8 +719,29 @@
       this.renderFilters();
     }
     renderModes() {
-      if (this.r.size) { this.r.size.value = this.model.viewMode; this.r.size.title = VIEW_MODES.find(mode => mode.id === this.model.viewMode)?.description || ''; }
-      if (this.r.filters.follow) { this.r.filters.follow.disabled = !!this.model.fallback; this.r.filters.follow.title = this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
+      const universe=!!this.model.universe;
+      for (const label of [this.r.size?.closest?.('label'), this.r.filters.follow?.closest?.('label')]) {
+        if (label) label.hidden = universe;
+      }
+      if (this.r.filtersBox) this.r.filtersBox.hidden = universe;
+      if(this.r.q){
+        this.r.q.placeholder=universe?'Instagram handle':'Name or handle';
+        this.r.q.setAttribute('aria-label',universe?'Find an Instagram handle on the map':'Find a person by name or handle on the map');
+      }
+      if(this.r.filtersBtn){
+        this.r.filtersBtn.setAttribute('aria-disabled',String(universe));
+        this.r.filtersBtn.title=universe?'Filters are available in the paged map; the full map shows all saved people.':'';
+        this.r.filtersBtn.style.opacity=universe?'.45':'';
+        if(universe)this.r.filtersBox.open=false;
+      }
+      if(this.pager)this.pager.hidden=universe;
+      if(this.r.size){this.r.size.disabled=universe;this.r.size.title=universe?'The full map uses recorded follow distance and follower size.':'';}
+      for(const control of [this.r.filters.fit,this.r.filters.status,this.r.filters.follow,...this.r.filters.scope.children]) {
+        if(control){control.disabled=universe;control.title=universe?'Filters are available in the paged map; the full map shows all saved people.':'';}
+      }
+      this.r.fit.title=universe?'Show the full map':'Show this page';
+      if (this.r.size) { this.r.size.value = this.model.viewMode; this.r.size.title = universe ? 'The full map uses recorded follow distance and follower size.' : VIEW_MODES.find(mode => mode.id === this.model.viewMode)?.description || ''; }
+      if (this.r.filters.follow) { this.r.filters.follow.disabled = universe || !!this.model.fallback; this.r.filters.follow.title = universe ? 'Following filters are available in the paged map; the full map shows all saved people.' : this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
       this.r.me.hidden = !this.model.world.me;
     }
     renderFilters() {
@@ -638,7 +754,7 @@
     }
     renderLegend() {
       const shared = this.model.viewMode === 'shared';
-      const rows = this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
+      const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
         { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: stronger connection evidence', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Distance orders the saved page by recorded network evidence, not personal familiarity.' },
         { g: 'size', s: shared ? 'Larger: more shared audiences' : 'Larger: more followers', t: SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
@@ -662,10 +778,18 @@
     }
     renderCount(announce = true) {
       const m = this.model, el = this.r.count;
+      if(m.universe){
+        const stats=m.universe.stats(), snapshot=m.universe.manifest;
+        el.textContent=`${int(stats.loaded||0)} loaded · ${int(m.total)} people`;
+        el.title=snapshot?.stale ? 'Positions use a saved snapshot. Prepare a new snapshot to include later data changes.' : 'Saved network snapshot. Zoom or search to explore; visible tiles load as you move.';
+        return;
+      }
+
+      if(m.pending && m.loadingCount){el.textContent=`${int(m.loadingCount)} / ${int(m.loadingTotal)} loaded`;return;}
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
-      const count=m.scene.nodes.filter(n=>String(n.d.id)!==String(m.world.me?.id)).length;
-      el.textContent=`${int(count)} shown · ${int(m.total)} matching people`;
+      const count=m.scene.nodes.length-(m.world.me && m.scene.get(m.world.me.id)?1:0);
+      el.textContent=`${int(count)} ${m.scene.large?'loaded':'shown'} · ${int(m.total)} matching people`;
       el.title='Zoom magnifies this same page. Use Next, search, or filters to see other people.';
       if (this.pager) {
         this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
@@ -679,6 +803,7 @@
     announce(t) { this.r.live.textContent = ''; setTimeout(() => { this.r.live.textContent = t; }, 30); }
     renderBusy() {
       const el = this.r.progress, m = this.model;
+      if(m.pending && m.loadingCount)this.r.count.textContent=`${int(m.loadingCount)} / ${int(m.loadingTotal)} loaded`;
       if (this.pager) {
         this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
         this.next.disabled = m.pending > 0 || !m.nextCursor;
@@ -699,10 +824,10 @@
       const copy = {
         unprepared: ['Map layout is not prepared yet', 'Your leads are available in the list. Prepare the map locally to explore connections here.'],
         building: ['Preparing the map', 'Your leads are available while the layout is being prepared.'],
-        loading: ['Loading the map', 'Grouping people by recorded audiences.'],
+        loading: ['Loading the map', 'Loading saved connections.'],
         offline: ['You’re offline', 'The map returns when the connection does.'],
         error: ['Couldn’t load the map', 'Check your connection, then try again.'],
-        empty: [m.fallback ? 'No one in this sample matches' : 'No one matches these filters', m.filtersActive ? 'Try clearing a filter.' : 'Nobody is on the map yet. Collect a follower list to fill it.']
+        empty: [m.fallback ? 'No one in this sample matches' : 'No one matches these filters', m.filtersActive ? 'Try clearing a filter.' : 'Add profiles in Accounts to get started.']
       }[p];
       if (!copy) return;
       box.dataset.kind = p; box.hidden = false;
@@ -726,16 +851,16 @@
 
       if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
       if (n.follows_me) facts.push(['Follows you', 'Recorded']);
-      const avatar = h('span', { class: 'mv-av', 'aria-hidden': 'true', text: initials(n) });
+      const avatar = h('span', { class: 'mv-av', 'aria-hidden': 'true', text: n.compact ? '…' : initials(n) });
       if (/^\/img\/\d+$/.test(n.pic || '')) {
         const image = h('img', { src: n.pic, alt: '', decoding: 'async' });
-        image.addEventListener('error', () => avatar.replaceChildren(initials(n)), { once: true });
+        image.addEventListener('error', () => avatar.replaceChildren(n.compact ? '…' : initials(n)), { once: true });
         avatar.replaceChildren(image);
       }
       card.replaceChildren(
         h('div', { class: 'mv-c-head' },
           avatar,
-          h('div', { class: 'mv-who' }, h('b', { text: n.name || '@' + n.handle }), h('span', { text: '@' + n.handle })),
+          h('div', { class: 'mv-who' }, h('b', { text: n.compact ? 'Loading profile…' : n.name || '@' + n.handle }), h('span', { text: n.compact ? '' : '@' + n.handle })),
           h('button', { type: 'button', class: 'mv-x', 'data-act': 'close', 'aria-label': 'Close details', title: 'Close (esc)', text: '×' })),
         h('section', { class: 'mv-tags' },
           h('div', { class: 'mv-tag-head' }, h('h4', { text: 'Relationship & tags' }),
@@ -751,6 +876,9 @@
             h('select', { 'aria-label': 'Lead status' }, h('option', { value: '', text: 'Not in pipeline' }),
               this.host.statuses.filter(status => status !== 'client').map(status => h('option', { value: status, text: SLABEL(status) }))))),
         h('details', { class: 'mv-connections' }, h('summary', { text: 'Connections' }),
+          h('div', { class: 'mv-line-key', 'aria-label': 'Recorded follow directions' },
+            [['incoming', 'They follow this person'], ['outgoing', 'This person follows them'], ['mutual', 'Both follow each other']].map(([kind, label]) =>
+              h('span', {}, h('i', { class: 'mv-line-sample ' + kind, 'aria-hidden': 'true' }), h('span', { text: label })))),
           h('dl', { class: 'mv-facts' }, facts.map(([k, v]) => h('div', {}, h('dt', { text: k }), h('dd', { text: v })))),
           h('section', { class: 'mv-seeds', 'aria-live': 'polite' }, h('h4', { text: 'Sources' }), h('ul', { class: 'mv-chips', id: 'mv-chips' }))),
         h('div', { class: 'mv-actions' },
@@ -781,7 +909,30 @@
       this.renderSeeds();
       // A sheet on a phone changes what "centre" means; recompute the inset.
       requestAnimationFrame(() => this.measure(false));
-      this.announce(`Selected ${n.name || '@' + n.handle}.`);
+      this.announce(n.compact ? 'Loading selected profile.' : `Selected ${n.name || '@' + n.handle}.`);
+    }
+    hydrateCardIdentity(n, person) {
+      if (String(person.id) !== String(n.id) || this.model.selected?.id !== n.id) return;
+      const identity = {
+        handle: person.handle || '', name: person.name || '',
+        pic: /^\/img\/\d+$/.test(person.pic || '') ? person.pic : null,
+        compact: false
+      };
+      Object.assign(n, identity);
+      Object.assign(this.model.selected, identity);
+      const item = this.model.scene.get(n.id);
+      if (item) Object.assign(item.d, identity);
+      const card = this.r.card;
+      card.querySelector('.mv-who b').textContent = identity.name || (identity.handle ? '@' + identity.handle : 'Profile');
+      card.querySelector('.mv-who span').textContent = identity.handle ? '@' + identity.handle : '';
+      const avatar = card.querySelector('.mv-av');
+      avatar.replaceChildren(initials(identity));
+      if (identity.pic) {
+        const image = h('img', { src: identity.pic, alt: '', decoding: 'async' });
+        image.addEventListener('error', () => avatar.replaceChildren(initials(identity)), { once: true });
+        avatar.replaceChildren(image);
+      }
+      this.invalidate();
     }
     updateCardFacts() {
       const n = this.model.selected;
@@ -850,6 +1001,7 @@
       try {
         const person = await this.host.person(n.id);
         if (this.model.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
+        this.hydrateCardIdentity(n, person);
         this.paintTags(n, person, box);
         const fit = cardFit(person);
         const fitValue = this.r.card.querySelector('.mv-summary > div:last-child dd');
@@ -864,8 +1016,12 @@
           }
         }
       } catch (_) {
-        if (this.model.selected?.id === n.id && box.isConnected) {
+        if (this.model.selected?.id === n.id && box.isConnected && box._readVersion === version) {
           feedback.textContent = 'Couldn’t load profile details. Reopen to retry.';
+          if (n.compact) {
+            this.r.card.querySelector('.mv-who b').textContent = 'Profile unavailable';
+            this.r.card.querySelector('.mv-who span').textContent = '';
+          }
           const fitValue = this.r.card.querySelector('.mv-summary > div:last-child dd');
           if (fitValue?.textContent === 'Loading…') fitValue.textContent = 'Unavailable';
         }
@@ -874,10 +1030,16 @@
     paintTags(n, person, box) {
       const tags = cardTags(person);
       box.querySelector('.mv-tag-chips').replaceChildren(...tags.map(tag => {
+        const presentation = this.host.tagPresentation?.(tag.label) || {
+          label: tag.label, importance: tag.relationship === 'client' ? 'strong' : 'standard', tone: '',
+          icon: tag.relationship === 'client' ? 'verified' : ''
+        };
         const button = h('button', {
-          type: 'button', class: 'mv-chip' + (tag.relationship ? ' mv-relationship' : ''),
-          'data-relationship': tag.relationship, text: tag.label + ' ×', 'aria-label': 'Remove ' + tag.label
-        });
+          type: 'button', class: 'tag mv-card-tag', 'data-relationship': tag.relationship,
+          'data-importance': presentation.importance, 'data-tone': presentation.tone,
+          title: tag.label, 'aria-label': 'Remove ' + tag.label
+        }, presentation.icon ? h('span', { class: 'tag-icon', 'data-icon': presentation.icon, 'aria-hidden': 'true' }) : null,
+          h('span', { text: presentation.label }), h('i', { class: 'x', text: '×', 'aria-hidden': 'true' }));
         button.addEventListener('click', () => this.editTag(n, tag.label, true));
         return button;
       }));
@@ -956,7 +1118,7 @@
     return view;
   }
 
-  const api = { MapView, mount, initials, cardTags, cardFit };
+  const api = { MapView, mount, initials, cardTags, cardFit, directedConnections };
   root.MapViewModule = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

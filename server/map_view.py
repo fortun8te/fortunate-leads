@@ -26,6 +26,9 @@ import db
 import map_layout as ML
 
 BUDGET_DEFAULT, BUDGET_MIN, BUDGET_MAX = 600, 50, 1500
+COMPACT_BUDGET_MAX = 20_000
+COMPACT_COLUMNS = ('id', 'x', 'y', 'rank', 'fit', 'closeness', 'followers',
+                   'statusCode', 'followFlags', 'sourceCount', 'hasPhoto', 'source')
 BUBBLE_MAX = 160          # most (cell, cluster) bubbles in one response
 BUBBLE_GRID = 8           # cells across the longer side of the viewport
 POOL_FRACTION = 0.5       # extra ranked people fetched to name each bubble's top ids
@@ -210,6 +213,10 @@ class Query:
         self.mode = q.get('mode', ['closeness'])[0].strip() or 'closeness'
         if self.mode not in ML.MODES:
             raise ValueError('mode must be closeness, fit, seeds or status')
+        compact = q.get('compact', ['0'])[0]
+        if compact not in ('0', '1'):
+            raise ValueError('compact must be 0 or 1')
+        self.compact = compact == '1'
         x0, y0 = _float(q, 'x0', 0.0), _float(q, 'y0', 0.0)
         x1, y1 = _float(q, 'x1', 1.0), _float(q, 'y1', 1.0)
         x0, y0, x1, y1 = (min(1.0, max(0.0, v)) for v in (x0, y0, x1, y1))
@@ -221,7 +228,7 @@ class Query:
             budget = int(raw) if raw else BUDGET_DEFAULT
         except ValueError:
             raise ValueError('budget must be a whole number') from None
-        self.budget = min(BUDGET_MAX, max(BUDGET_MIN, budget))
+        self.budget = min(COMPACT_BUDGET_MAX if self.compact else BUDGET_MAX, max(BUDGET_MIN, budget))
         scope = q.get('scope', [''])[0].strip().lower()
         if scope not in ('', 'leads', 'all'):
             raise ValueError('scope must be leads or all')
@@ -251,6 +258,8 @@ class Query:
             raise ValueError('overview must be 0 or 1')
         self.overview = overview == '1'
         self.cohort = q.get('cohort', ['0'])[0] == '1'
+        if self.compact and (not self.cohort or self.text):
+            raise ValueError('compact requires cohort=1 without a text search')
         self.after = None
         raw_after = q.get('after', [''])[0]
         if raw_after:
@@ -265,7 +274,7 @@ class Query:
 
     def key(self):
         return json.dumps([self.mode, list(self.rect), self.budget, self.scope, self.min_fit,
-                           self.status_text, self.text.lower(), self.follow, self.overview, self.cohort, self.after], separators=(',', ':'))
+                           self.status_text, self.text.lower(), self.follow, self.overview, self.cohort, self.compact, self.after], separators=(',', ':'))
 
 
 def _etag(store, query):
@@ -513,7 +522,7 @@ def view(conn, db_path, q, if_none_match=None, cache=True):
         main_rev = db.get_setting(conn, 'lead_data_rev', 0)
         etag = _etag(store, query)[:-1] + f'-{main_rev}\"'
         changing = ML.has_pending(conn) or ML.is_building(db_path)
-        cache = cache and not changing
+        cache = cache and not changing and not query.compact
         if cache and if_none_match and etag in [t.strip() for t in if_none_match.split(',')]:
             return Raw(b'', etag, 304)
         if cache:
@@ -536,7 +545,7 @@ def view(conn, db_path, q, if_none_match=None, cache=True):
             _CACHE[etag] = body
             while len(_CACHE) > _CACHE_MAX:
                 _CACHE.popitem(last=False)
-    return Raw(body, None, headers={'Cache-Control': 'no-store'}) if changing else Raw(body, etag)
+    return Raw(body, None, headers={'Cache-Control': 'no-store'}) if changing or query.compact else Raw(body, etag)
 
 
 def _view(conn, db_path, store, query):
@@ -591,28 +600,82 @@ def _cohort_class_rows(conn, cls, rank, pid, owner, limit):
 
 def _cohort_view(conn, store, query):
     """Read one stable rank page using bounded seeks in existing class indexes."""
-    budget = min(query.budget, 1000)
+    budget = min(query.budget, COMPACT_BUDGET_MAX if query.compact else 1000)
     revision = str(store.build_id) + ":" + str(store.rev)
+    if query.compact:
+        # Bind continuation to its mode and exact eligible classes. A caller
+        # changing filters must restart instead of silently skipping people.
+        revision += ':compact:' + query.mode + ':' + format(query.mask, 'x')
     reset = bool(query.after and query.after[2] != revision)
     rank, pid = query.after[:2] if query.after and not reset else (1e100, 0)
     owner = (store.meta('plan', {}) or {}).get('owner_id') or 0
     rows = []
     classes = [cls for cls, in store.conn.execute('SELECT DISTINCT cls FROM agg WHERE depth=1')
                if (query.mask >> cls) & 1]
-    for cls in classes:
-        rows.extend(_cohort_class_rows(store.conn, cls, rank, pid, owner, budget + 1))
-    rows.sort(key=lambda row: (-row[3], row[0]))
+    if query.compact:
+        streams = [_cohort_class_stream(store.conn, cls, rank, pid, owner, budget + 1) for cls in classes]
+        try:
+            rows = list(islice(heapq.merge(*streams, key=lambda row: (-row[3], row[0])), budget + 1))
+        finally:
+            for stream in streams:
+                stream.close()
+    else:
+        for cls in classes:
+            rows.extend(_cohort_class_rows(store.conn, cls, rank, pid, owner, budget + 1))
+        rows.sort(key=lambda row: (-row[3], row[0]))
     more = len(rows) > budget
     rows = rows[:budget]
-    people = _people(conn, [r[0] for r in rows])
+    people = {} if query.compact else _people(conn, [r[0] for r in rows])
     total = world_total(store, query.mask)
     own = store.conn.execute('SELECT cls FROM mp WHERE person_id=?', (owner,)).fetchone()
     if own and (query.mask >> own[0]) & 1: total -= 1
     result = _response(store, query, (0., 0., 1., 1.),
-                       [_node(r, people, store.mode) for r in rows], [], [], total, total, False)
+                       [] if query.compact else [_node(r, people, store.mode) for r in rows], [], [], total, total, False)
+    if query.compact:
+        result.update(compact=True, columns=COMPACT_COLUMNS, rows=_compact_rows(conn, rows),
+                      shown=len(rows), hidden=total - len(rows))
     result['cohort'] = True
     result['cohort_reset'] = reset
     result['next_cursor'] = json.dumps([rows[-1][3], rows[-1][0], revision]) if more and rows else None
+    return result
+
+
+def _cohort_class_stream(conn, cls, rank, pid, owner, limit):
+    """Two ordered index seeks, consumed lazily by the cross-class merge."""
+    remaining = limit
+    for sql, args in (
+        ('SELECT * FROM mp WHERE cls=? AND rk=? AND person_id>? AND person_id<>? ORDER BY person_id LIMIT ?',
+         (cls, rank, pid, owner)),
+        ('SELECT * FROM mp WHERE cls=? AND rk<? AND person_id<>? ORDER BY rk DESC,person_id LIMIT ?',
+         (cls, rank, owner)),
+    ):
+        if not remaining:
+            break
+        cursor = conn.execute(sql, (*args, remaining))
+        try:
+            for row in cursor:
+                remaining -= 1
+                yield row
+        finally:
+            cursor.close()
+
+
+def _compact_rows(conn, rows):
+    """Numeric rendering facts only; selected profiles use the existing detail API."""
+    facts = {}
+    for start in range(0, len(rows), 900):
+        ids = [row[0] for row in rows[start:start + 900]]
+        for pid, followers, photo, degree in conn.execute(
+                'SELECT p.id,p.followers,CASE WHEN p.pic_file IS NOT NULL AND p.pic_file<>\'\' THEN 1 ELSE 0 END,'
+                'coalesce(d.degree,0) FROM people p LEFT JOIN map_person_degree d ON d.person_id=p.id '
+                'WHERE p.id IN (%s)' % ','.join('?' * len(ids)), ids):
+            facts[pid] = (followers, photo, degree)
+    result = []
+    for pid, mx, my, rank, cluster, cls, fit, closeness, source in rows:
+        followers, photo, degree = facts.get(pid, (None, 0, 0))
+        result.append([pid, round(ML.coord(mx), 7), round(ML.coord(my), 7), round(rank, 6),
+                       fit, closeness / 1000.0, followers, (cls % 64) >> 3, cls // 64,
+                       degree, photo, source])
     return result
 
 

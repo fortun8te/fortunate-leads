@@ -26,12 +26,12 @@
   ];
   const FIT_LABEL = { strong: 'Strong', good: 'Good', weak: 'Weak', unread: 'Not read yet' };
   const STATUS_LABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', spoke_before: 'Spoke before', client: 'Client', no: 'Not a fit' };
-  const K_MIN = 0.55, K_MAX = 6;
+  const K_MIN = 0.55, K_MAX = 128;
 
   /* ---------- Camera ---------- */
   // The world is the unit square. At k = 1 the whole square fits the shorter side.
   class Camera {
-    constructor() { this.cx = 0.5; this.cy = 0.5; this.k = 1; this.w = 800; this.h = 600; this.inset = { top: 0, right: 0, bottom: 0, left: 0 }; }
+    constructor() { this.maxK = K_MAX; this.cx = 0.5; this.cy = 0.5; this.k = 1; this.w = 800; this.h = 600; this.inset = { top: 0, right: 0, bottom: 0, left: 0 }; }
     resize(w, h) { this.w = w; this.h = h; }
     get scale() { return Math.min(this.w, this.h) * 0.9 * this.k; }
     // The visible area excludes anything laid over the map, so "centre" means centre of what you can see.
@@ -43,18 +43,18 @@
       const a = this.toWorld(0, 0), b = this.toWorld(this.w, this.h), dx = (b[0] - a[0]) * pad, dy = (b[1] - a[1]) * pad;
       return { x0: a[0] - dx, y0: a[1] - dy, x1: b[0] + dx, y1: b[1] + dy };
     }
-    clampCentre() { this.cx = clamp(this.cx, -0.15, 1.15); this.cy = clamp(this.cy, -0.15, 1.15); this.k = clamp(this.k, K_MIN, K_MAX); }
+    clampCentre() { this.cx = clamp(this.cx, -0.15, 1.15); this.cy = clamp(this.cy, -0.15, 1.15); this.k = clamp(this.k, K_MIN, this.maxK); }
     panBy(dx, dy) { const s = this.scale; this.cx -= dx / s; this.cy -= dy / s; this.clampCentre(); }
     // Zoom by factor keeping the world point under (px, py) where it is.
     zoomAt(factor, px, py) {
       const [wx, wy] = this.toWorld(px, py);
-      this.k = clamp(this.k * factor, K_MIN, K_MAX);
+      this.k = clamp(this.k * factor, K_MIN, this.maxK);
       const s = this.scale, m = this.mid;
       this.cx = wx - (px - m[0]) / s; this.cy = wy - (py - m[1]) / s; this.clampCentre();
     }
     // Put world point (wx, wy) under screen point (px, py) at zoom k.
     lock(wx, wy, px, py, k) {
-      this.k = clamp(k, K_MIN, K_MAX);
+      this.k = clamp(k, K_MIN, this.maxK);
       const s = this.scale, m = this.mid;
       this.cx = wx - (px - m[0]) / s; this.cy = wy - (py - m[1]) / s; this.clampCentre();
     }
@@ -124,6 +124,30 @@
     return call;
   }
 
+  class SpatialIndex {
+    constructor(items) {
+      this.cells = new Map(); this.maxRadius = 0;
+      for (const it of items) {
+        const key = Math.floor(it.x * 128) + ':' + Math.floor(it.y * 128);
+        if (!this.cells.has(key)) this.cells.set(key, []);
+        this.cells.get(key).push(it); this.maxRadius = Math.max(this.maxRadius, it.d.portraitRadius || 0);
+      }
+    }
+    query(rect, limit = Infinity) {
+      const found = [], pad = this.maxRadius;
+      const x0 = Math.max(-1, Math.floor((rect.x0-pad)*128)), x1 = Math.min(129, Math.floor((rect.x1+pad)*128));
+      const y0 = Math.max(-1, Math.floor((rect.y0-pad)*128)), y1 = Math.min(129, Math.floor((rect.y1+pad)*128));
+      for (let y=y0;y<=y1;y++) for (let x=x0;x<=x1;x++) {
+        for (const it of this.cells.get(x+':'+y) || []) {
+          const r=it.d.portraitRadius || 0;
+          if (it.x+r<rect.x0 || it.x-r>rect.x1 || it.y+r<rect.y0 || it.y-r>rect.y1 || it.ta===0) continue;
+          found.push(it); if (found.length>=limit) return found;
+        }
+      }
+      return found;
+    }
+  }
+
   /* ---------- Scene: what is on screen, and how it fades ---------- */
   class Scene {
     constructor() { this.items = new Map(); this.nodes = []; this.clusters = []; this.animating = false; this.maxCluster = 1; }
@@ -144,7 +168,7 @@
       for (const n of resp.nodes || []) put('n', n);
       for (const c of resp.clusters || []) put('c', c);
       for (const it of this.items.values()) if (!seen.has(it.key)) it.ta = it.pin ? 1 : 0;
-      this.rebuild();
+      this.rebuild(); this.animating = !!morph || !o.instant;
     }
     // Keep one person visible whatever the server sends: the selected or searched person.
     pin(node) {
@@ -153,7 +177,7 @@
       const key = 'n:' + node.id; let it = this.items.get(key);
       if (!it) { it = { key, kind: 'n', d: node, x: node.x, y: node.y, fx: node.x, fy: node.y, tx: node.x, ty: node.y, t0: 0, dur: 0, a: 0, ta: 1, pin: true }; this.items.set(key, it); }
       it.d = node; it.x = node.x; it.y = node.y; it.tx = node.x; it.ty = node.y; it.dur = 0;
-      it.pin = true; it.ta = 1; this.pinned = key; this.rebuild();
+      it.pin = true; it.ta = 1; this.pinned = key; if (!this.large) this.rebuild();
     }
     unpin() { if (this.pinned) { const it = this.items.get(this.pinned); if (it) { it.pin = false; } this.pinned = null; } }
     get(id) { return this.items.get('n:' + id) || null; }
@@ -166,10 +190,12 @@
       this.nodes.sort((a, b) => (a.d.rank || 0) - (b.d.rank || 0));
       this.clusters.sort((a, b) => b.d.count - a.d.count);
       this.maxCluster = max;
+      this.large = this.nodes.length > 2000; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
     }
-    clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; }
+    clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; this.large = false; this.spatial = null; }
     // Advance by dt seconds. Returns true while anything is still moving, so the loop can stop when idle.
     step(now, dt, reduced) {
+      if (this.large && !this.animating) return false;
       let busy = false, dead = false;
       const k = reduced ? 1 : 1 - Math.exp(-dt / 0.085);
       for (const it of this.items.values()) {
@@ -247,6 +273,25 @@
     members.sort((a, b) => distanceValue(b) - distanceValue(a)
       || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
+    if (members.length > 2000) {
+      const count = members.length, hole = .06, outer = .46, golden = Math.PI * (3 - Math.sqrt(5));
+      const unit = .29 / Math.sqrt(count), maximum = size === 'equal' ? 14 : size === 'fit' ? 24 : 28;
+      const nodes = members.map((n, i) => {
+        const r = Math.sqrt(hole * hole + (outer * outer - hole * hole) * (i + .5) / count);
+        const portraitRadius = unit * radiusFor(n, 1, size) / maximum;
+        let hash=2166136261; for(const char of String(n.id)) hash=Math.imul(hash^char.charCodeAt(0),16777619);
+        hash^=hash>>>16; hash=Math.imul(hash,0x7feb352d); hash^=hash>>>15;
+        // Rotate inside the available clearance: organic spacing without changing
+        // anyone's evidence distance or allowing adjacent circles to overlap.
+        const jitter=((hash>>>0)/4294967296*2-1)*(1.25*unit-portraitRadius);
+        const angle = i * golden + jitter/r;
+        return { ...n, evidenceX: n.evidenceX ?? n.x, evidenceY: n.evidenceY ?? n.y,
+          x: .5 + r * Math.cos(angle), y: .5 + r * Math.sin(angle), cohort: true,
+          portraitRadius, spacing: unit * 2 };
+      });
+      if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: unit * 2 });
+      return nodes;
+    }
     const weights = members.map(n => radiusFor(n, 1, size));
     const largest = Math.max(...weights), outer = .46, centre = .06;
     let scale = Math.min(.065 / largest, Math.sqrt(.44 * (outer * outer - centre * centre) / weights.reduce((sum, r) => sum + r * r, 0)));
@@ -313,13 +358,20 @@
 
   // Select what can be read at this scale. Screen collisions never alter world coordinates.
   function displayPlan(scene, cam, guides = [], selected = null, blocked = null, ownerId = null, mode = 'closeness', size = 'followers') {
+    if (scene.large && scene.spatial) {
+      const visible = scene.spatial.query(cam.rect(), 12001);
+      const vector = visible.length <= 12000;
+      const marks = vector ? visible.map(it => { const [x,y]=cam.toScreen(it.x,it.y); return {kind:'n',it,x,y,r:String(it.d.id)===String(ownerId)?OWNER_RADIUS:it.d.portraitRadius*cam.scale}; }) : [];
+      const nodes = marks.filter(mark => mark.r >= 5).sort((a,b) => (a.it.x-.5)**2+(a.it.y-.5)**2-(b.it.x-.5)**2-(b.it.y-.5)**2).slice(0,1000);
+      return {nodes,groups:[],large:true,vector,marks};
+    }
     if (scene.nodes.some(it => it.d.cohort)) {
       const scale = cam.scale / Math.max(1, cam.k);
       const nodes = scene.nodes.filter(it => it.ta !== 0).map(it => {
         const [x, y] = cam.toScreen(it.x, it.y);
         const owner = String(it.d.id) === String(ownerId);
         const radiusScale = Math.min(1, it.d.spacing * scale * .49 / 15);
-        const r = owner ? OWNER_RADIUS * cam.k : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
+        const r = owner ? Math.min(24, OWNER_RADIUS * cam.k) : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
         return { kind: 'n', it, x, y, r };
       });
       return { nodes, groups: [] };
@@ -463,7 +515,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

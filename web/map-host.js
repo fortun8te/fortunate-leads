@@ -37,6 +37,11 @@
     person: (id) => api.get('/api/person/' + encodeURIComponent(id)),
     setStatus: (id, status) => saveClassification(id, 'mark', { status }),
     tags: () => api.get('/api/tags'),
+    tagPresentation(label) {
+      const tag = { tag: label, source: 'manual' }, importance = tagImportance(tag);
+      return { label: tagLabel(label), importance, tone: tagTone(tag),
+        icon: importance === 'exceptional' ? 'sparkles' : ['priority', 'strong'].includes(importance) ? 'verified' : '' };
+    },
     editTags: (id, add, remove) => saveClassification(id, 'tags', { add, remove }),
     // If_match makes a stale note fail with a conflict instead of overwriting someone else's edit.
     saveNote: (id, note, rev) => api.post(`/api/person/${encodeURIComponent(id)}/mark`, { note, if_match: rev ?? '' })

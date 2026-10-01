@@ -43,8 +43,8 @@
       this.reduced = !!o.reduced;
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
-      this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
-      this.density = 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
+      this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(1); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
+      this.density = [250,500,1000,10000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
       this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = VIEW_MODES.find(mode => mode.id === this.viewMode).size; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.connectionsVisible = false; this.flight = null; this.goal = null; this.vel = null;
@@ -66,6 +66,7 @@
         status: this.status, q: this.q, follow: this.follow
       });
       p.set('cohort', '1');
+      if (this.density > 2000 && !this.q) { p.set('compact', '1'); p.set('budget', String(Math.min(20000, this.density))); }
       if (this.cursor) p.set('after', this.cursor);
       return p;
     }
@@ -75,19 +76,19 @@
     async load(opt = {}) {
       if (this.paused) return;
       const cam = opt.cam ? Object.assign(new Camera(), this.cam, { ...opt.cam }) : this.cam;
-      const rect = {x0:0,y0:0,x1:1,y1:1}, params = this.params(), key = params.toString();
+      const rect = {x0:0,y0:0,x1:1,y1:1}, params = this.params(), key = params.toString() + '|count=' + this.density;
       this.schedule.cancel();
       const cached = !opt.force && this.cache.get(key);
       if (cached) { this.stats.cacheHits++; this.viewReq.cancel(); this.pending = 0; this.emit('busy'); this.loaded = { rect, k: cam.k }; this.apply(cached, { rect, k: cam.k }); return; }
       this.hold = !!(opt.cam && this.flight);
       const ticket = this.viewReq.begin();
       if (this.viewReq.n > 1 && this.pending) this.stats.aborted++;
-      this.pending = 1; this.stats.requests++;
+      this.pending = 1; this.loadingCount = 0; this.loadingTotal = this.density; this.stats.requests++;
       if (!this.scene.nodes.length && !this.scene.clusters.length) this.setPhase(this.online() ? 'loading' : 'offline');
       else this.emit('busy');
       let resp;
       try {
-        resp = await this.fetchJson('/api/map/view?' + params, { signal: ticket.signal });
+        resp = this.density > 2000 && !this.q ? await this.loadSnapshot(params, ticket) : await this.fetchJson('/api/map/view?' + params, { signal: ticket.signal });
       } catch (e) {
         if (ticket.live()) { this.pending = 0; this.emit('busy'); }
         if (e && e.name === 'AbortError') return;
@@ -110,6 +111,34 @@
       this.loaded = { rect, k: cam.k };
       this.apply(resp, { rect, k: cam.k });
     }
+    async loadSnapshot(params, ticket) {
+      const collected = [], seen = new Set(); let envelope = null, cursor = params.get('after') || '';
+      const statuses = [null,'interested','contacted','talking','spoke_before','client','no'];
+      for (let chunk=0;chunk<11 && collected.length<this.density;chunk++) {
+        if (!ticket.live()) return null;
+        const query = new URLSearchParams(params); query.set('budget', String(Math.min(20000,this.density-collected.length)));
+        if (cursor) query.set('after',cursor); else query.delete('after');
+        const response = await this.fetchJson('/api/map/view?'+query,{signal:ticket.signal});
+        if (!ticket.live()) return null;
+        if (!response.compact) return response;
+        if (!Array.isArray(response.rows)) throw new Error('The map came back incomplete.');
+        if (envelope && (String(response.rev)!==String(envelope.rev) || response.cohort_reset)) throw new Error('The saved network changed. Refresh the map to continue.');
+        envelope = response;
+        for (const row of response.rows) {
+          const [id,x,y,rank,fit,closeness,followers,status,flags,source_count,hasPhoto,source] = row;
+          if (seen.has(id)) throw new Error('The map returned duplicate people. Refresh to continue.');
+          seen.add(id); collected.push({id,x,y,rank,fit,closeness,followers,status:statuses[status]||null,
+            followed:!!(flags&1),follows_me:!!(flags&2),not_following:!!(flags&4),source_count,pic:hasPhoto?'/img/'+id:null,source,compact:true,handle:String(id)});
+        }
+        this.loadingCount=collected.length; this.loadingTotal=Math.min(this.density,response.total||this.density); this.emit('busy');
+        const next=response.next_cursor;
+        if (!next || !response.rows.length || collected.length>=this.density) break;
+        if (next===cursor) throw new Error('The map stopped advancing. Refresh to continue.');
+        cursor=next;
+        await new Promise(resolve=>setTimeout(resolve,0));
+      }
+      return {...envelope,rows:undefined,nodes:collected,shown:collected.length,hidden:Math.max(0,(envelope?.total||0)-collected.length)};
+    }
     fail(e) {
       this.error = e && e.message ? e.message : '';
       const offline = !this.online() || (e && e.name === 'TypeError');
@@ -117,8 +146,11 @@
       this.setPhase(offline ? 'offline' : 'error');
     }
     apply(resp, at) {
+      this.returningNode = null;
       const previousRev = this.rev;
+      const layoutStart=this.now();
       const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size, this.viewMode), clusters = [];
+      this.stats.layoutMs=this.now()-layoutStart;
       this.nextCursor = resp.next_cursor || null; this.cohort = true;
       if (resp.cohort_reset) {
         this.cursor = ''; this.pages = ['']; this.pageIndex = 0;
@@ -135,7 +167,9 @@
       this.stale = null;
       this.morph = 0;
       this.scene.clear();
+      const indexStart=this.now();
       this.scene.apply({ nodes, clusters }, this.now(), { morph: 0, instant: true });
+      this.stats.sceneMs=this.now()-indexStart;
       if (this.selected) {
         const current = nodes.find((n) => String(n.id) === String(this.selected.id));
         if (current) this.selected = current;
@@ -178,10 +212,11 @@
       if (this.stats.applied === applied) { Object.assign(this, previous); this.emit('scene'); }
     }
     setDensity(n) {
-      if (![250, 500, 1000].includes(+n) || +n === this.density) return;
-      this.density = +n; this.deselect(); this.resetPages(); this.load();
+      if (![250, 500, 1000, 10000, 50000, 200000].includes(+n) || +n === this.density) return;
+      this.density = +n; this.emit('density'); this.deselect(); this.resetPages(); this.load();
     }
     resetPages() {
+      this.returningNode = null;
       this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null; this.loaded = null;
     }
     setFilters(f) {
@@ -285,7 +320,13 @@
         this.select(nodes.find(it => String(it.id) === String(person.id)));
         this.emit('scene');
       }
-      if (this.selected) this.flyTo({ cx: this.selected.x, cy: this.selected.y, k: this.cam.k }, 450);
+      if (this.selected) {
+        const radius = this.scene.get(this.selected.id)?.d.portraitRadius;
+        const baseScale = this.cam.scale / this.cam.k;
+        const readableZoom = this.scene.large && radius > 0 ? 16 / (radius * baseScale) : this.cam.k;
+        const k = clamp(Math.max(this.cam.k, readableZoom), Core.K_MIN, K_MAX);
+        this.flyTo({ cx: this.selected.x, cy: this.selected.y, k }, 450);
+      }
     }
 
     /* ----- camera ----- */
@@ -303,9 +344,10 @@
       this.size = size; this.repack(); this.emit('size');
     }
     repack() {
+      this.returningNode = null;
       if (!this.cohort) return;
       const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, this.size, this.viewMode);
-      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced ? 0 : 240, instant: true});
+      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 2000 ? 0 : 240, instant: true});
       if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
       this.emit('scene');
     }
@@ -320,7 +362,7 @@
       this.locateReq.cancel(); this.flight = null; this.vel = null;
       const [wx, wy] = this.goal ? [this.goal.wx, this.goal.wy] : this.cam.toWorld(px, py);
       const base = this.goal && Math.abs(this.goal.px - px) < 2 && Math.abs(this.goal.py - py) < 2 ? this.goal.k : this.cam.k;
-      const k = clamp(base * factor, Core.K_MIN, K_MAX);
+      const k = clamp(base * factor, Core.K_MIN, this.cam.maxK || K_MAX);
       if (this.reduced) { this.cam.lock(wx, wy, px, py, k); this.goal = null; this.moved(); return; }
       this.goal = { k, wx, wy, px, py };
     }
@@ -340,6 +382,11 @@
         const d = Math.exp(-dt / 0.22); this.vel.vx *= d; this.vel.vy *= d;
         if (Math.hypot(this.vel.vx, this.vel.vy) < 8) this.vel = null; else busy = true;
         this.moved();
+      }
+      if (this.scene.large && this.returningNode) {
+        const it=this.returningNode, t=clamp((now-it.t0)/it.dur,0,1), ease=1-(1-t)**3;
+        it.x=it.fx+(it.tx-it.fx)*ease; it.y=it.fy+(it.ty-it.fy)*ease;
+        if(t===1){it.dur=0;this.returningNode=null;} else busy=true;
       }
       if (this.scene.step(now, dt, this.reduced)) busy = true;
       return busy;

@@ -182,3 +182,14 @@
 .mv-relationship { color: #a5c6f5; border-color: #46618a66; background: #4778ba18; }
 .mv-relationship[data-relationship="client"] { color: #91d1b2; border-color: #4f977566; background: #4f97751c; }
 .mv-relationship:hover { color: var(--fg); border-color: var(--line3); }
+
+/* The card shares Leads' semantic tag styles and icons. */
+.mv-tag-chips .mv-card-tag { max-width: 100%; height: 28px; min-height: 28px; cursor: pointer; }
+.mv-tag-chips .mv-card-tag > span:not(.tag-icon) { min-width: 0; }
+.mv-line-key { display: grid; gap: 6px; margin: 12px 0; color: var(--fg3); font-size: 11px; }
+.mv-line-key > span { display: flex; align-items: center; gap: 8px; }
+.mv-line-sample { position: relative; display: inline-block; width: 22px; height: 7px; flex: 0 0 22px; }
+.mv-line-sample::before { content: ''; position: absolute; inset: 3px 0 auto; border-top: 1px solid currentColor; opacity: .6; }
+.mv-line-sample.outgoing::before { border-top-style: dashed; }
+.mv-line-sample.mutual::before { top: 1px; }
+.mv-line-sample.mutual::after { content: ''; position: absolute; inset: 5px 0 auto; border-top: 1px dashed currentColor; opacity: .6; }

@@ -48,7 +48,7 @@ test('network overview always keeps owner visible and bounds exploration', () =>
   assert.ok(plan.nodes.some(n => n.it.d.id === 0));
   assert.ok(plan.nodes.length <= 420);
   cam.set(.5, .5, 1000);
-  assert.equal(cam.k, 6);
+  assert.equal(cam.k, 128);
 });
 test('portrait overview samples distinct communities and preserves real positions', () => {
   const cam = new Camera(); cam.resize(1400,1000);

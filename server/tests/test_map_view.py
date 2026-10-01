@@ -4,6 +4,7 @@ import random
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from map_view_fixture import make
 import db
@@ -292,6 +293,79 @@ class MapViewTests(unittest.TestCase):
         again=self.view({'scope':['all'],'cohort':['1'],'budget':['250'],'after':[json.dumps(after)]})
         self.assertTrue(again['cohort_reset'])
         self.assertEqual([n['id'] for n in first['nodes']],[n['id'] for n in again['nodes']])
+
+    def test_compact_cohort_preserves_facts_without_profile_hydration_or_response_cache(self):
+        legacy = self.view({'scope':['all'], 'cohort':['1'], 'budget':['1000']})
+        cache_keys = list(MV._CACHE)
+        with mock.patch.object(MV, '_people', wraps=MV._people) as hydrate:
+            raw = MV.view(self.conn, self.path, {'scope':['all'], 'cohort':['1'], 'compact':['1'], 'budget':['20000']})
+        result = json.loads(raw.body)
+        self.assertTrue(result['compact'])
+        self.assertEqual(result['nodes'], [])
+        self.assertEqual(result['clusters'], [])
+        self.assertEqual(result['columns'], list(MV.COMPACT_COLUMNS))
+        self.assertEqual(result['shown'], len(result['rows']))
+        self.assertEqual(result['shown'], result['total'])
+        self.assertEqual(result['hidden'], 0)
+        self.assertIsNone(result['next_cursor'])
+        self.assertIsNone(raw.etag)
+        self.assertEqual(raw.headers['Cache-Control'], 'no-store')
+        self.assertEqual(list(MV._CACHE), cache_keys)
+        self.assertTrue(all(len(call.args[1]) <= 1 for call in hydrate.call_args_list))
+        for row, node in zip(result['rows'], legacy['nodes']):
+            self.assertEqual(row[:7], [node[k] for k in ('id','x','y','rank','fit','closeness','followers')])
+            self.assertEqual(ML.CODE_STATUS.get(row[7]), node['status'])
+            self.assertEqual(bool(row[8] & 1), node['followed'])
+            self.assertEqual(bool(row[8] & 2), node['follows_me'])
+            self.assertEqual(row[9], node['source_count'])
+            self.assertEqual(bool(row[10]), bool(node['pic']))
+            self.assertEqual(bool(row[11]), bool(node.get('source')))
+
+    def test_compact_pages_visit_every_filtered_person_once_and_reset_changed_filters(self):
+        q = {'scope':['all'], 'cohort':['1'], 'compact':['1'], 'budget':['500'], 'follow':['unknown']}
+        with MV.reader(self.path, 'closeness') as store:
+            owner = store.meta('plan', {}).get('owner_id')
+            mask = MV.Query(q).mask
+            expected = [row[0] for row in sorted(store.conn.execute('SELECT person_id,rk,cls FROM mp'), key=lambda row: (-row[1],row[0]))
+                        if row[0] != owner and (mask >> row[2]) & 1]
+        seen=[]; after=''; first_cursor=None
+        while True:
+            result=self.view(dict(q, after=[after]))
+            self.assertLessEqual(len(result['rows']), 500)
+            self.assertEqual(result['total'], len(expected))
+            seen.extend(row[0] for row in result['rows'])
+            after=result['next_cursor']
+            if first_cursor is None: first_cursor=after
+            if not after: break
+        self.assertEqual(seen, expected)
+        self.assertIsNotNone(first_cursor)
+        changed=dict(q, status=['client'], after=[first_cursor])
+        reset=self.view(changed)
+        fresh=self.view(dict(changed, after=['']))
+        self.assertTrue(reset['cohort_reset'])
+        self.assertEqual(reset['rows'], fresh['rows'])
+
+    def test_compact_budget_and_input_are_bounded_without_changing_legacy_cap(self):
+        self.assertEqual(MV.Query({'cohort':['1'], 'compact':['1'], 'budget':['200000']}).budget, 20000)
+        self.assertEqual(MV.Query({'cohort':['1'], 'budget':['200000']}).budget, 1500)
+        for q in ({'compact':['1']}, {'cohort':['1'], 'compact':['1'], 'q':['person']}, {'compact':['yes']}):
+            with self.assertRaises(ValueError): MV.Query(q)
+
+    def test_compact_merge_consumes_a_page_plus_one_head_per_class(self):
+        original = MV._cohort_class_stream
+        consumed = 0
+        classes = 0
+        def counted(*args):
+            nonlocal consumed, classes
+            classes += 1
+            for row in original(*args):
+                consumed += 1
+                yield row
+        with mock.patch.object(MV, '_cohort_class_stream', counted):
+            result = self.view({'scope':['all'], 'cohort':['1'], 'compact':['1'], 'budget':['50']})
+        self.assertEqual(len(result['rows']), 50)
+        self.assertGreater(classes, 1)
+        self.assertLessEqual(consumed, 51 + classes)
 
     def test_late_cohort_cursor_seeks_past_large_rank_ties_with_bounded_work(self):
         conn = sqlite3.connect(':memory:')

@@ -252,3 +252,59 @@ test('selected card overlays the map and keeps pipeline and connection detail cl
   assert.match(source, /h\('details', \{ class: 'mv-connections' \}/);
   assert.match(source, /setConnectionsVisible\(connections\.open\)/);
 });
+
+test('compact card hydrates identity locally without replacing geometry or a newer status', () => {
+  const { MapView } = require('../../web/map-view.js');
+  const node = { id: 51, compact: true, handle: '51', x: .4, y: .6, status: 'talking' };
+  const fields = { '.mv-who b': {}, '.mv-who span': {}, '.mv-av': { replaceChildren(value) { this.value = value; } } };
+  const view = {
+    model: { selected: node, scene: { get: () => ({ d: node }) } },
+    r: { card: { querySelector: selector => fields[selector] } }, invalidate() {}
+  };
+  MapView.prototype.hydrateCardIdentity.call(view, node, { id: 51, handle: 'alice', name: 'Alice Founder', status: 'interested' });
+  assert.equal(fields['.mv-who b'].textContent, 'Alice Founder');
+  assert.equal(fields['.mv-who span'].textContent, '@alice');
+  assert.equal(fields['.mv-av'].value, 'AF');
+  assert.equal(node.compact, false);
+  assert.equal(node.status, 'talking');
+  assert.equal(node.x, .4);
+  assert.equal(node.y, .6);
+  MapView.prototype.hydrateCardIdentity.call(view, node, { id: 52, name: 'Wrong profile' });
+  assert.equal(node.name, 'Alice Founder');
+});
+
+test('compact identity reads ignore an old selection and show a useful local read failure', async () => {
+  const { MapView } = require('../../web/map-view.js');
+  const node = { id: 51, compact: true, handle: '51' };
+  const fields = { '.mv-who b': { textContent: 'Loading profile…' }, '.mv-who span': { textContent: '' }, '.mv-summary > div:last-child dd': { textContent: 'Loading…' } };
+  const feedback = {};
+  const box = { isConnected: true, querySelector: () => feedback };
+  const requests = [], hydrated = [];
+  const view = {
+    model: { selected: node },
+    r: { card: { querySelector: selector => selector === '.mv-tags' ? box : fields[selector] } },
+    host: { person: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
+    hydrateCardIdentity: (_, person) => hydrated.push(person.id), paintTags() {}
+  };
+  const first = MapView.prototype.loadTags.call(view, node);
+  view.model.selected = { id: 52 };
+  requests[0].resolve({ id: 51, handle: 'alice' });
+  await first;
+  assert.deepEqual(hydrated, []);
+  view.model.selected = node;
+  const second = MapView.prototype.loadTags.call(view, node);
+  requests[1].reject(new Error('offline'));
+  await second;
+  assert.equal(fields['.mv-who b'].textContent, 'Profile unavailable');
+  assert.equal(fields['.mv-who span'].textContent, '');
+  assert.equal(fields['.mv-summary > div:last-child dd'].textContent, 'Unavailable');
+  assert.match(feedback.textContent, /Reopen to retry/);
+  const stale = MapView.prototype.loadTags.call(view, node);
+  const latest = MapView.prototype.loadTags.call(view, node);
+  requests[3].resolve({ id: 51, handle: 'alice' });
+  await latest;
+  requests[2].reject(new Error('late failure'));
+  await stale;
+  assert.deepEqual(hydrated, [51]);
+  assert.equal(feedback.textContent, '');
+});
