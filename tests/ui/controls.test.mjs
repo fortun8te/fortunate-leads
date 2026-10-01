@@ -30,7 +30,7 @@ function harness() {
     fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
   const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
   const fail = index => requests[index].reject(new Error('offline'));
-  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-connect]' && button.dataset.connect ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
   return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
 async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
@@ -235,3 +235,24 @@ test('isolated collection keeps Stop visible and preserves the warned account no
   const post=h.requests.find(r=>r.options?.method==='POST');
   assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'pause'});
 });
+
+test('connecting saved accounts stays honest and can be cancelled',async()=>{
+ const h=harness(),status=collection();status.collection_startup={state:'waiting',message:'Waiting for saved Instagram accounts to connect.'};
+ h.respond(0,status);h.respond(1,engines());await settle();
+ assert.match(h.el.innerHTML,/fl-ctl-word">Connecting/);assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);assert.doesNotMatch(h.el.innerHTML,/fl-ctl-word">Collecting/);
+ h.click(b=>b.dataset.stage==='collection');
+ const post=h.requests.find(r=>r.options?.method==='POST');assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'pause'});
+});
+test('enabled collection offers one-click reconnect without claiming a request is active',async()=>{
+ const h=harness(),status=collection(false);status.stages.forEach(s=>{s.state=s.id==='ai'?'paused':'waiting';s.active=false;});status.accounts=[{lane_id:'one',online:false,paused:false,hold:null}];
+ h.respond(0,status);h.respond(1,engines());await settle();
+ assert.match(h.el.innerHTML,/>Connect accounts<\/button>/);assert.doesNotMatch(h.el.innerHTML,/fl-ctl-word">Collecting/);
+ h.click(b=>b.dataset.focus==='connect');const post=h.requests.find(r=>r.options?.method==='POST');assert.equal(JSON.parse(post.options.body).action,'connect_accounts');
+});
+
+ test('deferred Start is shown as connecting while collection remains paused',async()=>{
+ const h=await ready();h.click(b=>b.dataset.stage==='collection');
+ const pending=collection();pending.collection_startup={state:'opening',message:'Opening saved accounts.'};
+ h.respond(2,pending);await settle();
+ assert.match(h.el.innerHTML,/Connecting/);assert.doesNotMatch(h.el.innerHTML,/Couldn't confirm/);
+ });

@@ -39,12 +39,18 @@ class StartWorkflow(Base):
                 self.assertEqual(code, 400)
                 self.assertEqual(self.conn.execute('SELECT count(*) FROM lists').fetchone()[0], 0)
 
-    def test_connected_queued_work_is_waiting_until_leased(self):
+    def test_connected_queued_work_waits_until_a_request_is_active(self):
         self.connect()
         self.call('/api/start', {'handle': 'brand', 'directions': ['following']})
         self.assertEqual(self.flow()['state'], 'wait')
         self.assertNotIn('Collecting', self.flow()['headline'])
-        self.assertIsNotNone(self.connect()['job'])
+        job = self.connect()['job']
+        self.assertIsNotNone(job)
+        self.assertEqual(self.flow()['state'], 'wait')
+        code, permit = self.call('/api/ext/request', {'action': 'acquire', 'kind': 'list', 'job_id': job['id'],
+                                                     'lane_id': 'lane-test', 'account': {'ig_id': '101', 'handle': 'test.account'}})
+        self.assertEqual(code, 200)
+        self.assertTrue(permit['granted'])
         flow = self.flow()
         self.assertEqual(flow['state'], 'running')
         self.assertIn('following', flow['headline'])
@@ -98,7 +104,13 @@ class StartWorkflow(Base):
         self.conn.commit()
         self.call(f'/api/person/{pid}/read', {})
         self.assertEqual(self.flow()['state'], 'wait')
-        self.assertIsNotNone(self.connect('profile')['job'])
+        job = self.connect('profile')['job']
+        self.assertIsNotNone(job)
+        self.assertEqual(self.flow()['state'], 'wait')
+        code, permit = self.call('/api/ext/request', {'action': 'acquire', 'kind': 'profile', 'job_id': job['id'],
+                                                     'lane_id': 'lane-test', 'account': {'ig_id': '101', 'handle': 'test.account'}})
+        self.assertEqual(code, 200)
+        self.assertTrue(permit['granted'])
         flow = self.flow()
         self.assertEqual(flow['state'], 'running')
         self.assertIn('profile.brand', flow['headline'])

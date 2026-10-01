@@ -88,3 +88,11 @@ test('one primary button adds without restarting while collection is already on'
   s.ctx.syncSeed();
   assert.equal(s.node('#seed-start').textContent, 'Start collecting');
 });
+
+ test('queued startup reports connecting rather than claiming collection has started',async()=>{
+ const s=setup(async()=>({queued:2,started:false,starting:true,control:{collection_startup:{state:'opening'}}}));
+ await s.ctx.submitSeed(true);
+ assert.match(s.node('#seed-feedback').textContent,/Profiles queued. Connecting/);
+ assert.doesNotMatch(s.node('#seed-feedback').textContent,/Collection is on|Could not confirm/);
+ assert.equal(s.node('#seed-in').value,'');assert.equal(s.events(),1);
+ });

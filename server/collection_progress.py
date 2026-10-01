@@ -24,7 +24,7 @@ def summary(conn, lists, accts, now=None):
            'needs_review': sum(row['completion'] in ('blocked', 'unverified') for row in lists),
            'total': len(lists), 'known_entries_left': left, 'unknown_lists': len(pending) - len(known),
            'open_ended': db.get_setting(conn, 'auto_discover', True) is True, 'eta': None,
-           'status': 'warming_up', 'message': 'Measuring current pace'}
+           'status': 'warming_up', 'message': 'Waiting for saved pages'}
     def waiting(status, message):
         return dict(out, status=status, message=message)
     if control.stage_paused(conn, 'lists'):
@@ -35,11 +35,19 @@ def summary(conn, lists, accts, now=None):
     if not pending:
         return waiting('idle', 'Current queue finished' if lists and not out['partial'] and not out['needs_review']
                        else 'No lists waiting')
-    assigned = [account for account in accts if (account['role'] or 'both') in ('lists', 'both')]
+    rows = {row['lane_id']: row for row in accounts.rows(conn)}
+    share = accounts.list_share(conn, list(rows.values()))
+    # ETA uses the same main-account reservation as list assignment. An idle
+    # protected main cannot stand in for an offline or daily-capped alternate.
+    assigned = [account for account in accts if (account['role'] or 'both') in ('lists', 'both')
+                and account['lane_id'] in rows
+                and (not rows[account['lane_id']]['is_main'] or share > 0)]
     online = [account for account in assigned if account['online'] and not account['paused']]
     usable = [account for account in online if not account['hold'] and account.get('status') != 'connection_error']
-    rows = {row['lane_id']: row for row in accounts.rows(conn)}
-    ready = [account for account in usable if not accounts.list_wait_until(rows[account['lane_id']], now)]
+    ready = [account for account in usable
+             if not accounts.list_wait_until(rows[account['lane_id']], now)
+             and accounts.identity_owner(conn, rows[account['lane_id']], now)
+             and not accounts.identity_cooling(conn, rows[account['lane_id']], 'list', now)]
     if not ready:
         if usable:
             return waiting('waiting', 'Waiting for Instagram')
@@ -52,8 +60,10 @@ def summary(conn, lists, accts, now=None):
         return waiting('waiting', 'Connected accounts are paused' if assigned and all(account['paused'] for account in assigned)
                        else 'Instagram accounts are offline')
     usable = ready
-    budget_ready = [account for account in usable if not account['budget'].get('list')
-                    or account['today'].get('list', 0) < account['budget']['list']]
+    budget_ready = [account for account in usable
+                    if (not account['budget'].get('list')
+                        or account['today'].get('list', 0) < account['budget']['list'])
+                    and accounts.list_budget_left(conn, rows[account['lane_id']], now)]
     if not budget_ready:
         return waiting('waiting', 'Daily limits reached · resumes tomorrow')
     if out['unknown_lists'] == len(pending):

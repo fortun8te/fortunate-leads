@@ -114,6 +114,51 @@ class CollectionProgressTest(unittest.TestCase):
         self.lanes.append(dict(self.lanes[0], lane_id='second'))
         self.assertIsNotNone(self.summary()['eta'])
 
+    def add_reserved_main(self):
+        self.conn.execute("INSERT INTO accounts(lane_id,ig_id,role,is_main,last_seen) VALUES('main','789','both',1,?)", (accounts.iso(self.now),))
+        self.conn.commit()
+        self.lanes.append(dict(self.lanes[0], lane_id='main', budget={'list': 200}, today={'list': 0}))
+
+    def test_protected_main_does_not_mask_alternate_daily_limit(self):
+        self.add_reserved_main()
+        self.lanes[0]['budget']['list'] = 6
+        out = self.summary()
+        self.assertIsNone(out['eta'])
+        self.assertIn('Daily limits', out['message'])
+
+    def test_protected_main_does_not_mask_offline_alternate(self):
+        self.add_reserved_main()
+        self.lanes[0]['online'] = False
+        out = self.summary()
+        self.assertIsNone(out['eta'])
+        self.assertIn('offline', out['message'])
+
+    def test_main_is_available_when_explicitly_shared_or_only_list_account(self):
+        self.conn.execute("UPDATE accounts SET is_main=1 WHERE lane_id='lane'")
+        self.conn.commit()
+        self.assertIsNotNone(self.summary()['eta'])
+        self.conn.execute("INSERT INTO accounts(lane_id,ig_id,role) VALUES('offline','789','both')")
+        self.conn.commit()
+        self.assertIsNone(self.summary()['eta'])
+        db.set_setting(self.conn, 'main_list_share', .1)
+        self.assertIsNotNone(self.summary()['eta'])
+
+    def test_duplicate_identity_budget_and_cooldown_do_not_predict_progress(self):
+        self.conn.execute("INSERT INTO accounts(lane_id,ig_id,role,paused,last_seen,budget,today) VALUES('duplicate','123','both',1,?,'{\"list\":6}','{\"list\":6}')", (accounts.iso(self.now),))
+        self.conn.commit()
+        self.assertIn('Daily limits', self.summary()['message'])
+        self.conn.execute("UPDATE accounts SET budget=NULL,today='{}',list_cool_until=? WHERE lane_id='duplicate'", (accounts.iso(self.now + timedelta(minutes=30)),))
+        self.conn.commit()
+        self.assertEqual(self.summary()['message'], 'Waiting for Instagram')
+        self.assertIsNone(self.summary()['eta'])
+
+    def test_without_saved_pages_does_not_claim_measured_progress(self):
+        self.conn.execute('DELETE FROM collector_events')
+        self.conn.commit()
+        out = self.summary()
+        self.assertIsNone(out['eta'])
+        self.assertNotIn('Measuring', out['message'])
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_server import Base
 

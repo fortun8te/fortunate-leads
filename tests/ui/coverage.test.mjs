@@ -77,3 +77,9 @@ test('list filters use completion categories consistently including stopped tria
  assert.match($('#lists-f').innerHTML,/Complete <span class="num">1<\/span>/);
  assert.match($('#lists-f').innerHTML,/Incomplete <span class="num">1<\/span>/);
 });
+
+test('account daily limit takes precedence over queue estimates and shows real new profiles',()=>{
+ const html=c.collectionCoverageHTML({control:{progress:{unique_new_profiles:{today:12},saved_list_entries:{today:90},bios_read:{today:4}}},stages:[{id:'lists',state:'waiting',wait:{why:'Daily request budget reached',seconds:3600},now:'Daily limit reached. Resumes tonight.'},{id:'bios',state:'waiting'}],collection:{finished:2,pending:40,eta:{scope:'current_queue',low_minutes:5,high_minutes:10},message:'Measuring current pace'}});
+ assert.match(html,/12 new profiles today/);assert.match(html,/90 list entries saved/);assert.match(html,/4 bios read/);
+ assert.match(html,/Daily limit reached/);assert.doesNotMatch(html,/about 5|Measuring current pace/);
+});

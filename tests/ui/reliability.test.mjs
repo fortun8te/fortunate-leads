@@ -23,7 +23,7 @@ test('running list with unknown total never renders Done; unknown bio metrics re
 });
 test('scraper separates active work from incomplete and capped list coverage',()=>{
   const c=base({document:{activeElement:null},ago:()=>'',eta:()=> 'about 2 h',ST_LABEL:{},ST_DOT:{},LIST_STATE:{},listFilter:'all',listsShown:10});
-  c.S.sc={ext:{online:true},accounts:[{online:true,paused:false}],lists:[
+  c.S.sc={stages:[{id:'lists',active:true,state:'running',paused:false}],ext:{online:true},accounts:[{online:true,paused:false}],lists:[
     {state:'running',seed:'active',direction:'followers',received:40,total:100},
     {state:'partial',seed:'capped',direction:'followers',received:50,total:100},
     {state:'error',seed:'failed',direction:'following',received:10,total:100},
@@ -53,4 +53,12 @@ test('demo implements controls and qualification',async()=>{
   const paused=await (await w.fetch('/api/control',{method:'POST',body:JSON.stringify({stage:'all',action:'pause'})})).json();assert.equal(paused.all_paused,true);
   const qual=await (await w.fetch('/api/qual?view=all&limit=3')).json();assert.equal(qual.rows.length,3);assert.ok(qual.summary.verdicts>0);
   assert.ok(qual.rows.every(row => Array.isArray(row.connection_edges)));
+});
+
+test('connection entries never substitute for missing new-profile counts',()=>{
+ const c=base({document:{activeElement:null},ago:()=>'',eta:()=>null,ST_LABEL:{},LIST_STATE:{},listFilter:'all',listsShown:10});
+ c.S.sc={ext:{online:true},lists:[],soak:{'1h':{people:999}},progress:{lists:{},bios:{},qualify:{}}};
+ vm.runInContext(section('function renderScraper()', 'let listsShown ='),c);c.renderScraper();
+ assert.doesNotMatch(c.$('#scr-counts').innerHTML,/999/);
+ assert.match(c.$('#scr-counts').innerHTML,/New profiles this hour/);
 });

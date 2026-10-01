@@ -238,7 +238,7 @@ class ControlTest(LaneTest):
         self.assertEqual((kept['state'], kept['lane']), ('leased', 'lane-a'))
         self.assertTrue(self.conn.execute('SELECT 1 FROM jobs WHERE id=? AND state IN (\'queued\',\'leased\')', (first['id'],)).fetchone())
 
-    def test_follower_pause_does_not_mark_all_lists_waiting(self):
+    def test_follower_pause_does_not_block_all_list_requests(self):
         self.seeds('s1')
         job = self.nxt('a')['job']
         until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
@@ -250,7 +250,8 @@ class ControlTest(LaneTest):
         self.conn.commit()
         out = self.ctl()
         for item in (self.stage(out, 'lists'), out['accounts'][0]):
-            self.assertNotEqual(item['state'], 'waiting')
+            self.assertEqual(item['state'], 'waiting')  # A lease is assigned work, not an active request.
+            self.assertIsNone(item['wait'])
 
     def test_old_profile_lease_does_not_mask_rate_limit_wait(self):
         self.bio_job()

@@ -2073,7 +2073,8 @@ def api_scraper(conn, q, b):
     now = datetime.now(timezone.utc)
     accts = accounts.listing(conn, now)
     lists, coverage = list_coverage(conn)
-    stages = control.snapshot(conn, ai_left(conn))['stages']
+    control_state = api_control(conn, {}, {})
+    stages = control_state['stages']
     return {'processing': processing_modes.snapshot(conn), 'local_processing': api_local_processing(conn, {}, {}),
             'ext': ext_aggregate(conn, accts, now), 'accounts': accts, 'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
@@ -2084,7 +2085,7 @@ def api_scraper(conn, q, b):
             'soak': soak(conn, now), 'progress': progress(conn, accts),
             'coverage': {'lists': coverage, 'local': local_coverage(conn)},
             'collection': collection_progress.summary(conn, lists, accts, now),
-            'stages': stages,
+            'stages': stages, 'control': control_state,
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': lists,
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
@@ -2095,7 +2096,8 @@ def api_scraper_status(conn, q, b):
     """Small poll for the navigation strip; the full scraper report is for its page."""
     now = datetime.now(timezone.utc)
     accts = accounts.listing(conn, now, include_lists=False)
-    stages = control.snapshot(conn, ai_left(conn))['stages']
+    control_state = api_control(conn, {}, {})
+    stages = control_state['stages']
     return {'processing': processing_modes.snapshot(conn), 'ext': ext_aggregate(conn, accts, now), 'accounts': accts,
             'rate': accounts.aggregate_rate(accts),
             'alerts': accounts.alerts(conn, now, accts),
@@ -2103,7 +2105,7 @@ def api_scraper_status(conn, q, b):
             'qualify': bool(db.get_setting(conn, 'qualify')),
             'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
             'local_laya': bool(db.get_setting(conn, 'local_laya')),
-            'stages': stages,
+            'stages': stages, 'control': control_state,
             'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
                 "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
 
@@ -2584,7 +2586,7 @@ def ai_left(conn):
 
 def api_control(conn, q, b):
     """What each stage (lists, bios, AI) and each account is doing right now, in plain sentences."""
-    return control.snapshot(conn, ai_left(conn))
+    return dict(control.snapshot(conn, ai_left(conn)), collection_startup=browser_startup.snapshot(conn))
 
 
 _service_start_lock = threading.Lock()
@@ -2783,12 +2785,25 @@ def require_collection_resume(conn):
 
 
 def api_control_set(conn, q, b):
-    """{"stage": collection|lists|bios|ai|all, "action": pause|resume} or {"account": lane, "action": ...} → the new snapshot."""
-    if (b.get('action') == 'start_all' or
-            b.get('action') == 'resume' and (b.get('stage') in ('collection', 'lists', 'bios', 'all') or
-                                          b.get('stage') is None and isinstance(b.get('account'), str))):
-        require_collection_resume(conn)
+    """Collection controls, including bounded connection of saved Chrome profiles."""
     try:
+        if b.get('action') == 'acknowledge_scraping_warning' and (browser_startup.snapshot(conn) or {}).get('state') in ('opening', 'waiting'):
+            raise Bad('Stop the connection attempt before reviewing the warning.')
+        if b.get('action') == 'pause' and b.get('stage') != 'ai':
+            browser_startup.cancel(conn)
+        if b.get('action') == 'connect_accounts':
+            browser_startup.begin(ROOT, conn, b)
+            return api_control(conn, q, b)
+        if b.get('action') == 'resume_selected_accounts':
+            if browser_startup.begin(ROOT, conn, b, only_if_offline=True):
+                return api_control(conn, q, b)
+        normal_start = (b.get('action') == 'start_all' or b.get('action') == 'resume'
+                        and b.get('stage') in ('collection', 'lists', 'bios', 'all'))
+        if normal_start or b.get('action') == 'resume' and b.get('stage') is None and isinstance(b.get('account'), str):
+            require_collection_resume(conn)
+        if normal_start and browser_startup.can_launch(ROOT, conn) and browser_startup.read_config(ROOT):
+            if browser_startup.begin(ROOT, conn, b, only_if_offline=True):
+                return api_control(conn, q, b)
         if b.get('action') == 'stop_benchmark':
             with edge_benchmark_api.LOCK:
                 control.apply(conn, b)
@@ -2797,12 +2812,15 @@ def api_control_set(conn, q, b):
     except LookupError:
         conn.rollback()
         raise NotFound('no such account') from None
+    except ValueError as exc:
+        conn.rollback()
+        raise Bad(str(exc)) from None
     except Exception:
         conn.rollback()
         raise
     if b.get('stage') in ('ai', 'all'):
         schedule_local_services(conn)
-    if b.get('action') in ('resume', 'start_all') and b.get('stage') != 'ai':
+    if b.get('action') in ('resume', 'start_all', 'resume_selected_accounts') and b.get('stage') != 'ai':
         browser_startup.schedule(ROOT, conn)
     return api_control(conn, q, b)
 
@@ -2940,14 +2958,22 @@ def api_start(conn, q, b):
     handles = b.get('handles') if isinstance(b.get('handles'), list) else [b.get('handle')]
     directions = b.get('directions', ['followers', 'following'])
     queued = api_seeds(conn, q, {'handles': handles, 'directions': directions})['queued']
-    started, note, controls = True, None, None
+    started, starting, note, controls = False, False, None, None
+    isolation = db.get_setting(conn, 'instagram_collection_isolation') or {}
+    command = ({'action': 'resume_selected_accounts', 'accounts': [
+        {'lane_id': lane, 'ig_id': identity} for lane, identity in isolation['accounts'].items()]}
+        if isolation else {'stage': 'collection', 'action': 'resume'})
     try:
-        controls = api_control_set(conn, q, {'stage': 'collection', 'action': 'resume'})
-    except Bad as exc:
-        started, note = False, str(exc)
-    return {'queued': queued, 'started': started, 'note': note,
+        controls = api_control_set(conn, q, command)
+        starting = (controls.get('collection_startup') or {}).get('state') in ('opening', 'waiting')
+        stages = [stage for stage in controls.get('stages', []) if stage['id'] in ('lists', 'bios')]
+        started = not starting and len(stages) == 2 and all(not stage['paused'] for stage in stages)
+    except (Bad, ValueError) as exc:
+        note = str(exc)
+    return {'queued': queued, 'started': started, 'starting': starting, 'note': note,
             'directions': list(dict.fromkeys(directions)),
             'control': controls if controls is not None else api_control(conn, {}, {})}
+
 
 
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints

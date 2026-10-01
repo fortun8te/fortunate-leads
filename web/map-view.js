@@ -176,7 +176,7 @@
       const k = cam.k, mode = m.mode;
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
-      if (me) this.portraits.get(me.pic);
+      this.queuePortraits(plan.nodes, me);
       let photoBudget = 1001;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
@@ -235,6 +235,14 @@
       }
       this.renderCount(false);
       return this.labelsBusy;
+    }
+    queuePortraits(nodes, owner) {
+      if (owner) this.portraits.get(owner.pic);
+      const x = owner?.x ?? .5, y = owner?.y ?? .5;
+      const distance = mark => (mark.it.x - x) ** 2 + (mark.it.y - y) ** 2;
+      for (const mark of [...nodes].sort((a, b) => distance(a) - distance(b)).slice(0, 1001)) {
+        this.portraits.get(mark.it.d.pic);
+      }
     }
     paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
       const image = requestPhoto ? this.portraits.get(person.pic) : null;

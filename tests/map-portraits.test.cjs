@@ -98,3 +98,16 @@ test('changing display mode retains selected person and camera without relocatio
   const camera=model.cam.state();model.setMode('fit');
   assert.equal(requests,0);assert.deepEqual(model.cam.state(),camera);assert.equal(model.selected.id,1);
 });
+
+test('visible portraits queue from the owner outward regardless of paint order', () => {
+  const {MapView}=require('../web/map-view.js');
+  const {cache,images}=fixture({concurrency:1});
+  const owner={id:0,x:.5,y:.5,pic:'/img/0'};
+  const nodes=[.9,.7,.55].map((x,i)=>({it:{x,y:.5,d:{id:i+1,pic:'/img/'+(i+1)}}}));
+  const before=nodes.slice();
+  MapView.prototype.queuePortraits.call({portraits:cache},nodes,owner);
+  assert.deepEqual(nodes,before,'paint and hit-test order stays unchanged');
+  assert.equal(images[0].src,'/img/0');
+  for(const id of [3,2,1]) { images.at(-1).onload();assert.equal(images.at(-1).src,'/img/'+id); }
+  assert.equal(cache.active,1);
+});

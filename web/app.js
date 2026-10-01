@@ -2221,32 +2221,32 @@ function renderScraper() {
   const listStage = (sc.stages || sc.control?.stages)?.find(s => s.id === 'lists');
   const listPaused = !!sc.paused || !!listStage?.paused;
   const listHeld = listStage && ['cooldown', 'blocked', 'waiting', 'held'].includes(listStage.state);
-  const listActive = !listPaused && !listHeld;
+  const listActive = !listPaused && listStage?.active === true;
   const run = ls.find((l) => l.state === 'running');
   // One plain sentence: what is happening right now.
   const cool = x.cooldown_until && Date.parse(x.cooldown_until) > Date.now();
   const capped = ['list', 'profile'].some((k) => x.budget?.[k] && (x.today?.[k] || 0) >= x.budget[k]);
-  const reading = run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
+  const reading = listActive && run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
   else if (listPaused) { now = 'Paused'; sub = 'Use Start scraping at the top to continue from saved progress.'; }
-  else if (listHeld) { now = 'Scraping waiting'; sub = collectionReason(listStage.reason_code || listStage.wait?.why || listStage.reason, 'Progress is saved. Waiting to continue.'); }
-  else if (!x.online) { now = 'Chrome extension not connected'; sub = `Open Chrome with Instagram logged in${x.last_seen ? `. Last seen ${ago(x.last_seen)} ago.` : '.'}`; }
+  else if (listHeld) { now = 'Collection waiting'; sub = listStage.now || collectionReason(listStage.reason_code || listStage.wait?.why || listStage.reason, 'Progress is saved. Waiting to continue.'); }
+  else if (!x.online) { now = 'Accounts disconnected'; sub = 'Use Connect accounts to reopen your saved Chrome profiles.'; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
-  else if (cool && capped) { now = 'Daily limit reached'; sub = `Back ${backIn(x.cooldown_until)}. Add another Instagram account under Accounts to keep going today.`; }
+  else if (cool && capped) { now = 'Daily limit reached'; sub = `Resumes ${backIn(x.cooldown_until)}. Progress is saved.`; }
   else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Resting'; sub = `Instagram asked us to slow down. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
   else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} list entries saved so far.`; }
-  else { now = 'Online, waiting for work'; sub = 'Add accounts to scrape below.'; }
+  else { now = listStage?.now || 'Waiting for confirmed activity'; sub = ''; }
   const accs = sc.accounts || [];
-  const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} this hour` : 'offline'}</span></span>`).join('')
+  const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} list entries this hour` : 'offline'}</span></span>`).join('')
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
   if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && listActive ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
   const h1 = sc.soak?.['1h'] || {};
   const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
-  $('#scr-counts').innerHTML = tile('Scraped in the last hour', int(h1.new_people ?? h1.people ?? 0), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
-    + tile('Scraped today', int(sc.people_today ?? 0), 'new people')
-    + tile('Scraped in total', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
+  $('#scr-counts').innerHTML = tile('New profiles this hour', (sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
+    + tile('New profiles today', (sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today), 'newly added profiles')
+    + tile('Profiles saved', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
   const minuteRate = (value, noun) => value == null ? `measuring ${noun}` : `${int(value)} ${noun} in the last minute`;
   const recv = sc.coverage?.lists?.saved_entries ?? ls.reduce((a, l) => a + (l.saved_entries ?? l.received ?? 0), 0);
@@ -2373,11 +2373,11 @@ async function submitSeed(start = true) {
   seedAdding = true; seedAction = start ? 'start' : 'queue'; syncSeed();
   try {
     const r = await api.post(start ? '/api/start' : '/api/scraper/seeds', { handles, directions });
-    if (start && r.started !== true) {
+    if (start && r.started !== true && r.starting !== true) {
       $('#seed-feedback').textContent = 'Profiles are queued. Could not confirm collection started. Check status and try again.';
       loadScraper(); return;
     }
-    const message = start ? 'Collection is on. Progress is saved automatically.'
+    const message = start ? r.starting === true ? 'Profiles queued. Connecting your saved accounts…' : 'Collection is on. Check the status above for activity.'
       : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue.` : 'Those lists are already queued.';
     $('#seed-feedback').textContent = message;
     toast(message);
@@ -2438,6 +2438,8 @@ function accountAccess(a) {
     kind: 'wait' };
   if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: a.cooldown_until ? `Resumes ${backIn(a.cooldown_until)}.` : 'Waiting for Instagram to allow requests again.', kind: 'wait' };
   if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
+  if (a.collection_reason === 'main_reserved') return {label:'Protected', detail:a.collection_now, kind:'quiet'};
+  if (a.collection_state === 'waiting') return {label:'Waiting', detail:a.collection_now, kind:'wait'};
   return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
 }
 function accountInstagramHTML(a) {
@@ -2468,22 +2470,22 @@ function accountRow(a) {
   const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
   const conf = A.confirm === a.lane_id, access = accountAccess(a);
   const role = ROLES.find(([v]) => v === a.role)?.[1] || 'Unassigned';
-  const budget = `${b.list ? `${int(b.list)} list pages/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} bios/day` : 'No cap'}`;
-  const work = a.paused ? 'Work paused' : a.collection_wait ? collectionReason(a.collection_wait, 'Scraping paused') : a.status === 'running'
+  const budget = `${b.list ? `${int(b.list)} list requests/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} profile requests/day` : 'No cap'}`;
+  const work = a.collection_now || (a.paused ? 'Work paused' : a.collection_wait ? collectionReason(a.collection_wait, 'Scraping paused') : a.status === 'running'
     ? a.job ? jobText(a) : 'Waiting for a profile'
-    : access.kind === 'ok' ? 'Ready' : access.detail;
+    : access.kind === 'ok' ? 'Ready' : access.detail);
   const name = A.renaming === a.lane_id
     ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
     : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
   return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
+    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.collection_state === 'running' ? 'running' : a.collection_state ? a.online ? 'online' : 'offline' : a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Reserved for lists your other accounts cannot access, within its daily allowance">Main</span>' : ''}
       <span class="grow"></span>${accountInstagramHTML(a)}<button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button></div>
     <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
-    <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list pages used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
+    <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list requests used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
     <div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <details class="adv acc-more"><summary>Account settings</summary>
-    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} pages · ${int(t.profile)} bios</b><small>${esc(budget)}</small></div>
-    <p class="muted acc-telemetry">${int(h.people)} people this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
+    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b><small>${esc(budget)}</small></div>
+    <p class="muted acc-telemetry">${int(h.people)} list entries this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
     <div class="acc-ctl">
 
       <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Alternates collect lists. Main is reserved for lists they cannot access, within its daily allowance."><i></i><span>Main account</span></button>
@@ -2620,7 +2622,7 @@ function collectionCoverageHTML(sc) {
   if (!sc) return '';
   const lists = sc.coverage?.lists, bios = sc.progress?.bios, queue = sc.collection;
   const stages = sc.stages || sc.control?.stages || [];
-  const held = stages.find(stage => stage.wait?.scope === 'workspace');
+  const held = stages.find(stage => stage.wait?.scope === 'workspace') || stages.find(stage => stage.state === 'waiting' && stage.wait);
   const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
   const activity = sc.control?.collection || {
     stopping: collectionStages.some(stage => stage.state === 'stopping' || stage.paused && stage.active),
@@ -2630,7 +2632,7 @@ function collectionCoverageHTML(sc) {
   const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
   const state = activity?.stopping ? 'Stopping. Waiting for the current request to finish'
     : pausedByUser ? activity?.stop_acknowledged === true ? 'Stopped' : activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Paused by you'
-    : held ? collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
+    : held ? held.now || collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
     : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
   const until = held?.wait?.until;
   const resumes = !pausedByUser && until && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.now()
@@ -2640,13 +2642,15 @@ function collectionCoverageHTML(sc) {
     return `${queue.eta.scope === 'known_lists' ? 'Known lists' : 'Current queue'}: about ${minutes(queue.eta.low_minutes)}–${minutes(queue.eta.high_minutes)}`;
   })() : '';
   if (queue) {
+    const metrics = sc.control?.progress;
+    const saved = metrics?.unique_new_profiles?.today == null ? '' : `<span title="Counts since midnight UTC"><b>${int(metrics.unique_new_profiles.today)} new profiles today</b> · ${int(metrics.bios_read?.today || 0)} bios read · ${int(metrics.saved_list_entries?.today || 0)} list entries saved</span>`;
     const parts = [`${int(queue.finished)} finished`, `${int(queue.pending)} queued`];
     if (queue.limited) parts.push(`${int(queue.limited)} limited`);
     if (queue.partial > (queue.limited || 0)) parts.push(`${int(queue.partial - (queue.limited || 0))} partial`);
     if (queue.needs_review) parts.push(`${int(queue.needs_review)} need review`);
     const timing = pausedByUser || held || activity.stopping ? state + resumes : estimate || queue.message;
     const unknown = queue.unknown_lists ? ` · ${int(queue.unknown_lists)} list sizes unknown` : '';
-    return `<div class="collection-summary"><span><b>${parts.map(esc).join(' · ')}</b></span><span>${esc(timing)}${esc(unknown)}</span>${queue.open_ended ? '<span class="muted">Auto-discovery on</span>' : ''}<span>${bios?.left != null ? `${int(bios.left)} bios queued` : 'Counting bios'}</span></div>`;
+    return `<div class="collection-summary">${saved}<span><b>${parts.map(esc).join(' · ')}</b></span><span>${esc(timing)}${esc(unknown)}</span>${queue.open_ended ? '<span class="muted">Auto-discovery on</span>' : ''}<span>${bios?.left != null ? `${int(bios.left)} bios queued` : 'Counting bios'}</span></div>`;
   }
   const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
   const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting${bios.failed ? ` · ${int(bios.failed)} need retry` : ''}`;
@@ -2684,7 +2688,7 @@ function renderAccounts() {
   const sharedWait = collectionStages.find(s => s.wait?.scope === 'workspace');
   const collectionWait = (sharedWait ? sharedWait.reason_code || sharedWait.wait?.why || 'workspace' : null)
     || (collectionStages.length === 2 && collectionStages.every(s => s.paused) ? 'Scraping paused' : null);
-  list.innerHTML = accs.length ? accs.map(a => accountRow({...a, collection_wait: collectionWait})).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
+  list.innerHTML = accs.length ? accs.map(a => { const status = sc.control?.accounts?.find(row => row.lane_id === a.lane_id); return accountRow({...a, collection_wait: collectionWait, collection_state: status?.state, collection_reason: status?.reason_code, collection_now: status?.now}); }).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
   for (const row of list.querySelectorAll('[data-lane]')) {
     if (openLanes.has(row.dataset.lane)) row.querySelector('.acc-more').open = true;
     if (row.dataset.lane === focusLane) row.querySelectorAll('button, summary')[focusIndex]?.focus({ preventScroll: true });

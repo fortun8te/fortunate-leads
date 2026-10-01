@@ -128,14 +128,6 @@ def lane_wait(conn, row, kind, now):
     return None
 
 
-def lane_blocked(row, kind, now):
-    """A hard Instagram wait, even if an old job lease still appears active."""
-    if row['hold']:
-        return True
-    fields = ('list_cool_until',) if kind == 'list' else ('profile_cool_until',)
-    return any((until := utc(row[field])) is not None and until > now for field in fields)
-
-
 def counts(conn, now):
     hour, day = iso(now - timedelta(hours=1)), iso(now)[:10]
 
@@ -144,11 +136,25 @@ def counts(conn, now):
     ai = two('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?')
     ai['minute'] = conn.execute('SELECT count(*) FROM ai_scoring_events WHERE scored_at>=?',
                                 (iso(now - timedelta(minutes=1)),)).fetchone()[0]
-    return {'lists': two('SELECT count(*) FROM edges WHERE first_seen>=?'),
-            'bios': two('SELECT count(*) FROM people WHERE bio_at>=?'), 'ai': ai}
+    return {'lists': two("SELECT coalesce(sum(saved_entries),0) FROM collector_events WHERE at>=? AND outcome='page'"),
+            'new_profiles': two('SELECT count(*) FROM people WHERE first_seen>=?'),
+            'bios': two("SELECT count(*) FROM collector_events WHERE at>=? AND kind='profile' AND outcome='profile' AND reason='saved'"), 'ai': ai}
 
 
-UNIT = {'lists': 'people', 'bios': 'bios', 'ai': 'scores'}
+UNIT = {'lists': 'list entries', 'bios': 'bios', 'ai': 'scores'}
+
+
+def active_request(conn, now):
+    request = (db.get_setting(conn, 'instagram_request_gate') or {}).get('active') or {}
+    until = request.get('until')
+    return request if isinstance(until, (int, float)) and not isinstance(until, bool) and until > now.timestamp() else {}
+
+
+def reserved(conn, row, kind):
+    if not row['is_main']:
+        return False
+    return (accounts.list_share(conn, accounts.rows(conn)) <= 0 if kind == 'list'
+            else accounts.main_bios_reserved(conn, row))
 
 
 def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
@@ -176,20 +182,23 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     # accounts that could do this stage: online, not paused, role allows it
     role_ok = {'list': ('lists', 'both'), 'profile': ('bios', 'both')}[kind]
     able = [a for a in accts if a['online'] and not a['paused'] and (a['role'] or 'both') in role_ok]
-    working = [a for a in able if a['job'] and a['job']['kind'] == kind
-               and not lane_blocked(rows[a['lane_id']], kind, now) and a.get('state') != 'network_wait']
+    request = active_request(conn, now)
+    working = [a for a in able if request.get('lane') == a['lane_id'] and request.get('kind') == kind]
     if not accts or not any(a['online'] for a in accts):
         return dict(out, state='waiting' if queue else 'idle', now=f'No Instagram account is online. {queue:,} jobs waiting. Open Chrome with the extension.')
     if not able:
         return dict(out, state='waiting' if queue else 'idle', now=f'Every account that does this is paused or offline. {queue:,} jobs waiting.')
     if working:
         a = working[0]
-        j = a['job']
-        what = (f"@{j['seed']}'s {j['direction']}" if kind == 'list' else '@' + (j['handle'] or '?'))
+        j = a['job'] or {}
+        what = (f"@{j['seed']}'s {j['direction']}" if kind == 'list' and j.get('seed') else '@' + j['handle'] if j.get('handle') else 'Instagram')
         more = f' (+{len(working) - 1} more accounts)' if len(working) > 1 else ''
         return dict(out, state='running', now=f"{a['name']} is reading {what}{more}.")
     if not queue:
-        return dict(out, state='idle', now='Running, nothing left to do right now.')
+        return dict(out, state='idle', now='No collection work waiting.')
+    able = [a for a in able if not reserved(conn, rows[a['lane_id']], kind) or a['job'] and a['job']['kind'] == kind]
+    if not able:
+        return dict(out, state='waiting', now='Your main account is reserved. Waiting for an alternate account.')
     waits = [(w, a) for a in able for w in [lane_wait(conn, rows[a['lane_id']], kind, now)] if w]
     if waits and len(waits) == len(able):
         (why, sec), a = min(waits, key=lambda x: x[0][1] if x[0][1] is not None else 1e9)
@@ -199,9 +208,15 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
 
 
 def account_out(conn, a, row, now, all_paused):
-    base = {'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
-            'status': a['status'], 'hour': a['hour'], 'today': a['today'], 'wait': None,
+    request = active_request(conn, now)
+    active = request.get('lane') == a['lane_id']
+    base = {'active': active, 'lane_id': a['lane_id'], 'name': a['name'], 'role': a['role'], 'paused': a['paused'], 'online': a['online'],
+            'status': a['status'] if active or a['status'] != 'running' else 'online', 'hour': a['hour'], 'today': a['today'], 'wait': None,
             'budget': a['budget'], 'hold': a['hold'], 'job': a['job']}
+    if active:
+        stopping = a['paused'] or stage_paused(conn, 'lists' if request.get('kind') == 'list' else 'bios')
+        return dict(base, state='stopping' if stopping else 'running',
+                    now='Finishing the current Instagram request.' if stopping else 'Reading an Instagram list.' if request.get('kind') == 'list' else 'Reading an Instagram profile.')
     if a['paused']:
         return dict(base, state='paused', now='Paused by you.')
     if not a['online']:
@@ -214,20 +229,24 @@ def account_out(conn, a, row, now, all_paused):
         return dict(base, state='waiting', wait={'why': why, 'seconds': sec}, now=why + '.')
     if a.get('state') == 'network_wait':
         return dict(base, state='waiting', now='Instagram connection trouble. Retrying safely; progress is saved.')
+    if all_paused:
+        return dict(base, state='paused', now='Lists and bios are paused.')
     if a['job']:
         j = a['job']
-        if lane_blocked(row, j['kind'], now):
-            why, sec = lane_wait(conn, row, j['kind'], now)
+        wait = lane_wait(conn, row, j['kind'], now)
+        if wait:
+            why, sec = wait
             return dict(base, state='waiting', wait={'why': why, 'seconds': sec},
                         now=f"{why}{', back in ' + mins(sec) if sec is not None else ''}.")
         what = f"@{j['seed']}'s {j['direction']}" if j['kind'] == 'list' else f"the bio of @{j['handle']}"
-        return dict(base, state='running', now=f'Reading {what}.')
-    if all_paused:
-        return dict(base, state='paused', now='Nothing to do: lists and bios are both paused.')
+        return dict(base, state='waiting', now=f'Assigned {what}; waiting for the next request.')
     kinds = [KIND[s] for s in ('lists', 'bios') if not stage_paused(conn, s)
              and (a['role'] or 'both') in (s, 'both')]
     if not kinds:
         return dict(base, state='paused', now='The stages assigned to this account are paused.')
+    kinds = [kind for kind in kinds if not reserved(conn, row, kind)]
+    if not kinds:
+        return dict(base, state='idle', reason_code='main_reserved', now='Main account reserved; alternates handle collection.')
     waits = [lane_wait(conn, row, kind, now) for kind in kinds]
     if all(waits):
         why, sec = min(waits, key=lambda w: w[1] if w[1] is not None else float('inf'))
@@ -270,7 +289,8 @@ def snapshot(conn, ai_left=None):
                          'Waiting for the account to confirm collection has stopped.')
     stopping = both and active
     acknowledged = both and not (active or unconfirmed)
-    return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
+    return {'progress': {'unique_new_profiles': c['new_profiles'], 'saved_list_entries': c['lists'],
+                         'bios_read': c['bios'], 'timezone': 'UTC'}, 'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
             'all_paused': all(s['paused'] for s in stages) and not processing_modes.allows(conn, 'laya'),
             'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
             'instagram_request_attention': attention, 'collection_isolation': db.get_setting(conn, 'instagram_collection_isolation'), 'active': active, 'stopping': stopping,
