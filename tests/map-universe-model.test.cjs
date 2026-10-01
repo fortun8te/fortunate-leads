@@ -63,3 +63,11 @@ test('failed GPU startup restores the original fallback camera',async()=>{
  const model=new UniverseMapModel({fetchJson:async url=>url.includes('/manifest')?manifest:{nodes:[],total:0,world:{}},engineFactory:()=>({mount:async()=>false,dispose(){}})});
  await model.load();assert.equal(model.universe,null);assert.deepEqual(model.cam.state(),{cx:.5,cy:.5,k:1});model.dispose();
 });
+
+test('initial neighborhood framing stays readable as the outer graph grows',async()=>{
+ const near={...manifest,anchor:{...manifest.anchor,x:0,y:0},bounds:[-10000,-10000,10000,10000],initial_camera:{radius:400}};
+ const f=fixture(async()=>near);await f.model.load();
+ assert.equal(f.model.cam.k,27.5);
+ assert.equal(f.model.cam.scale/22000,0.9);
+ f.model.dispose();
+});

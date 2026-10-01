@@ -67,9 +67,29 @@ def _uniform(pid, salt=0):
     return ((x ^ (x >> 31)) & 0xffffffff) / 4294967296
 
 
-def _band(distance):
-    return (24.0 if distance == 1 else (distance - 1) * 200.0 + 50.0,
-            distance * 200.0 + 50.0)
+# Worst-case portrait area occupies at most 85% of each annulus. Growing
+# the world rather than shrinking all portraits keeps the owner neighborhood legible.
+PORTRAIT_FILL = .85
+GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
+
+
+def _bands(counts):
+    bands = [(0.0, 0.0)]
+    inner = 24.0
+    for distance in range(1, len(counts)):
+        peak_radius = 12.0 / (1 + distance * .10) * 1.15
+        outer = math.sqrt(inner * inner + max(1, counts[distance]) * peak_radius ** 2 / PORTRAIT_FILL)
+        bands.append((inner, outer))
+        inner = outer
+    return bands
+
+
+def _portrait_radius(distance, radial_distance, followers, log_max):
+    follower_boost = .85 + .30 * math.log1p(max(0, followers)) / log_max
+    # Keep a small world-space floor so far-away people can still be inspected
+    # at high zoom, without remaining visible as portraits in the initial view.
+    taper = max(.02, 1.0 / (1 + (radial_distance / 360.0) ** 3))
+    return 12.0 / (1 + distance * .10) * taper * follower_boost
 
 
 def _morton(x, y, span):
@@ -215,10 +235,12 @@ def build(database, anchor, traversal='outgoing', edge_policy='captured', tile_s
                     hops[b] = hops[a] + 1
                     queue.append(b)
         max_hop = max((h for h in hops if h != UNKNOWN), default=0)
-        span = max(600.0, (max_hop + 3) * 200.0)
         ring_counts = array('I', [0]) * (max_hop + 3)
         for h in hops:
             ring_counts[h if h != UNKNOWN else max_hop + 2] += 1
+        bands = _bands(ring_counts)
+        span = max(600.0, bands[-1][1] + 12.0)
+        ring_ranks = array('I', [0]) * len(ring_counts)
         log_max = max(1.0, math.log1p(max_followers))
         for row in index.execute('SELECT id,ordinal,followers FROM nodes ORDER BY id'):
             i, pid = row['ordinal'], row['id']
@@ -227,17 +249,18 @@ def build(database, anchor, traversal='outgoing', edge_policy='captured', tile_s
             if hop == 0:
                 x = y = 0.0
             else:
-                # Every known hop occupies a disjoint annulus. Stable jitter is within its band.
-                inner, outer = _band(distance)
-                radius = math.sqrt(inner * inner + _uniform(pid, 1) * (outer * outer - inner * inner))
-                angle = _uniform(pid, 2) * math.tau
+                # Equal-area radial strata and a golden angle avoid random clumps.
+                # Small ID-derived jitter keeps the packing irregular and deterministic.
+                inner, outer = bands[distance]
+                rank = ring_ranks[distance]
+                ring_ranks[distance] += 1
+                fraction = (rank + .35 + .30 * _uniform(pid, 1)) / ring_counts[distance]
+                radius = math.sqrt(inner * inner + fraction * (outer * outer - inner * inner))
+                spacing = math.sqrt((outer * outer - inner * inner) / ring_counts[distance])
+                angle = rank * GOLDEN_ANGLE + distance * .71 + (_uniform(pid, 2) - .5) * .10 * spacing / radius
                 x, y = math.cos(angle) * radius, math.sin(angle) * radius
             followers = max(0, int(row['followers'] or 0))
-            follower_boost = .25 + .75 * math.log1p(followers) / log_max
-            # Actual annulus area gives a circle-area budget <=12.25%.
-            inner, outer = _band(max(1, distance))
-            density_ceiling = math.sqrt((outer * outer - inner * inner) / max(1, ring_counts[distance])) * .35
-            r = min(12.0 / (1 + distance * .25), density_ceiling) * follower_boost
+            r = _portrait_radius(distance, math.hypot(x, y), followers, log_max)
             if hop == 0:
                 r = 12.0
             index.execute('UPDATE nodes SET hop=?,community=?,degree=?,x=?,y=?,r=?,morton=? WHERE id=?',
@@ -280,12 +303,25 @@ def build(database, anchor, traversal='outgoing', edge_policy='captured', tile_s
                         unresolved_evidence_count=index.execute('SELECT count(*) FROM evidence e LEFT JOIN nodes a ON a.id=e.source_id LEFT JOIN nodes b ON b.id=e.target_id WHERE a.id IS NULL OR b.id IS NULL').fetchone()[0],
                         unknown_hop=UNKNOWN, reachable_count=len(queue), community_semantics='Weakly connected recorded component',
                         metric_semantics='Distinct adjacency degree under selected traversal', record_stride=32, header_bytes=16,
-                        byte_order='little', ring_counts=list(ring_counts),
-                        size_semantics='Density-bounded radius, logarithmic follower boost, smaller at greater hop distance',
+                        byte_order='little', ring_counts=list(ring_counts), ring_bounds=bands,
+                        layout_semantics='Density-expanding disjoint hop annuli; deterministic irregular equal-area radial packing',
+                        size_semantics='Follower multiplier 0.85 to 1.15; radius decreases with hop and radial distance',
+                        portrait_fill_ceiling=PORTRAIT_FILL,
                         max_tile_records=tile_size, max_view_records=MAX_BUDGET,
                         source_snapshot_at=source_snapshot_at, source_stamp=source_stamp,
                         rebuild_required_after_source_changes=True, auto_rebuild=False,
                         created_at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), build_seconds=round(time.monotonic()-start, 3))
+        # Radius is the vertical half-extent at a reference landscape aspect of 1.6.
+        # Approximate 700 nearest people rather than fitting the entire universe.
+        first_distance = next((d for d in range(1, max_hop + 1) if ring_counts[d]), None)
+        if first_distance is None:
+            camera_radius = 100.0
+        else:
+            inner, outer = bands[first_distance]
+            fraction = min(1.0, 700.0 / 1.6 / ring_counts[first_distance])
+            camera_radius = max(100.0, .85 * math.sqrt(inner * inner + fraction * (outer * outer - inner * inner)))
+        manifest['initial_camera'] = dict(x=0.0, y=0.0, radius=camera_radius,
+                                        target_nodes=700, reference_aspect=1.6)
         manifest['owner'] = dict(manifest['anchor'], id=anchor_row['id'])
         manifest['total'] = n
         (temp / 'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))

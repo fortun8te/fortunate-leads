@@ -1,9 +1,11 @@
 /* Instanced circle quads. Each resident tile has its own bounded GPU buffer. */
 (function (root) {
   "use strict";
-  const SIZE = 1024,
+  const SIZE = 2048,
     CELL = 64,
-    COLS = 16;
+    COLS = SIZE / CELL,
+    MAX_PORTRAITS = COLS * COLS,
+    PORTRAIT_RADIUS = 6;
   const GLSL_VERTEX = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 position;
@@ -11,17 +13,17 @@ layout(location=1) in vec4 color;
 layout(location=2) in float slot;
 uniform vec4 camera0; uniform vec4 camera1;
 out vec2 uv; out vec4 tint; out float atlasSlot; out float radius;
-void main(){vec2 corners[6]=vec2[6](vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(-1,1),vec2(1,-1),vec2(1,1));vec2 c=corners[gl_VertexID];float r=color.a<0.?13.:max(1.1,position.z*camera1.z);vec2 p=(position.xy-camera0.xy)*camera1.z+camera0.zw+c*r;gl_Position=vec4(p.x/camera1.x*2.-1.,1.-p.y/camera1.y*2.,0,1);uv=c;float natural=position.z*camera1.z;float coverage=color.a<0.?1.:clamp(natural*natural/(1.1*1.1),.18,1.);vec3 ink=mix(vec3(.9),vec3(.48),color.rgb);tint=vec4(ink,abs(color.a)*coverage);atlasSlot=slot;radius=r;}`;
+void main(){vec2 corners[6]=vec2[6](vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(-1,1),vec2(1,-1),vec2(1,1));vec2 c=corners[gl_VertexID];float r=color.a<0.?13.:max(0.,position.z*camera1.z);vec2 p=(position.xy-camera0.xy)*camera1.z+camera0.zw+c*r;gl_Position=vec4(p.x/camera1.x*2.-1.,1.-p.y/camera1.y*2.,0,1);uv=c;float natural=position.z*camera1.z;float coverage=color.a<0.?1.:smoothstep(.25,1.,natural)*(1.-smoothstep(2.,6.,natural))*.18;vec3 ink=mix(vec3(.55),vec3(.35),color.rgb);tint=vec4(ink,abs(color.a)*coverage);atlasSlot=slot;radius=r;}`;
   const GLSL_FRAGMENT = `#version 300 es
 precision highp float;
 in vec2 uv; in vec4 tint; in float atlasSlot; in float radius;
 uniform sampler2D atlas;out vec4 outColor;
-void main(){float d=length(uv);if(d>1.)discard;float a=1.-smoothstep(1.-clamp(.75/max(radius,1.),.06,.45),1.,d);vec4 c=tint;if(atlasSlot>=0.&&radius>=12.){vec2 cell=vec2(mod(atlasSlot,16.),floor(atlasSlot/16.));vec2 tex=(cell*64.+vec2(1.)+(uv*.5+.5)*62.)/1024.;c=texture(atlas,tex);}outColor=vec4(c.rgb,c.a*a);}`;
+void main(){float d=length(uv);if(d>1.)discard;float a=1.-smoothstep(1.-clamp(.75/max(radius,1.),.06,.45),1.,d);vec4 c=tint;if(atlasSlot>=0.&&radius>=6.){vec2 cell=vec2(mod(atlasSlot,${COLS}.),floor(atlasSlot/${COLS}.));vec2 tex=(cell*${CELL}.+vec2(1.)+(uv*.5+.5)*${CELL - 2}.)/${SIZE}.;c=texture(atlas,tex);float reveal=smoothstep(6.,10.,radius);c.rgb=mix(vec3(dot(c.rgb,vec3(.2126,.7152,.0722))),c.rgb,reveal);c.a*=reveal;}else if(radius>=6.){discard;}outColor=vec4(c.rgb,c.a*a);}`;
   const WGSL = `struct Camera { a:vec4f,b:vec4f }; @group(0) @binding(0) var<uniform> camera:Camera;
 @group(0) @binding(1) var atlas:texture_2d<f32>; @group(0) @binding(2) var atlasSampler:sampler;
 struct Out { @builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) tint:vec4f,@location(2) slot:f32,@location(3) radius:f32 };
-@vertex fn vs(@builtin(vertex_index) vertex:u32,@location(0) position:vec3f,@location(1) color:vec4f,@location(2) slot:f32)->Out {var corners=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1));let c=corners[vertex];let r=select(max(1.1,position.z*camera.b.z),13.,color.a<0.);let p=(position.xy-camera.a.xy)*camera.b.z+camera.a.zw+c*r;var o:Out;o.pos=vec4f(p.x/camera.b.x*2.-1.,1.-p.y/camera.b.y*2.,0,1);o.uv=c;let natural=position.z*camera.b.z;let coverage=select(clamp(natural*natural/(1.1*1.1),.18,1.),1.,color.a<0.);let ink=mix(vec3f(.9),vec3f(.48),color.rgb);o.tint=vec4f(ink,abs(color.a)*coverage);o.slot=slot;o.radius=r;return o;}
-@fragment fn fs(o:Out)->@location(0) vec4f {let d=length(o.uv);if(d>1.){discard;}let a=1.-smoothstep(1.-clamp(.75/max(o.radius,1.),.06,.45),1.,d);var c=o.tint;if(o.slot>=0.&&o.radius>=12.){let cell=vec2f(o.slot%16.,floor(o.slot/16.));let uv=(cell*64.+vec2f(1.)+(o.uv*.5+.5)*62.)/1024.;c=textureSampleLevel(atlas,atlasSampler,uv,0.);}return vec4f(c.rgb,c.a*a);}`;
+@vertex fn vs(@builtin(vertex_index) vertex:u32,@location(0) position:vec3f,@location(1) color:vec4f,@location(2) slot:f32)->Out {var corners=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1));let c=corners[vertex];let r=select(max(0.,position.z*camera.b.z),13.,color.a<0.);let p=(position.xy-camera.a.xy)*camera.b.z+camera.a.zw+c*r;var o:Out;o.pos=vec4f(p.x/camera.b.x*2.-1.,1.-p.y/camera.b.y*2.,0,1);o.uv=c;let natural=position.z*camera.b.z;let coverage=select(smoothstep(.25,1.,natural)*(1.-smoothstep(2.,6.,natural))*.18,1.,color.a<0.);let ink=mix(vec3f(.55),vec3f(.35),color.rgb);o.tint=vec4f(ink,abs(color.a)*coverage);o.slot=slot;o.radius=r;return o;}
+@fragment fn fs(o:Out)->@location(0) vec4f {let d=length(o.uv);if(d>1.){discard;}let a=1.-smoothstep(1.-clamp(.75/max(o.radius,1.),.06,.45),1.,d);var c=o.tint;if(o.slot>=0.&&o.radius>=6.){let cell=vec2f(o.slot%${COLS}.,floor(o.slot/${COLS}.));let uv=(cell*${CELL}.+vec2f(1.)+(o.uv*.5+.5)*${CELL - 2}.)/${SIZE}.;c=textureSampleLevel(atlas,atlasSampler,uv,0.);let reveal=smoothstep(6.,10.,o.radius);c=vec4f(mix(vec3f(dot(c.rgb,vec3f(.2126,.7152,.0722))),c.rgb,reveal),c.a*reveal);}else if(o.radius>=6.){discard;}return vec4f(c.rgb,c.a*a);}`;
   function uniforms(cam) {
     return new Float32Array([
       cam.cx,
@@ -348,13 +350,13 @@ struct Out { @builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) tin
     constructor(
       renderer,
       changed,
-      { maxSlots = 256, maxQueue = 48, concurrency = 2 } = {},
+      { maxSlots = MAX_PORTRAITS, maxQueue = 48, concurrency = 2 } = {},
     ) {
       this.renderer = renderer;
       this.changed = changed;
-      this.maxSlots = Math.min(maxSlots, 256);
-      this.maxQueue = maxQueue;
-      this.concurrency = concurrency;
+      this.maxSlots = Math.max(1, Math.min(maxSlots, MAX_PORTRAITS));
+      this.maxQueue = Math.max(1, Math.min(maxQueue, 48));
+      this.concurrency = Math.max(1, Math.min(concurrency, 4));
       this.entries = new Map();
       this.queue = [];
       this.active = 0;
@@ -367,6 +369,10 @@ struct Out { @builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) tin
     }
     setPins(ids) {
       this.pins = new Set([...ids].slice(0, this.maxSlots));
+      // Stop obsolete view work; keep already decoded faces as the bounded LRU.
+      for (const [id, e] of [...this.entries])
+        if (!e.ready && !this.pins.has(id))
+          this.freeSlots.push(this.evict(id));
     }
     bind(id, tile, offset) {
       const e = this.entries.get(id);
@@ -476,14 +482,18 @@ struct Out { @builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) tin
             ) {
               this.renderer.image(e.slot, bitmap);
               e.ready = true;
-              this.changed();
             }
           } catch (_) {
+            e.failed = true;
           } finally {
             bitmap?.close();
             this.controllers.delete(ctl);
             this.active--;
             this.pump();
+            // A failed batch must also refill admission after freeing queue space.
+            // Failed entries remain cached so render callbacks cannot retry forever.
+            if (!this.disposed && !this.paused && !ctl.signal.aborted && this.entries.get(e.id) === e)
+              this.changed();
           }
         })();
       }
@@ -506,6 +516,11 @@ struct Out { @builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) tin
     GLSL_FRAGMENT,
     WGSL,
     uniforms,
+    SIZE,
+    CELL,
+    COLS,
+    MAX_PORTRAITS,
+    PORTRAIT_RADIUS,
   };
   root.MapUniverseGPU = api;
   if (typeof module !== "undefined") module.exports = api;

@@ -112,17 +112,49 @@ class UniverseTests(unittest.TestCase):
         c.executemany('INSERT INTO people VALUES(?,?,?,?,?)',((i,str(i),'dense_'+str(i),'Dense',i) for i in range(100,2100)))
         c.executemany('INSERT INTO universe_edges VALUES(?,?,?,?)',((10,i,'2026-09-29','captured_fixture') for i in range(100,2100)))
         c.commit();c.close()
-        U.build(self.path,'me')
+        manifest = U.build(self.path,'me')
         with closing(sqlite3.connect(U._snapshot(self.path)/'index.sqlite')) as c:
-            rows=c.execute('SELECT r,followers FROM nodes WHERE hop=1').fetchall()
-        area=sum(math.pi*r*r for r,f in rows)
-        self.assertLessEqual(area,math.pi*(250**2-24**2)*.1225+1e-6)
-        rows.sort(key=lambda row: row[1])
-        self.assertGreater(rows[-1][0],rows[1][0])
+            rows=c.execute('SELECT r,followers,x,y FROM nodes WHERE hop=1').fetchall()
+        inner, outer = manifest['ring_bounds'][1]
+        area=sum(math.pi*r*r for r,f,x,y in rows)
+        self.assertLessEqual(area,math.pi*(outer**2-inner**2)*U.PORTRAIT_FILL+1e-6)
+        self.assertGreater(outer, 600)
+        self.assertTrue(all(r > 0 for r,f,x,y in rows))
+        # The camera exposes a compact owner neighborhood even with thousands of direct follows.
+        radius = manifest['initial_camera']['radius']
+        visible = [(x,y,r) for r,f,x,y in rows if abs(x)<radius*1.6 and abs(y)<radius]
+        self.assertTrue(350 < len(visible) < 950)
+        # At an 800px-high landscape viewport, the center shows readable photos,
+        # while the edges naturally become small gray bubbles.
+        scale = 360/radius
+        near = [r*scale for x,y,r in visible if math.hypot(x,y)<100]
+        outer = [r*scale for x,y,r in visible if math.hypot(x,y)>350]
+        self.assertGreater(min(near), 10)
+        self.assertLess(max(outer), 10)
+        self.assertGreater(max(near), max(outer)*1.5)
+        # Golden-angle packing avoids severe collisions in that default neighborhood.
+        severe = sum(1 for i,(x,y,r) in enumerate(visible) for xx,yy,rr in visible[i+1:]
+                     if math.hypot(x-xx,y-yy)<.75*(r+rr))
+        self.assertEqual(severe, 0)
         self.assertEqual(len(U.search(self.path,{'q':'dense_'})['results']),20)
         self.assertEqual([n['id'] for n in U.locate(self.path,{'ids':'10,20,99999'})['nodes']],[10,20])
         self.assertTrue(any(e['target']==20 for e in U.edges(self.path,{'ids':'10'})['edges']))
         with self.assertRaises(ValueError): U.locate(self.path,{'ids':','.join(['1']*201)})
+
+    def test_large_second_hop_expands_without_shrinking_neighborhood(self):
+        # Actual-data scale: adding 111,773 second-hop people must not squeeze
+        # the 2,723 first-hop portraits into a microscopic disk.
+        bands = U._bands([1, 2723, 111773, 0, 3000])
+        self.assertGreater(bands[2][1], bands[1][1] * 5)
+        self.assertEqual(bands[1], U._bands([1, 2723, 1, 0, 1])[1])
+        self.assertTrue(all(bands[d][1] == bands[d+1][0] for d in range(1,len(bands)-1)))
+        log_max = math.log1p(1000000)
+        small = U._portrait_radius(1, 100, 0, log_max)
+        large = U._portrait_radius(1, 100, 1000000, log_max)
+        self.assertAlmostEqual(large / small, 1.15 / .85)
+        self.assertGreater(small, U._portrait_radius(1, 1000, 0, log_max))
+        self.assertGreater(small, U._portrait_radius(2, 100, 0, log_max))
+        self.assertGreater(U._portrait_radius(2, 20000, 0, log_max), .15)
 
     def test_http_binary_mime_and_conditional_read(self):
         import server
@@ -152,10 +184,11 @@ class UniverseTests(unittest.TestCase):
         self.assertFalse(U.manifest(self.path)['stale'])
         near=U.person(self.path,{'id':'20'})['person']
         far=U.person(self.path,{'id':'30'})['person']
-        self.assertTrue(24<=math.hypot(near['x'],near['y'])<250)
-        self.assertTrue(250<=math.hypot(far['x'],far['y'])<450)
-        self.assertEqual(U._band(1)[1],U._band(2)[0])
-        self.assertEqual(U._band(2)[1],U._band(3)[0])
+        bands = U.manifest(self.path)['ring_bounds']
+        self.assertTrue(bands[1][0]<=math.hypot(near['x'],near['y'])<bands[1][1])
+        self.assertTrue(bands[2][0]<=math.hypot(far['x'],far['y'])<bands[2][1])
+        self.assertEqual(bands[1][1],bands[2][0])
+        self.assertEqual(bands[2][1],bands[3][0])
         with closing(sqlite3.connect(self.path)) as c:
             c.execute('UPDATE people SET followers=777 WHERE id=20');c.commit()
         changed=U.manifest(self.path)

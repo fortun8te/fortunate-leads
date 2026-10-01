@@ -39,7 +39,8 @@
       let checked = false,
         engine = null,
         activated = false,
-        initialCamera = null;
+        initialCamera = null,
+        initialZoom = 4;
       try {
         const ticket = this.viewReq.begin();
         const manifest = await this.fetchJson("/api/map/universe/manifest", {
@@ -85,7 +86,16 @@
           manifest.node_count > 1
         ) {
           initialCamera = this.cam.state();
-          this.cam.set(0.5, 0.5, 4);
+          const framing = Number(manifest.initial_camera?.radius);
+          const universeAPI = root.MapUniverse ||
+            (typeof require === "function" ? require("./map-universe.js") : null);
+          if (Number.isFinite(framing) && framing > 0 && universeAPI) {
+            // Frame a readable neighborhood, independently of the outer graph extent.
+            initialZoom = Math.max(1, Math.min(16384,
+              universeAPI.transformFor(manifest).span / (framing * 2)));
+          }
+          this.cam.maxK = 16384;
+          this.cam.set(0.5, 0.5, initialZoom);
         }
         const mounted = await engine.mount(this.container, {
           camera: this.cam,
@@ -136,7 +146,7 @@
           initialCamera &&
           this.cam.cx === 0.5 &&
           this.cam.cy === 0.5 &&
-          this.cam.k === 4 &&
+          this.cam.k === initialZoom &&
           !this.flight &&
           !this.goal
         ) {

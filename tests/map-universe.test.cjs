@@ -305,7 +305,7 @@ test("local portrait atlas caps pending decodes, slots and releases bitmap resou
     global.createImageBitmap = oldBitmap;
   }
 });
-test("GPU circles keep portraits borderless, owner small and tiny dots translucent", () => {
+test("GPU portraits are borderless, unloaded bubbles hidden and subpixel dots fade away", () => {
   const {
     GLSL_VERTEX,
     GLSL_FRAGMENT,
@@ -315,22 +315,29 @@ test("GPU circles keep portraits borderless, owner small and tiny dots transluce
     assert.doesNotMatch(shader, /d\s*>\s*\.92/); // no portrait ring repaint
   assert.match(GLSL_VERTEX, /color\.a<0\.\?13\./);
   assert.match(WGSL, /13\.,color\.a<0\./);
-  assert.match(GLSL_VERTEX, /natural\*natural/);
   assert.match(
     GLSL_VERTEX,
-    /clamp\(natural\*natural\/\(1\.1\*1\.1\),\.18,1\.\)/,
+    /smoothstep\(\.25,1\.,natural\)\*\(1\.-smoothstep\(2\.,6\.,natural\)\)\*\.18/,
   );
   assert.match(GLSL_FRAGMENT, /clamp\(\.75\/max\(radius,1\.\),\.06,\.45\)/);
-  assert.match(WGSL, /natural\*natural/);
-  assert.match(WGSL, /clamp\(natural\*natural\/\(1\.1\*1\.1\),\.18,1\.\)/);
+  assert.match(WGSL, /smoothstep\(\.25,1\.,natural\)\*\(1\.-smoothstep\(2\.,6\.,natural\)\)\*\.18/);
   assert.match(WGSL, /textureSampleLevel\(atlas,atlasSampler,uv,0\.\)/);
   assert.doesNotMatch(WGSL, /textureSample\(/);
+  assert.match(GLSL_FRAGMENT, /else if\(radius>=6\.\)\{discard;/);
+  assert.match(WGSL, /else if\(o.radius>=6\.\)\{discard;/);
+  for (const shader of [GLSL_VERTEX, WGSL])
+    assert.doesNotMatch(shader, /max\(1\.1|,\.18,1\./);
+  assert.match(GLSL_FRAGMENT, /mod\(atlasSlot,32\.\)/);
+  assert.match(GLSL_FRAGMENT, /\/2048\./);
+  assert.match(WGSL, /o.slot%32\./);
+  assert.match(GLSL_FRAGMENT, /smoothstep\(6\.,10\.,radius\)/);
+  assert.match(WGSL, /smoothstep\(6\.,10\.,o.radius\)/);
+  assert.match(WGSL, /\/2048\./);
 });
-test("atlas LRU replaces more than256 profiles across views without stale faces", async () => {
+test("atlas LRU replaces more than1024 profiles across views without stale faces", async () => {
   const { Atlas } = require("../web/map-universe-gpu.js");
   const oldFetch = global.fetch,
     oldBitmap = global.createImageBitmap;
-  let currentId = 0;
   const images = [],
     updates = [];
   global.fetch = async (url) => ({
@@ -354,7 +361,7 @@ test("atlas LRU replaces more than256 profiles across views without stale faces"
   );
   async function load(ids) {
     atlas.setPins(ids);
-    for (let turn = 0; turn < 20; turn++) {
+    for (let turn = 0; turn < 64; turn++) {
       for (const id of ids) atlas.request(id);
       await new Promise((resolve) => setImmediate(resolve));
       if (ids.every((id) => atlas.entries.get(id)?.ready)) return;
@@ -362,21 +369,21 @@ test("atlas LRU replaces more than256 profiles across views without stale faces"
     throw Error("Atlas did not settle");
   }
   try {
-    const first = Array.from({ length: 256 }, (_, i) => i + 1);
+    const first = Array.from({ length: 1024 }, (_, i) => i + 1);
     await load(first);
-    assert.equal(atlas.entries.size, 256);
+    assert.equal(atlas.entries.size, 1024);
     assert.ok(atlas.queue.length <= 48);
     const tile = { packed: new Float32Array(10) };
     tile.packed[7] = atlas.bind(1, tile, 7);
     assert.equal(tile.packed[7], atlas.entries.get(1).slot);
-    const second = Array.from({ length: 256 }, (_, i) => i + 257);
+    const second = Array.from({ length: 1024 }, (_, i) => i + 1025);
     await load(second);
-    assert.equal(atlas.entries.size, 256);
+    assert.equal(atlas.entries.size, 1024);
     assert.equal(tile.packed[7], -1);
     assert.ok(updates.some(([offset, value]) => offset === 28 && value === -1));
     assert.equal(atlas.entries.has(1), false);
     assert.ok(second.every((id) => atlas.entries.get(id).ready));
-    assert.ok(images.some(([slot, id]) => id === 512));
+    assert.ok(images.some(([slot, id]) => id === 2048));
   } finally {
     atlas.dispose();
     global.fetch = oldFetch;
@@ -423,5 +430,88 @@ test("an evicted active decode cannot overwrite its reused slot", async () => {
     atlas.dispose();
     global.fetch = oldFetch;
     global.createImageBitmap = oldBitmap;
+  }
+});
+
+
+test("portrait admission accepts six pixel faces and caps a large view at1024", () => {
+  const e = engine();
+  e.camera.k = 64;
+  e.atlas = { maxSlots: 1024, setPins(ids) { this.pins = ids; }, request() { return null; } };
+  const radius = 6.1 * e.transform.span / e.camera.scale;
+  const tile = parseTile(binary(Array.from({length: 1400}, (_, i) => ({id: i + 1, x: 0, y: 0, r: radius}))));
+  tile.packed = pack(tile, e.transform);
+  buildIndex(tile);
+  e.schedulePortraits([tile], e.camera);
+  assert.equal(e.atlas.pins.size, 1024);
+  assert.equal(e.portraitCandidates.length, 1024);
+  assert.equal(e.maxVisibleRecords, 250000);
+});
+
+test("portrait atlas geometry fits1024 faces within16MiB and caps loading", () => {
+  const { Atlas, SIZE, CELL, COLS, MAX_PORTRAITS } = require("../web/map-universe-gpu.js");
+  assert.equal(SIZE, 2048);
+  assert.equal(CELL, 64);
+  assert.equal(COLS, 32);
+  assert.equal(MAX_PORTRAITS, 1024);
+  assert.equal(SIZE * SIZE * 4, 16 * 1024 * 1024);
+  const atlas = new Atlas({}, () => {}, { maxSlots: 5000, maxQueue: 900, concurrency: 20 });
+  assert.equal(atlas.maxSlots, 1024);
+  assert.equal(atlas.maxQueue, 48);
+  assert.equal(atlas.concurrency, 4);
+  const normal = new Atlas({}, () => {});
+  assert.equal(normal.maxSlots, 1024);
+  assert.equal(normal.concurrency, 2);
+  atlas.dispose();
+  normal.dispose();
+});
+
+
+test("portrait admission retains the closest faces across scanlines and loads center first", () => {
+  const e = engine(), seen = [];
+  e.camera.k = 64;
+  e.atlas = { maxSlots: 2, setPins(ids) { this.pins = ids; }, request(id) { seen.push(id); return null; } };
+  const unit = e.transform.span / e.camera.scale;
+  const tile = parseTile(binary([
+    {id: 1, x: -200 * unit, y: -200 * unit, r: 9 * unit},
+    {id: 2, x: 100 * unit, y: -150 * unit, r: 9 * unit},
+    {id: 3, x: 0, y: 0, r: 9 * unit},
+    {id: 4, x: 20 * unit, y: 20 * unit, r: 9 * unit},
+  ]));
+  tile.packed = pack(tile, e.transform);
+  buildIndex(tile);
+  e.schedulePortraits([tile], e.camera);
+  assert.deepEqual(seen, [3, 4]);
+  assert.deepEqual([...e.atlas.pins].sort(), [3, 4]);
+});
+
+test("failed portrait batches continue admission without re-fetching failed photos", async () => {
+  const { Atlas } = require("../web/map-universe-gpu.js");
+  const oldFetch = global.fetch, requests = [];
+  const ids = Array.from({length: 130}, (_, i) => i + 1);
+  global.fetch = async (url) => { requests.push(Number(url.split("/").pop())); return {ok: false}; };
+  let notifications = 0;
+  const atlas = new Atlas({}, () => {
+    notifications++;
+    for (const id of ids) atlas.request(id);
+  });
+  try {
+    atlas.setPins(ids);
+    for (const id of ids) atlas.request(id);
+    for (let turn = 0; turn < 10 && requests.length < ids.length; turn++)
+      await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.length, ids.length);
+    assert.equal(new Set(requests).size, ids.length);
+    assert.equal(notifications, ids.length);
+    assert.equal(atlas.active, 0);
+    assert.equal(atlas.queue.length, 0);
+    assert.ok(ids.every(id => atlas.entries.get(id).failed));
+    for (const id of ids) atlas.request(id);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.length, ids.length);
+  } finally {
+    atlas.dispose();
+    global.fetch = oldFetch;
   }
 });

@@ -423,43 +423,73 @@
         cam.h,
         ...tiles.map((t) => t.id ?? "owner"),
       ].join(":");
+      const limit = Math.min(this.atlas.maxSlots ?? 1024, 1024);
       if (key !== this.portraitKey) {
         this.portraitKey = key;
         this.portraitCandidates = [];
         const ids = new Set(),
-          rect = cam.rect();
-        const admit = (tile, i, id) => {
-          if (ids.size >= 256 || ids.has(id)) return;
-          ids.add(id);
-          this.portraitCandidates.push({ tile, offset: i * 10 + 7, id });
+          rect = cam.rect(),
+          center = cam.mid;
+        // Bounded max heap: inspect visible indexed records, retain the nearest
+        // faces regardless of tile/scanline order without a graph-wide array.
+        const nearest = this.portraitCandidates;
+        const admit = (tile, i, id, distance = -1) => {
+          if (ids.has(id)) return;
+          const candidate = { tile, offset: i * 10 + 7, id, distance };
+          if (nearest.length < limit) {
+            ids.add(id);
+            nearest.push(candidate);
+            let child = nearest.length - 1;
+            while (child > 0) {
+              const parent = (child - 1) >> 1;
+              if (nearest[parent].distance >= candidate.distance) break;
+              nearest[child] = nearest[parent];
+              child = parent;
+            }
+            nearest[child] = candidate;
+          } else if (distance < nearest[0].distance) {
+            ids.delete(nearest[0].id);
+            ids.add(id);
+            let parent = 0;
+            while (parent * 2 + 1 < nearest.length) {
+              let child = parent * 2 + 1;
+              if (child + 1 < nearest.length && nearest[child + 1].distance > nearest[child].distance)
+                child++;
+              if (nearest[child].distance <= distance) break;
+              nearest[parent] = nearest[child];
+              parent = child;
+            }
+            nearest[parent] = candidate;
+          }
         };
         if (this.ownerTile && this.owner)
           admit(this.ownerTile, 0, this.owner.id);
         for (const tile of tiles) {
           if (tile.owner) continue;
           const g = tile.index;
-          if (!g || g.r * cam.scale < 14) continue;
+          if (!g || g.r * cam.scale < 6) continue;
           const a = Math.max(0, Math.floor((rect.x0 - g.r - g.x0) / g.dx)),
             b = Math.min(31, Math.floor((rect.x1 + g.r - g.x0) / g.dx)),
             c = Math.max(0, Math.floor((rect.y0 - g.r - g.y0) / g.dy)),
             d = Math.min(31, Math.floor((rect.y1 + g.r - g.y0) / g.dy));
-          for (let cy = c; cy <= d && ids.size < 256; cy++)
-            for (let cx = a; cx <= b && ids.size < 256; cx++)
+          for (let cy = c; cy <= d; cy++)
+            for (let cx = a; cx <= b; cx++)
               for (
                 let i = g.heads[cy * 32 + cx];
-                i >= 0 && ids.size < 256;
+                i >= 0;
                 i = g.next[i]
               ) {
                 const o = i * 10,
                   r = tile.packed[o + 2] * cam.scale;
-                if (r < 14) continue;
+                if (r < 6) continue;
                 const [x, y] = cam.toScreen(tile.packed[o], tile.packed[o + 1]);
                 if (x + r < 0 || y + r < 0 || x - r > cam.w || y - r > cam.h)
                   continue;
-                admit(tile, i, tile.view.getUint32(HEADER + i * STRIDE, true));
+                admit(tile, i, tile.view.getUint32(HEADER + i * STRIDE, true),
+                  (x - center[0]) ** 2 + (y - center[1]) ** 2);
               }
-          if (ids.size >= 256) break;
         }
+        nearest.sort((a, b) => a.distance - b.distance);
         this.atlas.setPins(ids);
       }
       for (const { tile, offset, id } of this.portraitCandidates) {
