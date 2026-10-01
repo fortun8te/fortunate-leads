@@ -15,8 +15,8 @@
     if (n < 1e7) return (Math.round(n / 1e5) / 10).toString().replace(/\.0$/, '') + 'M';
     return Math.round(n / 1e6) + 'M';
   };
-  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
-  const easeInOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 5);
+  const easeInOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 16 * Math.pow(t, 5) : 1 - Math.pow(-2 * t + 2, 5) / 2; };
 
   const MODES = [
     { id: 'closeness', label: 'Network', short: 'Network' },
@@ -159,10 +159,12 @@
         seen.add(key);
         let it = this.items.get(key);
         if (!it) { it = { key, kind, d, x: d.x, y: d.y, fx: d.x, fy: d.y, tx: d.x, ty: d.y, t0: now, dur: 0, a: o.instant ? 1 : 0, ta: 1, pin: false }; this.items.set(key, it); return; }
-        it.d = d; it.ta = 1;
-        if (Math.abs(it.tx - d.x) > 1e-7 || Math.abs(it.ty - d.y) > 1e-7) {
+        const fromRadius = it.d.portraitRadius, toRadius = d.portraitRadius;
+        const radiusChanged = Number.isFinite(fromRadius) && Number.isFinite(toRadius) && Math.abs(fromRadius - toRadius) > 1e-9;
+        it.d = morph && radiusChanged ? { ...d, portraitRadius: fromRadius } : d; it.ta = 1;
+        if (radiusChanged || Math.abs(it.tx - d.x) > 1e-7 || Math.abs(it.ty - d.y) > 1e-7) {
           it.tx = d.x; it.ty = d.y;
-          if (morph) { it.fx = it.x; it.fy = it.y; it.t0 = now; it.dur = morph; } else { it.x = d.x; it.y = d.y; it.dur = 0; }
+          if (morph) { it.fx = it.x; it.fy = it.y; it.t0 = now; it.dur = morph; it.fr = fromRadius; it.tr = toRadius; } else { it.x = d.x; it.y = d.y; it.dur = 0; }
         }
       };
       for (const n of resp.nodes || []) put('n', n);
@@ -190,13 +192,13 @@
       this.nodes.sort((a, b) => (a.d.rank || 0) - (b.d.rank || 0));
       this.clusters.sort((a, b) => b.d.count - a.d.count);
       this.maxCluster = max;
-      this.large = this.nodes.length > 2000; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
+      this.large = this.nodes.length > 5000; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
     }
     clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; this.large = false; this.spatial = null; }
     // Advance by dt seconds. Returns true while anything is still moving, so the loop can stop when idle.
     step(now, dt, reduced) {
       if (this.large && !this.animating) return false;
-      let busy = false, dead = false;
+      let busy = false, dead = false, moved = false;
       const k = reduced ? 1 : 1 - Math.exp(-dt / 0.085);
       for (const it of this.items.values()) {
         if (it.a !== it.ta) {
@@ -205,12 +207,15 @@
           if (it.a === 0 && it.ta === 0) { it.dead = true; dead = true; }
         }
         if (it.dur) {
-          const t = (now - it.t0) / it.dur, e = easeOut(t);
+          const t = reduced ? 1 : (now - it.t0) / it.dur, e = easeOut(t);
+          moved = true;
+          if (Number.isFinite(it.fr) && Number.isFinite(it.tr)) it.d.portraitRadius = it.fr + (it.tr - it.fr) * e;
           it.x = it.fx + (it.tx - it.fx) * e; it.y = it.fy + (it.ty - it.fy) * e;
           if (t >= 1) { it.dur = 0; it.x = it.tx; it.y = it.ty; } else busy = true;
         }
       }
       if (dead) { for (const [key, it] of this.items) if (it.dead) this.items.delete(key); this.rebuild(); }
+      if (moved && this.large && !dead) this.spatial = new SpatialIndex(this.nodes);
       this.animating = busy;
       return busy;
     }
@@ -233,7 +238,7 @@
     if (n.status && n.status !== 'no') return 'a';
     return n.fit === 'strong' ? 't1' : n.fit === 'good' ? 't2' : n.fit === 'weak' ? 't3' : 't4';
   }
-  const OWNER_RADIUS = 12;
+  const OWNER_RADIUS = 18;
   const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Shared sources'}, {id:'equal',label:'Equal'}];
   const SIZE_HELP = {
     followers:'Larger bubbles have more saved followers. Unknown counts use the smallest size. Counts use a compressed scale.',
@@ -273,7 +278,7 @@
     members.sort((a, b) => distanceValue(b) - distanceValue(a)
       || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
-    if (members.length > 2000) {
+    if (members.length > 3000) {
       const count = members.length, hole = .06, outer = .46, golden = Math.PI * (3 - Math.sqrt(5));
       const unit = .29 / Math.sqrt(count), maximum = size === 'equal' ? 14 : size === 'fit' ? 24 : 28;
       const nodes = members.map((n, i) => {
@@ -292,24 +297,28 @@
       if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: unit * 2 });
       return nodes;
     }
-    const weights = members.map(n => radiusFor(n, 1, size));
+    // Modest follower differences remain readable while portraits gradually
+    // shrink away from the owner. Equal sizing remains strictly equal.
+    const weights = members.map((n, i) => radiusFor(n, 1, size)
+      * (size === 'equal' ? 1 : 1 - .24 * Math.pow(i / Math.max(1, members.length - 1), .8)));
     const largest = Math.max(...weights), outer = .46, centre = .06;
-    let scale = Math.min(.065 / largest, Math.sqrt(.44 * (outer * outer - centre * centre) / weights.reduce((sum, r) => sum + r * r, 0)));
+    let scale = Math.min(.065 / largest, Math.sqrt(.5 * (outer * outer - centre * centre) / weights.reduce((sum, r) => sum + r * r, 0)));
     const candidates = [];
     let seed = 0x6d2b79f5;
     const random = () => {
       seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
       return (seed >>> 0) / 4294967296;
     };
-    for (let i = 0; i < Math.max(800, members.length * 48); i++) {
-      const distance = outer * Math.sqrt(random()), angle = random() * Math.PI * 2;
+    const candidateCount = Math.max(800, members.length * 32);
+    for (let i = 0; i < candidateCount; i++) {
+      // Already ordered by radius; random angles avoid a grid or spiral pattern.
+      const distance = Math.sqrt(centre * centre + (outer * outer - centre * centre) * (i + .5) / candidateCount), angle = random() * Math.PI * 2;
       candidates.push({ x: .5 + distance * Math.cos(angle), y: .5 + distance * Math.sin(angle), distance });
     }
-    candidates.sort((a, b) => a.distance - b.distance);
     let slots = [];
     // A single radial pass per attempt preserves evidence ordering. Nearby-cell
     // checks use the largest radius, so differently sized portraits cannot overlap.
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 12; attempt++) {
       slots = [];
       const cellSize = largest * scale * 2.12, cells = new Map();
       for (const point of candidates) {
@@ -334,7 +343,7 @@
         if (slots.length === members.length) break;
       }
       if (slots.length === members.length) break;
-      scale *= .86;
+      scale *= .95;
     }
     if (slots.length !== members.length) {
       // Guaranteed finite fallback for unusually skewed pages: enough square-grid
@@ -371,7 +380,7 @@
         const [x, y] = cam.toScreen(it.x, it.y);
         const owner = String(it.d.id) === String(ownerId);
         const radiusScale = Math.min(1, it.d.spacing * scale * .49 / 15);
-        const r = owner ? Math.min(24, OWNER_RADIUS * cam.k) : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
+        const r = owner ? Math.min(28, OWNER_RADIUS * cam.k) : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
         return { kind: 'n', it, x, y, r };
       });
       return { nodes, groups: [] };

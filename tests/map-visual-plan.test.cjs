@@ -59,7 +59,7 @@ test('portrait overview samples distinct communities and preserves real position
   assert.ok(plan.nodes.length > 300);
   assert.ok(new Set(plan.nodes.map(n=>n.it.d.cluster)).size >= 6);
   assert.ok(plan.nodes.length <= 420);
-  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,12);
+  assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,18);
   for(const mark of plan.nodes) assert.deepEqual([mark.it.x,mark.it.y],[nodes[mark.it.d.id].x,nodes[mark.it.d.id].y]);
 });
 test('overview count chips include loaded people hidden by portrait collisions', () => {
@@ -82,7 +82,7 @@ test('mode encodings preserve circle geometry and use truthful sizes', () => {
     const {cam,scene,guides}=fixture();const before=scene.nodes.map(n=>[n.x,n.y]);
     const plan=displayPlan(scene,cam,guides,null,null,0,mode);
     assert.deepEqual(scene.nodes.map(n=>[n.x,n.y]),before);
-    assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,12);
+    assert.equal(plan.nodes.find(n=>n.it.d.id===0).r,18);
     assert.equal(LEGENDS[mode][0].s,'Distance: evidence');
     assert.equal(LEGENDS[mode].length,2);
   }
@@ -98,7 +98,7 @@ test('modest owner portrait keeps its fixed identity caption clear', () => {
   const cam=new Camera();cam.resize(1400,1000);const scene=new Scene();
   const nodes=[{id:0,x:.5,y:.5,fit:'unread'},...Array.from({length:100},(_,i)=>({id:i+1,x:.44+(i%10)*.015,y:.5+Math.floor(i/10)*.015,fit:'strong',rank:i/100}))];
   scene.apply({nodes,clusters:[]},0,{instant:true});const plan=displayPlan(scene,cam,[],null,null,0);
-  const owner=plan.nodes.find(n=>n.it.d.id===0);assert.equal(owner.r,12);
+  const owner=plan.nodes.find(n=>n.it.d.id===0);assert.equal(owner.r,18);
   for(const mark of plan.nodes.filter(n=>n.it.d.id!==0)) {
     const x=Math.max(owner.x-45,Math.min(mark.x,owner.x+45));
     const y=Math.max(owner.y+31,Math.min(mark.y,owner.y+50));

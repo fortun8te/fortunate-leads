@@ -8,8 +8,8 @@
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
   const VIEW_MODES = [
-    { id: 'network', label: 'My network', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger recorded connection evidence; larger means more saved followers.' },
-    { id: 'shared', label: 'Shared audiences', size: 'connections', distance: 'Collected source audiences', description: 'Profiles seen in more collected source audiences are larger and closer. Shared audiences are not mutual friends.' }
+    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger recorded connection evidence; larger means more saved followers.' },
+    { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Profiles seen in more collected source audiences are larger and closer. Shared audiences are not mutual friends.' }
   ];
 
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -336,7 +336,7 @@
       this.flight = new Flight(this.cam.state(), target, this.now(), ms);
       this.emit('camera');
     }
-    fit() { this.flyTo({ cx:0.5,cy:0.5,k:1 },600); }
+    fit() { this.flyTo({ cx:0.5,cy:0.5,k:1.55 },320); }
     pan(dx, dy) { this.interruptCamera(); this.cam.panBy(dx, dy); this.moved(); }
     release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
     setSizeEncoding(size) {
@@ -347,7 +347,7 @@
       this.returningNode = null;
       if (!this.cohort) return;
       const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, this.size, this.viewMode);
-      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 2000 ? 0 : 240, instant: true});
+      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 3001 ? 0 : 280, instant: true});
       if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
       this.emit('scene');
     }

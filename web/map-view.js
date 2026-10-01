@@ -92,10 +92,10 @@
         fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
-      this.model.cam.set(.5,.5,1.2);
+      this.model.cam.set(.5,.5,1.55);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
+      this.portraits = new PortraitCache({ max:3072, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -202,10 +202,33 @@
 
       this.paintGuides(ctx, P, m, cam, S, sx, sy, want);
       const sel = m.selected, edges = m.connectionsVisible && m.edges && sel && m.edges.id === sel.id ? m.edges : null;
-      const dim = 1;
+      const related = new Set(sel ? [String(sel.id)] : []);
+      if(edges?.state === 'ready') for(const line of directedConnections(edges.lines,sel.id)) {
+        related.add(String(line.selected.id));related.add(String(line.other.id));
+      }
+      const focusTarget=sel?1:0;
+      this.focusMix=(this.focusMix||0)+(focusTarget-(this.focusMix||0))*(m.reduced?1:1-Math.exp(-dt/.07));
+      if(Math.abs(this.focusMix-focusTarget)>.005)this.invalidate();
+      else this.focusMix=focusTarget;
+      const dim=1-.74*this.focusMix;
 
       const hovered = this.hover;
       const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode, m.size);
+      const activeId=this.nodeDrag?.d.id ?? sel?.id;
+      const active=plan.nodes.find(mark=>String(mark.it.d.id)===String(activeId));
+      if(active)active.r*=1+(this.nodeDrag?.06:.07*this.focusMix);
+      for(const mark of plan.nodes) {
+        let dx=0,dy=0;
+        if(active && mark!==active && String(mark.it.d.id)!==String(m.world.me?.id)) {
+          const x=mark.x-active.x,y=mark.y-active.y,d=Math.hypot(x,y),gap=active.r+mark.r+4;
+          if(d>0 && d<gap){const push=Math.min(14,(gap-d)*.8);dx=x/d*push;dy=y/d*push;}
+        }
+        const it=mark.it,k=m.reduced?1:1-Math.exp(-dt/.06);
+        it.displayDX=(it.displayDX||0)+(dx-(it.displayDX||0))*k;
+        it.displayDY=(it.displayDY||0)+(dy-(it.displayDY||0))*k;
+        mark.x+=it.displayDX;mark.y+=it.displayDY;
+        if(Math.abs(it.displayDX-dx)+Math.abs(it.displayDY-dy)>.05)this.invalidate();
+      }
       if (plan.large) this.paintLargeOverview(ctx, P, plan);
       const bubbles = plan.groups;
       for (const mark of plan.nodes) lab.block([mark.x-mark.r-2, mark.y-mark.r-2, mark.x+mark.r+2, mark.y+mark.r+2]);
@@ -237,11 +260,11 @@
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
       this.queuePortraits(plan.nodes, me);
-      let photoBudget = 1001;
+      let photoBudget = 3001;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
-        ctx.globalAlpha = it.a * dim;
+        ctx.globalAlpha = it.a * (related.has(String(d.id)) ? 1 : dim);
         this.paintPortrait(ctx, P, d, x, y, r, photoBudget-- > 0);
       }
       ctx.globalAlpha = 1;
@@ -249,7 +272,7 @@
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
 
-        const ownerRadius=m.scene.large?OWNER_RADIUS:Math.min(24,OWNER_RADIUS*k);
+        const ownerRadius=m.scene.large?OWNER_RADIUS:Math.min(28,OWNER_RADIUS*k);
         this.paintPortrait(ctx, P, me, x, y, ownerRadius, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
         ownerCaption = { x, y: y + ownerRadius + 16, text };
@@ -343,12 +366,13 @@
       if (owner) this.portraits.get(owner.pic);
       const x = owner?.x ?? .5, y = owner?.y ?? .5;
       const distance = mark => (mark.it.x - x) ** 2 + (mark.it.y - y) ** 2;
-      for (const mark of [...nodes].sort((a, b) => distance(a) - distance(b)).slice(0, 1001)) {
+      for (const mark of [...nodes].sort((a, b) => distance(a) - distance(b)).slice(0, 3001)) {
         this.portraits.get(mark.it.d.pic);
       }
     }
     paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
       const image = requestPhoto ? this.portraits.get(person.pic) : null;
+      if (!image && !owner) return;
       ctx.save(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.clip();
       ctx.fillStyle = owner ? P.bg2 : P.bg1; ctx.fillRect(x-radius, y-radius, radius*2, radius*2);
       if (image) {
@@ -406,7 +430,7 @@
     }
     paintEdges(ctx, P, edges, sx, sy, now, sel) {
       const a = clamp((now - this.edgeAt) / 260, 0, 1), reduced = this.model.reduced;
-      ctx.globalAlpha = (reduced ? 1 : a) * .4;
+      ctx.globalAlpha = (reduced ? 1 : a) * .7;
       for (const line of directedConnections(edges.lines, sel.id)) {
         const from = this.model.scene.get(line.selected.id) || line.selected;
         const to = this.model.scene.get(line.other.id) || line.other;
@@ -415,7 +439,7 @@
         if (!length) continue;
         const mutual = line.incoming && line.outgoing;
         const ox = -(y1 - y0) / length * 1.25, oy = (x1 - x0) / length * 1.25;
-        ctx.strokeStyle = P.fg3; ctx.lineWidth = .75;
+        ctx.strokeStyle = P.fg2; ctx.lineWidth = 1;
         for (const outgoing of [false, true]) {
           if (!(outgoing ? line.outgoing : line.incoming)) continue;
           const offset = mutual ? outgoing ? 1 : -1 : 0;
@@ -464,6 +488,8 @@
         return {kind:'n',it:{d:person,x:person.x,y:person.y},x,y,r:Math.max(3,(person.portraitRadius||0)*this.model.cam.scale)};
       }
       const plan = this.displayMarks; if (!plan) return null;
+      const selected=plan.nodes.find(mark=>String(mark.it.d.id)===String(this.model?.selected?.id));
+      if(selected && Math.hypot(selected.x-px,selected.y-py)<=selected.r+3)return selected;
       if (plan.large && this.model.scene.spatial) {
         const moving=this.nodeDrag||this.model.returningNode;
         if(moving){const[x,y]=this.model.cam.toScreen(moving.x,moving.y),r=moving.d.portraitRadius*this.model.cam.scale;if(Math.hypot(px-x,py-y)<=r)return{kind:'n',it:moving,x,y,r};}
@@ -487,7 +513,7 @@
     startNodeDrag(mark) {
       if(this.model.universe)return false;
       const it = mark?.kind === 'n' && mark.it;
-      if (this.model.scene.large && mark?.r < 5) return false;
+
       if (!it || String(it.d.id) === String(this.model.world.me?.id)) return false;
       this.finishNodeDrag(true);
       this.nodeDrag = it; it.dur = 0; this.hover = null;
@@ -504,7 +530,7 @@
       const it = this.nodeDrag; this.nodeDrag = null;
       if (!it) return;
       if (immediate || this.model.reduced) { it.x = it.tx; it.y = it.ty; it.dur = 0; }
-      else { it.fx = it.x; it.fy = it.y; it.t0 = performance.now(); it.dur = 280; if(this.model.scene.large)this.model.returningNode=it; }
+      else { it.fx = it.x; it.fy = it.y; it.t0 = performance.now(); it.dur = 320; if(this.model.scene.large)this.model.returningNode=it; }
       this.invalidate();
     }
 
@@ -716,6 +742,14 @@
       r.fit.title = 'Show this page';
       r.size?.replaceChildren(...VIEW_MODES.map(o=>h('option',{value:o.id,text:o.label})));
       if (r.size) r.size.value=this.model.viewMode;
+      const pop=r.filtersBox?.querySelector('.mv-pop');
+      if(pop) {
+        for(const [select,text] of [[r.size,'Arrange by'],[r.filters.follow,'Following']]) {
+          const label=select?.closest('label');if(!label)continue;
+          label.className='mv-f';label.firstChild.textContent=text+' ';pop.prepend(label);
+        }
+        const scope=pop.querySelector('#map-scope-l');if(scope)scope.textContent='People';
+      }
       this.renderModes();
       this.renderFilters();
     }
@@ -891,7 +925,7 @@
       statusSelect.addEventListener('change', () => this.setStatus(n, statusSelect.value || null));
       const connections = card.querySelector('.mv-connections');
       connections.addEventListener('toggle', () => {
-        if (this.model.selected?.id === n.id) this.model.setConnectionsVisible(connections.open);
+        if (this.model?.selected?.id === n.id) this.model.setConnectionsVisible(connections.open);
       });
       const tagForm = card.querySelector('.mv-tag-form');
       card.querySelector('.mv-tag-add').addEventListener('click', () => this.toggleTagForm(tagForm.hidden));
@@ -913,7 +947,7 @@
       this.announce(n.compact ? 'Loading selected profile.' : `Selected ${n.name || '@' + n.handle}.`);
     }
     hydrateCardIdentity(n, person) {
-      if (String(person.id) !== String(n.id) || this.model.selected?.id !== n.id) return;
+      if (String(person.id) !== String(n.id) || this.model?.selected?.id !== n.id) return;
       const identity = {
         handle: person.handle || '', name: person.name || '',
         pic: /^\/img\/\d+$/.test(person.pic || '') ? person.pic : null,
@@ -1001,7 +1035,7 @@
       feedback.textContent = 'Loading…';
       try {
         const person = await this.host.person(n.id);
-        if (this.model.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
+        if (this.model?.selected?.id !== n.id || !box.isConnected || box._readVersion !== version) return;
         this.hydrateCardIdentity(n, person);
         this.paintTags(n, person, box);
         const fit = cardFit(person);
@@ -1017,7 +1051,7 @@
           }
         }
       } catch (_) {
-        if (this.model.selected?.id === n.id && box.isConnected && box._readVersion === version) {
+        if (this.model?.selected?.id === n.id && box.isConnected && box._readVersion === version) {
           feedback.textContent = 'Couldn’t load profile details. Reopen to retry.';
           if (n.compact) {
             this.r.card.querySelector('.mv-who b').textContent = 'Profile unavailable';
@@ -1057,7 +1091,7 @@
       let saved = false;
       try {
         const person = await this.host.editTags(n.id, remove ? [] : [tag], remove ? [tag] : []);
-        if (this.model.selected?.id === n.id && box.isConnected) {
+        if (this.model?.selected?.id === n.id && box.isConnected) {
           this.paintTags(n, person, box);
           if (person.status !== undefined) this.model.patchStatus(n.id, person.status);
           if (!remove) box.querySelector('input').value = '';
@@ -1069,7 +1103,7 @@
       } finally {
         this.tagSaving = false;
         for (const el of box.querySelectorAll('input,button')) el.disabled = false;
-        if (saved && !remove && this.model.selected?.id === n.id && box.isConnected) this.toggleTagForm(false);
+        if (saved && !remove && this.model?.selected?.id === n.id && box.isConnected) this.toggleTagForm(false);
       }
     }
     async toggleNote(btn) {
@@ -1083,7 +1117,7 @@
       try {
         const read = this.noteRead = (this.noteRead || 0) + 1;
         const p = await this.host.person(n.id);
-        if (this.model.selected?.id !== n.id || read !== this.noteRead || !box.isConnected) return;
+        if (this.model?.selected?.id !== n.id || read !== this.noteRead || !box.isConnected) return;
         this.note = { id: n.id, rev: p.mark_rev, base: p.note || '' };
         ta.value = this.note.base; ta.disabled = false; ta.focus();
         box.querySelector('.mv-note-msg').textContent = ''; box.querySelector('[data-note="save"]').disabled = false;

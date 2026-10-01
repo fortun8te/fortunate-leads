@@ -19,9 +19,9 @@ test('outgoing paths are dashed, incoming solid, and mutual shows both without d
   const strokes = [];
   const ctx = { setLineDash(value) { this.dash = value; }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes.push([...this.dash]); } };
   const view = { edgeAt: 0, model: { reduced: true, scene: { get() {} } } };
-  MapView.prototype.paintEdges.call(view, ctx, { fg3: '#888' }, { lines: [edge(1, 2), edge(3, 1), edge(1, 4), edge(4, 1), edge(1, 4), edge(1, 5, 'overlap')] }, x => x, y => y, 300, { id: 1 });
+  MapView.prototype.paintEdges.call(view, ctx, { fg2: '#aaa' }, { lines: [edge(1, 2), edge(3, 1), edge(1, 4), edge(4, 1), edge(1, 4), edge(1, 5, 'overlap')] }, x => x, y => y, 300, { id: 1 });
   assert.deepEqual(strokes, [[4, 4], [], [], [4, 4]]);
-  assert.equal(ctx.dash.length, 0); assert.equal(ctx.globalAlpha, 1); assert.equal(ctx.lineWidth, .75);
+  assert.equal(ctx.dash.length, 0); assert.equal(ctx.globalAlpha, 1); assert.equal(ctx.lineWidth, 1);
 });
 test('map tags use the shared Leads presentation while keeping Client once and inline removal', () => {
   const chips = element('div'), edited = [];
@@ -32,4 +32,8 @@ test('map tags use the shared Leads presentation while keeping Client once and i
   assert.equal(client.className, 'tag mv-card-tag'); assert.equal(client.attrs['data-importance'], 'strong');
   assert.equal(client.children[0].attrs['data-icon'], 'verified'); assert.equal(client.children[1].textContent, 'Client');
   client.click(); assert.deepEqual(edited, [[{ id: 1 }, 'Client', true]]);
+});
+test('pending portrait photos do not draw placeholder bubbles',()=>{
+ const view={portraits:{get(){return null;}}};
+ MapView.prototype.paintPortrait.call(view,{}, {},{id:3,pic:'/img/3'},20,20,10,true,false);
 });
