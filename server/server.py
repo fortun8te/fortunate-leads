@@ -810,6 +810,7 @@ def record_scraping_warning(conn, lane, ig_id=None):
         warning['pending'] = (current or {}).get('pending', {})
         current = warning
     db.set_setting(conn, 'instagram_scraping_warning', current)
+    db.set_setting(conn, 'instagram_collection_isolation', None)
     db.set_setting(conn, 'paused_lists', True)
     db.set_setting(conn, 'paused_bios', True)
 
@@ -828,15 +829,15 @@ def ext_error(conn, q, b):
         conn.execute('BEGIN IMMEDIATE')
     collector_request(conn, q, b, allow_disabled=True)
     code, ts, lane = b.get('code'), db.now(), accounts.lane_of(q, b)
+    event_id = b.get('event_id') if isinstance(b.get('event_id'), str) and 0 < len(b['event_id']) <= 100 else None
+    if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
+        conn.commit()
+        return {'duplicate': True}
     warning = b.get('reason') == 'scraping_warning' or scraping_warning_url(b.get('url')) or any(
         scraping_warning_url(url) for url in re.findall(r'https://[^\s|]+', str(b.get('message') or '')))
     if warning:
         code = 'challenge'
         record_scraping_warning(conn, lane, (accounts.account_from(q, b) or {}).get('ig_id'))
-    event_id = b.get('event_id') if isinstance(b.get('event_id'), str) and 0 < len(b['event_id']) <= 100 else None
-    if event_id and conn.execute('SELECT 1 FROM collector_events WHERE event_id=?', (event_id,)).fetchone():
-        conn.commit()
-        return {'duplicate': True}
     # Security and login warnings also stop other accounts sharing this workspace.
     job = conn.execute("SELECT * FROM jobs WHERE id=? AND state IN ('queued','leased')", (b.get('job_id'),)).fetchone()
     stale = bool(b.get('job_id') and stale_lease(conn, job, q, b))
@@ -871,6 +872,10 @@ def ext_error(conn, q, b):
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
     route_recovery = home_redirect and not stale and scoped_follower_redirect(
         conn, job, b, datetime.now(timezone.utc))
+    if (code in ('rate_limit', 'soft_block', 'login', 'challenge') or home_redirect) and db.get_setting(conn, 'instagram_collection_isolation'):
+        db.set_setting(conn, 'instagram_collection_isolation', None)
+        db.set_setting(conn, 'paused_lists', True)
+        db.set_setting(conn, 'paused_bios', True)
     if code in ('rate_limit', 'soft_block', 'login', 'challenge') or (home_redirect and not route_recovery):
         now = datetime.now(timezone.utc)
         # Keep the longest known wait. A second account's shorter warning must
@@ -1042,6 +1047,26 @@ def ext_heartbeat(conn, q, b):
         fields['list_endpoint_until'] = clean_iso(b.get('list_endpoint_until'))
     if 'hold' in b and (backend == 'chrome' or b['hold'] in accounts.HOLDS):
         fields['hold'] = b['hold'] if b['hold'] in accounts.HOLDS else None
+    if db.get_setting(conn, 'instagram_collection_isolation'):
+        previous = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        identity = (accounts.account_from(q, b) or {}).get('ig_id')
+        now = datetime.now(timezone.utc)
+        for key in accounts.IDENTITY_WAITS:
+            incoming = fields.get(key)
+            old = previous[key] if previous and previous['ig_id'] == identity else None
+            if incoming and accounts.later(incoming, now) and (not accounts.later(old, now) or utc(incoming) > utc(old)):
+                # A cooldown can arrive before its queued error report. Stop at
+                # the first new observation without shortening the saved wait.
+                db.set_setting(conn, 'instagram_collection_isolation', None)
+                db.set_setting(conn, 'paused_lists', True)
+                db.set_setting(conn, 'paused_bios', True)
+                break
+    if db.get_setting(conn, 'instagram_collection_isolation') and b.get('hold') in accounts.HOLDS:
+        identity = (accounts.account_from(q, b) or {}).get('ig_id')
+        if not accounts.warning_for(conn, {'lane_id': lane, 'ig_id': identity}):
+            db.set_setting(conn, 'instagram_collection_isolation', None)
+            db.set_setting(conn, 'paused_lists', True)
+            db.set_setting(conn, 'paused_bios', True)
     if backend == 'chrome':
         # Older extensions send this precise status text but no tab field.
         tab = b.get('tab') if 'tab' in b else {
@@ -1057,6 +1082,10 @@ def ext_heartbeat(conn, q, b):
             record_scraping_warning(conn, lane, (accounts.account_from(q, b) or {}).get('ig_id'))
             tab = 'tab_challenge'
         if tab in ('tab_login', 'tab_challenge'):
+            if db.get_setting(conn, 'instagram_collection_isolation'):
+                db.set_setting(conn, 'instagram_collection_isolation', None)
+                db.set_setting(conn, 'paused_lists', True)
+                db.set_setting(conn, 'paused_bios', True)
             fields['hold'] = 'challenge' if tab == 'tab_challenge' or fields.get('hold') == 'challenge' else 'login'
             fields['state'] = tab
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)

@@ -137,6 +137,20 @@ def remember_identity(conn, row, now, day=None):
                         (row['lane_id'], row['ig_id'])).fetchone()
 
 
+def warning_for(conn, row):
+    marker = db.get_setting(conn, 'instagram_scraping_warning') or {}
+    warnings = [marker, *marker.get('pending', {}).values()]
+    return next((warning for warning in warnings if warning and (
+        warning.get('lane') == row['lane_id'] or warning.get('ig_id') and warning['ig_id'] == row['ig_id'])), None)
+
+
+def isolation_allows(conn, row):
+    if not row or warning_for(conn, row):
+        return False
+    isolation = db.get_setting(conn, 'instagram_collection_isolation')
+    return not isolation or isolation.get('accounts', {}).get(row['lane_id']) == row['ig_id']
+
+
 def touch(conn, lane, acct=None, **fields):
     """Upsert the lane's row as seen now; `fields` are column values to set. Returns the row."""
     ts = db.now()
@@ -179,8 +193,8 @@ def touch(conn, lane, acct=None, **fields):
             sets['today'] = sets.get('today') if 'today' in fields else None
         for key in IDENTITY_WAITS:
             sets[key] = active_wait(previous[key], sets.get(key, row[key]), now)
-    warning = db.get_setting(conn, 'instagram_scraping_warning')
-    if isinstance(warning, dict) and (warning.get('lane') == lane or lane in warning.get('pending', {})):
+    warning = warning_for(conn, {'lane_id': lane, 'ig_id': sets.get('ig_id', row['ig_id'])})
+    if warning:
         sets['hold'] = 'challenge'
         sets['last_error'] = warning['message']
     conn.execute(f"UPDATE accounts SET {', '.join(k + '=?' for k in sets)} WHERE lane_id=?", (*sets.values(), lane))
@@ -198,7 +212,7 @@ def budget_of(conn, row):
 
 
 def paused_for(conn, row):
-    return bool(db.get_setting(conn, 'paused')) or bool(row and row['paused'])
+    return bool(db.get_setting(conn, 'paused')) or bool(row and (row['paused'] or not isolation_allows(conn, row)))
 
 
 # ---------- health, release, handoff ----------
@@ -1007,7 +1021,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
                 if not row['paused'] and not row['hold'] and row['last_seen']
                 and utc(row['last_seen']).timestamp() > stamp - REQUEST_LEASE_SECONDS}
         allowed = {kind for kind, stage in (('list', 'lists'), ('profile', 'bios'))
-                   if not db.get_setting(conn, 'instagram_scraping_warning')
+                   if (not db.get_setting(conn, 'instagram_scraping_warning') or db.get_setting(conn, 'instagram_collection_isolation'))
                    and not db.get_setting(conn, 'paused') and not db.get_setting(conn, 'paused_' + stage)}
         eligibility = {}
 
@@ -1015,7 +1029,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
             key = (candidate, request_kind)
             if key not in eligibility:
                 row = live.get(candidate)
-                eligibility[key] = bool(row is not None and request_kind in allowed
+                eligibility[key] = bool(row is not None and isolation_allows(conn, row) and request_kind in allowed
                                         and role_allows(row, request_kind)
                                         and not (request_kind == 'profile' and main_bios_reserved(conn, row))
                                         and identity_owner(conn, row, now)

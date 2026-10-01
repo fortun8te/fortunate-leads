@@ -39,7 +39,7 @@ def iso(d):
 def stage_paused(conn, stage):
     if stage == 'ai':
         return not processing_modes.allows(conn, 'external')
-    return bool(db.get_setting(conn, 'instagram_scraping_warning')) or bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
+    return bool(db.get_setting(conn, 'instagram_scraping_warning') and not db.get_setting(conn, 'instagram_collection_isolation')) or bool(db.get_setting(conn, 'paused')) or bool(db.get_setting(conn, 'paused_' + stage))
 
 
 def paused_kinds(conn):
@@ -273,7 +273,7 @@ def snapshot(conn, ai_left=None):
     return {'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
             'all_paused': all(s['paused'] for s in stages) and not processing_modes.allows(conn, 'laya'),
             'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
-            'instagram_request_attention': attention, 'active': active, 'stopping': stopping,
+            'instagram_request_attention': attention, 'collection_isolation': db.get_setting(conn, 'instagram_collection_isolation'), 'active': active, 'stopping': stopping,
             'stop_acknowledged': acknowledged,
             'collection': {'paused': both, 'active': active, 'stopping': stopping,
                            'stop_acknowledged': acknowledged, 'unconfirmed': unconfirmed},
@@ -333,10 +333,55 @@ def stop_benchmark(conn, body):
 def apply(conn, b):
     """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
-    if action == 'acknowledge_scraping_warning' and not conn.in_transaction:
+    if action in ('acknowledge_scraping_warning', 'resume_selected_accounts') and not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     warning = db.get_setting(conn, 'instagram_scraping_warning')
+    if action == 'resume_selected_accounts':
+        selected = b.get('accounts')
+        isolation = db.get_setting(conn, 'instagram_collection_isolation')
+        if not (warning or isolation) or not isinstance(selected, list) or len(selected) != 2:
+            raise ValueError('Select exactly two existing accounts while keeping the warned account blocked.')
+        now = datetime.now(timezone.utc)
+        gate = db.get_setting(conn, 'instagram_request_gate') or {}
+        if gate.get('active') or db.get_setting(conn, 'instagram_request_attention') or shared_collection_wait(conn, now):
+            raise ValueError('Wait for the current request or protective pause to finish first.')
+        allowed = {}
+        for selection in selected:
+            if not isinstance(selection, dict):
+                raise ValueError('Each selected account needs its existing lane and Instagram identity.')
+            row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (selection.get('lane_id'),)).fetchone()
+            if (not row or not row['ig_id'] or selection.get('ig_id') != row['ig_id'] or row['lane_id'] in allowed
+                    or row['ig_id'] in allowed.values() or accounts.warning_for(conn, row) or row['hold']
+                    or not row['last_seen'] or now - utc(row['last_seen']) > accounts.RELEASE_AFTER
+                    or row['state'] == 'network_wait' or row['collection_backend'] != 'chrome'
+                    or tuple(int(v) for v in str(row['version'] or '0').split('.') if v.isdigit()) < (3, 9, 30)
+                    or accounts.later(row['cooldown_until'], now)
+                    or any(accounts.identity_cooling(conn, row, kind, now) for kind in ('list', 'profile'))):
+                raise ValueError('Only the two healthy, signed-in accounts can continue.')
+            waits = conn.execute(
+                'SELECT cooldown_until,list_cool_until,profile_cool_until FROM accounts WHERE ig_id=? UNION ALL '
+                'SELECT cooldown_until,list_cool_until,profile_cool_until FROM account_identity_state WHERE ig_id=?',
+                (row['ig_id'], row['ig_id'])).fetchall()
+            if any(accounts.later(value, now) for wait in waits for value in wait):
+                raise ValueError('A selected Instagram identity still has a protective pause.')
+            if any(accounts.budget_of(conn, row).get(kind, 0) <= 0 for kind in ('list', 'profile')):
+                raise ValueError('Set finite daily limits before continuing selected accounts.')
+            allowed[row['lane_id']] = row['ig_id']
+        if isolation and allowed != isolation.get('accounts'):
+            raise ValueError('Continue only the same two selected Instagram accounts.')
+        db.set_setting(conn, 'instagram_collection_isolation', {'accounts': allowed, 'at': iso(now)})
+        conn.execute('UPDATE accounts SET paused=1')
+        for lane in allowed:
+            conn.execute('UPDATE accounts SET paused=0 WHERE lane_id=?', (lane,))
+        db.set_setting(conn, 'paused', False)
+        db.set_setting(conn, 'paused_lists', False)
+        db.set_setting(conn, 'paused_bios', False)
+        conn.commit()
+        return
     if action == 'acknowledge_scraping_warning':
+        if (not all(stage_paused(conn, stage) for stage in ('lists', 'bios'))
+                or (db.get_setting(conn, 'instagram_request_gate') or {}).get('active')):
+            raise ValueError('Stop collection and wait for the current request before reviewing this warning.')
         if not warning or b.get('account') != warning.get('lane') or b.get('reviewed') is not True:
             raise ValueError('Review the affected Instagram account before acknowledging its warning.')
         row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (warning['lane'],)).fetchone()

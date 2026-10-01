@@ -38,7 +38,7 @@ personal accounts, brands outside the markets above (`Other market`).
 ## Principles
 
 - **Safe pace over speed.** Never loosen pacing. Three 429s in an hour stop everything until midnight.
-  A warning stops the workspace; switching accounts is not a way around it.
+  A warning stops the workspace. Only explicit operator authorization may resume two already healthy, identity-bound accounts while the warned account remains blocked. New warnings or cooldowns stop the workspace again; never rotate identities or clear a warning automatically.
 - **No evasion.** No proxies, Tor or block dodging. The old Tor collector is archived and deliberately unmerged.
 - **Free by default.** No paid scraping services (Apify was rejected). AI uses `:free` OpenRouter models and local models.
 - **Plain, monochrome UI.** Short product language, neutral grey, no filler. See `docs/COPY.md`.

@@ -207,19 +207,20 @@
     if (n.status && n.status !== 'no') return 'a';
     return n.fit === 'strong' ? 't1' : n.fit === 'good' ? 't2' : n.fit === 'weak' ? 't3' : 't4';
   }
-  const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Connections'}, {id:'equal',label:'Equal'}];
+  const OWNER_RADIUS = 12;
+  const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Shared sources'}, {id:'equal',label:'Equal'}];
   const SIZE_HELP = {
-    followers:'Larger portraits have more saved followers. Unknown counts use the smallest size. Sizes use a logarithmic scale.',
-    fit:'Larger portraits have a stronger saved fit assessment. Unread profiles use the smallest size.',
-    connections:'Larger portraits appear in more distinct collected source audiences. This is recorded overlap, not friendship.',
-    equal:'Every person has the same portrait size.'
+    followers:'Larger bubbles have more saved followers. Unknown counts use the smallest size. Counts use a compressed scale.',
+    fit:'Larger bubbles have a stronger saved fit assessment. Unread profiles use the smallest size.',
+    connections:'Larger bubbles appear in more collected audiences. Shared sources do not establish a relationship.',
+    equal:'Every person has the same bubble size.'
   };
   const radiusFor = (n, k, size = 'followers') => {
-    let base = 8;
-    if (size === 'equal') base = 9;
-    else if (size === 'connections') base = clamp(7 + 2 * Math.sqrt(Math.max(0, +n.source_count || 0)), 8, 14);
-    else if (size === 'fit') base = { strong: 14, good: 11.5, weak: 9, unread: 8 }[n.fit] || 8;
-    else if (n.followers != null) base = clamp(7 + 1.15 * Math.log10(1 + Math.max(0, +n.followers || 0)), 8, 15);
+    let base = 7;
+    if (size === 'equal') base = 14;
+    else if (size === 'connections') base = clamp(7 + 6 * Math.sqrt(Math.max(0, +n.source_count || 0)), 7, 28);
+    else if (size === 'fit') base = { strong: 24, good: 16, weak: 10, unread: 7 }[n.fit] || 7;
+    else if (n.followers != null) base = 7 + 21 * Math.pow(clamp((Math.log10(1 + Math.max(0, +n.followers || 0)) - 2) / 4, 0, 1), 2);
     return base * clamp(.85 + .15 * Math.sqrt(k), .85, 1.35);
   };
   const distanceKey = { g: 'centre', t: 'Closer portraits have stronger recorded network evidence. Positions are evenly spaced for readability; distance is an ordering, not a measure of friendship.', s: 'Distance: evidence' };
@@ -241,53 +242,72 @@
     return s;
   }
 
-  function cohortLayout(people, owner) {
+  function cohortLayout(people, owner, size = 'followers') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
     members.sort((a, b) => (b.closeness || 0) - (a.closeness || 0)
       || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
+    const weights = members.map(n => radiusFor(n, 1, size));
+    const largest = Math.max(...weights), outer = .46, centre = .06;
+    let scale = Math.min(.065 / largest, Math.sqrt(.44 * (outer * outer - centre * centre) / weights.reduce((sum, r) => sum + r * r, 0)));
     const candidates = [];
     let seed = 0x6d2b79f5;
     const random = () => {
       seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
       return (seed >>> 0) / 4294967296;
     };
-    for (let i = 0; i < Math.max(200, members.length * 18); i++) {
-      const radius = .46 * Math.sqrt(random()), angle = random() * Math.PI * 2;
-      const x = radius * Math.cos(angle), y = radius * Math.sin(angle);
-      if (radius < .078 || Math.abs(x) < .075 && y > 0 && y < .115) continue;
-      candidates.push({ x: .5 + x, y: .5 + y, r: radius });
+    for (let i = 0; i < Math.max(800, members.length * 48); i++) {
+      const distance = outer * Math.sqrt(random()), angle = random() * Math.PI * 2;
+      candidates.push({ x: .5 + distance * Math.cos(angle), y: .5 + distance * Math.sin(angle), distance });
     }
-    candidates.sort((a, b) => a.r - b.r);
-    let step = Math.min(.075, .72 / Math.sqrt(Math.max(1, members.length)));
-    let slots;
-    // Static radial packing: neighbouring cells keep collision checks bounded.
-    // A fixed seed gives the same page the same organic positions on every visit.
-    for (;;) {
+    candidates.sort((a, b) => a.distance - b.distance);
+    let slots = [];
+    // A single radial pass per attempt preserves evidence ordering. Nearby-cell
+    // checks use the largest radius, so differently sized portraits cannot overlap.
+    for (let attempt = 0; attempt < 8; attempt++) {
       slots = [];
-      const cells = new Map();
+      const cellSize = largest * scale * 2.12, cells = new Map();
       for (const point of candidates) {
-        const cx = Math.floor(point.x / step), cy = Math.floor(point.y / step);
+        const radius = weights[slots.length] * scale;
+        if (point.distance < centre + radius || point.distance + radius > outer) continue;
+        // Leave room beneath the owner for its name, without drawing a boundary.
+        if (Math.abs(point.x - .5) < .055 + radius && point.y > .5 && point.y < .585 + radius) continue;
+        const cx = Math.floor(point.x / cellSize), cy = Math.floor(point.y / cellSize);
         let overlaps = false;
         for (let dy = -1; dy <= 1 && !overlaps; dy++) {
           for (let dx = -1; dx <= 1 && !overlaps; dx++) {
-            const nearby = cells.get(`${cx + dx}:${cy + dy}`) || [];
-            overlaps = nearby.some(other => Math.hypot(point.x - other.x, point.y - other.y) < step);
+            const nearby = cells.get((cx + dx) + ':' + (cy + dy)) || [];
+            overlaps = nearby.some(other => Math.hypot(point.x - other.x, point.y - other.y) < (radius + other.radius) * 1.06);
           }
         }
         if (overlaps) continue;
-        slots.push(point);
-        const key = `${cx}:${cy}`;
+        const placed = { ...point, radius };
+        slots.push(placed);
+        const key = cx + ':' + cy;
         if (!cells.has(key)) cells.set(key, []);
-        cells.get(key).push(point);
+        cells.get(key).push(placed);
         if (slots.length === members.length) break;
       }
-      if (slots.length >= members.length) break;
-      step *= .94;
+      if (slots.length === members.length) break;
+      scale *= .86;
     }
-    const nodes = members.map((n, i) => ({ ...n, evidenceX: n.x, evidenceY: n.y,
-      x: slots[i].x, y: slots[i].y, cohort: true, spacing: step }));
-    if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: step });
+    if (slots.length !== members.length) {
+      // Guaranteed finite fallback for unusually skewed pages: enough square-grid
+      // slots inside the disk, each separated by more than the largest diameter.
+      const step = Math.min(.12, .35 / Math.sqrt(members.length)), limit = Math.ceil(outer / step);
+      scale = step * .45 / largest;
+      slots = [];
+      for (let y = -limit; y <= limit; y++) for (let x = -limit; x <= limit; x++) {
+        const distance = Math.hypot(x * step, y * step), radius = largest * scale;
+        if (distance < centre + radius || distance + radius > outer) continue;
+        if (Math.abs(x * step) < .055 + radius && y > 0 && y * step < .085 + radius) continue;
+        slots.push({ x: .5 + x * step, y: .5 + y * step, distance });
+      }
+      slots.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
+    }
+    const nodes = members.map((n, i) => ({ ...n, evidenceX: n.evidenceX ?? n.x, evidenceY: n.evidenceY ?? n.y,
+      x: slots[i].x, y: slots[i].y, cohort: true, portraitRadius: weights[i] * scale, spacing: largest * scale * 2.12 }));
+    if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: largest * scale * 2.12 });
     return nodes;
   }
 
@@ -299,7 +319,7 @@
         const [x, y] = cam.toScreen(it.x, it.y);
         const owner = String(it.d.id) === String(ownerId);
         const radiusScale = Math.min(1, it.d.spacing * scale * .49 / 15);
-        const r = owner ? 24 * cam.k : radiusFor(it.d, 1, size) * radiusScale * cam.k;
+        const r = owner ? OWNER_RADIUS * cam.k : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
         return { kind: 'n', it, x, y, r };
       });
       return { nodes, groups: [] };
@@ -357,7 +377,7 @@
       groupMarks.push(mark); occupied.push(mark);
     }
     for (const it of candidates) {
-      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? 24 : radiusFor(it.d, cam.k, size);
+      const [x, y] = cam.toScreen(it.x, it.y), r = String(it.d.id) === String(ownerId) ? OWNER_RADIUS * cam.k : radiusFor(it.d, cam.k, size);
       if (!inside(x, y, 8)) continue;
       const pinned = (selected && String(it.d.id) === String(selected.id)) || String(it.d.id) === String(ownerId);
       if (!pinned && (nodeMarks.length >= limit || overlaps(x, y, r))) {
@@ -443,7 +463,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

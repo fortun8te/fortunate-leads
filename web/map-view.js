@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
   const Core = root.MapCore, { MapModel } = root.MapModel;
-  const { MODES, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, followRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
+  const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, toneFor, radiusFor, hasRing, followRing, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
 
@@ -52,6 +52,7 @@
 
     /* ---------- model events ---------- */
     onModel(what) {
+      if (what === 'scene' || what === 'mode') this.finishNodeDrag(true);
       if (what === 'size') { this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
       if (what === 'edges') { this.edgeAt = performance.now(); this.renderSeeds(); }
@@ -74,7 +75,7 @@
       if (!this.comparing) { if (this.model.phase === 'idle' || this.model.phase === 'error' || this.model.phase === 'offline') this.model.load(); }
       this.invalidate();
     }
-    hide() { this.shown = false; clearInterval(this.poller); this.model.pause(true); this.closeResults(); this.hideTip(); }
+    hide() { this.finishNodeDrag(true); this.shown = false; clearInterval(this.poller); this.model.pause(true); this.closeResults(); this.hideTip(); }
     resize() { this.measure(false); }
     measure(first) {
       const box = this.r.canvasBox, w = box.clientWidth, h = box.clientHeight;
@@ -188,15 +189,15 @@
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
 
-        this.paintPortrait(ctx, P, me, x, y, 24*k, true, true);
+        this.paintPortrait(ctx, P, me, x, y, OWNER_RADIUS*k, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
-        ownerCaption = { x, y: y + 29*k + 10, text };
-        lab.block([x-width/2-4, y+31, x+width/2+4, y+50]);
+        ownerCaption = { x, y: y + OWNER_RADIUS*k + 16, text };
+        lab.block([x-width/2-4, y+OWNER_RADIUS*k+7, x+width/2+4, y+OWNER_RADIUS*k+25]);
       }
 
       // Endpoints of the selected person's lines, then the selection ring.
       if (edges && edges.state === 'ready') for (const n of edges.seeds.filter(n=>m.scene.get(n.id))) {
-        const placed=m.scene.get(n.id)?.d || n;
+        const placed=m.scene.get(n.id) || n;
         const x = sx(placed.x), y = sy(placed.y); ctx.fillStyle = P.fg; ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
         ctx.strokeStyle = P.bg; ctx.lineWidth = 1.5; ctx.stroke();
         want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x, y, r: 5, w: 500 });
@@ -320,7 +321,8 @@
         const follows = l.kind === 'follows' || l.kind === 'follows_you';
         ctx.strokeStyle = follows ? P.accent : P.fg3; ctx.lineWidth = follows ? 1.25 : 1;
         ctx.setLineDash(l.kind === 'mutual' ? [4, 4] : []);
-        ctx.beginPath(); ctx.moveTo(sx(l.a.x), sy(l.a.y)); ctx.lineTo(sx(l.b.x), sy(l.b.y)); ctx.stroke();
+        const from = this.model.scene.get(l.a.id) || l.a, to = this.model.scene.get(l.b.id) || l.b;
+        ctx.beginPath(); ctx.moveTo(sx(from.x), sy(from.y)); ctx.lineTo(sx(to.x), sy(to.y)); ctx.stroke();
       }
       ctx.setLineDash([]); ctx.globalAlpha = 1;
       if (a < 1 && !reduced) this.invalidate();
@@ -367,6 +369,29 @@
       return null;
     }
 
+    // Dragging is a temporary inspection gesture; recorded distance stays unchanged.
+    startNodeDrag(mark) {
+      const it = mark?.kind === 'n' && mark.it;
+      if (!it || String(it.d.id) === String(this.model.world.me?.id)) return false;
+      this.finishNodeDrag(true);
+      this.nodeDrag = it; it.dur = 0; this.hover = null;
+      return true;
+    }
+    moveNodeDrag(dx, dy) {
+      const it = this.nodeDrag;
+      if (!it || this.model.scene.get(it.d.id) !== it) return false;
+      it.x += dx / this.model.cam.scale; it.y += dy / this.model.cam.scale;
+      this.invalidate();
+      return true;
+    }
+    finishNodeDrag(immediate = false) {
+      const it = this.nodeDrag; this.nodeDrag = null;
+      if (!it) return;
+      if (immediate || this.model.reduced) { it.x = it.tx; it.y = it.ty; it.dur = 0; }
+      else { it.fx = it.x; it.fy = it.y; it.t0 = performance.now(); it.dur = 280; }
+      this.invalidate();
+    }
+
     /* ---------- input ---------- */
     bind() {
       const c = this.canvas, m = this.model, pts = new Map();
@@ -377,7 +402,7 @@
         this.touch = e.pointerType === 'touch';
         c.setPointerCapture(e.pointerId); c.style.cursor=''; c.classList.remove('kb'); c.focus({ preventScroll: true });
         pts.set(e.pointerId, pos(e)); m.interruptCamera();
-        if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: m.cam.k, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; drag = null; return; }
+        if (pts.size === 2) { this.finishNodeDrag(true); const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: m.cam.k, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; drag = null; return; }
         drag = { x: e.clientX, y: e.clientY, moved: false, at: this.pick(...pos(e)), t: performance.now() }; samples = [];
         c.classList.add('drag');
       });
@@ -390,10 +415,11 @@
         }
         if (drag) {
           const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-          if (!drag.moved && Math.hypot(dx, dy) > (e.pointerType === 'mouse' ? 4 : 9)) { drag.moved = true; this.hideTip(); }
+          if (!drag.moved && Math.hypot(dx, dy) > (e.pointerType === 'mouse' ? 4 : 9)) { drag.moved = true; drag.node = this.startNodeDrag(drag.at); this.hideTip(); }
           if (drag.moved) {
             const ddx = e.clientX - (drag.lx ?? drag.x), ddy = e.clientY - (drag.ly ?? drag.y);
             drag.lx = e.clientX; drag.ly = e.clientY;
+            if (drag.node) { this.moveNodeDrag(ddx, ddy); return; }
             m.pan(ddx, ddy);
             const now = performance.now(); samples.push([now, e.clientX, e.clientY]); while (samples.length && now - samples[0][0] > 90) samples.shift();
           }
@@ -408,14 +434,15 @@
         if (!had || !drag) return;
         c.classList.remove('drag');
         if (!drag.moved) this.activate(drag.at || this.pick(...pos(e)));
+        else if (drag.node) this.finishNodeDrag();
         else if (samples.length > 1) {
           const a = samples[0], b = samples[samples.length - 1], dt = (b[0] - a[0]) / 1000;
           if (dt > 0) m.release((b[1] - a[1]) / dt, (b[2] - a[2]) / dt);
         }
-        drag = null; m.moved(); this.invalidate();
+        const wasNode = drag.node; drag = null; if (!wasNode) m.moved(); this.invalidate();
       };
       c.addEventListener('pointerup', end);
-      const cancel = () => { pts.clear(); pinch=null; drag=null; m.interruptCamera(); c.classList.remove('drag'); };
+      const cancel = () => { this.finishNodeDrag(true); pts.clear(); pinch=null; drag=null; m.interruptCamera(); c.classList.remove('drag'); };
       c.addEventListener('pointercancel', cancel); c.addEventListener('lostpointercapture', (e) => { if (pts.has(e.pointerId)) cancel(); });
       c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { this.hover = null; this.hideTip(); this.invalidate(); } });
       c.addEventListener('wheel', (e) => {
@@ -432,12 +459,6 @@
       this.r.zoomOut.addEventListener('click', () => this.zoomCentre(1 / 1.6));
       this.r.fit.addEventListener('click', () => m.fit());
       this.r.me.addEventListener('click', () => m.world.me && m.flyTo({ cx: m.world.me.x, cy: m.world.me.y, k: Math.max(m.cam.k, 3) }, 700));
-      this.r.modes.addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (b) m.setMode(b.dataset.mode); });
-      this.r.modes.addEventListener('keydown', (e) => {
-        const i = MODES.findIndex((x) => x.id === m.mode), d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-        if (!d) return; e.preventDefault();
-        const next = MODES[(i + d + MODES.length) % MODES.length]; m.setMode(next.id); this.r.modes.querySelector(`[data-mode="${next.id}"]`).focus();
-      });
       this.r.size?.addEventListener('change', () => m.setSizeEncoding(this.r.size.value));
       // Search.
       const input = this.r.q; let timer = 0;
@@ -488,7 +509,7 @@
       const hit = this.pick(x, y), prev = this.hover;
       const same = hit && prev && hit.it.d.id === prev.it.d.id;
       this.hover = hit;
-      this.canvas.style.cursor = hit ? 'pointer' : '';
+      this.canvas.style.cursor = hit?.kind === 'n' && String(hit.it.d.id) !== String(this.model.world.me?.id) ? 'grab' : hit ? 'pointer' : '';
       if (!hit) { this.hideTip(); if (prev) this.invalidate(); return; }
       if (!same) this.showTip(hit);
       const tip = this.r.tip, box = this.r.canvasBox;
@@ -578,14 +599,10 @@
       r.fit.title = 'Show this page';
       r.size?.replaceChildren(...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
       if (r.size) r.size.value=this.model.size;
-      r.modes.replaceChildren(...MODES.map((x) => h('button', { type: 'button', role: 'radio', 'data-mode': x.id, 'aria-checked': 'false', tabindex: '-1' },
-        h('span', { class: 'mv-long', text: x.label }), h('span', { class: 'mv-short', text: x.short }))));
       this.renderModes();
       this.renderFilters();
     }
     renderModes() {
-      for (const b of this.r.modes.children) { const on = b.dataset.mode === this.model.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
-      this.r.modes.hidden = this.model.fallback;
       if (this.r.filters.follow) { this.r.filters.follow.disabled = !!this.model.fallback; this.r.filters.follow.title = this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
       this.r.me.hidden = !this.model.world.me;
     }
@@ -885,7 +902,7 @@
     const $ = (id) => doc.getElementById(id);
     const pane = $('pane-map'); if (!pane || !$('map-canvas')) return null;
     return {
-      pane, size: $('map-size'), canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), modes: $('map-modes'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
+      pane, size: $('map-size'), canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
       badge: $('map-filter-badge'), filters: { scope: $('map-scope'), fit: $('map-fit-filter'), status: $('map-status-filter'), follow: $('map-follow-filter'), clear: $('map-filters-clear') },
       state: $('map-state'), stale: $('map-stale'), progress: $('map-progress'), tip: $('hover'), legend: $('map-legend'), hud: $('map-hud'), count: $('map-shown'), live: $('map-live'),
       card: $('map-card'), zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), fit: $('map-fit'), me: $('map-me')

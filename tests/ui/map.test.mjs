@@ -94,10 +94,26 @@ test('label collision avoids covering existing labels', () => {
   const second = labels.place({ x: 400, y: 300, r: 10 }, { w: 70, h: 18 });
   assert.ok(first); assert.ok(second); assert.notDeepEqual(first, second);
 });
+test('size changes preserve people, selection and camera without fetching another page', () => {
+  const requests = [];
+  const model = new MapModel({ reduced: true, fetchJson: url => { requests.push(url); throw new Error('Unexpected request'); } });
+  model.apply({ ...response(1, [person(1, { followers: 100 }), person(2, { followers: 1000000 })]), world: { me: person(0, { x: .5, y: .5 }) } }, {});
+  model.cam.set(.3, .4, 2);
+  model.selected = model.scene.get(1).d;
+  const ids = model.scene.nodes.map(n => n.d.id);
+  const followers = model.scene.nodes.filter(n => n.d.id !== 0).map(n => n.d.portraitRadius);
+  assert.notEqual(followers[0], followers[1]);
+  model.setSizeEncoding('equal');
+  assert.deepEqual(model.scene.nodes.map(n => n.d.id), ids);
+  assert.equal(new Set(model.scene.nodes.filter(n => n.d.id !== 0).map(n => n.d.portraitRadius)).size, 1);
+  assert.deepEqual([model.cam.cx, model.cam.cy, model.cam.k], [.3, .4, 2]);
+  assert.equal(model.selected, model.scene.get(1).d);
+  assert.deepEqual(requests, []);
+});
 test('invalid coordinates cannot poison the scene', () => {
   assert.equal(cleanNode(person(1, { x: null })), null); assert.equal(cleanNode(person(1, { x: NaN })), null); assert.equal(cleanNode(person(1, { y: Infinity })), null);
 });
-test('combobox has a list alternative, radio modes, and mobile sheet', () => {
+test('combobox has a list alternative and mobile sheet', () => {
   const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../../web/map-view.css', import.meta.url), 'utf8');
   assert.match(html, /role="combobox"/); assert.match(html, /aria-controls="map-search-results"/); assert.match(html, /Open Leads/); assert.match(css, /max-height: 56%/);

@@ -91,8 +91,9 @@
               <input id="map-q" type="search" role="combobox" aria-label="Find a person on the map" aria-expanded="false" aria-controls="map-search-results" aria-autocomplete="list" placeholder="Name or handle" autocomplete="off" spellcheck="false">
               <div id="map-search-results" class="mv-results" role="listbox" aria-label="Matching people" hidden></div>
             </div>
-            <div class="mv-modes seg" id="map-modes" role="radiogroup" aria-label="View"></div>
-            <label class="mv-size">Size <select class="select" id="map-size" aria-label="Bubble size"></select></label>
+            <label class="mv-size">Size by <select class="select" id="map-size" aria-label="Bubble size"></select></label>
+                <label class="mv-size mv-follow">Show
+                  <select class="select" id="map-follow-filter" aria-label="Show connections"><option value="all">Everyone</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
             <details class="mv-filters" id="map-filters">
               <summary class="btn"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg><span>Filters</span><span class="mv-badge num" id="map-filter-badge" hidden></span></summary>
               <div class="mv-pop">
@@ -102,8 +103,7 @@
                   <select class="select" id="map-fit-filter"><option value="">Any fit</option><option value="good">Good or stronger</option><option value="strong">Strong only</option></select></label>
                 <label class="mv-f"><span class="mv-fl">Status</span>
                   <select class="select" id="map-status-filter"><option value="">Any status</option><option value="interested">Interested</option><option value="contacted">Contacted</option><option value="talking">Talking</option><option value="spoke_before">Spoke before</option><option value="client">Client</option><option value="no">Not a fit</option></select></label>
-                <label class="mv-f"><span class="mv-fl">Following</span>
-                  <select class="select" id="map-follow-filter"><option value="all">All people</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
+
                 <p class="mv-filter-note muted">Following is based on saved observations. Missing evidence stays unknown.</p>
                 <button type="button" class="btn ghost" id="map-filters-clear" hidden>Clear filters</button>
               </div>

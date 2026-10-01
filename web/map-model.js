@@ -114,7 +114,7 @@
     }
     apply(resp, at) {
       const previousRev = this.rev;
-      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me), clusters = [];
+      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size), clusters = [];
       this.nextCursor = resp.next_cursor || null; this.cohort = true;
       if (resp.cohort_reset) {
         this.cursor = ''; this.pages = ['']; this.pageIndex = 0;
@@ -282,7 +282,17 @@
     fit() { this.flyTo({ cx:0.5,cy:0.5,k:1 },600); }
     pan(dx, dy) { this.interruptCamera(); this.cam.panBy(dx, dy); this.moved(); }
     release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
-    setSizeEncoding(size) { if (!Core.SIZE_OPTIONS.some(o=>o.id===size) || size === this.size) return; this.size=size; this.emit('size'); }
+    setSizeEncoding(size) {
+      if (!Core.SIZE_OPTIONS.some(o => o.id === size) || size === this.size) return;
+      this.size = size;
+      if (this.cohort) {
+        const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, size);
+        this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced ? 0 : 240, instant: true});
+        if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
+        this.emit('scene');
+      }
+      this.emit('size');
+    }
     interruptCamera() {
       this.locateReq.cancel(); this.flight=null; this.goal=null; this.vel=null;
       if (this.hold) { this.viewReq.cancel(); this.pending=0; this.loaded=null; this.emit('busy'); }
