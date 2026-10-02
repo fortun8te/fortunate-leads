@@ -1,35 +1,19 @@
-# Getting more collection accounts
+# Collection accounts
 
-Researched 2 October 2026. Sources are listed at the end; vendor blogs sell scraping services, so treat their numbers as marketing, not measurements.
+Updated 2 October 2026. Additional accounts do not remove Instagram restriction risk. There is no verified account-age rule, warm-up schedule or accounts-to-daily-volume conversion for this workspace.
 
-## What we know
+## Current behavior
 
-- Every account that scrapes can be restricted. @dihfluencer was warned on 1 October. No pace guarantees safety.
-- Instagram links risk to the login, the Chrome profile and the network. Accounts sharing one home IP share some of that risk. We do not use proxies or Tor (project rule), so this cannot be removed, only kept small.
-- The extension reuses a real, logged-in Chrome session. Agent Reach (the repo Michael mentioned) does the same for Instagram, so it adds no safety and no new route. Its own docs warn about bans and recommend a secondary account.
+The extension uses an existing logged-in Chrome profile. Keep one verified Instagram identity per saved collection profile. The main account stays personal and excluded from automation. A warning stops the workspace and remains held until Michael reviews it.
 
-## Safest ways to get accounts
+Adding a profile does not authorize collection on it. The current selective-resume action accepts exactly the two already approved healthy account identities; it does not support an arbitrary number of accounts. Preserve that gate and all pacing, warning, identity and budget checks.
 
-1. **Real people's accounts, with consent.** Teammates, friends and clients who already use Instagram and agree to lend a Chrome profile. Aged accounts with a normal history get restricted far less than new ones.
-2. **Your own extra accounts, aged.** Create them by hand, one phone number each, and use them like a person for 1 to 2 weeks (follow, like, post a story) before any collection.
-3. **One Chrome profile per account.** Never log two accounts into one profile. Add the profile in `data/browser-startup.json`.
+Before changing the account setup, read INSTAGRAM_WARNING_RECOVERY.md, PRODUCT.md and the current HANDOFF.md. Verify account consent, identity binding and live warning state. Never use another identity to bypass a restriction or restore proxy/Tor collection.
 
-## What not to do
+## Following-only option
 
-- Buying accounts, account farms and bulk-created accounts. They are the first to be restricted, and the sellers often keep the login.
-- Running more accounts to go faster than the pace limits. More accounts add volume; the per-account pace stays the same.
-- Using the main account.
+The internal follower_lists database setting defaults to true. Setting the stored JSON boolean to false prevents the scheduler from selecting new follower-list jobs. Queued follower jobs and saved cursors remain available if the setting is restored. Existing active requests are not cancelled by this selector. This option is not exposed in Settings or the accounts API; do not edit the live database to try it.
 
-## Ramp
+Following lists produced more usable coverage in the September28 trials. Follower endpoints returned capped results. This does not establish a future collection rate or restriction-free pace. See scraping-throughput-trials.md and OPEN_ITEMS.md for measurement limits.
 
-1. One account for a week with no warning.
-2. Three accounts for a week.
-3. Six, then ten to twelve for 200k list entries a day.
-
-The first warning on any account pauses the workspace. Michael reviews it himself.
-
-## Sources
-
-- [Agent Reach](https://github.com/Panniantong/Agent-Reach)
-- [How to Scrape Instagram in 2026, Scrapfly](https://scrapfly.io/blog/posts/how-to-scrape-instagram)
-- [How to Scrape Instagram in 2026, Olostep](https://www.olostep.com/blog/how-to-scrape-instagram)
+A clean long multi-account soak and controlled comparison of real follower routes remain unverified.
