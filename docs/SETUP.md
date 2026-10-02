@@ -181,9 +181,9 @@ To stop collection on purpose, pause lists and bios in **Controls**, or pause an
 
 ```sh
 python3 -m unittest discover -s server/tests
-python3 -m unittest sidecar/test_laya.py
+python3 -m unittest sidecar/test_laya.py sidecar/test_service.py
 node --test extension/test/*.test.mjs
-node --test tests/web/*.test.mjs          # note-save races, filters, exports and demo workflows
+find tests web -type f \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name '*.test.js' \) -print0 | xargs -0 node --test
 node tests/e2e/driver.mjs                 # 8 simulated hours against a fake Instagram, about a minute
 node tests/e2e/driver.mjs --lanes 1,2,4   # several accounts
 python3 tests/bench.py                    # timings on a synthetic 100k-people database
