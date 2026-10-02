@@ -11,6 +11,11 @@ Updated from GitHub merge state, the recovered Claude session, and fresh tests o
 4. **Real follower capture** (HANDOFF "Earlier Mac checklist" 4): the e2e fake serves the `follow_list_page` shape; a real capture of a working follower page has never been verified.
 5. **Soak** (checklist 3, `ops/soak.md`): 72 requests / 11 min and 300 bios/day are conservative guesses; tune only after a clean multi-account soak. No live soak has been run since the 2026-09-26 update. The live checkout was moved to `Projects/Fortunate-Leads/app` by the Claude cleanup. A running process may still have earlier code loaded; verify its version before any live test.
 
+## 2 October additions
+- Setting `follower_lists` (default on). Set it to false to collect following lists only; follower jobs stay queued and are skipped.
+- `resume_selected_accounts` still requires exactly two accounts. To run a single account while a warning is held, Michael must either acknowledge the warning after reviewing it, or approve relaxing that gate. Not changed.
+- More accounts: see [MORE_ACCOUNTS](MORE_ACCOUNTS.md).
+
 ## P2 - setup and hygiene
 6. Reload the extension in every Chrome profile and confirm the version (3.9.27 after PR #73). An old build posting `other ... (HTTP 0)` was seen on 2026-09-24.
 7. Add OpenRouter keys in Settings and confirm `/api/llm` shows Ready (checklist 5). Laya sidecar venv is optional (SETUP.md section 7).

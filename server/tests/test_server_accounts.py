@@ -101,6 +101,17 @@ class LaneTest(Base):
         self.conn.execute("INSERT INTO pages(job_id,cursor,at) VALUES(?,?,?)", (job['id'], '', now.isoformat()))
         self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['direction'], 'following')
 
+    def test_following_only_skips_follower_lists(self):
+        self.seeds('f1', direction='followers')
+        self.post('a', '/api/ext/heartbeat', {'version': '3.9.5', 'state': 'idle'})
+        now = datetime.now(timezone.utc)
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['direction'], 'followers')
+        db.set_setting(self.conn, 'follower_lists', False)
+        self.conn.commit()
+        self.assertIsNone(accounts.pick_job(self.conn, 'lane-a', ['list'], now))
+        self.seeds('f2', direction='following')
+        self.assertEqual(accounts.pick_job(self.conn, 'lane-a', ['list'], now)['direction'], 'following')
+
     def test_roles_and_pause(self):
         pid = db.upsert_person(self.conn, {'ig_id': '7', 'handle': 'dave'})
         self.conn.commit()
