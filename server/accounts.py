@@ -666,7 +666,9 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     # This viewer's follower endpoint may redirect while following still works.
     # Keep the other direction eligible and let a healthy viewer take its queued followers.
     route_waiting = [r['lane_id'] for r in accts if follower_route_wait(conn, r, now)]
-    follower_filter = " AND (j.kind!='list' OR j.direction!='followers')" if lane in route_waiting else ''
+    # Instagram caps follower lists at ~25 people a page; following lists are the productive route.
+    follower_filter = (" AND (j.kind!='list' OR j.direction!='followers')"
+                       if lane in route_waiting or db.get_setting(conn, 'follower_lists', True) is False else '')
     page_size_filter = '' if allow_page_size else ' AND j.page_size IS NULL'
     parts = str(row['version'] or '').split('.')
     experiment_capable = (not row['is_main'] and len(parts) == 3
