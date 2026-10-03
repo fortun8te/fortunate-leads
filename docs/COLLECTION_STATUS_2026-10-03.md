@@ -20,3 +20,9 @@ Evidence: fresh local /api/control and /api/scraper responses and read-only SQLi
 ## Verification boundaries
 
 A passing simulator verifies synthetic interruption and recovery cases. It does not prove live Instagram collection, unrestricted follower access, a clean multi-account soak, or qualification quality. Live monitoring must report actual pages, people, warning events, stop state, and elapsed duration separately.
+
+## Executed checks
+
+The settled backend suite passed 1,258 tests with three optional skips. Combined interface and extension checks passed 603 tests. The repaired root Python suite passed 21 checks; sidecar/service checks passed 27. Ten rendered browser checks passed, and desktop/mobile controls were visually inspected using an isolated fixture.
+
+Earlier interruption runs passed 82 checks across 24 simulated hours and 40 checks in a two-account scenario completing after 4.58 simulated hours. The checkout was still changing during those runs, so final release verification reruns the settled simulator rather than attributing them to exact final code.

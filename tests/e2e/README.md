@@ -4,10 +4,10 @@
 node tests/e2e/driver.mjs
 ```
 
-This runs 8 simulated hours of scraping in about 50 s of real time. It needs Node 18 or later and Python 3, and has no dependencies. It exits 0 when every check passes and 1 otherwise. A failed run keeps its temp dir, whose path is printed; it holds `result.json`, `log.json`, `server.log` and `fake_ig.log`.
+This runs 8 simulated hours of scraping. Runtime depends on the machine and current collection workload; a 24-hour run on 3 October 2026 took about 10 real minutes. It needs Node 18 or later and Python 3, and has no dependencies. It exits 0 when every check passes and 1 otherwise. A failed run keeps its temp dir, whose path is printed; it holds `result.json`, `log.json`, `server.log` and `fake_ig.log`.
 
 Options:
-- `--hours N`: simulated hours. The default is 8. A 24 h run takes about 90 s.
+- `--hours N`: simulated hours. The default is 8. This is virtual time, not a real Instagram soak.
 - `--outage-min N`: how long the server stays offline. The default is 4.
 - `--keep`: keep the temp dir.
 - `--verbose`: print the timeline, the passed checks and the extension's own trail.
@@ -15,7 +15,7 @@ Options:
 
 ## Lanes (`--lanes N`)
 
-N emulated Chrome profiles, each with its own storage, tabs, alarms and service worker running the real extension, all against one server. Each profile is logged in to its own fake Instagram account (`X-Sim-Account`; the home page names the viewer so the extension can detect it) with its own failures, counted per account: lane 1 gets a 429 on its 200th list request, lane 2 is logged out on its 20th (Michael logs it back in 45 min later), lane 3 a soft block on its 45th, lane 4 "please wait" on its 60th. After resolving popup login/security holds, the simulated operator waits until every account is resolved and the shared deadline has passed, then explicitly resumes collection. It retries this operator action if a warning extends the deadline. The recovered login account is deliberately left paused while the others resume, so the scenario exercises transfer of its saved cursor. No harness faults. 10 lists, 16.9k connections; the run stops when every list is done (cap 12 simulated hours).
+N emulated Chrome profiles, each with its own storage, tabs, alarms and service worker running the real extension, all against one server. Each profile is logged in to its own fake Instagram account (`X-Sim-Account`; the home page names the viewer so the extension can detect it) with its own failures, counted per account: lane 1 gets a 429 on its 200th list request, lane 2 is logged out on its 20th (Michael logs it back in 45 min later), lane 3 a soft block on its 45th, lane 4 "please wait" on its 60th. After resolving popup login/security holds, the simulated operator waits until every account is resolved and the shared deadline has passed, then explicitly resumes collection. It retries this operator action if a warning extends the deadline. The recovered login account is deliberately left paused while the others resume, so the scenario exercises transfer of its saved cursor. No harness faults. 10 lists, 16.9k connections; the run stops when every list is done (cap 12 simulated hours). Automatic discovery is disabled only in the temporary simulator fixture, so new unknown fake targets cannot hide whether this finite queue finished. Failure to finish the queue is a failing check.
 
 Checks: every list complete with edges equal to what the fake served, no page fetched twice across lanes and none posted twice, a list is never requested by a second lane while the lane that had it is still working it, a logged-out lane's list moves to another lane from its saved cursor after explicit resume (and the server records the handoff), no lane requests inside its own cooldown, a shared warning stops list and profile requests across other lanes, the server knows each lane's account, every outbox ends empty.
 
