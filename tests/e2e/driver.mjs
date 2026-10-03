@@ -484,6 +484,10 @@ async function opsHttp(p, body) {
     return r.json();
   });
 }
+async function finiteScenario() {
+  const configured = await opsHttp('/api/scraper/suggestions', { enabled: false });
+  if (configured.auto_discover !== false) throw new Error('Failed to disable automatic discovery in the temporary simulator fixture');
+}
 async function resumeCollection() {
   const sc = await opsHttp('/api/scraper');
   const until = Date.parse(sc.ext?.cooldown_until || '');
@@ -557,6 +561,9 @@ async function main() {
   launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
   await startServer();
   await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  // This scenario has a finite fake seed set. Automatic discovery is covered
+  // separately; adding unknown fake targets hides completion and creates noise.
+  await finiteScenario();
   const seeds = SEEDS.map(([handle, direction, size, x = {}], j) => {
     const s = { pk: String(7_100_000_000 + j), username: handle, handle, direction, size, private: !!x.private, capped: !!x.capped,
       verified: !!x.verified, lists: { [direction]: size },
@@ -824,6 +831,7 @@ async function lanesMain(N) {
   launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
   await startServer();
   await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  await finiteScenario();
   const seeds = LANE_SEEDS.map(([handle, direction, size], j) => {
     const s = { pk: String(7_200_000_000 + j), username: handle, handle, direction, size, lists: { [direction]: size },
       followers: direction === 'followers' ? size : 300 + j * 17, following: direction === 'following' ? size : 200 + j * 11 };
@@ -922,6 +930,7 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   const pass = [], fail = [];
   const check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
   const lanesOfList = new Map();
+  check(tDone != null, 'all fixture lists completed', tDone != null ? (tDone / HOUR).toFixed(2) + ' h' : 'not within ' + HOURS + ' h');
   for (const e of igLog.filter((x) => x.kind === 'list')) { if (!lanesOfList.has(e.list)) lanesOfList.set(e.list, new Set()); lanesOfList.get(e.list).add(e.lane); }
   const rows = [];
   for (const s of seeds) {

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/controls.js', import.meta.url), 'utf8');
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
-const collection = (paused = true) => ({processing:{mode:'R'}, stages:['lists','bios','ai'].map(id => ({id,paused:id === 'ai' || paused,state:id === 'ai' || paused ? 'paused' : 'running',now:id === 'lists' ? 'Reading list page 2' : ''}))});
+const collection = (paused = true) => ({collection_scope:'both',processing:{mode:'R'}, stages:['lists','bios','ai'].map(id => ({id,paused:id === 'ai' || paused,state:id === 'ai' || paused ? 'paused' : 'running',now:id === 'lists' ? 'Reading list page 2' : ''}))});
 const engines = (override = {}) => ({processing:{mode:'R'},paused:false,engines:{laya:{enabled:false,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true},k2:{enabled:false,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true}},...override});
 
 function harness() {
@@ -30,7 +30,7 @@ function harness() {
     fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
   const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
   const fail = index => requests[index].reject(new Error('offline'));
-  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-connect]' && button.dataset.connect ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-list-scope]' && button.dataset.listScope ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-connect]' && button.dataset.connect ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
   return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
 async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
@@ -40,7 +40,7 @@ test('initial control state keeps scraping action and per-engine statuses visibl
   assert.match(h.el.innerHTML,/fl-ctl-word">Stopped/);
   assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
   assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Off in R mode<\/span>/);
-  assert.match(h.el.innerHTML,/Continue collecting/);
+  assert.match(h.el.innerHTML,/Start collection/);
   assert.match(h.el.innerHTML,/aria-expanded="false"/);
 });
 
@@ -103,12 +103,12 @@ test('a slow status response cannot undo a confirmed scraping pause', async () =
   const post=h.requests.find(request=>request.url==='/api/control' && request.options?.method==='POST');
   assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'resume'});
   post.resolve({ok:true,status:200,json:async()=>collection(false)});await settle();
-  assert.match(h.el.innerHTML,/Stop collecting/);
+  assert.match(h.el.innerHTML,/Stop collection/);
   h.respond(2,collection(true));h.respond(3,engines());await settle();
-  assert.match(h.el.innerHTML,/Stop collecting/);
+  assert.match(h.el.innerHTML,/Stop collection/);
   const latest=h.requests.length;
   h.respond(latest-2,collection(false));h.respond(latest-1,engines());await settle();
-  assert.match(h.el.innerHTML,/Stop collecting/);
+  assert.match(h.el.innerHTML,/Stop collection/);
 });
 
 test('a failed engine change reports the error and keeps the last confirmed state', async () => {
@@ -142,10 +142,10 @@ test('stop waits for the active request to finish before offering Continue', asy
   post.resolve({ ok: true, json: async () => stopping }); await settle();
   assert.match(h.el.innerHTML, /fl-ctl-word">Stopping…/);
   assert.match(h.el.innerHTML, /disabled>Stopping…/);
-  assert.doesNotMatch(h.el.innerHTML, />Continue collecting<\/button>/);
+  assert.doesNotMatch(h.el.innerHTML, />Start collection<\/button>/);
   const last = h.requests.length;
   h.respond(last - 2, collection(true)); h.respond(last - 1, engines()); await settle();
-  assert.match(h.el.innerHTML, />Continue collecting<\/button>/);
+  assert.match(h.el.innerHTML, />Start collection<\/button>/);
   assert.match(h.el.innerHTML, /Progress is saved/);
   assert.equal(h.requests.filter(request => !request.options?.method).length, 4, 'one status read after the action, not two');
 });
@@ -165,7 +165,7 @@ test('a partial stop reply cannot pretend that collection stopped', async () => 
   post.resolve({ ok: true, json: async () => ({ stages: [{ id: 'lists', paused: true }] }) }); await settle();
   assert.match(h.el.innerHTML, /Couldn&#39;t confirm collection change/);
   assert.match(h.el.innerHTML, /aria-expanded="true"/);
-  assert.doesNotMatch(h.el.innerHTML, />Continue collecting<\/button>/);
+  assert.doesNotMatch(h.el.innerHTML, />Start collection<\/button>/);
 });
 
 
@@ -179,7 +179,7 @@ test('qualification lives in details and pauses independently of collection', as
   assert.equal(post.url,'/api/local-processing');assert.deepEqual(JSON.parse(post.options.body),{paused:true});
   post.resolve({ok:true,json:async()=>({paused:true,state:'stopping',stop_acknowledged:false})});await settle();
   assert.match(h.el.innerHTML,/disabled>Stopping…/);
-  assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);
+  assert.match(h.el.innerHTML,/>Stop collection<\/button>/);
   assert.doesNotMatch(h.el.innerHTML,/>Continue checks<\/button>/);
 });
 
@@ -193,7 +193,7 @@ test('collection detail prioritizes a running bio stage over idle lists', async 
 test('the main header has one collection control and keeps AI choices in details', async () => {
   const h=await ready();const top=h.el.innerHTML.split('<div class="fl-ctl-panel"')[0];
   assert.match(top,/fl-ctl-name">Collection/);
-  assert.match(top,/>Continue collecting<\/button>/);
+  assert.match(top,/>Start collection<\/button>/);
   assert.doesNotMatch(top,/Qualification|Choose AI mode|Stop checks|Rules only/);
   assert.match(h.el.innerHTML,/Qualification <span class="fl-engine-state">Rules only/);
 });
@@ -220,7 +220,7 @@ test('warning acknowledgment is separate from starting collection', async () => 
   assert.deepEqual(JSON.parse(post.options.body),{action:'acknowledge_scraping_warning',account:'lane1',reviewed:true});
   post.resolve({ok:true,status:200,json:async()=>collection()});await settle();
   assert.doesNotMatch(h.el.innerHTML,/Couldn't confirm|data-warning-review/);
-  assert.match(h.el.innerHTML,/Continue collecting/);
+  assert.match(h.el.innerHTML,/Start collection/);
 });
 
 test('isolated collection keeps Stop visible and preserves the warned account notice', async () => {
@@ -228,7 +228,7 @@ test('isolated collection keeps Stop visible and preserves the warned account no
   status.instagram_request_attention={kind:'scraping_warning',lane:'blocked',message:'Review warning',review_ready:true};
   status.collection_isolation={accounts:{one:'101',two:'102'}};
   h.respond(0,status);h.respond(1,engines());await settle();
-  assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);
+  assert.match(h.el.innerHTML,/>Stop collection<\/button>/);
   assert.match(h.el.innerHTML,/This account stays blocked/);
   assert.match(h.el.innerHTML,/data-focus="warning-ack" disabled/);
   h.click(b=>b.dataset.stage==='collection');
@@ -239,7 +239,7 @@ test('isolated collection keeps Stop visible and preserves the warned account no
 test('connecting saved accounts stays honest and can be cancelled',async()=>{
  const h=harness(),status=collection();status.collection_startup={state:'waiting',message:'Waiting for saved Instagram accounts to connect.'};
  h.respond(0,status);h.respond(1,engines());await settle();
- assert.match(h.el.innerHTML,/fl-ctl-word">Connecting/);assert.match(h.el.innerHTML,/>Stop collecting<\/button>/);assert.doesNotMatch(h.el.innerHTML,/fl-ctl-word">Collecting/);
+ assert.match(h.el.innerHTML,/fl-ctl-word">Connecting/);assert.match(h.el.innerHTML,/>Stop collection<\/button>/);assert.doesNotMatch(h.el.innerHTML,/fl-ctl-word">Collecting/);
  h.click(b=>b.dataset.stage==='collection');
  const post=h.requests.find(r=>r.options?.method==='POST');assert.deepEqual(JSON.parse(post.options.body),{stage:'collection',action:'pause'});
 });
@@ -256,3 +256,60 @@ test('enabled collection offers one-click reconnect without claiming a request i
  h.respond(2,pending);await settle();
  assert.match(h.el.innerHTML,/Connecting/);assert.doesNotMatch(h.el.innerHTML,/Couldn't confirm/);
  });
+
+test('following-only choice is visible and waits for server confirmation', async () => {
+  const h = await ready();
+  const top = h.el.innerHTML.split('<div class="fl-ctl-panel"')[0];
+  assert.match(top, /Following only/);
+  assert.match(top, /data-list-scope="both"[^>]*aria-pressed="true"/);
+  h.click(b => b.dataset.listScope === 'following');
+  const post = h.requests.find(r => r.options?.method === 'POST');
+  assert.deepEqual(JSON.parse(post.options.body), {action:'set_list_scope', scope:'following'});
+  assert.match(h.el.innerHTML, /data-list-scope="both"[^>]*aria-pressed="true"/);
+  assert.equal(h.el.querySelector('[data-focus="scope-following"]').disabled, true);
+  post.resolve({ok:true, json:async () => ({...collection(),collection_scope:'following'})});
+  await settle();
+  assert.match(h.el.innerHTML, /data-list-scope="following"[^>]*aria-pressed="true"/);
+  assert.match(h.el.innerHTML, /Follower lists stay saved/);
+  assert.match(h.el.innerHTML, /<strong>Following lists/);
+  assert.match(h.el.innerHTML, />Start collection<\/button>/);
+});
+
+test('list scope cannot change during collection, startup, stopping or unknown status', async () => {
+  const stopping = collection(); stopping.stages[0].state='stopping'; stopping.stages[0].active=true;
+  const connecting = collection(); connecting.collection_startup={state:'waiting'};
+  const unknown = collection(); delete unknown.collection_scope;
+  for (const status of [collection(false),stopping,connecting,unknown]) {
+    const h=harness();h.respond(0,status);h.respond(1,engines());await settle();
+    const button=h.el.querySelector('[data-focus="scope-following"]');
+    assert.equal(button.disabled,true);
+    h.click(b=>b.dataset.listScope==='following');
+    assert.equal(h.requests.filter(r=>r.options?.method==='POST').length,0);
+  }
+});
+
+test('a rejected or unconfirmed scope change preserves the saved selection', async () => {
+  for (const reply of [{...collection(),collection_scope:'both'},null]) {
+    const h=await ready();h.click(b=>b.dataset.listScope==='following');
+    const post=h.requests.find(r=>r.options?.method==='POST');
+    if (reply) post.resolve({ok:true,json:async()=>reply}); else post.reject(new Error('offline'));
+    await settle();
+    assert.match(h.el.innerHTML,/Couldn&#39;t confirm list selection change/);
+    assert.match(h.el.innerHTML,/data-list-scope="both"[^>]*aria-pressed="true"/);
+  }
+});
+
+
+test('selected-account resume retains following-only stages and confirms bios stay stopped', async () => {
+  const h=harness(),status=collection();
+  status.collection_scope='following';
+  status.collection_isolation={accounts:{one:'101'},collection_stages:['lists']};
+  h.respond(0,status);h.respond(1,engines());await settle();
+  h.click(b=>b.dataset.stage==='collection');
+  const post=h.requests.find(r=>r.options?.method==='POST');
+  assert.deepEqual(JSON.parse(post.options.body),{action:'resume_selected_accounts',accounts:[{lane_id:'one',ig_id:'101'}],collection_stages:['lists']});
+  const resumed={...status,stages:status.stages.map(stage=>stage.id==='lists'?{...stage,paused:false,state:'running'}:stage)};
+  post.resolve({ok:true,json:async()=>resumed});await settle();
+  assert.doesNotMatch(h.el.innerHTML,/Couldn&#39;t confirm collection change/);
+  assert.match(h.el.innerHTML,/>Stop collection<\/button>/);
+});

@@ -1,30 +1,51 @@
-# Soak test — 10–15 accounts back to back
+# Live collection verification
 
-Goal: hours of list collection at 7–12 s gaps with no 429 / "please wait".
+A passing simulator proves recovery against controlled responses. A real Instagram run must be recorded separately. Do not describe simulated hours as live hours.
 
-## Before
-- Server running via LaunchAgent (`ops/install-launchagent.sh --with-backup`); `ops/doctor.sh` all PASS (nothing on :8766).
-- Extension reloaded, manifest version bumped; `/api/scraper` → `ext.version` shows it, `ext.online=true`.
-- One logged-in instagram.com tab. Qualification off (`POST /api/settings/qualify {"on":false}`) so only lists run;
-  `qualify_auto` true switches it on by itself once every list is done.
-- Budget: `POST /api/scraper/budget {"list":3000}` if the day's list budget would stop the run early.
+## Before starting
 
-## Run
-- Queue 10–15 accounts: `POST /api/scraper/seeds {"handles":[...],"directions":["following"]}` (add followers once that parser is fixed).
-- Leave it. Check `curl -s 127.0.0.1:8777/api/scraper | python3 -m json.tool` every ~30 min.
+- Confirm the installed server and extension versions agree with the release being tested. Preserve the existing database and collection checkpoints.
+- Use an authorized alternate account with a current, verified Instagram identity. The main account stays personal. Warned accounts remain blocked.
+- Choose Following only and one target for the first run. Start through the app's collection control. An existing warning requires the explicit review or selected-account authorization supported by that release.
+- Keep the current pacing, budgets, cooldowns and warning gates. A test must never increase them or clear protective state to make progress.
+- Record the start time, account, target, list direction, current saved count and cursor. Keep this record local.
 
-## Watch
-| field | healthy |
+## Observe
+
+Read `GET /api/scraper` before starting, after the first saved page, after 5 minutes, after 15 minutes, and then about every 30 minutes while collection remains active. Each read is a dated snapshot, not proof of continuous observation.
+
+For a local snapshot on the default port:
+
+```sh
+curl --fail --silent --show-error --max-time 20 http://127.0.0.1:8777/api/scraper
+```
+
+| Evidence | What to check |
 |---|---|
-| `soak.1h.pages` | ~300–500 (one page per 7–12 s) |
-| `soak.1h.people` | ~pages × 25–50 |
-| `ext.rate.pages_hour` / `people_hour` | matches `soak.1h` within ~10% |
-| `ext.cooldown_until` | null the whole run |
-| `ext.last_error` | null; any `rate_limit`/`soft_block` = stop and note the time + `soak.6h` totals |
-| `lists[].state` | moves queued → running → done one at a time; no `error` |
-| `queue.list` | drops by one per finished list |
-| `ext.today.list` vs `ext.budget.list` | stays under budget |
+| `accounts` | Intended alternate is online, identity matches, warning/cooldown/hold stays visible. Blocked accounts and main account remain excluded. |
+| `lists` | The target's current-run saved count advances. Cursor changes between pages. Complete requires proven page history; partial remains partial. |
+| `collection` | Progress distinguishes pending, partial, finished and needs review. Unknown sizes do not become invented completion percentages. |
+| `soak` | Saved pages and people advance during active work. Report observed values, without a promised rate. |
+| `queue`, account budgets | Queue and daily allowance explain waits. A paused or waiting account must make no new requests. |
+| `alerts`, account error fields | First warning, login/security page, restriction or cooldown is recorded immediately. The existing collector must stop or wait according to its protective policy. |
 
-## Record afterwards
-Accounts done, hours run, total pages/people (`soak.6h`), first 429 time (if any), gaps used.
-Tail `~/Library/Logs/fortunate-leads.log` for tracebacks (`ops/doctor.sh` counts recent ones).
+Stop at the first Instagram warning. Do not rotate identities, repeatedly retry a failed endpoint, or resume merely because the cooldown time passed. Resolve or review the condition through the supported operator flow.
+
+## Recovery check
+
+After several pages have been saved, use Stop in the app. Confirm counts and cursor stay saved and no new Instagram requests begin. Start again only while the authorized account remains healthy. Confirm the next page continues from the saved cursor and counts do not duplicate.
+
+Use the simulator for forced server outages, lost acknowledgments and stopped workers. Do not force those faults against the live account or restart its server for a soak test.
+
+```sh
+PYTHONPATH=server python3 -m unittest discover -s server/tests -p 'test_collection*recovery.py'
+node --test extension/test/background-controls.test.mjs
+node tests/e2e/driver.mjs --hours 24 --keep
+node tests/e2e/driver.mjs --lanes 2 --hours 12 --keep
+```
+
+The simulator uses a temporary database and free ports. It loads the actual extension and server, but Instagram, Chrome worker scheduling and time are emulated. Its result cannot establish whether Instagram will accept the real account for hours.
+
+## Record the result
+
+Record actual elapsed live time, snapshot times, target, account, starting and ending counts, pages saved, completion state, interruption/resume result, first warning time and stop reason. Attach version identities and locally saved evidence. Label unattended gaps, missing extension readback and unfinished targets explicitly. A first saved page proves collection started; only sustained recorded progress supports a long-run claim.

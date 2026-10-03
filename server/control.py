@@ -294,6 +294,7 @@ def snapshot(conn, ai_left=None):
             'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
             'instagram_request_attention': attention, 'collection_isolation': db.get_setting(conn, 'instagram_collection_isolation'), 'active': active, 'stopping': stopping,
             'stop_acknowledged': acknowledged,
+            'collection_scope': 'following' if db.get_setting(conn, 'follower_lists') is False else 'both',
             'collection': {'paused': both, 'active': active, 'stopping': stopping,
                            'stop_acknowledged': acknowledged, 'unconfirmed': unconfirmed},
             'at': iso(now)}
@@ -355,11 +356,28 @@ def apply(conn, b):
     if action in ('acknowledge_scraping_warning', 'resume_selected_accounts') and not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     warning = db.get_setting(conn, 'instagram_scraping_warning')
+    if action == 'set_list_scope':
+        scope = b.get('scope')
+        if scope not in ('following', 'both'):
+            raise ValueError('Choose following only or followers and following.')
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        state = snapshot(conn)
+        startup = db.get_setting(conn, 'collection_startup') or {}
+        if not state['stop_acknowledged'] or startup.get('state') in ('opening', 'waiting'):
+            raise ValueError('Stop collection and wait for the current request before changing lists.')
+        db.set_setting(conn, 'follower_lists', scope == 'both')
+        conn.commit()
+        return
     if action == 'resume_selected_accounts':
         selected = b.get('accounts')
         isolation = db.get_setting(conn, 'instagram_collection_isolation')
-        if not (warning or isolation) or not isinstance(selected, list) or len(selected) != 2:
-            raise ValueError('Select exactly two existing accounts while keeping the warned account blocked.')
+        if not (warning or isolation) or not isinstance(selected, list) or len(selected) not in (1, 2):
+            raise ValueError('Select one or two existing accounts while keeping the warned account blocked.')
+        stages = b.get('collection_stages', (isolation or {}).get('collection_stages', ['lists', 'bios']))
+        if (not isinstance(stages, list) or not stages or any(stage not in ('lists', 'bios') for stage in stages)
+                or len(stages) != len(set(stages))):
+            raise ValueError('Choose lists, bios, or both collection stages.')
         now = datetime.now(timezone.utc)
         gate = db.get_setting(conn, 'instagram_request_gate') or {}
         if gate.get('active') or db.get_setting(conn, 'instagram_request_attention') or shared_collection_wait(conn, now):
@@ -376,7 +394,7 @@ def apply(conn, b):
                     or tuple(int(v) for v in str(row['version'] or '0').split('.') if v.isdigit()) < (3, 9, 30)
                     or accounts.later(row['cooldown_until'], now)
                     or any(accounts.identity_cooling(conn, row, kind, now) for kind in ('list', 'profile'))):
-                raise ValueError('Only the two healthy, signed-in accounts can continue.')
+                raise ValueError('Only healthy, signed-in accounts can continue.')
             waits = conn.execute(
                 'SELECT cooldown_until,list_cool_until,profile_cool_until FROM accounts WHERE ig_id=? UNION ALL '
                 'SELECT cooldown_until,list_cool_until,profile_cool_until FROM account_identity_state WHERE ig_id=?',
@@ -386,15 +404,15 @@ def apply(conn, b):
             if any(accounts.budget_of(conn, row).get(kind, 0) <= 0 for kind in ('list', 'profile')):
                 raise ValueError('Set finite daily limits before continuing selected accounts.')
             allowed[row['lane_id']] = row['ig_id']
-        if isolation and allowed != isolation.get('accounts'):
-            raise ValueError('Continue only the same two selected Instagram accounts.')
-        db.set_setting(conn, 'instagram_collection_isolation', {'accounts': allowed, 'at': iso(now)})
+        if isolation and not set(allowed.items()).issubset((isolation.get('accounts') or {}).items()):
+            raise ValueError('Continue only previously selected Instagram accounts.')
+        db.set_setting(conn, 'instagram_collection_isolation', {'accounts': allowed, 'collection_stages': stages, 'at': iso(now)})
         conn.execute('UPDATE accounts SET paused=1')
         for lane in allowed:
             conn.execute('UPDATE accounts SET paused=0 WHERE lane_id=?', (lane,))
         db.set_setting(conn, 'paused', False)
-        db.set_setting(conn, 'paused_lists', False)
-        db.set_setting(conn, 'paused_bios', False)
+        db.set_setting(conn, 'paused_lists', 'lists' not in stages)
+        db.set_setting(conn, 'paused_bios', 'bios' not in stages)
         conn.commit()
         return
     if action == 'acknowledge_scraping_warning':

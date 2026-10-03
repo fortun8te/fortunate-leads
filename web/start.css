@@ -15,3 +15,14 @@
 .fl-models { padding-top:var(--s2); border-top:1px solid var(--line); color:var(--fg3); font-size:12px; }
 .fl-models > summary { padding:var(--s2) 0; cursor:pointer; }
 .fl-ctl-panel-head > a { color:var(--fg3); font-size:12px; text-decoration:underline; text-underline-offset:3px; }
+
+/* List scope remains visible without opening the activity panel. */
+.fl-ctl-scope { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:0 0 8px; font-size:12px; color:var(--fg3); }
+.fl-ctl-scope .seg button { min-height:28px; }
+.fl-ctl-scope .seg button[aria-pressed="true"] { background:var(--fg); color:var(--inv); }
+.fl-ctl-scope-note { line-height:1.4; }
+@media (max-width:600px) { .fl-ctl-scope-note { flex-basis:100%; } }
+.fl-ctl-direct { flex:none; }
+@media (max-width:420px) { .fl-ctl-name { display:none; } }
+
+#seed-dir button:disabled[aria-pressed="false"] { background:none; color:var(--fg3); }

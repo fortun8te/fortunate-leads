@@ -98,12 +98,16 @@
       return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(state.item?.state || 'unknown')}${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id].toLowerCase()}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
     };
     const stopped = scrape.paused && !scrape.connecting;
-    const action = scrape.connecting ? 'Stop collecting' : busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Continue collecting' : 'Stop collecting';
-    const wait = stopped ? 'Continue collecting' : 'Stop collecting';
+    const action = scrape.connecting ? 'Stop collection' : busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Start collection' : 'Stop collection';
+    const wait = stopped ? 'Start collection' : 'Stop collection';
+    const scope = control?.collection_scope;
+    const scopeReady = scrape.available && stopped && control?.stop_acknowledged !== false && scrape.state !== 'Stopping' && ['following', 'both'].includes(scope);
+    const scopeNote = !scrape.available || !scope ? 'Checking list selection…' : scope === 'following' ? 'Follower lists stay saved.' : 'Both types of list are included.';
+    const scopeControls = `<div class="fl-ctl-scope"><span>Collect</span><div class="seg" role="group" aria-label="Lists to collect">${[['following','Following only'],['both','Both lists']].map(([value,label]) => `<button type="button" data-list-scope="${value}" data-focus="scope-${value}" aria-pressed="${scope === value}" ${busy || !scopeReady ? 'disabled' : ''}>${label}</button>`).join('')}</div><span class="fl-ctl-scope-note">${esc(scopeNote)}${!stopped && scrape.available ? ' Stop collection to change.' : ''}</span></div>`;
     const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' && control?.collection_startup?.state !== 'failed' ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span>${scrape.reconnect ? `<button type="button" class="btn fl-ctl-direct" data-connect="true" data-focus="connect" ${busy ? 'disabled' : ''}>Connect accounts</button>` : ''}${warning && !control?.collection_isolation ? `<button type="button" class="btn fl-ctl-direct" data-warning-review data-focus="warning-review">Review Instagram warning</button>` : `<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${stopped ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button>`}</div>`
-      + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
+      + scopeControls + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
 
-      + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
+      + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? scope === 'following' ? 'Following lists' : 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     if (el.innerHTML === html) return;
     el.innerHTML = html;
@@ -128,24 +132,33 @@
     if (busy) return;
     busy = target; error = ''; ++revision; render();
     try {
-      const result = await request(target === 'collection' ? '/api/control' : target === 'qualification' ? '/api/local-processing' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if (target === 'collection') {
+      const result = await request(['collection','scope'].includes(target) ? '/api/control' : target === 'qualification' ? '/api/local-processing' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if (target === 'scope') {
+        if (result.collection_scope !== body.scope || !Array.isArray(result.stages)) throw new Error('Unconfirmed');
+        control = result; controlError = false;
+      }
+      else if (target === 'collection') {
         const stages = result.stages?.filter(stage => ['lists', 'bios'].includes(stage.id));
         const preparing = ['opening','waiting'].includes(result.collection_startup?.state);
-        if (stages?.length !== 2 || !preparing && body.action !== 'connect_accounts' && stages.some(stage => stage.paused !== (body.action === 'pause' || body.action === 'acknowledge_scraping_warning'))) throw new Error('Unconfirmed');
+        if (stages?.length !== 2 || !preparing && body.action !== 'connect_accounts' && stages.some(stage => stage.paused !== (body.action === 'pause' || body.action === 'acknowledge_scraping_warning' || Array.isArray(body.collection_stages) && !body.collection_stages.includes(stage.id)))) throw new Error('Unconfirmed');
         control = result; controlError = false;
       }
       else if (target === 'qualification') { if (result.paused !== body.paused) throw new Error('Unconfirmed'); local = result; localError = false; }
       else { if (!result.engines?.[target] || result.engines[target].enabled !== body.enabled) throw new Error('Unconfirmed'); engines = result; engineError = false; }
       render();
       window.dispatchEvent(new Event('fl:control-changed'));
-    } catch { open = true; error = `Couldn't confirm ${target === 'collection' ? 'collection' : target === 'qualification' ? 'bio checks' : names[target].toLowerCase()} change. Check status and try again.`; }
+    } catch { open = true; error = `Couldn't confirm ${target === 'scope' ? 'list selection' : target === 'collection' ? 'collection' : target === 'qualification' ? 'bio checks' : names[target].toLowerCase()} change. Check status and try again.`; }
     finally { busy = ''; render(); await poll(true); }
   }
   el.addEventListener('click', event => {
     // Rendering replaces the clicked button before this click reaches document.
     // Keep the outside-click handler from treating that detached button as outside.
     event.stopPropagation();
+    const scopeButton = event.target.closest('[data-list-scope]');
+    if (scopeButton && !scopeButton.disabled) {
+      if (scopeButton.dataset.listScope !== control?.collection_scope) act('scope', {action:'set_list_scope',scope:scopeButton.dataset.listScope});
+      return;
+    }
     const summary = event.target.closest('.fl-ctl-summary');
     if (summary) { open = !open; render(); if (open) poll(true); return; }
     if (event.target.closest('[data-warning-review]')) { open = true; render(); return; }
@@ -161,7 +174,7 @@
     if (collection && !collection.disabled) {
       const selected = control?.collection_isolation?.accounts;
       act('collection', selected && collection.dataset.action === 'resume'
-        ? {action:'resume_selected_accounts',accounts:Object.entries(selected).map(([lane_id,ig_id])=>({lane_id,ig_id}))}
+        ? {action:'resume_selected_accounts',accounts:Object.entries(selected).map(([lane_id,ig_id])=>({lane_id,ig_id})),collection_stages:control.collection_isolation.collection_stages || (control.collection_scope === 'following' ? ['lists'] : ['lists','bios'])}
         : {stage:'collection',action:collection.dataset.action});
     }
   });

@@ -261,6 +261,23 @@ class ExplicitConnectionTests(unittest.TestCase):
         self.assertEqual(browser_startup.snapshot(self.conn)['state'],'failed')
         self.assertTrue(db.get_setting(self.conn,'paused_lists'))
 
+    def test_single_online_account_resume_needs_no_profile_config_or_launch(self):
+        self.config.unlink()
+        self.fresh_beats(datetime.now(timezone.utc).timestamp())
+        command = dict(self.command, accounts=self.selected[:1])
+        self.assertFalse(browser_startup.begin(self.root,self.conn,command,only_if_offline=True))
+        self.launch.assert_not_called()
+
+    def test_single_offline_account_opens_only_selected_profile(self):
+        command = dict(self.command, accounts=self.selected[:1])
+        intent = self.begin(command)
+        self.fresh_beats(intent['requested_at'] + 1)
+        browser_startup.run_pending(self.root,self.conn,popen=self.launch,clock=lambda:intent['requested_at']+2)
+        self.assertEqual(browser_startup.snapshot(self.conn)['state'], 'started')
+        self.assertEqual(self.launch.call_count, 1)
+        self.assertEqual(db.get_setting(self.conn,'instagram_collection_isolation')['accounts'], {'lane0':'100'})
+        self.assertEqual(self.conn.execute("SELECT paused FROM accounts WHERE lane_id='lane1'").fetchone()[0], 1)
+
 
 if __name__ == '__main__':
     unittest.main()
