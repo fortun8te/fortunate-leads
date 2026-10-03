@@ -503,6 +503,7 @@
   }
   const scout = { on: false, available: true, model: 'grok', workers: 2, done_today: 0, done: 0, waiting: 0, usage: [], models: [{ id: 'grok', label: 'Grok' }, { id: 'space-bunny', label: 'Space Bunny' }] };
   const stagePaused = { lists: false, bios: false };
+  let collectionScope = 'both';
   const sites = new Map();
   function controlView() {
     const stages = [['lists', 'Collect lists', 'people'], ['bios', 'Read bios', 'bios'], ['ai', 'AI scoring', 'scores']].map(([id, label, unit]) => {
@@ -514,7 +515,7 @@
         hour: paused ? 0 : id === 'lists' ? 342 : id === 'bios' ? 36 : 120,
         today: id === 'lists' ? scraper.peopleToday : id === 'bios' ? 73 : 450, queue: id === 'lists' ? 17 : 120 };
     });
-    return { processing:processingView(), stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
+    return { collection_scope:collectionScope, processing:processingView(), stages, accounts, all_paused: stages.every((s) => s.paused), local_laya: settings.local_laya, at: now() };
   }
   const llm = { models: ['z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'nvidia/nemotron-3-super-120b-a12b:free'], daily_limit: 1000, workers: 4, llm_min: 40, bio_min: 25,
     keys: [
@@ -543,7 +544,7 @@
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
         text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
-      people_today: scraper.peopleToday, lists: listViews, coverage, processing:processingView(), stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
+      people_today: scraper.peopleToday, lists: listViews, coverage, control:controlView(), processing:processingView(), stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
       progress: {
         lists: { left: scraper.lists.filter((l) => l.state === 'queued' || l.state === 'running').reduce((n, l) => n + Math.max(0, (l.total || 1000) - l.received), 0), per_hour: 11280, eta_h: 3.4 },
@@ -589,6 +590,12 @@
     };
     if (path === '/api/control') {
       if (method === 'POST') {
+        if (body?.action === 'set_list_scope') {
+          if (!['following','both'].includes(body.scope)) fail('Choose the lists to collect');
+          if (!scraper.paused && !(stagePaused.lists && stagePaused.bios)) fail('Stop collection before changing the lists');
+          collectionScope = body.scope;
+          return controlView();
+        }
         if (body?.action === 'start_all' && body?.stage == null) {
           scraper.paused = false;
           stagePaused.lists = false;

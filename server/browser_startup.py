@@ -171,11 +171,11 @@ def _selected(repo, conn, body):
     if requested is None and isolation:
         requested = [{'lane_id': lane, 'ig_id': identity} for lane, identity in isolation['accounts'].items()]
     if requested is not None:
-        if not isinstance(requested, list) or len(requested) != 2 or any(not isinstance(item, dict) for item in requested):
-            raise ValueError('Choose the two saved Instagram accounts.')
+        if not isinstance(requested, list) or len(requested) not in (1, 2) or any(not isinstance(item, dict) for item in requested):
+            raise ValueError('Choose one or two saved Instagram accounts.')
         selected = {(item.get('lane_id'), item.get('ig_id')) for item in requested}
-        if len(selected) != 2 or isolation and selected != set(isolation['accounts'].items()):
-            raise ValueError('Connect only the same two selected accounts.')
+        if len(selected) != len(requested) or isolation and not selected.issubset(set(isolation['accounts'].items())):
+            raise ValueError('Connect only previously selected accounts.')
         profiles = [profile for profile in profiles if (profile['lane_id'], profile['ig_id']) in selected]
         if len(profiles) != len(selected):
             raise ValueError('A selected account has no saved Chrome profile. Check account setup.')
@@ -196,7 +196,7 @@ def begin(repo, conn, body, *, only_if_offline=False):
     existing = db.get_setting(conn, _INTENT) or {}
     pending = existing.get('state') in _PENDING and existing.get('deadline_at', 0) > now.timestamp()
     requested = body.get('accounts')
-    if not pending and only_if_offline and isinstance(requested, list) and len(requested) == 2 and all(isinstance(item, dict) for item in requested):
+    if not pending and only_if_offline and isinstance(requested, list) and len(requested) in (1, 2) and all(isinstance(item, dict) for item in requested):
         rows = [conn.execute('SELECT last_seen FROM accounts WHERE lane_id=?', (item.get('lane_id'),)).fetchone() for item in requested]
         if all(row and row['last_seen'] and now - accounts.utc(row['last_seen']) < accounts.ONLINE_FOR for row in rows):
             return False

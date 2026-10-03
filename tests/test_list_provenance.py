@@ -8,6 +8,7 @@ from pathlib import Path
 os.environ['FL_NO_ORSLOT'] = '1'
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 import db
+import accounts
 import server
 
 
@@ -15,9 +16,10 @@ class ListProvenanceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.c = db.init(Path(self.tmp.name) / 'test.sqlite')
+        accounts.touch(self.c, 'lane-a', {'ig_id': '101', 'handle': 'alternate'}, version='3.9.27')
         db.queue_list(self.c, 'seed', 'following')
         self.c.commit()
-        self.q = {'lane': ['lane-a']}
+        self.q = {'lane': ['lane-a'], 'version': ['3.9.27'], 'kinds': ['list']}
 
     def tearDown(self):
         self.c.close()
@@ -58,7 +60,7 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertTrue(result['upgrade_required'])
         self.assertIsNone(result['job'])
         self.assertEqual(self.c.execute('SELECT state FROM jobs').fetchone()[0], 'queued')
-        self.assertIsNotNone(server.ext_next(self.c, dict(self.q, version=['3.8.0']), {})['job'])
+        self.assertIsNotNone(server.ext_next(self.c, dict(self.q, version=['3.9.27']), {})['job'])
 
     def test_replayed_request_is_idempotent(self):
         _, body = self.page(['alice'], 'a')
@@ -101,6 +103,10 @@ class ListProvenanceTest(unittest.TestCase):
         self.page(['alice'], 'next', total=2, source='current_run')
         job = server.ext_next(self.c, self.q, {})['job']
         server.ext_error(self.c, self.q, dict(job_id=job['id'], lease_token=job['lease_token'], code='other', message='temporary failure'))
+        self.assertIsNone(server.ext_next(self.c, self.q, {})['job'])
+        # Elapse only this isolated job's transient retry deadline.
+        self.c.execute('UPDATE jobs SET retry_not_before=NULL WHERE id=?', (job['id'],))
+        self.c.commit()
         self.page(['bob'], done=True, total=2, source='current_run')
         self.assertTrue(self.active(old))
         self.assertEqual(self.c.execute('SELECT state FROM lists').fetchone()[0], 'partial')

@@ -20,7 +20,7 @@ env:
 jobs:
   regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,9 +33,12 @@ jobs:
           node --version
       - name: Python server regression tests
         run: python3 -m unittest discover -s server/tests -v
+      - name: Collection provenance and benchmark regression tests
+        if: always()
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Sidecar regression tests
         if: always()
-        run: python3 -m unittest sidecar/test_laya.py -v
+        run: python3 -m unittest sidecar/test_laya.py sidecar/test_service.py -v
       - name: Extension regression tests across timezones
         if: always()
         run: |
@@ -47,6 +50,9 @@ jobs:
         if: always()
         shell: bash
         run: |
-          mapfile -d '' tests < <(find tests web -type f -name '*.test.mjs' -print0)
+          mapfile -d '' tests < <(find tests web -type f \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name '*.test.js' \) -print0)
           test "${#tests[@]}" -gt 0
           node --test "${tests[@]}"
+      - name: Collection interruption and recovery simulator
+        if: always()
+        run: node tests/e2e/driver.mjs

@@ -2175,6 +2175,7 @@ async function loadScraper() {
   try { S.sc = await api.get('/api/scraper'); S.scError = false; S.scStale = false; }
   catch (e) { S.scError = true; S.scStale = true; }
   finally { S.scLoading = false; }
+  syncSeed();
   if (SCRAPER_FULL_VIEWS.has(S.view)) await loadProcessingStatus();
   renderStatus();
   if (S.view === 'scraper') renderScraper();
@@ -2358,7 +2359,8 @@ function parseHandles(s) {
 }
 let seedAdding = false;
 let seedAction = '';
-const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v);
+const seedFollowingOnly = () => S.sc?.control?.collection_scope === 'following';
+const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v).filter(direction => !seedFollowingOnly() || direction === 'following');
 const seedCollectionRunning = () => !!S.sc && !S.sc.paused && S.sc.stages?.find(stage => stage.id === 'lists')?.paused === false;
 function syncSeed() {
   const n = parseHandles($('#seed-in').value).length;
@@ -2368,10 +2370,15 @@ function syncSeed() {
   $('#seed-start').disabled = unavailable;
   $('#seed-in').disabled = seedAdding;
   $('#seed-start').textContent = seedAdding ? seedAction === 'start' ? 'Starting…' : 'Adding…' : seedCollectionRunning() ? 'Add profiles' : 'Start collecting';
-  $$('#seed-dir button').forEach(b => { b.disabled = seedAdding; b.setAttribute('aria-pressed', String(b.classList.contains('on'))); });
+  $$('#seed-dir button').forEach(b => {
+    const excluded = seedFollowingOnly() && b.dataset.v === 'followers';
+    b.disabled = seedAdding || excluded;
+    b.setAttribute('aria-pressed', String(!excluded && b.classList.contains('on')));
+    b.title = excluded ? 'Following only is selected above' : '';
+  });
 }
 $('#seed-in').addEventListener('input', syncSeed);
-$('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); syncSeed(); } });
+$('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { b.classList.toggle('on'); syncSeed(); } });
 async function submitSeed(start = true) {
   const handles = parseHandles($('#seed-in').value), directions = seedDirs();
   if (seedAdding || S.scStale || !handles.length || !directions.length) return;
@@ -2379,7 +2386,7 @@ async function submitSeed(start = true) {
   try {
     const r = await api.post(start ? '/api/start' : '/api/scraper/seeds', { handles, directions });
     if (start && r.started !== true && r.starting !== true) {
-      $('#seed-feedback').textContent = 'Profiles are queued. Could not confirm collection started. Check status and try again.';
+      $('#seed-feedback').textContent = "Profiles are queued. Couldn't confirm collection started. Check status and try again.";
       loadScraper(); return;
     }
     const message = start ? r.starting === true ? 'Profiles queued. Connecting your saved accounts…' : 'Collection is on. Check the status above for activity.'
@@ -2392,6 +2399,7 @@ async function submitSeed(start = true) {
   finally { seedAdding = false; seedAction = ''; syncSeed(); }
 }
 $('#seed-start').onclick = () => submitSeed(!seedCollectionRunning());
+window.addEventListener('fl:control-changed', () => loadScraper());
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
 const ST_LABEL = { connection_error: 'Connection trouble', running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };

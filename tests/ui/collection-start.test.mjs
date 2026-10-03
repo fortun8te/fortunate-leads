@@ -18,11 +18,11 @@ function setup(post) {
     $: node, $$: () => directions, S: {scStale: false},
     plural: (n, label) => `${n} ${label}${n === 1 ? '' : 's'}`,
     ucf: s => s, toast() {}, loadScraper() {}, Event,
-    window: {dispatchEvent() { events++; }}, api: {post}
+    window: {addEventListener() {},dispatchEvent() { events++; }}, api: {post}
   });
   vm.runInContext(code, ctx);
   node('#seed-in').value = '@brand\nhttps://instagram.com/founder/';
-  return {ctx, node, events: () => events};
+  return {ctx, node, directions, events: () => events};
 }
 
 test('start preserves chosen scope, confirms start and prevents duplicate submits', async () => {
@@ -96,3 +96,17 @@ test('one primary button adds without restarting while collection is already on'
  assert.doesNotMatch(s.node('#seed-feedback').textContent,/Collection is on|Could not confirm/);
  assert.equal(s.node('#seed-in').value,'');assert.equal(s.events(),1);
  });
+
+
+test('global following-only selection excludes follower lists from queued targets', async () => {
+  const bodies=[];
+  const s=setup(async (path,body)=>{bodies.push(body);return {queued:2};});
+  const follower={dataset:{v:'followers'},classList:{contains:()=>true},setAttribute(){}};
+  s.directions.unshift(follower);
+  s.ctx.S.sc={control:{collection_scope:'following'}};
+  s.ctx.syncSeed();
+  assert.equal(follower.disabled,true);
+  assert.equal(s.node('#seed-n').textContent,'2 profiles · 2 lists');
+  await s.ctx.submitSeed(false);
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[0].directions)),['following']);
+});

@@ -85,3 +85,16 @@ class PermitApiTest(Base):
         self.assertFalse(result['granted'])
         self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate')['active'])
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'leased')
+
+    def test_following_scope_blocks_cached_follower_lease_without_losing_cursor(self):
+        job = self.lease()['job']
+        self.conn.execute("UPDATE lists SET cursor='saved-cursor' WHERE seed=? AND direction='followers'", (job['seed'],))
+        db.set_setting(self.conn, 'follower_lists', False)
+        self.conn.commit()
+        code, result = self.request(job)
+        self.assertEqual(code, 200)
+        self.assertFalse(result['granted'])
+        self.assertTrue(result['stale'])
+        self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'queued')
+        self.assertEqual(self.conn.execute("SELECT cursor FROM lists WHERE seed=? AND direction='followers'", (job['seed'],)).fetchone()[0], 'saved-cursor')
+        self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate'))

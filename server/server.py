@@ -248,7 +248,7 @@ def ext_request(conn, q, b):
         return {'granted': False, 'stale': True, 'wait_ms': 15000}
     if (job['kind'] == 'profile' and accounts.main_bios_reserved(conn, row) or
             job['kind'] == 'list' and job['direction'] == 'followers'
-            and accounts.follower_route_wait(conn, row, now)):
+            and (accounts.follower_route_wait(conn, row, now) or db.get_setting(conn, 'follower_lists') is False)):
         conn.execute("UPDATE jobs SET state='queued',lane=NULL,leased_until=NULL,lease_token=NULL,"
                      "attempts=max(attempts-1,0) WHERE id=?", (job['id'],))
         conn.commit()
@@ -2967,8 +2967,9 @@ def api_start(conn, q, b):
     try:
         controls = api_control_set(conn, q, command)
         starting = (controls.get('collection_startup') or {}).get('state') in ('opening', 'waiting')
-        stages = [stage for stage in controls.get('stages', []) if stage['id'] in ('lists', 'bios')]
-        started = not starting and len(stages) == 2 and all(not stage['paused'] for stage in stages)
+        selected_stages = isolation.get('collection_stages', ['lists', 'bios'])
+        stages = [stage for stage in controls.get('stages', []) if stage['id'] in selected_stages]
+        started = not starting and len(stages) == len(selected_stages) and all(not stage['paused'] for stage in stages)
     except (Bad, ValueError) as exc:
         note = str(exc)
     return {'queued': queued, 'started': started, 'starting': starting, 'note': note,

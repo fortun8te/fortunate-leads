@@ -1,4 +1,4 @@
-"""Explicit continuation is bound to two existing healthy identities, never a warning bypass."""
+"""Explicit continuation is bound to explicitly selected healthy identities, never a warning bypass."""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -123,3 +123,60 @@ class CollectionIsolationTests(Base):
                 self.conn.execute(f'UPDATE accounts SET {column}=NULL')
                 self.conn.execute('DELETE FROM account_identity_state')
                 self.conn.commit()
+
+    def test_single_healthy_account_can_collect_with_warning_preserved(self):
+        self.prepare()
+        warning = db.get_setting(self.conn, 'instagram_scraping_warning')
+        self.assertEqual(self.resume(accounts=[{'lane_id':'one','ig_id':'101'}])[0], 200)
+        self.assertEqual(db.get_setting(self.conn, 'instagram_scraping_warning'), warning)
+        self.assertEqual(db.get_setting(self.conn, 'instagram_collection_isolation')['accounts'], {'one':'101'})
+        self.assertFalse(db.get_setting(self.conn, 'qualify'))
+        self.assertFalse(accounts.paused_for(self.conn, self.conn.execute("SELECT * FROM accounts WHERE lane_id='one'").fetchone()))
+        for lane in ('two', 'warned'):
+            self.assertFalse(accounts.request_permit(self.conn, lane, kind='list')['granted'])
+        self.assertTrue(accounts.request_permit(self.conn, 'one', kind='list')['granted'])
+
+    def test_selection_can_narrow_but_cannot_expand_or_replace(self):
+        self.prepare()
+        self.assertEqual(self.resume()[0], 200)
+        self.assertEqual(self.resume(accounts=[{'lane_id':'one','ig_id':'101'}])[0], 200)
+        self.assertEqual(self.resume()[0], 400)
+        self.assertEqual(self.resume(accounts=[{'lane_id':'two','ig_id':'102'}])[0], 400)
+        self.assertEqual(db.get_setting(self.conn, 'instagram_collection_isolation')['accounts'], {'one':'101'})
+
+    def test_selection_requires_one_or_two_distinct_healthy_accounts(self):
+        self.prepare()
+        self.beat('third', '103')
+        for selected in ([], [{'lane_id':'one','ig_id':'101'}] * 2,
+                         [{'lane_id':lane,'ig_id':uid} for lane, uid in [('one','101'),('two','102'),('third','103')]],
+                         [{'lane_id':'warned','ig_id':'100'}]):
+            with self.subTest(selected=selected):
+                self.assertEqual(self.resume(accounts=selected)[0], 400)
+
+    def test_selected_lists_only_start_keeps_bios_and_ai_stopped(self):
+        self.prepare()
+        self.assertEqual(self.resume(accounts=[{'lane_id':'one','ig_id':'101'}], collection_stages=['lists'])[0], 200)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+        self.assertFalse(db.get_setting(self.conn, 'qualify'))
+        self.assertFalse(accounts.request_permit(self.conn, 'one', kind='profile')['granted'])
+        self.assertTrue(accounts.request_permit(self.conn, 'one', kind='list')['granted'])
+
+    def test_invalid_selected_stages_cannot_change_collection(self):
+        self.prepare()
+        for stages in ([], ['ai'], ['lists', 'lists'], 'lists', [None]):
+            with self.subTest(stages=stages):
+                self.assertEqual(self.resume(collection_stages=stages)[0], 400)
+                self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+                self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+                self.assertIsNone(db.get_setting(self.conn, 'instagram_collection_isolation'))
+
+    def test_start_retains_lists_only_isolation_and_reports_enabled(self):
+        self.prepare()
+        self.assertEqual(self.resume(accounts=[{'lane_id':'one','ig_id':'101'}], collection_stages=['lists'])[0], 200)
+        self.assertEqual(self.call('/api/control', {'action':'pause','stage':'collection'})[0], 200)
+        status, result = self.call('/api/start', {'handle':'seed', 'directions':['following']})
+        self.assertEqual(status, 200)
+        self.assertTrue(result['started'])
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))

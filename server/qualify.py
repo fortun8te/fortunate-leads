@@ -19,7 +19,7 @@ TAG_GROUPS = ('role', 'niche', 'signal', 'size', 'source', 'ai')   # 'ai': only 
 PROXY = llm.PROXY
 MODELS = llm.MODELS
 PROMPT_VERSION = 'q9-private-notes'   # source-separated evidence; the few-shot set is versioned separately (prompt_version)
-TAGS_VERSION = 't6-reach'   # bump when rule tags change: the server re-derives everyone's auto tags once (LLM verdicts are kept)
+TAGS_VERSION = 't7-buyer-evidence'   # re-derive rule tags/verdicts; keep unchanged LLM verdicts
 PREFILTER_VERSION = 'p3-owner'  # bump when an existing Laya-scored prefilter needs reblending
 ROLES = ('buyer', 'connector', 'collaborator', 'peer', 'supplier', 'unrelated', 'unclear')
 
@@ -33,7 +33,8 @@ ROLE_RX = {
                   r'growth partner', r'media buying', r'performance marketing', r'paid (?:social|ads)', r'klaviyo (?:partner|agency)',
                   r'scaling (?:ecom|e-?commerce|dtc|brands?|companies)'),
     'Freelancer': _rx(r'freelancer?', r'zzp(?:er)?', r'copywriter', r'media buyer', r'ads manager', r'email (?:marketer|strategist|specialist)',
-                      r'cro (?:specialist|expert)', r'klaviyo (?:expert|specialist)', r'shopify (?:developer|expert|dev)'),
+                      r'cro (?:specialist|expert)', r'klaviyo (?:expert|specialist)', r'shopify (?:developer|expert|dev)',
+                      r'(?:fractional )?cfo (?:to|for)'),
     'Creative': _rx(r'(?:product |commercial |architectural |food |fashion )?photographer', r'photography', r'videographer', r'ugc(?: creator)?',
                     r'3d (?:artist|designer|renders?|visuals?)', r'cgi', r'retoucher', r'art director', r'graphic designer', r'motion designer',
                     r'video production', r'productfotograaf', r'fotograaf', r'(?:static )?ad creatives?', r'ad designer'),
@@ -473,10 +474,18 @@ def _buyer_support(person):
     commerce = ROLE_RX['Brand'].search(text)
     # A shop link helps only alongside product evidence, not an affiliate storefront.
     shop = 'Shop Link' in {t for t, g in rule_tags(person, [], None) if g == 'signal'}
-    selling = bool(store or (niches and (commerce or shop)))
+    # "Boutique agency" describes a service, not an online product store.
+    selling = bool(niches and (store or commerce or shop))
     service = any(ROLE_RX[r].search(text) for r in ('Agency', 'Freelancer', 'Creative', 'Creator', 'Coach', 'Supplier'))
+    service = service or bool(re.search(r'\bhelping founders (?:build|scale|grow)\b', text, re.I))
+    publisher = bool(re.search(r'\bnewsletter\b|\bconsumer brand news\b|'
+                               r'\banalysis and advice for (?:the )?(?:global )?[\w &]+ industries\b', text, re.I))
     ownership = re.search(r'(?:founder|owner|ceo)\s+(?:of |at )?(?:a |our |the )?(?:\w+\s+){0,3}' + PRODUCT_TERMS + r'\s+brand', text, re.I)
     direct_sales = store or shop or re.search(r'\b(?:shop (?:now|our|here|online)|handmade|handcrafted|ships?|shipping|our products)\b', text, re.I)
+    # A publisher's link hub can contain "shop" without selling physical goods.
+    if publisher and not ownership and not re.search(
+            r'\b(?:shop (?:now|our|here|online)|handmade|handcrafted|ships?|shipping|our products)\b', text, re.I):
+        return False
     if service and not direct_sales and not ownership and not MULTI_FOUNDER.search(text):
         return False
     return bool(explicit_brand or MULTI_BRAND.search(text) or selling)
