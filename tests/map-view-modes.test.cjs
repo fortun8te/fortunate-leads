@@ -3,12 +3,12 @@ const assert=require('node:assert/strict');
 const {MapModel,VIEW_MODES}=require('../web/map-model.js');
 const {cohortLayout}=require('../web/map-core.js');
 const nodes=[
- {id:1,handle:'close',x:.4,y:.4,closeness:.9,followers:100,source_count:1,fit:'good'},
+ {id:1,handle:'close',x:.4,y:.4,closeness:.9,followed:true,follows_me:true,followers:100,source_count:1,fit:'good'},
  {id:2,handle:'shared',x:.7,y:.2,closeness:.2,followers:10000,source_count:8,fit:'good'},
- {id:3,handle:'large',x:.8,y:.7,closeness:.5,followers:1000000,source_count:3,fit:'good'}
+ {id:3,handle:'large',x:.8,y:.7,closeness:.5,followed:true,followers:1000000,source_count:3,fit:'good'}
 ];
 const distance=n=>Math.hypot(n.x-.5,n.y-.5);
-test('My network combines connection distance with follower size; shared uses recorded audience overlap',()=>{
+test('recorded follows use owner evidence distance; shared uses recorded audience overlap',()=>{
  const network=cohortLayout(nodes,{id:0},'followers','network');
  assert.deepEqual(network.slice(0,-1).map(n=>n.id),[1,3,2]);
  assert.ok(network[0].portraitRadius<network[1].portraitRadius);
@@ -34,11 +34,44 @@ test('view presets repack the same people without changing camera, cursors, evid
  for(const n of nodes){const placed=model.scene.get(n.id).d;assert.equal(placed.evidenceX,n.x);assert.equal(placed.evidenceY,n.y);}
  model.setViewMode('network');assert.equal(model.size,'followers');assert.deepEqual(model.cam.state(),camera);
 });
-test('invalid or retired saved modes return to My network',()=>{
+test('invalid or retired saved modes return to recorded follows',()=>{
  for(const viewMode of [undefined,'fit','equal','audience','bogus']){
   const model=new MapModel({viewMode});assert.equal(model.viewMode,'network');assert.equal(model.size,'followers');
  }
  assert.equal(new MapModel({viewMode:'shared'}).size,'connections');
+});
+test('default map includes unqualified people and does not filter either observed follow direction',()=>{
+ const model=new MapModel();const params=model.params();
+ assert.equal(model.viewMode,'network');assert.equal(model.scope,'all');assert.equal(model.follow,'all');
+ assert.equal(params.get('scope'),'all');assert.equal(params.get('follow') || 'all','all');
+ assert.equal(params.get('mode'),'closeness');
+ const preset=VIEW_MODES.find(mode=>mode.id==='network');
+ assert.equal(preset.label,'Recorded follows');
+ assert.match(preset.description,/Mutual follows first, then accounts following me, then accounts I follow/);
+ assert.match(preset.description,/do not establish a personal relationship/);
+});
+test('owner evidence order survives high overlap, celebrity followers and lead fit',()=>{
+ const evidence=[
+  {id:1,handle:'mutual_low_fit',x:.5,y:.5,closeness:.96,followed:true,follows_me:true,followers:50,source_count:1,fit:'weak',rank:1},
+  {id:2,handle:'follows_me',x:.5,y:.5,closeness:.78,followed:false,follows_me:true,followers:100,source_count:1,fit:'unread',rank:1},
+  {id:3,handle:'celebrity_i_follow',x:.5,y:.5,closeness:.60,followed:true,follows_me:false,followers:10000000,source_count:100,fit:'strong',rank:100},
+  {id:4,handle:'overlap_only',x:.5,y:.5,closeness:.10,followed:false,follows_me:false,followers:1000000,source_count:1000,fit:'strong',rank:100}
+ ];
+ const model=new MapModel();
+ model.apply({nodes:evidence,world:{me:{id:0}},total:4},{});
+ const ordered=model.scene.nodes.map(it=>it.d).filter(n=>n.id!==0).sort((a,b)=>distance(a)-distance(b));
+ assert.deepEqual(ordered.map(n=>n.id),[1,2,3,4]);
+ assert.deepEqual(ordered.map(n=>[n.followed,n.follows_me]),[[true,true],[false,true],[true,false],[false,false]]);
+});
+test('compact snapshots retain explicit known evidence without treating status or score as a relationship',async()=>{
+ const model=new MapModel({density:3000,fetchJson:async()=>({compact:true,rev:1,total:2,nodes:[],world:{me:{id:0}},rows:[
+  [1,.5,.5,1,1,.45,50,0,0,1,0,0,3],
+  [2,.5,.5,100,100,.9,1000000,1,0,1000,0,0,4]
+ ]})});
+ const ticket=model.viewReq.begin();const response=await model.loadSnapshot(model.params(),ticket);
+ assert.equal(response.nodes[0].connection_kind,'known');assert.equal(response.nodes[0].connection_tier,3);
+ assert.equal(response.nodes[1].connection_kind,'source');assert.equal(response.nodes[1].connection_tier,4);
+ assert.equal(response.nodes[1].status,'interested');
 });
 test('selecting a person immediately shows their recorded connections',()=>{
  const model=new MapModel({fetchJson:()=>new Promise(()=>{})});

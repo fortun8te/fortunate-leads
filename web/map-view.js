@@ -25,7 +25,17 @@
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
   const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000].includes(n)?n:500; } catch (_) { return 500; } };
-  const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
+  const MAP_VIEW_VERSION = 'recorded-follows-1';
+  const savedViewMode = () => {
+    try {
+      if (root.localStorage?.getItem('fortunate.map.view.version') !== MAP_VIEW_VERSION) {
+        root.localStorage?.setItem('fortunate.map.view', 'network');
+        root.localStorage?.setItem('fortunate.map.view.version', MAP_VIEW_VERSION);
+        return 'network';
+      }
+      return root.localStorage?.getItem('fortunate.map.view');
+    } catch (_) { return 'network'; }
+  };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
 
@@ -61,6 +71,43 @@
       groups.set(key, group);
     }
     return [...groups.values()];
+  }
+  // These flags describe recorded owner follows; audience overlap is never a line.
+  function recordedOwnerConnections(plan, ownerId, selectedId, limit = 500) {
+    const owner = plan.nodes.find(mark => String(mark.it.d.id) === String(ownerId));
+    if (!owner) return [];
+    const lines = [], seen = new Set();
+    for (const mark of plan.nodes) {
+      const person = mark.it.d, id = String(person.id);
+      if (mark === owner || id === String(selectedId) || seen.has(id) || !(person.followed === true || person.follows_me === true)) continue;
+      seen.add(id);
+      lines.push({owner, other:mark, outgoing:person.followed === true, incoming:person.follows_me === true});
+      if (lines.length >= Math.max(1, Math.min(500, limit))) break;
+    }
+    return lines;
+  }
+  function recordedBackgroundConnections(plan, ownerId, selectedId, connections = []) {
+    const nodes = new Map(plan.nodes.map(mark => [String(mark.it.d.id), mark]));
+    const lines = [], seen = new Set(), selected = selectedId == null ? null : String(selectedId);
+    const add = (from, to, outgoing, incoming) => {
+      if (!from || !to || from === to) return;
+      const a = String(from.it.d.id), b = String(to.it.d.id);
+      if (a === selected || b === selected) return;
+      const key = [a,b].sort().join(':');
+      if (seen.has(key)) return;
+      seen.add(key); lines.push({owner:from,other:to,outgoing,incoming});
+    };
+    // Backend paths must name both displayed endpoints and a recorded follow kind.
+    for (const edge of connections) {
+      if (!['follow','follows','mutual'].includes(edge.kind)) continue;
+      add(nodes.get(String(edge.source ?? edge.a?.id)), nodes.get(String(edge.target ?? edge.b?.id)), true, edge.kind === 'mutual');
+      if (lines.length >= 500) return lines;
+    }
+    for (const line of recordedOwnerConnections(plan, ownerId, selectedId)) {
+      add(line.owner, line.other, line.outgoing, line.incoming);
+      if (lines.length >= 500) break;
+    }
+    return lines;
   }
   function cardFit(person) {
     const verdict = person.verdict;
@@ -117,7 +164,7 @@
       if (what === 'stale') this.renderStale();
       if (what === 'scene') this.renderStale();
       if (what === 'selection') { if (!this.model.selected || this.cardId !== this.model.selected.id) this.renderCard(); else this.updateCardFacts(); this.invalidate(); }
-      if (what === 'mode') { try { root.localStorage?.setItem('fortunate.map.view', this.model.viewMode); } catch (_) {} this.renderModes(); this.renderLegend(); this.invalidate(); }
+      if (what === 'mode') { try { root.localStorage?.setItem('fortunate.map.view', this.model.viewMode); root.localStorage?.setItem('fortunate.map.view.version', MAP_VIEW_VERSION); } catch (_) {} this.renderModes(); this.renderLegend(); this.invalidate(); }
       if (what === 'filters') this.renderFilters();
       if (what === 'scene' && this.model.universe) this.canvas.style.zIndex = '1';
     }
@@ -214,9 +261,7 @@
 
       const hovered = this.hover;
       const plan = this.displayMarks = displayPlan(m.scene, cam, m.world.guides || [], m.selected, this.hud, m.world.layout === 'network_disk' || m.mode === 'closeness' ? m.world.me?.id : null, m.mode, m.size);
-      const activeId=this.nodeDrag?.d.id ?? sel?.id;
-      const active=plan.nodes.find(mark=>String(mark.it.d.id)===String(activeId));
-      if(active)active.r*=1+(this.nodeDrag?.06:.07*this.focusMix);
+      const active = this.emphasizeMarks(plan, dt);
       for(const mark of plan.nodes) {
         let dx=0,dy=0;
         if(active && mark!==active && String(mark.it.d.id)!==String(m.world.me?.id)) {
@@ -252,6 +297,7 @@
         lab.block([x - 22, y - 16, x + 22, y + 16]);
       }
       ctx.globalAlpha = 1; ctx.textAlign = 'left';
+      this.paintBackgroundEdges(ctx, P, plan);
       // Lines for the selected person, under the dots.
       if (edges && edges.state === 'ready') this.paintEdges(ctx, P, edges, sx, sy, now, sel);
 
@@ -261,7 +307,7 @@
       let ownerCaption = null;
       this.queuePortraits(plan.nodes, me);
       let photoBudget = 3001;
-      for (const mark of plan.nodes) {
+      for (const mark of this.portraitOrder(plan)) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
         ctx.globalAlpha = it.a * (related.has(String(d.id)) ? 1 : dim);
@@ -428,6 +474,41 @@
       }
       ctx.globalAlpha = 1;
     }
+    emphasizeMarks(plan, dt) {
+      const ownerId = String(this.model.world.me?.id);
+      const activeId = String(this.nodeDrag?.d.id ?? this.model.selected?.id);
+      const easing = this.model.reduced ? 1 : 1 - Math.exp(-dt / .07);
+      let active = null;
+      for (const mark of plan.nodes) {
+        const it = mark.it, chosen = String(it.d.id) === activeId && String(it.d.id) !== ownerId;
+        const target = chosen ? 1 : 0;
+        it.displayFocus = (it.displayFocus || 0) + (target - (it.displayFocus || 0)) * easing;
+        if (Math.abs(it.displayFocus - target) > .005) this.invalidate();
+        else it.displayFocus = target;
+        // A few pixels are visible even when dense cohorts have tiny portraits.
+        mark.r += Math.max(3, mark.r * .2) * it.displayFocus;
+        if (chosen) active = mark;
+      }
+      return active;
+    }
+    portraitOrder(plan) {
+      const activeId = String(this.nodeDrag?.d.id ?? this.model.selected?.id);
+      const active = plan.nodes.find(mark => String(mark.it.d.id) === activeId);
+      return active ? [...plan.nodes.filter(mark => mark !== active), active] : plan.nodes;
+    }
+    paintBackgroundEdges(ctx, P, plan) {
+      const lines = recordedBackgroundConnections(plan, this.model.world.me?.id, this.model.selected?.id, this.model.world.connections);
+      if (!lines.length) return;
+      ctx.save();
+      ctx.strokeStyle = P.fg3; ctx.lineWidth = .7;
+      ctx.globalAlpha = .06 * (this.model.selected ? .55 : 1);
+      for (const line of lines) {
+        ctx.setLineDash(line.outgoing && !line.incoming ? [2, 4] : []);
+        ctx.beginPath(); ctx.moveTo(line.owner.x, line.owner.y);
+        ctx.lineTo(line.other.x, line.other.y); ctx.stroke();
+      }
+      ctx.restore();
+    }
     paintEdges(ctx, P, edges, sx, sy, now, sel) {
       const a = clamp((now - this.edgeAt) / 260, 0, 1), reduced = this.model.reduced;
       ctx.globalAlpha = (reduced ? 1 : a) * .7;
@@ -489,19 +570,20 @@
       }
       const plan = this.displayMarks; if (!plan) return null;
       const selected=plan.nodes.find(mark=>String(mark.it.d.id)===String(this.model?.selected?.id));
-      if(selected && Math.hypot(selected.x-px,selected.y-py)<=selected.r+3)return selected;
       if (plan.large && this.model.scene.spatial) {
         const moving=this.nodeDrag||this.model.returningNode;
         if(moving){const[x,y]=this.model.cam.toScreen(moving.x,moving.y),r=moving.d.portraitRadius*this.model.cam.scale;if(Math.hypot(px-x,py-y)<=r)return{kind:'n',it:moving,x,y,r};}
         const cam=this.model.cam,[wx,wy]=cam.toWorld(px,py),reach=(this.touch?16:9)/cam.scale;
         const nearby=this.model.scene.spatial.query({x0:wx-reach,y0:wy-reach,x1:wx+reach,y1:wy+reach});
-        let best=null,distance=Infinity;
+        let best=selected && Math.hypot(selected.x-px,selected.y-py)<=selected.r ? selected : null, distance=best ? Math.hypot(best.x-px,best.y-py) : Infinity;
         for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?OWNER_RADIUS:it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
         return best;
       }
       const reach = this.touch ? 16 : 9;
       // Real photo bodies win before expanded hit targets in the dense overview.
-      for (const mark of plan.nodes) if (Math.hypot(mark.x-px,mark.y-py)<=mark.r) return mark;
+      let body=null, bodyDistance=Infinity;
+      for (const mark of plan.nodes) { const d=Math.hypot(mark.x-px,mark.y-py); if (d<=mark.r && d<bodyDistance) { body=mark; bodyDistance=d; } }
+      if (body) return body;
       let nearest=null, distance=Infinity;
       for (const mark of plan.nodes) { const d=Math.hypot(mark.x-px,mark.y-py); if (d<=Math.max(mark.r+3,reach) && d<distance) { nearest=mark;distance=d; } }
       if (nearest) return nearest;
@@ -790,7 +872,7 @@
     renderLegend() {
       const shared = this.model.viewMode === 'shared';
       const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
-        { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: stronger connection evidence', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Distance orders the saved page by recorded network evidence, not personal familiarity.' },
+        { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: recorded follows', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Mutual follows first, then accounts following you, then accounts you follow. Relationship tags and source-only evidence come after these.' },
         { g: 'size', s: shared ? 'Larger: more shared audiences' : 'Larger: more followers', t: SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
       const glyph = (g) => {
@@ -1153,7 +1235,7 @@
     return view;
   }
 
-  const api = { MapView, mount, initials, cardTags, cardFit, directedConnections };
+  const api = { MapView, mount, initials, cardTags, cardFit, directedConnections, recordedOwnerConnections, recordedBackgroundConnections, savedViewMode };
   root.MapViewModule = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);
