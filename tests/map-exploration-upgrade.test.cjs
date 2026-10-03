@@ -119,3 +119,29 @@ test('the owner label does not carve a rectangular notch into world positions',(
  const below=nodes.filter(n=>Math.abs(n.x-.5)<.045 && n.y>.565 && n.y<.60);
  assert.ok(below.length>10,'profiles continue immediately below the circular owner clearance');
 });
+
+test('fit during a morph includes destination portrait sizes and uses current positions after settling',()=>{
+ for(const [width,height] of [[1440,679],[390,640]]) {
+  const model=new MapModel();model.cam.resize(width,height);model.cam.inset={top:30,right:0,bottom:70,left:0};
+  model.flyTo=target=>model.cam.set(target.cx,target.cy,target.k);
+  model.scene.apply({nodes:[{id:1,x:.48,y:.48,portraitRadius:.005},{id:2,x:.52,y:.52,portraitRadius:.005}]},0,{instant:true});
+  const destination=[{id:1,x:.08,y:.15,portraitRadius:.025},{id:2,x:.9,y:.91,portraitRadius:.055}];
+  model.scene.apply({nodes:destination},100,{morph:260});
+  assert.equal(model.scene.get(1).x,.48,'the fit request occurs before the portraits move');
+  model.fit();const during=model.cam.state();
+  const inside=nodes=>{
+   for(const n of nodes) {
+    const [x,y]=model.cam.toScreen(n.x,n.y),r=n.portraitRadius*model.cam.scale;
+    assert.ok(x-r>=20-1e-6&&x+r<=width-20+1e-6,'complete destination portraits fit horizontally');
+    assert.ok(y-r>=50-1e-6&&y+r<=height-90+1e-6,'complete destination portraits fit vertically');
+   }
+  };
+  inside(destination);
+  model.scene.step(500,.4,false);model.fit();assert.deepEqual(model.cam.state(),during,'finishing the morph does not invalidate its fit');
+  // Temporary inspection drags keep their previous targets but change the
+  // current world position. A settled fit must include what is now displayed.
+  const dragged=model.scene.get(1);dragged.x=.7;dragged.y=.4;
+  model.fit();assert.ok(Math.abs(model.cam.cx-.815)<1e-12);assert.ok(Math.abs(model.cam.cy-.67)<1e-12);
+  inside(model.scene.nodes.map(it=>({x:it.x,y:it.y,portraitRadius:it.d.portraitRadius})));
+ }
+});

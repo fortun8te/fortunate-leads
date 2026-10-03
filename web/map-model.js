@@ -341,8 +341,10 @@
       if(!nodes.length){this.flyTo({cx:.5,cy:.5,k:1},320);return;}
       let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
       for(const it of nodes) {
-        const r=it.d.portraitRadius||0;
-        x0=Math.min(x0,it.x-r);x1=Math.max(x1,it.x+r);y0=Math.min(y0,it.y-r);y1=Math.max(y1,it.y+r);
+        // Fit the completed spread while portraits are still moving into it.
+        const moving=it.dur>0,x=moving?it.tx:it.x,y=moving?it.ty:it.y;
+        const r=moving&&Number.isFinite(it.tr)?it.tr:it.d.portraitRadius||0;
+        x0=Math.min(x0,x-r);x1=Math.max(x1,x+r);y0=Math.min(y0,y-r);y1=Math.max(y1,y+r);
       }
       const inset=cam.inset,pad=20;
       const width=Math.max(1,cam.w-inset.left-inset.right-pad*2),height=Math.max(1,cam.h-inset.top-inset.bottom-pad*2);
