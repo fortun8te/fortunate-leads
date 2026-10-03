@@ -192,7 +192,7 @@
       this.nodes.sort((a, b) => (a.d.rank || 0) - (b.d.rank || 0));
       this.clusters.sort((a, b) => b.d.count - a.d.count);
       this.maxCluster = max;
-      this.large = this.nodes.length > 5000; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
+      this.large = this.nodes.reduce((count,it)=>count+(it.ta!==0?1:0),0) > 5000; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
     }
     clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; this.large = false; this.spatial = null; }
     // Advance by dt seconds. Returns true while anything is still moving, so the loop can stop when idle.
@@ -269,109 +269,58 @@
     return s;
   }
 
-  // Fixed evidence bands keep a weak page from appearing close merely because
-  // it contains no better-connected people. Size never determines the band.
-  const DISTANCE_BANDS = [[.06,.30],[.30,.35],[.35,.39],[.39,.425],[.425,.46]];
   function distanceValue(n, mode = 'network') {
     if (mode === 'fit') return {strong:3,good:2,weak:1,unread:0}[n.fit] ?? 0;
     const value = mode === 'shared' ? n.source_count : n.closeness;
     return value != null && Number.isFinite(+value) ? +value : -1;
   }
-  function distanceBand(n, mode = 'network') {
-    const value = distanceValue(n, mode);
-    if (mode === 'shared') return value >= 8 ? 0 : value >= 4 ? 1 : value >= 2 ? 2 : value >= 1 ? 3 : 4;
-    if (mode === 'fit') return value >= 3 ? 0 : value >= 2 ? 1 : value >= 1 ? 3 : 4;
-    return value >= .65 ? 0 : value >= .4 ? 1 : value >= .2 ? 2 : value >= .09 ? 3 : 4;
-  }
   function cohortLayout(people, owner, size = 'followers', distance = 'network') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
-    members.sort((a, b) => distanceValue(b, distance) - distanceValue(a, distance)
-      || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
-    if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
-    const bands = DISTANCE_BANDS.map(([low,high]) => ({low,high,indices:[],sum:0}));
-    const weights = [];
-    members.forEach((n,i) => bands[distanceBand(n,distance)].indices.push(i));
-    for (const band of bands) band.indices.forEach((i,at) => {
-      const radius = Math.sqrt(band.low**2 + (band.high**2-band.low**2)*(at+.5)/band.indices.length);
-      weights[i] = radiusFor(members[i],1,size) * (size === 'equal' ? 1 : 1-.24*Math.pow((radius-.06)/.4,.8));
-      band.sum += weights[i]**2;
-    });
-    const largest = weights.reduce((maximum,weight)=>Math.max(maximum,weight),0);
-    // The busiest evidence band determines a common scale. A distant influencer
-    // cannot become huge because its own band happens to be mostly empty.
-    let scale = Math.min(.055/largest,...bands.filter(b=>b.sum).map(b=>Math.sqrt(.48*(b.high**2-b.low**2)/b.sum)));
-    let slots = [], portraitScales = null;
-    if (members.length > 3000) {
-      const golden = Math.PI*(3-Math.sqrt(5));
-      portraitScales=[];let previous=Infinity;const uniformScale=scale;
-      for(const band of bands) {
-        if(!band.indices.length)continue;
-        const maximum=band.indices.reduce((max,i)=>Math.max(max,weights[i]),0);
-        let bandScale=(size==='equal'?uniformScale:Math.min(.055/largest,(band.high-band.low)*.4/maximum,Math.sqrt(.48*(band.high**2-band.low**2)/band.sum)))*.92;
-        if(size!=='equal')bandScale=Math.min(previous,bandScale);
-        const margin=maximum*bandScale,low=band.low+margin,high=band.high-margin;
-        band.indices.forEach((i,at)=>{
-          const radius=Math.sqrt(low**2+(high**2-low**2)*(at+.5)/band.indices.length),angle=i*golden;
-          slots[i]={x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle)};
-        });
-        // Check neighbours inside each annulus. Its reserved boundary margins
-        // also prevent cross-band overlap. Dense distant bands must not shrink
-        // the readable close portraits in a different band.
-        const cellSize=maximum*bandScale*2,cells=new Map();let clearance=1;
-        for(const i of band.indices) {
-          const point=slots[i],radius=weights[i]*bandScale,cx=Math.floor(point.x/cellSize),cy=Math.floor(point.y/cellSize);
-          for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)for(const other of cells.get((cx+dx)+':'+(cy+dy))||[])
-            clearance=Math.min(clearance,Math.hypot(point.x-other.x,point.y-other.y)/(radius+other.radius)*.99);
-          const key=cx+':'+cy;if(!cells.has(key))cells.set(key,[]);cells.get(key).push({...point,radius});
-        }
-        bandScale*=clearance;
-        if(size==='equal')scale=Math.min(scale,bandScale);
-        else {for(const i of band.indices)portraitScales[i]=bandScale;previous=bandScale;}
+    members.sort((a,b) => distanceValue(b,distance)-distanceValue(a,distance)
+      || (b.closeness||0)-(a.closeness||0) || (b.rank||0)-(a.rank||0) || String(a.id).localeCompare(String(b.id)));
+    if (!members.length) return owner ? [{...owner,x:.5,y:.5,cohort:true,spacing:.075}] : [];
+    // Distance is a continuous ordering of the loaded people. Ties occupy the
+    // available space; they do not acquire an invented strength or relationship.
+    // A single organic disk avoids score bands and the gaps they create.
+    const count=members.length, centre=.06, outer=.46;
+    const weights=members.map((n,i)=>radiusFor(n,1,size)
+      * (size==='equal'?1:1-.24*Math.pow(i/Math.max(1,count-1),.8)));
+    const largest=weights.reduce((max,r)=>Math.max(max,r),0);
+    let scale=Math.min(.055*(1-1e-12)/largest,Math.sqrt(.5*(outer*outer-centre*centre)/weights.reduce((sum,r)=>sum+r*r,0)));
+    const candidateCount=Math.max(800,count*32);
+    let slots=[];
+    // Stream deterministic random-angle candidates rather than generating a
+    // regular spiral, lattice, or millions of candidate objects. Radius grows
+    // continuously, preserving evidence order even when values are discrete.
+    for(let attempt=0;attempt<24;attempt++) {
+      slots=[];let seed=0x6d2b79f5;
+      const cell=largest*scale*2.12, columns=Math.ceil(1/cell)+2,cells=new Map();
+      for(let i=0;i<candidateCount;i++) {
+        seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;
+        const angle=(seed>>>0)/4294967296*Math.PI*2;
+        const d=Math.sqrt(centre*centre+(outer*outer-centre*centre)*(i+.5)/candidateCount);
+        const r=weights[slots.length]*scale;
+        if(d<centre+r || d+r>outer)continue;
+        const x=.5+d*Math.cos(angle),y=.5+d*Math.sin(angle);
+        const cx=Math.floor(x/cell),cy=Math.floor(y/cell);let overlap=false;
+        for(let dy=-1;dy<=1&&!overlap;dy++)for(let dx=-1;dx<=1&&!overlap;dx++)
+          for(const other of cells.get((cy+dy)*columns+cx+dx)||[]) {
+            const gap=(r+other.r)*1.06,dx=x-other.x,dy=y-other.y;
+            if(dx*dx+dy*dy<gap*gap){overlap=true;break;}
+          }
+        if(overlap)continue;
+        const point={x,y,r};slots.push(point);
+        const key=cy*columns+cx;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(point);
+        if(slots.length===count)break;
       }
-      if(size==='equal')portraitScales=null;
-    } else {
-      let seed=0x6d2b79f5;
-      const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
-      const candidates=[];
-      bands.forEach((band,which)=>{
-        const count=Math.max(80,band.indices.length*40);
-        if(!band.indices.length)return;
-        for(let i=0;i<count;i++) {
-          const radius=Math.sqrt(band.low**2+(band.high**2-band.low**2)*(i+.5)/count),angle=random()*Math.PI*2;
-          candidates.push({x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle),distance:radius,band:which});
-        }
-      });
-      for(let attempt=0;attempt<24;attempt++) {
-        slots=[];const cellSize=largest*scale*2.12,cells=new Map();
-        for(const point of candidates) {
-          const i=slots.length,which=distanceBand(members[i],distance),band=bands[which],radius=weights[i]*scale;
-          if(point.band!==which || point.distance<band.low+radius || point.distance+radius>band.high)continue;
-          if(Math.abs(point.x-.5)<.055+radius && point.y>.5 && point.y<.585+radius)continue;
-          const cx=Math.floor(point.x/cellSize),cy=Math.floor(point.y/cellSize);let overlaps=false;
-          for(let dy=-1;dy<=1&&!overlaps;dy++)for(let dx=-1;dx<=1&&!overlaps;dx++)
-            overlaps=(cells.get((cx+dx)+':'+(cy+dy))||[]).some(other=>Math.hypot(point.x-other.x,point.y-other.y)<(radius+other.radius)*1.06);
-          if(overlaps)continue;
-          const placed={...point,radius};slots.push(placed);
-          const key=cx+':'+cy;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(placed);
-          if(slots.length===members.length)break;
-        }
-        if(slots.length===members.length)break;
-        scale*=.92;
-      }
-      // Each annulus has finite area. If a pathological page exhausts candidates,
-      // use the same bounded annular spiral rather than inventing closer positions.
-      if(slots.length!==members.length) {
-        slots=[];scale*=.4;const golden=Math.PI*(3-Math.sqrt(5));
-        for(const band of bands)band.indices.forEach((i,at)=>{
-          const margin=largest*scale,low=band.low+margin,high=band.high-margin;
-          const radius=Math.sqrt(low**2+(high**2-low**2)*(at+.5)/band.indices.length),angle=i*golden;
-          slots[i]={x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle)};
-        });
-      }
+      if(slots.length===count)break;
+      // Keep the same organic candidates at a smaller scale. Never fall back to
+      // a geometric pattern for a skewed page or a page containing only ties.
+      scale*=.91;
     }
+    if(slots.length!==count)throw new Error('Could not space the loaded profiles.');
     const nodes=members.map((n,i)=>({...n,evidenceX:n.evidenceX??n.x,evidenceY:n.evidenceY??n.y,
-      x:slots[i].x,y:slots[i].y,cohort:true,distanceBand:distanceBand(n,distance),
-      portraitRadius:weights[i]*(portraitScales?.[i]??scale),spacing:largest*(portraitScales?.[i]??scale)*2.12}));
+      x:slots[i].x,y:slots[i].y,cohort:true,portraitRadius:weights[i]*scale,spacing:largest*scale*2.12}));
     if(owner)nodes.push({...owner,x:.5,y:.5,cohort:true,spacing:largest*scale*2.12});
     return nodes;
   }
@@ -499,7 +448,7 @@
       let entry = this.entries.get(url);
       if (entry) { this.entries.delete(url); this.entries.set(url, entry); return entry.state === 'ready' ? entry.image : null; }
       if (this.entries.size >= this.max) {
-        const victim = [...this.entries].find(([,e]) => e.state !== 'loading');
+        let victim;for(const pair of this.entries)if(pair[1].state!=='loading' && !pair[1].retained){victim=pair;break;}
         if (!victim) return null;
         victim[1].image?.close?.();
         this.entries.delete(victim[0]);
@@ -518,7 +467,7 @@
           entry.state = ready ? 'ready' : 'failed'; if(ready)entry.readyAt=this.now(); this.active--;
           image.onload = image.onerror = null;
           if (!ready) { entry.image = null; image.src = ''; }
-          this.pump(); this.changed();
+          this.pump(); this.changed(entry);
         };
         image.onload = () => {
           if (!image.naturalWidth) return finish(false);
@@ -556,7 +505,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceBand, distanceValue, DISTANCE_BANDS, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

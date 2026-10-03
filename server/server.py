@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import biofetch
 import deepscout
 import websearch
@@ -3146,6 +3147,46 @@ class Server(ThreadingHTTPServer):
 SECURITY_HEADERS = {'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff'}
 
 
+class PictureOwnership:
+    """Reuse SQLite's parsed schema, but read current picture ownership on every request."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.conn = None
+        self.identity = None
+
+    def close(self):
+        with self.lock:
+            if self.conn is not None:
+                self.conn.close()
+            self.conn = None
+            self.identity = None
+
+    def owns(self, path, pid):
+        with self.lock:
+            path = Path(path).resolve()
+            stat = path.stat()
+            identity = (str(path), stat.st_dev, stat.st_ino)
+            if identity != self.identity:
+                if self.conn is not None:
+                    self.conn.close()
+                self.conn = None
+                self.identity = None
+                # A fresh autocommit SELECT sees committed ownership changes, including
+                # WAL updates. Do not use immutable mode or cache the query result.
+                self.conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+                                            timeout=15, isolation_level=None, check_same_thread=False)
+                self.identity = identity
+            cursor = self.conn.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?', (pid, f'{pid}.jpg'))
+            try:
+                return cursor.fetchone() is not None
+            finally:
+                cursor.close()
+
+
+_picture_ownership = PictureOwnership()
+atexit.register(_picture_ownership.close)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -3254,12 +3295,7 @@ class Handler(BaseHTTPRequestHandler):
     def image(self, pid):
         if not re.fullmatch(r'[0-9]+', pid):
             return self.send(404, {'ok': False, 'error': 'no image'})
-        conn = db.connect(CFG['db'])
-        try:
-            owned = conn.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?', (pid, f'{pid}.jpg')).fetchone()
-        finally:
-            conn.close()
-        if not owned:
+        if not _picture_ownership.owns(CFG['db'], pid):
             return self.send(404, {'ok': False, 'error': 'no image'})
         f = pfp_dir() / f'{pid}.jpg'
         if not f.is_file():

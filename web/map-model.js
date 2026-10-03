@@ -8,7 +8,7 @@
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
   const VIEW_MODES = [
-    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger saved connection evidence. Profiles with little evidence stay in the outer band.' },
+    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Distance orders this page by saved connection evidence. Similar evidence spreads continuously. Recorded follows do not establish friendship.' },
     { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Closer means more collected source audiences. Shared audiences are not mutual friends.' },
     { id: 'fit', label: 'Best fit', size: 'fit', distance: 'Saved fit assessment', description: 'Closer means a stronger saved fit assessment. This view does not indicate a connection.' }
   ];
@@ -336,7 +336,19 @@
       this.flight = new Flight(this.cam.state(), target, this.now(), ms);
       this.emit('camera');
     }
-    fit() { this.flyTo({ cx:0.5,cy:0.5,k:1.55 },320); }
+    fit() {
+      const nodes=this.scene.nodes.filter(it=>it.ta!==0),cam=this.cam;
+      if(!nodes.length){this.flyTo({cx:.5,cy:.5,k:1},320);return;}
+      let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+      for(const it of nodes) {
+        const r=it.d.portraitRadius||0;
+        x0=Math.min(x0,it.x-r);x1=Math.max(x1,it.x+r);y0=Math.min(y0,it.y-r);y1=Math.max(y1,it.y+r);
+      }
+      const inset=cam.inset,pad=20;
+      const width=Math.max(1,cam.w-inset.left-inset.right-pad*2),height=Math.max(1,cam.h-inset.top-inset.bottom-pad*2);
+      const k=Math.min(1.55,width/Math.max(.1,x1-x0)/(.9*Math.min(cam.w,cam.h)),height/Math.max(.1,y1-y0)/(.9*Math.min(cam.w,cam.h)));
+      this.flyTo({cx:(x0+x1)/2,cy:(y0+y1)/2,k},320);
+    }
     pan(dx, dy) { this.interruptCamera(); this.cam.panBy(dx, dy); this.moved(); }
     release(vx, vy) { const speed=Math.hypot(vx,vy); if (!this.reduced && speed > 60) { const scale=Math.min(1,700/speed); this.vel = { vx:vx*scale, vy:vy*scale }; } }
     setSizeEncoding(size) {

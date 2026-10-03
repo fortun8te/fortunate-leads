@@ -4,12 +4,14 @@ const {MapModel}=require('../web/map-model.js');
 const {cohortLayout,Scene,PortraitCache}=require('../web/map-core.js');
 const radius=n=>Math.hypot(n.x-.5,n.y-.5);
 
-test('weak and unknown evidence stays outside even when the page has no closer people',()=>{
- for(const count of [1,500,5000,20000]) {
-  const people=Array.from({length:count},(_,i)=>({id:i+1,closeness:i%2?.03:null,followers:i%2?1:100000000,rank:1}));
+test('unknown evidence remains unknown and ties fill a continuous organic disk',()=>{
+ for(const count of [500,3000,20000]) {
+  const people=Array.from({length:count},(_,i)=>({id:i+1,closeness:null,followers:1000,rank:1}));
   const nodes=cohortLayout(people,{id:0});
-  assert.equal(nodes.length,count+1);
-  assert.ok(nodes.slice(0,-1).every(n=>radius(n)-n.portraitRadius>=.425-1e-10));
+  assert.equal(nodes.length,count+1);assert.ok(nodes.slice(0,-1).every(n=>n.closeness===null));
+  const distances=nodes.slice(0,-1).map(radius);
+  assert.ok(distances.at(-1)-distances[0]>.3,'ties use the whole disk rather than a thin ring');
+  assert.ok(distances.every((d,i)=>!i||d-distances[i-1]<.025),'no empty annular gaps');
  }
 });
 test('a famous disconnected profile cannot outrank or move inside a recorded connection',()=>{
@@ -17,7 +19,20 @@ test('a famous disconnected profile cannot outrank or move inside a recorded con
  for(const size of ['followers','fit','connections','equal']) {
   const placed=cohortLayout(people,{id:0},size);
   assert.equal(placed[0].id,2);assert.ok(radius(placed[0])<radius(placed[1]));
-  assert.ok(radius(placed[1])>=.425);
+ }
+});
+test('discrete network, shared and fit values never create rings or spiral steps at 3k and 20k',()=>{
+ for(const count of [3000,20000])for(const view of ['network','shared','fit']) {
+  const people=Array.from({length:count},(_,i)=>({id:i,closeness:i<count/2?.4:.03,source_count:i<count/2?8:1,fit:i<count/2?'strong':'unread',followers:1000}));
+  const nodes=cohortLayout(people,null,'followers',view),distances=nodes.map(radius);
+  assert.ok(distances.every((r,i)=>!i||r-distances[i-1]<.01),'values cannot produce a radial discontinuity');
+  const steps=new Set(nodes.slice(1).map((n,i)=>{
+    const step=Math.atan2(n.y-.5,n.x-.5)-Math.atan2(nodes[i].y-.5,nodes[i].x-.5);
+    return Math.round(((step+Math.PI*4)%(Math.PI*2))*10);
+  }));
+  assert.ok(steps.size>50,'angles have organic variation rather than repeating a spiral');
+  const taper=nodes.at(-1).portraitRadius/nodes[0].portraitRadius;
+  assert.ok(taper>.75&&taper<.77,'the gradual taper spans the disk, including score ties');
  }
 });
 test('all requested page sizes are accepted and retain the compact request bound',()=>{
@@ -73,7 +88,7 @@ test('new viewport photos replace queued offscreen work without unbounded reques
  images[0].onload();assert.equal(images[1].src,'/img/9');assert.equal(cache.active,1);
 });
 
-test('twenty thousand people in one evidence band have real geometric clearance in every size mode',()=>{
+test('twenty thousand people with tied evidence have real geometric clearance in every size mode',()=>{
  for(const size of ['followers','fit','connections','equal'])for(const closeness of [.8,.5,.3,.1,.03]) {
   const people=Array.from({length:20000},(_,i)=>({id:i+1,closeness,followers:i%3?1:100000000,fit:['strong','weak','unread'][i%3],source_count:i%19}));
   const nodes=cohortLayout(people,null,size),width=nodes.reduce((max,n)=>Math.max(max,n.portraitRadius*2),0),cells=new Map();
@@ -85,4 +100,22 @@ test('twenty thousand people in one evidence band have real geometric clearance 
    const key=`${x}:${y}`;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(n);
   }
  }
+});
+
+test('show this page fits every loaded portrait inside desktop and phone insets',()=>{
+ for(const [width,height] of [[1440,679],[390,640]])for(const count of [3000,20000]) {
+  const model=new MapModel({reduced:true});model.cam.resize(width,height);model.cam.inset={top:30,right:0,bottom:70,left:0};
+  model.scene.apply({nodes:cohortLayout(Array.from({length:count},(_,i)=>({id:i+1,closeness:.3,followers:1000})),{id:0})},0,{instant:true});
+  model.cam.set(.5,.5,8);model.fit();
+  for(const it of model.scene.nodes) {
+   const [x,y]=model.cam.toScreen(it.x,it.y),r=(it.d.portraitRadius||0)*model.cam.scale;
+   assert.ok(x-r>=20-1e-6&&x+r<=width-20+1e-6);assert.ok(y-r>=50-1e-6&&y+r<=height-90+1e-6);
+  }
+ }
+});
+
+test('the owner label does not carve a rectangular notch into world positions',()=>{
+ const nodes=cohortLayout(Array.from({length:3000},(_,i)=>({id:i,followers:1000,closeness:.3})),{id:'owner'});
+ const below=nodes.filter(n=>Math.abs(n.x-.5)<.045 && n.y>.565 && n.y<.60);
+ assert.ok(below.length>10,'profiles continue immediately below the circular owner clearance');
 });

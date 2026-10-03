@@ -10,8 +10,15 @@ start collectors, enable AI, alter collection allowances, or clean the live data
   distance/size controls. Connection evidence controls the default distance; business
   fit and follower size cannot stand in for closeness. Shared sources remain observed
   overlap, not friendship. The layout schema changes, requiring a local layout rebuild.
-  Large overviews represent all loaded people while drawing at most 1,000 visible
-  portraits at once; smaller distant marks become portraits as the view changes.
+  Continuous organic packing spreads tied scores through the disk without empty
+  rings or a spiral grid. Large overviews progressively retain saved portrait pixels
+  in a bounded raster, so the decoded-image budget does not permanently hide people.
+  The explicit fit button measures the loaded bounds instead of forcing a fixed zoom.
+- Local photo serving reuses a protected read-only database connection while checking
+  current ownership on every request. File validation and photo freshness remain.
+  A 120-photo local HTTP trial at 12 concurrent requests on Python 3.14 improved
+  from 3.22–3.51 seconds to 0.076–0.123 seconds across two runs of each variant.
+  This measures cached local photos only, not Instagram collection.
 - Each accepted list page adds a stable-ID directed connection to a local evidence
   index. The same A-follows-B fact can be read from either end without another fetch.
   This does not establish either account's complete list. Existing list completion,
@@ -186,7 +193,9 @@ The complete server suite passed 1,404 tests on Python 3.14, with three optional
 dependency skips. The optional transport suite passed all 13 tests separately on
 Python 3.12 with Instagrapi 3.0.14. Root and sidecar Python suites passed 21 and 27
 tests. The extension passed 208 tests in each of UTC, Europe/Amsterdam,
-America/Los_Angeles and Asia/Tokyo. The complete web suite passed 424 tests.
+America/Los_Angeles and Asia/Tokyo. The original complete web suite passed 424 tests. The map correction passed all
+427 web tests and all 14 picture-serving tests on Python 3.14. After the final
+bitmap-lifetime and page-transition guards, all 23 focused map regressions passed.
 After the final malformed-research display guard, all 33 affected evidence,
 research-pipeline and owner-authority tests passed again. The final collection
 simulator passed all 82 checks across eight simulated hours, including warning
@@ -199,9 +208,15 @@ incremental graph counts. Reproduced defects were fixed and covered by regressio
 All database experiments used temporary copies or synthetic data. The canonical
 checkout stayed clean; no live account activity, cleanup or deployment was performed.
 
-Desktop and 390-pixel phone layouts, including the profile card, were inspected.
-The 20,000-person view passed clearance checks, including every person concentrated
-in one distance band. A warm local zoom sample measured 7.8 ms median paint and
-10 ms maximum. The final repeated 5k/10k/20k load-timing sequence timed out in the
-browser harness; no final cold-load guarantee is claimed from that repeat. The
-separate preview remains paused with no collection or research workers running.
+The first rendered map passed functional checks, but Michael rejected its rigid
+rings, large empty gaps and grey placeholder wall. Those checks were not visual
+acceptance. The corrected preview was then independently inspected with the actual saved
+profiles at 3,000 and 20,000 people: continuous organic spacing, no empty score
+bands, no spiral/grid pattern and no bright placeholder wall. The 20,000-person
+overview reached all 20,000 rendered entries and returned to an idle frame loop;
+page-size switching and zoom were checked without browser errors. A completed
+20,000-person raster survived a visit to 3,000 and returned fully rendered without
+queued photo requests. A bitmap
+lifetime defect found during this review was fixed before sign-off. These are
+implementation checks, not Michael's appearance approval. The separate preview
+remains paused with no collection or research workers running.

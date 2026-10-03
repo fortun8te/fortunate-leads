@@ -7,6 +7,7 @@
   const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, radiusFor, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
+  const photoHash=value=>{let n=2166136261;for(let i=0;i<value.length;i++)n=Math.imul(n^value.charCodeAt(i),16777619);n^=n>>>16;n=Math.imul(n,0x7feb352d);return(n^(n>>>15))>>>0;};
 
   const h = (tag, attrs, ...kids) => {
     const el = doc.createElement(tag);
@@ -96,7 +97,7 @@
       this.model.cam.set(.5,.5,1.55);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
+      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: entry => { this.captureOverviewPortrait(entry); this.invalidate(); } });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -165,7 +166,9 @@
         tones: { t0: tone(0.12), t1: tone(0.26), t2: tone(0.38), t3: tone(0.5), t4: tone(0.6), t5: tone(0.68) }
       };
       this.palette.tones.a = this.palette.accent;
-      this.dark = doc.documentElement.dataset.theme !== 'light'; this.overviewRaster = null;
+      this.dark = doc.documentElement.dataset.theme !== 'light';
+      // The overview now contains actual photo pixels rather than themed dots.
+      // Keep it and its pending image holds intact when the palette changes.
     }
 
     /* ---------- frame loop ---------- */
@@ -340,42 +343,127 @@
       this.paintLabels(ctx,P,lab,want,dt);
       return this.labelsBusy;
     }
-    paintLargeOverview(ctx, P, plan) {
-      const m=this.model,cam=m.cam,ownerId=String(m.world.me?.id);
-      ctx.fillStyle=P.fg3;
-      if (plan.vector) {
-        ctx.beginPath();
-        for(const mark of plan.marks) { if(String(mark.it.d.id)===ownerId)continue; ctx.moveTo(mark.x+mark.r,mark.y);ctx.arc(mark.x,mark.y,mark.r,0,TAU); }
-        ctx.fill(); return;
+    captureOverviewPortrait(entry) {
+      const atlas=this.overviewRaster;
+      if(!atlas || atlas.version!==this.model.scene.version)return;
+      if(entry?.state!=='ready' && entry?.state!=='failed')return;
+      for(const it of atlas.byPic.get(entry.url)||[]) {
+        const id=String(it.d.id);
+        if(!atlas.complete.has(id)){if(entry.state==='ready')entry.retained=true;atlas.incoming.set(id,entry);}
       }
-      if (!this.overviewRaster || this.overviewRaster.version!==m.scene.version) {
-        const start=performance.now(),side=2048,canvas=doc.createElement('canvas');canvas.width=side;canvas.height=side;
-        const draw=canvas.getContext('2d');draw.fillStyle=P.fg3;
-        for(let offset=0;offset<m.scene.nodes.length;offset+=2048) {
-          draw.beginPath();
-          for(const it of m.scene.nodes.slice(offset,offset+2048)) {
-            if(String(it.d.id)===ownerId)continue;
-            const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
-            draw.moveTo(x+r,y);draw.arc(x,y,r,0,TAU);
-          }
-          draw.fill();
+    }
+    prepareOverview() {
+      const m=this.model,previous=this.overviewRaster;
+      if(previous?.version===m.scene.version)return previous;
+      for(const entry of previous?.incoming.values()||[])entry.retained=false;
+      const side=2048,canvas=doc.createElement('canvas');canvas.width=side;canvas.height=side;
+      const atlas={canvas,draw:canvas.getContext('2d'),version:m.scene.version,nodes:new Map(),byPic:new Map(),positions:new Map(),complete:new Set(),incoming:new Map(),order:[],cursor:0};
+      const ownerId=String(m.world.me?.id);
+      for(const it of m.scene.nodes) {
+        if(String(it.d.id)===ownerId || it.ta===0)continue;
+        const id=String(it.d.id),pic=/^\/img\/\d+$/.test(it.d.pic||'')?it.d.pic:null;
+        atlas.nodes.set(id,it);atlas.positions.set(id,{x:it.x,y:it.y,r:it.d.portraitRadius,pic});
+        if(pic) {if(!atlas.byPic.has(pic))atlas.byPic.set(pic,[]);atlas.byPic.get(pic).push(it);}
+        else atlas.incoming.set(id,{state:'failed',image:null});
+        const old=previous?.positions.get(id);
+        if(old && old.pic===pic && previous.complete.has(id)) {
+          // Preserve rendered photos when view or sizing changes. The overview
+          // needs its old pixels, not another decoded image or a disappearance.
+          const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
+          const ox=old.x*side,oy=old.y*side,or=old.r*side;
+          atlas.draw.save();atlas.draw.beginPath();atlas.draw.arc(x,y,r,0,TAU);atlas.draw.clip();
+          atlas.draw.drawImage(previous.canvas,ox-or,oy-or,or*2,or*2,x-r,y-r,r*2,r*2);atlas.draw.restore();
+          atlas.complete.add(id);atlas.incoming.delete(id);
         }
-        this.overviewRaster={canvas,version:m.scene.version};this.stats.rasterMs=performance.now()-start;
       }
-      const [x,y]=cam.toScreen(0,0);ctx.drawImage(this.overviewRaster.canvas,x,y,cam.scale,cam.scale);
+      // Stable shuffled loading fills the whole disk progressively. The same
+      // photo URL can belong to several people; each keeps its own position.
+      atlas.order=[...atlas.byPic.keys()].map(url=>({url,hash:photoHash(url)})).sort((a,b)=>a.hash-b.hash).map(item=>item.url);
+      this.overviewRaster=atlas;
+      for(const entry of this.portraits.entries.values())this.captureOverviewPortrait(entry);
+      return atlas;
+    }
+    paintMissingPortrait(ctx,P,x,y,r) {
+      // A confirmed absent photo gets a faint small individual mark. Pending
+      // photos never turn into bright placeholder circles or a grey wall.
+      ctx.save();ctx.globalAlpha*=.18;ctx.fillStyle=P.fg3;
+      ctx.beginPath();ctx.arc(x,y,Math.max(.6,r*.32),0,TAU);ctx.fill();ctx.restore();
+    }
+    paintLargeOverview(ctx, P, plan) {
+      const start=performance.now(),m=this.model,cam=m.cam,atlas=this.prepareOverview(),side=atlas.canvas.width;
+      const now=this.paintNow??performance.now();
+      for(const [id,entry] of atlas.incoming) {
+        const it=atlas.nodes.get(id),image=entry.image;
+        if(!it){atlas.incoming.delete(id);continue;}
+        const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
+        if(entry.state==='failed') {
+          this.paintMissingPortrait(atlas.draw,P,x,y,r);atlas.complete.add(id);atlas.incoming.delete(id);continue;
+        }
+        if(!image || !(image.naturalWidth||image.width) || !(image.naturalHeight||image.height)) {
+          entry.retained=false;atlas.incoming.delete(id);
+          // A detached bitmap from an earlier scene must be fetched again. Do
+          // not let one expired image throw and stop the whole frame loop.
+          if(this.portraits.entries.get(entry.url)===entry)this.portraits.entries.delete(entry.url);
+          const at=atlas.order.indexOf(entry.url);if(at>=0)atlas.cursor=Math.min(atlas.cursor,at);
+          this.invalidate();continue;
+        }
+        const reveal=m.reduced?1:Core.easeOut((now-entry.readyAt)/280);
+        if(reveal<1 || it.a<.99) {
+          const [x,y]=cam.toScreen(it.x,it.y);
+          ctx.globalAlpha=it.a;this.paintPortrait(ctx,P,it.d,x,y,it.d.portraitRadius*cam.scale,true);this.invalidate();
+          continue;
+        }
+        const width=image.naturalWidth||image.width,height=image.naturalHeight||image.height,crop=Math.min(width,height);
+        atlas.draw.save();atlas.draw.beginPath();atlas.draw.arc(x,y,r,0,TAU);atlas.draw.clip();
+        atlas.draw.drawImage(image,(width-crop)/2,(height-crop)/2,crop,crop,x-r,y-r,r*2,r*2);atlas.draw.restore();
+        atlas.complete.add(id);atlas.incoming.delete(id);entry.retained=false;
+      }
+      if(atlas.cursor<atlas.order.length && atlas.incoming.size===0 && !this.portraits.active)this.invalidate();
+      ctx.globalAlpha=1;
+      const [x,y]=cam.toScreen(0,0);ctx.drawImage(atlas.canvas,x,y,cam.scale,cam.scale);
+      this.stats.rasterMs=performance.now()-start;
     }
     queuePortraits(nodes, owner) {
-      if (owner) this.portraits.get(owner.pic);
-      const x = owner?.x ?? .5, y = owner?.y ?? .5;
-      const distance = mark => (mark.it.x - x) ** 2 + (mark.it.y - y) ** 2;
+      if(owner)this.portraits.get(owner.pic);
+      const x=owner?.x??.5,y=owner?.y??.5;
+      const distance=mark=>(mark.it.x-x)**2+(mark.it.y-y)**2;
       const selected=this.model?.selected?.pic;
-      const urls=[owner?.pic,selected,...[...nodes].sort((a,b)=>distance(a)-distance(b)).slice(0,4000).map(mark=>mark.it.d.pic)];
+      if(!this.model?.scene?.large && this.overviewRaster) {
+        for(const entry of this.overviewRaster.incoming.values())entry.retained=false;
+        this.overviewRaster.incoming.clear();
+      }
+      let ordered=[...nodes].sort((a,b)=>distance(a)-distance(b));
+      if(ordered.length>500) {
+        const priority=ordered.slice(0,48),rest=ordered.slice(48);
+        for(const mark of rest)mark.it.photoOrder??=photoHash(String(mark.it.d.id)+'|'+(mark.it.d.pic||''));
+        rest.sort((a,b)=>a.it.photoOrder-b.it.photoOrder);ordered=[...priority,...rest];
+      }
+      const urls=[owner?.pic,selected,...ordered.slice(0,4000).map(mark=>mark.it.d.pic)];
+      if(this.model?.scene?.large) {
+        const atlas=this.prepareOverview();
+        const finished=url=>(atlas.byPic.get(url)||[]).every(it=>atlas.complete.has(String(it.d.id)));
+        while(atlas.cursor<atlas.order.length) {
+          const url=atlas.order[atlas.cursor],entry=this.portraits.entries.get(url);
+          if(!finished(url) && entry?.state!=='ready' && entry?.state!=='failed')break;
+          atlas.cursor++;
+        }
+        // A moving bounded window streams all saved photos into the persistent
+        // raster. Pan and zoom promote readable photos without erasing others.
+        for(let i=atlas.cursor;i<Math.min(atlas.order.length,atlas.cursor+128);i++)
+          if(!finished(atlas.order[i]))urls.push(atlas.order[i]);
+      }
       if(this.portraits.prioritize)this.portraits.prioritize(urls);
       else for(const url of urls)this.portraits.get(url);
+      if(this.model?.scene?.large)for(const url of urls)this.captureOverviewPortrait(this.portraits.entries.get(url));
     }
     paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
       const image = requestPhoto ? (this.portraits.peek ? this.portraits.peek(person.pic) : this.portraits.get(person.pic)) : null;
-      if(!image && !owner)return;
+      if(!image && !owner) {
+        if(!person.pic || !/^\/img\/\d+$/.test(person.pic) || this.portraits.entries?.get(person.pic)?.state==='failed') {
+          if(!this.model?.scene?.large || !this.overviewRaster?.complete.has(String(person.id)))this.paintMissingPortrait(ctx,P,x,y,radius);
+        }
+        return;
+      }
       const reveal=image && this.portraits.reveal ? this.portraits.reveal(person.pic,this.paintNow ?? performance.now(),this.model?.reduced) : 1;
       if(image && reveal<1)this.invalidate();
       const visibleRadius=radius*(image && !owner ? .88+.12*reveal : 1);
@@ -799,7 +887,7 @@
       const sizeText={followers:'Size: followers',fit:'Size: fit',connections:'Size: shared audiences',equal:'Size: equal'}[this.model.size];
       const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
         { g:'centre',s:shared?'Closer: more shared audiences':fit?'Closer: stronger fit':'Closer: stronger connection evidence',
-          t:shared?'Fixed distance bands use distinct collected source audiences, not mutual friends.':fit?'Fixed distance bands use the saved fit assessment. They do not show a connection.':'Fixed distance bands use saved network evidence. Little or unknown evidence stays in the outer band, even when the page contains no close connections. Following does not establish friendship.' },
+          t:shared?'Distance orders this page by distinct collected source audiences. Shared audiences are not mutual friends.':fit?'Distance orders this page by the saved fit assessment. It does not show a connection.':'Distance orders this page by saved network evidence. Similar evidence spreads continuously. Following does not establish friendship.' },
         { g:'size',s:sizeText,t:SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
       const glyph = (g) => {
