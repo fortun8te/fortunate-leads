@@ -28,7 +28,9 @@ def evidence_group(row):
     relationship = row['relationships'] != '[]'
     manual = bool(row['manual_fit'])
     # Owner evidence can qualify profiles whose machine fit is absent or low.
-    fit = 0 if status < 3 or relationship or manual else int((row['content_fit'] or 0) < 70)
+    network_only = 'network_candidate' in row.keys() and row['network_candidate']
+    fit = 0 if status < 3 or relationship or manual else (
+        2 if network_only or row['content_fit'] is None else int(row['content_fit'] < 70))
     return status, not relationship, not manual, fit
 
 

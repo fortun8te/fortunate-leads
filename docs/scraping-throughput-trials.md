@@ -7,6 +7,18 @@ turn, and another eligible list can progress. Cursors, account ownership,
 request spacing and warning holds are retained. A large list can still take
 days; it no longer gets exclusive precedence over other ready work.
 
+Known stable account IDs can now go directly to their list without a profile
+lookup. Saved cursors survive ordinary continuation; intentionally refreshing a
+list still starts a new run. Three consecutive pages with changing cursors but
+no new members in that run park the partial list and release the queue. Unknown
+count, explicit cap and repeated-person partials are not automatically retried.
+
+When existing priorities run out, automatic discovery can choose public,
+unread accounts seen in at least two collected accounts' current lists.
+It queues their following lists through the existing collector, without a bio
+or AI dependency. See [Collection efficiency](COLLECTION_EFFICIENCY.md) for
+coverage rules, measured results and limits.
+
 ## Optional experiments (off by default)
 
 - `auto_discover_policy=bounded_completion` prioritizes smaller following lists
@@ -21,7 +33,8 @@ days; it no longer gets exclusive precedence over other ready work.
   --viewer-ig-id ID --db PATH` previews fresh 50/100/200-row arms. Applying needs
   `--apply`, a known alternate running extension 3.9.21, known public targets
   and no previous collection history for those targets. All arms stay pinned
-  to that viewer; no cross-account cursor handoff. Default following size: 50.
+  to that viewer; no cross-account cursor handoff. Default following size: 200;
+  default follower size: 25. Requesting 200 does not guarantee 200 returned.
   Three different targets are a feasibility check, not a matched causal test.
 
 `ops/collection_benchmark.py` reports the recorded trial, returned rows, newly

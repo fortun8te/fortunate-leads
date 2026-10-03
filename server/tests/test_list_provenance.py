@@ -52,6 +52,78 @@ class ListProvenanceTest(unittest.TestCase):
             self.assertEqual((row['state'], row['received'], row['total']), ('done', 2, 2))
             self.assertTrue(db.list_run_complete(self.conn, job['id']))
 
+    def test_known_identity_lease_preserves_actual_run_count_provenance(self):
+        db.upsert_person(self.conn, {'handle': 'seed', 'ig_id': '123', 'following': 99})
+        self.conn.commit()
+        job = self.start()
+        info = job['list_identity']
+        self.assertEqual((info['ig_id'], info['run_id'], info['first_page_seen']), ('123', job['id'], False))
+        self.assertNotEqual(info['total_source'], 'current_run')
+        self.page(job, ['alice'], ig_id='123', done=False, next_cursor='second', total=2)
+        resumed = self.next()
+        self.assertEqual(resumed['cursor'], 'second')
+        self.assertEqual(resumed['list_identity'], {'ig_id': '123', 'run_id': job['id'],
+                         'total': 2, 'total_source': 'current_run', 'first_page_seen': True})
+
+    def test_unknown_or_conflicting_identity_keeps_profile_lookup(self):
+        job = self.start()
+        self.assertNotIn('list_identity', job)
+        self.page(job, ['alice'])
+        db.upsert_person(self.conn, {'handle': 'seed', 'ig_id': '123'})
+        self.conn.execute("UPDATE seeds SET ig_id='456' WHERE handle='seed'")
+        self.conn.commit()
+        job = self.start(refresh=True)
+        self.assertNotIn('list_identity', job)
+
+    def test_new_cursors_with_repeated_members_stop_and_do_not_auto_restart(self):
+        job = self.start()
+        self.page(job, ['alice'], done=False, next_cursor='p1', total=100)
+        for i in range(2, 5):
+            result = self.page(self.next(), ['alice'], done=False, has_more=True, next_cursor=f'p{i}', total=100)
+        self.assertTrue(result['no_progress'])
+        row = self.row()
+        self.assertEqual((row['state'], row['received'], row['cursor']), ('partial', 1, 'p4'))
+        self.assertEqual(self.active(), {'alice'})
+        self.assertFalse(db.list_run_complete(self.conn, job['id']))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM edge_observations').fetchone()[0], 4)
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed'", (old,))
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
+
+    def test_progress_resets_duplicate_streak_and_existing_people_are_useful(self):
+        for handle in ('alice', 'bob', 'carol'):
+            db.upsert_person(self.conn, {'handle': handle})
+        self.conn.commit()
+        job = self.start()
+        for i, handle in enumerate(('alice', 'alice', 'alice', 'bob', 'bob', 'bob', 'carol')):
+            result = self.page(job, [handle], done=False, next_cursor=f'p{i + 1}', total=100)
+            self.assertNotIn('no_progress', result)
+            job = self.next()
+        self.assertEqual((self.row()['state'], self.row()['received']), ('running', 3))
+
+    def test_unknown_count_terminal_list_stays_partial_without_wasteful_rescan(self):
+        self.page(self.start(), ['alice'], total=None, total_source='unknown')
+        self.assertEqual(self.row()['state'], 'partial')
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.conn.execute("UPDATE lists SET updated_at=? WHERE seed='seed'", (old,))
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['reopened'], 0)
+        self.assertEqual(self.active(), {'alice'})
+
+    def test_explicit_continue_preserves_tracked_partial_but_refresh_starts_new_run(self):
+        job = self.start()
+        self.page(job, ['alice'], done=False, next_cursor='second', total=2)
+        self.conn.execute("UPDATE lists SET state='partial',error='Interrupted before next page' WHERE seed='seed'")
+        self.conn.execute("UPDATE jobs SET state='partial' WHERE id=?", (job['id'],))
+        self.conn.commit()
+        resumed = self.start()
+        self.assertEqual((resumed['cursor'], resumed['received']), ('second', 1))
+        self.assertEqual(resumed['list_identity'] if 'list_identity' in resumed else None, None)
+        self.page(resumed, ['bob'], total=2)
+        self.assertEqual(self.row()['state'], 'done')
+        fresh = self.start(refresh=True)
+        self.assertIsNone(fresh['cursor'])
+        self.assertEqual(fresh['received'], 0)
+
     def test_cached_total_cannot_certify_or_remove_old_edges(self):
         self.page(self.start(), ['old'])
         self.page(self.start(refresh=True), ['new'], total=1, total_source='cached')

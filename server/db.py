@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS collector_events(id INTEGER PRIMARY KEY, event_id TEX
   http_status INT, requested_count INT, returned_count INT, new_links INT);
 CREATE INDEX IF NOT EXISTS collector_events_at ON collector_events(at);
 CREATE INDEX IF NOT EXISTS collector_events_lane_at ON collector_events(lane,at);
+CREATE INDEX IF NOT EXISTS collector_events_job_id ON collector_events(job_id,id);
+CREATE INDEX IF NOT EXISTS collector_events_list_pages ON collector_events(at DESC,id DESC)
+    WHERE kind='list' AND outcome='page';
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,
@@ -1282,7 +1285,7 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None,
             raise ValueError('experimental page size requires a new seed')
     ts = now()
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
-    row = conn.execute('SELECT state FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+    row = conn.execute('SELECT * FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                     (seed, direction)).fetchone():
         return False  # duplicate requests never rewind or relabel work already in progress
@@ -1290,7 +1293,7 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None,
         conn.execute('DELETE FROM list_private_denials WHERE seed=? AND direction=?', (seed, direction))
     if row and row['state'] in ('done', 'private') and not refresh:
         return False
-    if row and (refresh or row['state'] == 'partial'):
+    if row and (refresh or row['state'] == 'partial' and not resumable_list(conn, row)):
         conn.execute('UPDATE lists SET cursor=NULL, run_job_id=NULL, received=0, lane=NULL WHERE seed=? AND direction=?', (seed, direction))
     conn.execute('INSERT INTO lists(seed, direction, state, updated_at) VALUES(?,?,?,?) '
                  "ON CONFLICT DO UPDATE SET state='queued', error=NULL, updated_at=excluded.updated_at",
@@ -1308,6 +1311,26 @@ SHORT_RATIO = 0.95      # done with received below this share of the known total
 SHORT_MIN = 20          # ... and at least this many people missing
 PARTIAL_RETRY_DELAY = timedelta(days=1)
 PARTIAL_RETRY_BATCH = 2  # repair runs every 15 minutes; do not flood Instagram with old partials
+PARKED_PARTIAL_PREFIXES = (
+    'Instagram limited this list;',
+    'Instagram returned repeated people without progress;',
+    'No current collection count was available;',
+)
+
+
+def resumable_list(conn, row):
+    """Only a tracked, non-cyclic unfinished prefix can be continued."""
+    if row['cursor'] is None or row['run_job_id'] is None:
+        return False
+    if (row['error'] or '').startswith(PARKED_PARTIAL_PREFIXES + (
+            'Instagram repeated its page cursor.', 'Earlier pages lack first-page tracking;',
+            'The page history does not prove')):
+        return False
+    run = conn.execute('SELECT first_page_seen FROM list_runs WHERE job_id=?', (row['run_job_id'],)).fetchone()
+    # The saved next cursor must not have been consumed already.
+    return bool(run and run[0] and not conn.execute(
+        'SELECT 1 FROM list_page_requests WHERE job_id=? AND requested_cursor=?',
+        (row['run_job_id'], row['cursor'])).fetchone())
 
 
 def repair_lists(conn, dry=False):
@@ -1363,7 +1386,7 @@ def repair_lists(conn, dry=False):
                     todo.append((r['seed'], d, 'partial'))
             elif r['state'] == 'partial' and (s.lower(), d) not in live and (
                     (s.lower(), d) not in private_denials and r['released_why'] != 'private' and
-                    not (r['error'] or '').startswith('Instagram limited this list;') and
+                    not (r['error'] or '').startswith(PARKED_PARTIAL_PREFIXES) and
                     reopened.get(f'{s}|{d}', 0) < REOPEN_MAX):
                 try:
                     updated = datetime.fromisoformat(r['updated_at'])
@@ -1390,13 +1413,7 @@ def repair_lists(conn, dry=False):
                 row = rows[(s.lower(), d)]
                 # An interrupted cursor chain can continue with its tracked prefix.
                 # A terminal short list or a cursor cycle needs a fresh first page.
-                run = (conn.execute('SELECT first_page_seen FROM list_runs WHERE job_id=?',
-                                    (row['run_job_id'],)).fetchone() if row['run_job_id'] is not None else None)
-                tracked_prefix = bool(run and run[0])
-                resume = (what == 'retry_partial' and row['cursor'] is not None and tracked_prefix and
-                          not (row['error'] or '').startswith(('Instagram repeated its page cursor.',
-                                                                'Earlier pages lack first-page tracking;',
-                                                                'The page history does not prove')))
+                resume = what == 'retry_partial' and resumable_list(conn, row)
                 if not resume:
                     conn.execute('UPDATE lists SET cursor=NULL,run_job_id=NULL,received=0 WHERE seed=? AND direction=?', (s, d))
             conn.execute("UPDATE lists SET state='queued', error=NULL, prev_lane=coalesce(lane,prev_lane), "

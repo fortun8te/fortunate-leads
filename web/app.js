@@ -2249,6 +2249,16 @@ function renderScraper() {
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
   if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && listActive ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
   const h1 = sc.soak?.['1h'] || {};
+  const listEfficiency = $('#list-efficiency-body');
+  if (listEfficiency) {
+    const measured = sc.collection_efficiency;
+    const rows = measured?.directions || [];
+    listEfficiency.innerHTML = rows.length ?
+      `<p class="muted">${measured.sampled ? 'Latest saved pages from the last 24 hours' : 'Last 24 hours'}. Counts are list entries, so the same person can appear in more than one list.</p>` +
+      rows.map(r => `<p><b>${r.direction === 'following' ? 'Following' : 'Followers'}</b> · ${int(r.pages)} pages · ${r.saved_per_page == null ? 'saved entries not measured' : `${int(Math.round(r.saved_per_page))} saved entries per page`}${r.new_connections == null ? '' : ` · ${int(r.new_connections)} new list connections`}</p>`).join('') +
+      '<p class="muted">Successful pages only. Lookups and failed requests also use the daily allowance. Incomplete lists stay marked incomplete.</p>' :
+      '<p class="muted">Collection results appear after pages have been saved.</p>';
+  }
   const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
   $('#scr-counts').innerHTML = tile('New profiles this hour', (sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
     + tile('New profiles today', (sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today), 'newly added profiles')

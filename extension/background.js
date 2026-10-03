@@ -507,6 +507,21 @@ const editProg = (key, fn, gen = mem.gen) => edit('prog', (all) => {
   if (gen !== mem.gen) throw new Superseded();
   all = all || {}; all[key] = fn(all[key] || {}); return all;
 });
+// Server metadata is tied to this exact run and stable identity. A handle cache
+// alone cannot authorize skipping the initial lookup or prove list coverage.
+function listIdentity(job) {
+  const identity = job.list_identity;
+  const validId = value => (typeof value === 'string' || (typeof value === 'number' && Number.isSafeInteger(value))) &&
+    /^[1-9]\d{0,29}$/.test(String(value));
+  if (job.experiment_viewer_ig_id != null || !identity || identity.run_id !== job.id ||
+      !validId(identity.ig_id) || !validId(job.ig_id) || String(identity.ig_id) !== String(job.ig_id) ||
+      !['current_run', 'cached', 'unknown'].includes(identity.total_source) ||
+      typeof identity.first_page_seen !== 'boolean' ||
+      !(identity.total === null || (Number.isInteger(identity.total) && FL.count(identity.total) === identity.total))) return null;
+  const total = identity.total_source === 'unknown' ? null : identity.total;
+  return { igId: String(identity.ig_id), total,
+    totalSource: total == null ? 'unknown' : identity.total_source === 'current_run' && identity.first_page_seen ? 'current_run' : 'cached' };
+}
 async function runList(gen, job, tab) {
   const requestedCount = FL.listPageSize(job, (await get('account'))?.ig_id);
   const key = job.seed.toLowerCase() + '/' + job.direction, cursor = job.cursor || null;
@@ -516,7 +531,19 @@ async function runList(gen, job, tab) {
   let igId = job.ig_id || (cached && cached.ig_id), total = FL.count(prog.total) ?? FL.count(cached && cached[job.direction]);
   // Counts from the handle cache guide progress but cannot prove this run saw everyone.
   let totalSource = total == null ? 'unknown' : FL.count(prog.total) != null && prog.jobId === job.id && prog.totalSource === 'current_run' ? 'current_run' : 'cached';
-  // Refresh the seed once at the start of each run: an ID cache cannot prove a current count.
+  const identity = listIdentity(job);
+  if (identity) {
+    igId = identity.igId;
+    // Preserve a count already witnessed in this run locally; otherwise restore
+    // the server checkpoint, including after local progress has been cleared.
+    if (totalSource !== 'current_run' || identity.totalSource === 'current_run') {
+      total = identity.total;
+      totalSource = identity.totalSource;
+    }
+    prog = { ...prog, jobId: job.id, total, totalSource, countAttempted: true };
+    await editProg(key, () => prog, gen);
+  }
+  // Unknown identities and pinned experiments keep the existing lookup route.
   if (!igId || !prog.countAttempted) {
     // web_profile_info 429s for scripts (RESEARCH.md); let Instagram load the profile page itself and read its own data.
     const r = await lookupViaPage(gen, job.seed, 'list', tab);

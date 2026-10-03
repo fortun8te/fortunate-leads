@@ -32,6 +32,7 @@ import control  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
 import collection_progress  # noqa: E402
+import collection_efficiency  # noqa: E402
 import map_scale  # noqa: E402
 import map_layout  # noqa: E402
 import map_view  # noqa: E402
@@ -360,6 +361,25 @@ def ext_next(conn, q, b):
         out = {'id': job['id'], 'kind': 'list', 'seed': job['seed'], 'ig_id': seed and seed['ig_id'],
                'direction': job['direction'], 'cursor': lst and lst['cursor'], 'received': (lst and lst['received']) or 0,
                'page_size': job['page_size'], 'experiment_viewer_ig_id': job['experiment_viewer_ig_id']}
+        # Known identities can go straight to the list. Profile navigation is
+        # still required for unknown/ambiguous identities and pinned trials.
+        identities = {str(r[0]) for r in conn.execute(
+            'SELECT ig_id FROM seeds WHERE handle=? UNION SELECT ig_id FROM people WHERE handle=?',
+            (job['seed'], job['seed'])) if r[0] is not None and str(r[0]).strip()}
+        if (not job['experiment_viewer_ig_id'] and len(identities) == 1
+                and str(out['ig_id'] or '').isdigit()):
+            run = conn.execute('SELECT * FROM list_runs WHERE job_id=?', (job['id'],)).fetchone()
+            count = run['total'] if run and run['total_source'] == 'current_run' else None
+            source = 'current_run' if count is not None else 'unknown'
+            if count is None:
+                known = conn.execute(
+                    'SELECT total FROM lists WHERE seed=? AND direction=?',
+                    (job['seed'], job['direction'])).fetchone()
+                count = count_or_none(known['total']) if known else None
+                source = 'cached' if count is not None else 'unknown'
+            out['list_identity'] = {'ig_id': str(out['ig_id']), 'run_id': job['id'],
+                                    'total': count, 'total_source': source,
+                                    'first_page_seen': bool(run and run['first_page_seen'])}
     else:
         p = conn.execute('SELECT ig_id FROM people WHERE handle=?', (job['handle'],)).fetchone()
         out = {'id': job['id'], 'kind': 'profile', 'handle': job['handle'], 'ig_id': p and p['ig_id']}
@@ -606,14 +626,26 @@ def _ext_list_page(conn, q, b):
     rules.sync(conn, pids)
     received = conn.execute('SELECT member_count FROM list_runs WHERE job_id=?',
                             (job['id'],)).fetchone()[0] if job else len(set(pids))
+    # Different cursors can still return the same people forever. Distinct
+    # current-run membership, not globally new profiles, measures progress.
+    # Keep all observations and the next cursor, but stop spending requests
+    # after three consecutive nonterminal pages add no run members.
+    no_progress = False
+    if job and next_cursor and not stalled and received == previous_members:
+        recent = conn.execute(
+            "SELECT saved_entries FROM collector_events WHERE job_id=? AND outcome='page' "
+            'ORDER BY id DESC LIMIT 2', (job['id'],)).fetchall()
+        no_progress = len(recent) == 2 and all(r['saved_entries'] == 0 for r in recent)
     limited = bool(b.get('limited'))
     missing_end = not next_cursor and not b.get('done') and not limited
-    done = bool(b.get('done')) or limited or stalled or missing_end
+    done = bool(b.get('done')) or limited or stalled or missing_end or no_progress
     total = count_or_none(b.get('total'))
     if total is None:
         row = conn.execute(f"SELECT {'followers' if direction == 'followers' else 'following'} FROM people WHERE handle=?", (seed,)).fetchone()
         total = row[0] if row else (old and old['total'])
     error = 'Instagram limited this list; coverage is partial.' if limited else None
+    if no_progress and not error:
+        error = 'Instagram returned repeated people without progress; saved this partial list and moved on.'
     if stalled:
         error = 'Instagram repeated its page cursor. Collected profiles were saved; retry this partial list to continue.'
     run = conn.execute('SELECT * FROM list_runs WHERE job_id=?', (job['id'],)).fetchone() if job else None
@@ -665,6 +697,8 @@ def _ext_list_page(conn, q, b):
     result = {'received': received}
     if stalled:
         result.update(stalled=True, partial=True)
+    if no_progress:
+        result.update(no_progress=True, partial=True)
     if trial_stopped:
         result.update(trial_stopped=True, partial=True)
     return result
@@ -2086,6 +2120,7 @@ def api_scraper(conn, q, b):
             'soak': soak(conn, now), 'progress': progress(conn, accts),
             'coverage': {'lists': coverage, 'local': local_coverage(conn)},
             'collection': collection_progress.summary(conn, lists, accts, now),
+            'collection_efficiency': collection_efficiency.summary(conn, now),
             'stages': stages, 'control': control_state,
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': lists,
