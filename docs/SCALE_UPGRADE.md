@@ -32,8 +32,14 @@ start collectors, enable AI, alter collection allowances, or clean the live data
   rollback and interrupted migration; ordinary collection uses the improvement too.
 - The existing collector keeps its default scheduler. An explicit experimental
   `observed_yield` policy may interleave ordinary equal-priority lists based on saved
-  page yield, with exploration and existing four-page fairness. Positive-priority
-  work, trials, eligibility, account ownership, holds and pacing retain precedence.
+  page yield, with exploration and existing four-page fairness. Four saved ordinary
+  backlog pages can also earn one automatic fresh-network lease opportunity, so a
+  large old backlog cannot indefinitely prevent new discovery. Actual leasing spends
+  that opportunity, including failed attempts; read-only queue checks do not.
+  At most two automatic targets remain pending. Positive-priority work, trials,
+  direction fallbacks, eligibility, account ownership, holds and pacing retain
+  precedence. A lease can include the existing lookup or confirmation behavior;
+  it is not a guaranteed single underlying HTTP request or a fixed request share.
 - A metadata-only permit audit distinguishes list pages, seed lookups and profile
   views. It records known HTTP outcomes separately from operations with unknown HTTP
   counts. Native profile navigation can generate several underlying requests.
@@ -65,6 +71,34 @@ more people than adaptive. This is one historical cohort, not a prospective dail
 rate or proof that the adaptive policy should be the default. It excludes unknown
 transport attempts, profile reads and seed lookups. Missing historical identities
 and legacy timestamps are disclosed in the replay report.
+
+### Fresh-target admission audit
+
+A later read-only audit used accepted page events from 12:20:16 to 16:27 UTC on
+October 3. Jobs already present at the cutoff produced 651 newly stored historical
+links from 84 pages; 50 jobs admitted afterward produced 39,540 from 243 pages.
+Those later jobs match discovery history. Their first admission was at 13:02:18,
+just after an older crawl finished at 13:01:59. No observed page preceded its job's
+creation time. This identifies an initial discovery delay of roughly 42 minutes;
+it does not establish a sustained speed improvement or a controlled comparison.
+Historical link additions are a different metric from canonical replay novelty.
+
+The fixed-cohort replay correctly excludes those 243 later pages. Within its
+remaining 84-page cohort, the first 50 chronological pages yielded 628 canonical
+new connections; round-robin yielded 951 and adaptive yielded 936. All policies
+converged to 1,009 connections after all 84 pages. This supports bounded exploration,
+but does not demonstrate that adaptive scheduling beats simple round-robin.
+
+The audit also reproduced a missing admission path on temporary data: an ordinary
+priority-zero backlog prevented a fresh automatic candidate from being admitted,
+even when the experimental scheduler was enabled and no automatic target was
+pending. Admission and dispatch must both be bounded; merely admitting a lower
+priority discovery job would still leave it behind the same ordinary backlog.
+The experimental policy now implements that bounded opportunity, including when
+the fresh target lies outside the first 64 ordinary queued jobs. The allowance is
+stored inside the actual lease transaction and survives restart; rollback restores
+it. Ordinary saved-cursor work resumes after the opportunity. This remains an
+offline-tested scheduling change, with no live throughput claim.
 
 ### Saved-list intake
 
@@ -189,8 +223,9 @@ API is introduced. See [the source audit](SOURCE_CAPACITY_RESEARCH.md).
 
 ## Validation
 
-The complete server suite passed 1,404 tests on Python 3.14, with three optional
-dependency skips. The optional transport suite passed all 13 tests separately on
+After the fresh-network admission change, the complete server suite ran 1,420
+tests on Python 3.14 in 252.728 seconds: successful, with three optional dependency
+skips. Its independent review passed 135 focused scheduling and safety tests. The optional transport suite passed all 13 tests separately on
 Python 3.12 with Instagrapi 3.0.14. Root and sidecar Python suites passed 21 and 27
 tests. The extension passed 208 tests in each of UTC, Europe/Amsterdam,
 America/Los_Angeles and Asia/Tokyo. The original complete web suite passed 424 tests. The map correction passed all

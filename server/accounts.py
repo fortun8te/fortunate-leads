@@ -773,7 +773,16 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
     args = (*kinds, ts, ts, ts, lane, *ok, *route_waiting, *viewer_args, *experiment_args,
             prefer_profile, last_list, yield_list, prefer_following, lane)
     while True:
-        candidate = acquisition_dispatch.select(conn, conn.execute(query, args).fetchall(),
+        eligible = conn.execute(query, args).fetchall()
+        if acquisition_dispatch.enabled(conn) and eligible:
+            # Seek the bounded fresh frontier through the very same account,
+            # direction, backend, hold and ownership filters as ordinary work.
+            fresh_query = query.replace("WHERE j.kind IN", "WHERE EXISTS (SELECT 1 FROM collection_discovery h "
+                "WHERE h.job_id=j.id AND h.state='queued') AND j.kind IN")
+            fresh_query = fresh_query.rsplit('LIMIT ', 1)[0] + 'LIMIT 2'
+            present = {r['id'] for r in eligible}
+            eligible.extend(r for r in conn.execute(fresh_query, args).fetchall() if r['id'] not in present)
+        candidate = acquisition_dispatch.select(conn, eligible,
                                                 lane=lane, last_list=last_list, yield_list=yield_list,
                                                 prefer_following=prefer_following)
         if not candidate or candidate['kind'] != 'profile':

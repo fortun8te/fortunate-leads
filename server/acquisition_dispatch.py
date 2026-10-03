@@ -13,6 +13,7 @@ POLICY_KEY = 'graph_acquisition_policy'
 CURRENT = 'current'
 ADAPTIVE = 'observed_yield'
 TURN_PREFIX = 'graph_acquisition_turn:'
+FRESH_CONSUMED_PREFIX = 'graph_acquisition_fresh_consumed:'
 
 
 def seed_identity(conn, handle, supplied=None):
@@ -64,8 +65,33 @@ def record_admission(conn, lane, job):
     advance the experimental exploration cadence.
     """
     if enabled(conn) and _ordinary(job):
+        if is_automatic(conn, job) and fresh_turn_due(conn, lane):
+            latest = conn.execute("SELECT id FROM collector_events WHERE lane=? "
+                "AND kind='list' AND outcome='page' ORDER BY at DESC,id DESC LIMIT 1", (lane,)).fetchone()[0]
+            db.set_setting(conn, FRESH_CONSUMED_PREFIX + str(lane), latest)
         db.set_setting(conn, TURN_PREFIX + str(lane),
                        (admission_turn(conn, lane) + 1) % acquisition_planner.EXPLORATION_INTERVAL)
+
+
+def fresh_turn_due(conn, lane):
+    """Four saved ordinary pages earn one fresh-network lease, never a poll."""
+    import collection_suggestions
+    if not enabled(conn) or not collection_suggestions.enabled(conn):
+        return False
+    consumed = db.get_setting(conn, FRESH_CONSUMED_PREFIX + str(lane), 0)
+    if type(consumed) is not int or consumed < 0:
+        return False
+    rows = conn.execute(
+        "SELECT j.*,c.id AS saved_event_id FROM collector_events c JOIN jobs j ON j.id=c.job_id "
+        "WHERE c.lane=? AND c.kind='list' AND c.outcome='page' "
+        "ORDER BY c.at DESC,c.id DESC LIMIT ?", (lane, 4)).fetchall()
+    return len(rows) == 4 and all(r['saved_event_id'] > consumed and _ordinary(r) and r['priority'] == 0
+                                and not is_automatic(conn, r) for r in rows)
+
+
+def permits_fresh_admission(conn, lane, job):
+    return (_ordinary(job) and job['priority'] == 0
+            and not is_automatic(conn, job) and fresh_turn_due(conn, lane))
 
 
 def select(conn, eligible, *, lane=None, last_list=None, yield_list=False, prefer_following=False):
@@ -76,6 +102,21 @@ def select(conn, eligible, *, lane=None, last_list=None, yield_list=False, prefe
     first = rows[0]
     if not _ordinary(first):
         return first
+    if prefer_following and first['direction'] == 'following':
+        rows = [r for r in rows if r['kind'] == 'list' and r['direction'] == 'following']
+    # The separate automatic seek uses the scheduler's exact eligibility SQL.
+    # Preserve requested positive-priority work and trials before exploration.
+    protected = [r for r in rows if r['kind'] == 'list' and not _ordinary(r)]
+    ordinary = [r for r in rows if _ordinary(r) and r['priority'] == 0
+                and not is_automatic(conn, r)]
+    automatic = [r for r in rows if _ordinary(r) and is_automatic(conn, r)]
+    if ordinary and automatic:
+        if not protected and fresh_turn_due(conn, lane):
+            return automatic[0]
+        # Taking a fresh job consumes the turn. Resume ordinary work even
+        # when the default sticky-list ordering puts the fresh list first.
+        rows = ordinary
+        first = rows[0]
     candidates, by_id = [], {}
     for row in rows[:acquisition_planner.MAX_CANDIDATES]:
         if not _ordinary(row) or row['priority'] != first['priority']:

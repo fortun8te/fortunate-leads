@@ -254,7 +254,7 @@ def queue_when_idle(conn, row, now=None):
     now = now or datetime.now(timezone.utc)
     if not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
-    if (not enabled(conn) or control.stage_paused(conn, 'lists')
+    if (not enabled(conn) or not accounts.isolation_allows(conn, row) or control.stage_paused(conn, 'lists')
             or control.shared_collection_wait(conn, now) or not accounts.healthy(row, now)
             or control.lane_wait(conn, row, 'list', now)
             or 'list' not in accounts.kinds_for(conn, row, ['list'], now)):
@@ -269,9 +269,11 @@ def queue_when_idle(conn, row, now=None):
     current = accounts.pick_job(conn, row['lane_id'], ['list'], now)
     if current is not None:
         import acquisition_dispatch
-        # The experimental page policy needs a second automatic target to
-        # compare. Manual requests keep their place and the two-job cap stays.
-        if not acquisition_dispatch.enabled(conn) or not acquisition_dispatch.is_automatic(conn, current):
+        # The experimental policy can compare automatic targets or earn one
+        # fresh page after four ordinary pages. The two-target cap still applies.
+        if (not acquisition_dispatch.enabled(conn)
+                or not (acquisition_dispatch.is_automatic(conn, current)
+                        or acquisition_dispatch.permits_fresh_admission(conn, row['lane_id'], current))):
             return None
     # Automatic exploration never recruits the protected main account.
     all_accounts = conn.execute('SELECT * FROM accounts').fetchall()
