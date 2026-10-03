@@ -131,7 +131,7 @@ class EngineControlsTests(unittest.TestCase):
         class Pool:
             def idle(self):
                 return False
-        with patch.object(server, 'POOL', [Pool()]), \
+        with patch.object(server.get_application().qualification, '_llm_pool', Pool()), \
                 patch.object(server.local_model, 'status', return_value={'ready': False}), \
                 patch.object(server.local_model, 'is_remote', return_value=False), \
                 patch.object(server.laya, 'last_known', return_value=False), \

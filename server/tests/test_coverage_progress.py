@@ -132,7 +132,7 @@ class CoverageProgressTest(unittest.TestCase):
                           (person['id'], digest, '{}', 0, db.now()))
         self.conn.execute('DELETE FROM laya_queue WHERE person_id=?', (person['id'],))
         self.conn.commit()
-        server._local_coverage_cache.clear()
+        server.get_application().collection.local_coverage_cache.clear()
         reviewed = server.local_coverage(self.conn)
         self.assertEqual((reviewed['eligible_profiles'], reviewed['processed_profiles'], reviewed['pending_profiles'],
                           reviewed['state']), (1, 1, 0, 'complete'))

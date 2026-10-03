@@ -44,8 +44,8 @@ class WorkerTransactionTest(unittest.TestCase):
                 observed.append(db_conn.execute('SELECT count(*) FROM items').fetchone()[0])
                 return False
 
-            with patch.dict(server.CFG, {'db': path}), patch.object(server.traceback, 'print_exc'), \
-                    patch.object(server.edge_benchmark_api, 'active', return_value=False):
+            with patch.dict(server.CFG, {'db': path}), patch.object(server.get_application().supervisor, 'log_error'), \
+                    patch.object(server.get_application().supervisor, 'benchmark_probe', return_value=False):
                 server.worker(StopAfterTwoSteps(), step, 0, 0)
             self.assertEqual(observed, [0])
 
@@ -54,7 +54,7 @@ class WorkerTransactionTest(unittest.TestCase):
             path = str(Path(directory) / 'worker.sqlite')
             calls = []
             with patch.dict(server.CFG, {'db': path}), \
-                    patch.object(server.edge_benchmark_api, 'active', side_effect=[True, False]):
+                    patch.object(server.get_application().supervisor, 'benchmark_probe', side_effect=[True, False]):
                 server.worker(StopAfterTwoSteps(), lambda conn: calls.append('work'), 0, 0)
             self.assertEqual(calls, ['work'])
 
@@ -71,7 +71,7 @@ class WorkerTransactionTest(unittest.TestCase):
 
             started = threading.Event()
             errors = []
-            original = server.requalify
+            original = server.get_application().qualification.requalify
 
             def slow_requalify(*args):
                 started.set()
@@ -87,7 +87,7 @@ class WorkerTransactionTest(unittest.TestCase):
                 finally:
                     conn.close()
 
-            with patch.object(server, 'requalify', side_effect=slow_requalify):
+            with patch.object(server.get_application().qualification, 'requalify', side_effect=slow_requalify):
                 thread = threading.Thread(target=qualify)
                 thread.start()
                 try:
@@ -95,7 +95,7 @@ class WorkerTransactionTest(unittest.TestCase):
                     beat = db.connect(path)
                     beat.execute('PRAGMA busy_timeout=1300')
                     try:
-                        with patch.object(server, 'ext_state', return_value={}):
+                        with patch.object(server.get_application().collection, 'ext_state', return_value={}):
                             server.ext_heartbeat(beat, {}, {'lane_id': 'lane-a'})
                     finally:
                         beat.close()

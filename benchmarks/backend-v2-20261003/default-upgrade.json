@@ -1,0 +1,626 @@
+{
+  "fixture": {
+    "people": 100000,
+    "identity_digest": "7e198bb54dca0a33298aaf095b6df02eac2f55369c158de57764244d80e86453",
+    "snapshot_sha256_before_migration": "baea3da115eecb68719b7713ca0250fc04ff211d358b9f6acd639eeba1bc6785",
+    "same_sqlite_backup_source": "/private/tmp/fortunate-backend-v2/baseline.sqlite",
+    "prepared_map_copied": false
+  },
+  "response_differences": {},
+  "latency": {
+    "leads_score": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 13.46,
+          "p95_ms": 14.638,
+          "max_ms": 14.638
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 13.21,
+          "p95_ms": 14.374,
+          "max_ms": 14.374
+        },
+        "p50_ratio": 0.981
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 13.486,
+          "p95_ms": 14.06,
+          "max_ms": 14.06
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 13.683,
+          "p95_ms": 14.308,
+          "max_ms": 14.308
+        },
+        "p50_ratio": 1.015
+      }
+    },
+    "leads_connected": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 79.616,
+          "p95_ms": 81.033,
+          "max_ms": 81.033
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 80.515,
+          "p95_ms": 94.797,
+          "max_ms": 94.797
+        },
+        "p50_ratio": 1.011
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 79.568,
+          "p95_ms": 81.133,
+          "max_ms": 81.133
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 79.899,
+          "p95_ms": 81.455,
+          "max_ms": 81.455
+        },
+        "p50_ratio": 1.004
+      }
+    },
+    "leads_min_lists": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 122.36,
+          "p95_ms": 126.185,
+          "max_ms": 126.185
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 18.177,
+          "p95_ms": 18.463,
+          "max_ms": 18.463
+        },
+        "p50_ratio": 0.149
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 122.291,
+          "p95_ms": 123.067,
+          "max_ms": 123.067
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 17.615,
+          "p95_ms": 19.781,
+          "max_ms": 19.781
+        },
+        "p50_ratio": 0.144
+      }
+    },
+    "leads_strong_fit": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 105.405,
+          "p95_ms": 106.195,
+          "max_ms": 106.195
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 17.93,
+          "p95_ms": 19.269,
+          "max_ms": 19.269
+        },
+        "p50_ratio": 0.17
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 105.319,
+          "p95_ms": 106.328,
+          "max_ms": 106.328
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 19.132,
+          "p95_ms": 19.627,
+          "max_ms": 19.627
+        },
+        "p50_ratio": 0.182
+      }
+    },
+    "leads_search": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 111.972,
+          "p95_ms": 114.434,
+          "max_ms": 114.434
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 112.189,
+          "p95_ms": 113.284,
+          "max_ms": 113.284
+        },
+        "p50_ratio": 1.002
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 111.358,
+          "p95_ms": 115.553,
+          "max_ms": 115.553
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 111.635,
+          "p95_ms": 112.667,
+          "max_ms": 112.667
+        },
+        "p50_ratio": 1.002
+      }
+    },
+    "counts": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.566,
+          "p95_ms": 5.82,
+          "max_ms": 5.82
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.293,
+          "p95_ms": 5.579,
+          "max_ms": 5.579
+        },
+        "p50_ratio": 0.951
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 4.837,
+          "p95_ms": 5.307,
+          "max_ms": 5.307
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.248,
+          "p95_ms": 5.594,
+          "max_ms": 5.594
+        },
+        "p50_ratio": 1.085
+      }
+    },
+    "counts_filtered": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 124.284,
+          "p95_ms": 127.871,
+          "max_ms": 127.871
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 125.052,
+          "p95_ms": 127.156,
+          "max_ms": 127.156
+        },
+        "p50_ratio": 1.006
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.037,
+          "p95_ms": 5.196,
+          "max_ms": 5.196
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.263,
+          "p95_ms": 5.531,
+          "max_ms": 5.531
+        },
+        "p50_ratio": 1.045
+      }
+    },
+    "tags": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.35,
+          "p95_ms": 5.766,
+          "max_ms": 5.766
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.136,
+          "p95_ms": 5.339,
+          "max_ms": 5.339
+        },
+        "p50_ratio": 0.96
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.597,
+          "p95_ms": 5.701,
+          "max_ms": 5.701
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 4.992,
+          "p95_ms": 5.276,
+          "max_ms": 5.276
+        },
+        "p50_ratio": 0.892
+      }
+    },
+    "tags_filtered": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 749.922,
+          "p95_ms": 756.417,
+          "max_ms": 756.417
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 164.595,
+          "p95_ms": 166.103,
+          "max_ms": 166.103
+        },
+        "p50_ratio": 0.219
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 4.926,
+          "p95_ms": 5.103,
+          "max_ms": 5.103
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.339,
+          "p95_ms": 5.736,
+          "max_ms": 5.736
+        },
+        "p50_ratio": 1.084
+      }
+    },
+    "control": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 7.987,
+          "p95_ms": 9.121,
+          "max_ms": 9.121
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 8.701,
+          "p95_ms": 9.228,
+          "max_ms": 9.228
+        },
+        "p50_ratio": 1.089
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 8.102,
+          "p95_ms": 9.003,
+          "max_ms": 9.003
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 8.581,
+          "p95_ms": 9.413,
+          "max_ms": 9.413
+        },
+        "p50_ratio": 1.059
+      }
+    },
+    "map": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 97.93,
+          "p95_ms": 99.614,
+          "max_ms": 99.614
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 98.777,
+          "p95_ms": 99.777,
+          "max_ms": 99.777
+        },
+        "p50_ratio": 1.009
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 12.646,
+          "p95_ms": 20.816,
+          "max_ms": 20.816
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 12.771,
+          "p95_ms": 16.308,
+          "max_ms": 16.308
+        },
+        "p50_ratio": 1.01
+      }
+    },
+    "map_view": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 7.982,
+          "p95_ms": 8.408,
+          "max_ms": 8.408
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 7.867,
+          "p95_ms": 8.145,
+          "max_ms": 8.145
+        },
+        "p50_ratio": 0.986
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 7.494,
+          "p95_ms": 8.106,
+          "max_ms": 8.106
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 7.795,
+          "p95_ms": 8.126,
+          "max_ms": 8.126
+        },
+        "p50_ratio": 1.04
+      }
+    },
+    "map_search": {
+      "cold": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.817,
+          "p95_ms": 6.118,
+          "max_ms": 6.118
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.7,
+          "p95_ms": 6.322,
+          "max_ms": 6.322
+        },
+        "p50_ratio": 0.98
+      },
+      "warm": {
+        "baseline": {
+          "n": 5,
+          "p50_ms": 5.643,
+          "p95_ms": 5.748,
+          "max_ms": 5.748
+        },
+        "candidate": {
+          "n": 5,
+          "p50_ms": 5.914,
+          "p95_ms": 6.822,
+          "max_ms": 6.822
+        },
+        "p50_ratio": 1.048
+      }
+    }
+  },
+  "response_comparison_version": 3,
+  "excluded_response_paths": [
+    {
+      "endpoint": "control",
+      "path": "$.body.at",
+      "reason": "control.snapshot sets at=iso(datetime.now(timezone.utc)) for the response snapshot; it is not a saved observation date"
+    }
+  ],
+  "response_cases": [
+    "leads_score",
+    "leads_connected",
+    "leads_min_lists",
+    "leads_strong_fit",
+    "leads_search",
+    "counts",
+    "counts_filtered",
+    "tags",
+    "tags_filtered",
+    "control",
+    "map",
+    "map_view",
+    "map_search"
+  ],
+  "runs_per_condition": {
+    "baseline": 5,
+    "candidate": 5
+  },
+  "python_executable": {
+    "baseline": "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+    "candidate": "/Applications/Xcode.app/Contents/Developer/usr/bin/python3"
+  },
+  "python_version": {
+    "baseline": "3.9.6 (default, Aug 25 2026, 21:26:21) \n[Clang 21.0.0 (clang-2100.3.34.2)]",
+    "candidate": "3.9.6 (default, Aug 25 2026, 21:26:21) \n[Clang 21.0.0 (clang-2100.3.34.2)]"
+  },
+  "cold_definition": "Application response caches and layout reader pool cleared; OS cache retained",
+  "map_view_prepared": {
+    "baseline": false,
+    "candidate": false
+  },
+  "baseline_errors": [],
+  "candidate_errors": [],
+  "candidate_migration_ms": 20.845,
+  "candidate_explicit_ranking_prepare_ms": null,
+  "sqlite_connect_close": {
+    "baseline": {
+      "n": 100,
+      "p50_ms": 4.096,
+      "p95_ms": 4.505,
+      "max_ms": 5.059
+    },
+    "candidate": {
+      "n": 100,
+      "p50_ms": 4.048,
+      "p95_ms": 4.382,
+      "max_ms": 4.499
+    }
+  },
+  "concurrency": {
+    "baseline": {
+      "warm_mixed": {
+        "n": 24,
+        "p50_ms": 62.387,
+        "p95_ms": 190.001,
+        "max_ms": 198.932,
+        "wall_ms": 201.749,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 40,
+        "nonclient_threads": 15,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      },
+      "cold_same_map": {
+        "n": 24,
+        "p50_ms": 7363.053,
+        "p95_ms": 7557.95,
+        "max_ms": 7574.502,
+        "wall_ms": 7577.805,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 51,
+        "nonclient_threads": 26,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      },
+      "warm_same_control": {
+        "n": 24,
+        "p50_ms": 62.074,
+        "p95_ms": 83.92,
+        "max_ms": 85.288,
+        "wall_ms": 106.138,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 47,
+        "nonclient_threads": 22,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      }
+    },
+    "candidate": {
+      "warm_mixed": {
+        "n": 24,
+        "p50_ms": 68.121,
+        "p95_ms": 151.333,
+        "max_ms": 159.329,
+        "wall_ms": 161.521,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 48,
+        "nonclient_threads": 23,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      },
+      "cold_same_map": {
+        "n": 24,
+        "p50_ms": 268.562,
+        "p95_ms": 315.142,
+        "max_ms": 318.952,
+        "wall_ms": 322.754,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 51,
+        "nonclient_threads": 26,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      },
+      "warm_same_control": {
+        "n": 24,
+        "p50_ms": 78.027,
+        "p95_ms": 94.463,
+        "max_ms": 94.618,
+        "wall_ms": 109.067,
+        "status_counts": {
+          "200": 24
+        },
+        "errors": 0,
+        "retryable_rejections": 0,
+        "process_threads": 50,
+        "nonclient_threads": 25,
+        "thread_measurement": "Python thread enumeration sampled every 2ms; nonclient includes main and HTTP listener"
+      }
+    }
+  },
+  "busy_writer": {
+    "baseline": {
+      "holder_requested_ms": 1000,
+      "holder_actual_ms": 1010.516,
+      "status": 200,
+      "elapsed_ms": 1074.664,
+      "body": {
+        "status": "interested",
+        "note": null,
+        "mark_rev": "2026-10-03T13:12:00.233234+00:00",
+        "id": 1,
+        "note_mentions": [],
+        "relationships": [],
+        "familiarity": null,
+        "ok": true
+      },
+      "retry_after": null,
+      "error": null,
+      "mark_before": null,
+      "mark_after": [
+        "interested",
+        null
+      ],
+      "rejected_write_preserved_mark": null
+    },
+    "candidate": {
+      "holder_requested_ms": 1000,
+      "holder_actual_ms": 1010.384,
+      "status": 503,
+      "elapsed_ms": 308.042,
+      "body": {
+        "ok": false,
+        "error": "Database busy; retry shortly"
+      },
+      "retry_after": "1",
+      "error": null,
+      "mark_before": null,
+      "mark_after": null,
+      "rejected_write_preserved_mark": true
+    }
+  },
+  "all_stable_responses_equal": true,
+  "baseline_commit": "7ad97519abaaaabad11a86babc2c15be95c56393",
+  "candidate_branch": "codex/backend-v2"
+}

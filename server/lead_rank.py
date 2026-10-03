@@ -9,6 +9,17 @@ import sqlite3
 ORDERS = {
     'fit': "CASE WHEN tier='unread' THEN 1 ELSE 0 END, (content_fit IS NULL), content_fit DESC, degree DESC, (score IS NULL), score DESC, person_id",
     'score': '(score IS NULL), score DESC, followers DESC, person_id',
+    'connected': 'degree DESC, (followers IS NULL), followers DESC, person_id',
+}
+
+# Connected ordering is an optional upgrade for existing prepared databases.
+# Missing it must not disable the established score and fit projections.
+BASE_SORTS = ('fit', 'score')
+FIT_CONDITIONS = {
+    'strong': 'content_fit>=70',
+    'good': 'content_fit>=45 AND content_fit<70',
+    'weak': 'content_fit<45',
+    'unread': 'content_fit IS NULL',
 }
 
 
@@ -39,7 +50,8 @@ def ensure(conn):
         name = 'lead_rank_' + sort
         if name not in indexes:
             if conn.execute('SELECT 1 FROM lead_rank LIMIT 1').fetchone():
-                conn.execute("UPDATE settings SET value='false' WHERE key='lead_rank_ready'")
+                if sort in BASE_SORTS:
+                    conn.execute("UPDATE settings SET value='false' WHERE key='lead_rank_ready'")
             else:
                 conn.execute(f'CREATE INDEX {name} ON lead_rank(hidden,{order})')
     refresh = ("INSERT INTO lead_rank SELECT p.id, EXISTS(SELECT 1 FROM marks m WHERE m.person_id=p.id AND m.status='no'), "
@@ -79,13 +91,17 @@ def ensure(conn):
                  'UPDATE lead_rank_totals SET n=n+1 WHERE hidden=NEW.hidden; ' + decrease + increase + ' END')
 
 
-def ready(conn):
-    return bool(conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('lead_rank','lead_rank_totals','lead_rank_facets')").fetchone()[0] == 3
+def ready(conn, sort=None):
+    if sort is not None and sort not in ORDERS:
+        return False
+    prepared = bool(conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('lead_rank','lead_rank_totals','lead_rank_facets')").fetchone()[0] == 3
                 and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('lead_rank_fit','lead_rank_score')").fetchone()[0] == 2
                 and conn.execute("SELECT 1 FROM settings WHERE key='lead_rank_ready' AND value='true'").fetchone()
                 and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'lead_rank_%'").fetchone()[0] == 15
                 and conn.execute("SELECT 1 FROM settings WHERE key='map_person_degree_v1' AND value='true'").fetchone()
                 and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6)
+    return prepared and (sort != 'connected' or bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='lead_rank_connected'").fetchone()))
 
 
 def prepare(conn):
@@ -148,22 +164,59 @@ def counts(conn, statuses):
     return out
 
 
-def page(conn, sort, limit, offset):
-    """Only the ordinary open list; uncommon filters use the shared exact query."""
-    if sort not in ORDERS or not ready(conn):
+def page(conn, sort, limit, offset, *, min_lists=0, fits=()):
+    """Exact open-list ordering with optional degree and content-fit predicates.
+
+    Callers still hydrate only these IDs through the ordinary profile query.
+    A missing connected index falls back until explicit offline preparation.
+    """
+    if (sort not in ORDERS or type(min_lists) is not int or min_lists < 0
+            or any(fit not in FIT_CONDITIONS for fit in fits) or not ready(conn, sort)):
         return None
+    # Preserve the original SQL NOT IN semantics even for a legacy null owner.
+    if conn.execute('SELECT 1 FROM seeds WHERE is_me=1 AND handle IS NULL LIMIT 1').fetchone():
+        return 0, []
     # Owner handles are few. Exclude them without counting ten million profiles.
     excluded = owner_ids(conn)
     clause = 'hidden=0'
+    args = []
+    if min_lists:
+        clause += ' AND degree>=?'
+        args.append(min_lists)
+    if fits:
+        clause += ' AND (' + ' OR '.join('(' + FIT_CONDITIONS[fit] + ')' for fit in dict.fromkeys(fits)) + ')'
     if excluded:
         clause += ' AND person_id NOT IN (' + ','.join('?' for _ in excluded) + ')'
-    total = conn.execute('SELECT n FROM lead_rank_totals WHERE hidden=0').fetchone()[0]
-    if excluded:
-        total -= conn.execute('SELECT count(*) FROM lead_rank WHERE hidden=0 AND person_id IN (' +
-                              ','.join('?' for _ in excluded) + ')', excluded).fetchone()[0]
+        args.extend(excluded)
+    if min_lists or fits:
+        total = conn.execute(f'SELECT count(*) FROM lead_rank WHERE {clause}', args).fetchone()[0]
+    else:
+        total = conn.execute('SELECT n FROM lead_rank_totals WHERE hidden=0').fetchone()[0]
+        if excluded:
+            total -= conn.execute('SELECT count(*) FROM lead_rank WHERE hidden=0 AND person_id IN (' +
+                                  ','.join('?' for _ in excluded) + ')', excluded).fetchone()[0]
     ids = [row[0] for row in conn.execute(f'SELECT person_id FROM lead_rank WHERE {clause} '
-                                        f'ORDER BY {ORDERS[sort]} LIMIT ? OFFSET ?', excluded + [limit, offset])]
+                                        f'ORDER BY {ORDERS[sort]} LIMIT ? OFFSET ?', args + [limit, offset])]
     return total, ids
+
+
+def page_for_query(conn, sort, limit, offset, query):
+    """Use only after the shared filter/sort/pagination validation has run.
+
+    Reject every unimplemented query key, including empty-valued filters, so
+    the ordinary query remains authoritative for status, tags and other views.
+    Parsing matches the shared first-value comma and whole-number semantics.
+    """
+    if set(query) - {'sort', 'limit', 'offset', 'fit', 'min_lists'}:
+        return None
+    fits = [value.strip() for value in query.get('fit', [''])[0].split(',') if value.strip()]
+    try:
+        min_lists = int(query.get('min_lists', [''])[0].strip() or '0')
+    except ValueError:
+        return None
+    if not 0 <= min_lists < 2 ** 63:
+        return None
+    return page(conn, sort, limit, offset, min_lists=min_lists, fits=fits)
 
 
 if __name__ == '__main__':

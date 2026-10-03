@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
 import db
@@ -34,9 +34,27 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS web_research(person_id INTEGER PRIMARY KE
   results TEXT NOT NULL, site TEXT, at TEXT NOT NULL)"""
 
 _gate = threading.BoundedSemaphore(PARALLEL)
-_sites = ThreadPoolExecutor(max_workers=SITE_WORKERS, thread_name_prefix='research-site')
+_sites = None  # Lazily shared by this research client, independent of application lifetimes.
 _health = {'at': None, 'ok': False}
 _lock = threading.Lock()
+
+
+def _site_pool():
+    from backend.executor import DaemonExecutor
+    global _sites
+    with _lock:
+        if _sites is None:
+            _sites = DaemonExecutor(max_workers=SITE_WORKERS, thread_name_prefix='research-site')
+        return _sites
+
+
+def close_sites(wait=False):
+    """Explicit client teardown. Application close must not stop other workspaces' shared reads."""
+    global _sites
+    with _lock:
+        pool, _sites = _sites, None
+    if pool is not None:
+        pool.shutdown(wait=wait, cancel_futures=True)
 
 
 def ensure(conn):
@@ -166,7 +184,12 @@ def cached(conn, person):
 def lookup(person):
     """Network only (no DB). Site and searches overlap; slow lookups return partial evidence."""
     deadline = time.monotonic() + LOOKUP_BUDGET
-    site_future = _sites.submit(read_website, person) if person.get('website') else None
+    site_future = None
+    if person.get('website'):
+        try:
+            site_future = _site_pool().submit(read_website, person)
+        except RuntimeError:
+            pass  # A full bounded site queue leaves this lookup's search results useful.
     seen, per_host, results = set(), {}, []
     # A result has to name them (full name, handle or their domain) to count; common words alone match strangers.
     marks = {m.lower() for m in (_clean(person.get('name')), str(person.get('handle') or '').lstrip('@'),

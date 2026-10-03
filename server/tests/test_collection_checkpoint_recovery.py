@@ -61,7 +61,7 @@ class CollectionRecoveryTest(unittest.TestCase):
     def test_interrupted_import_rolls_back_all_evidence_and_can_retry(self):
         job = self.next()
         page = self.body(job, 'alice', 'next-page')
-        with patch.object(server, 'refresh_network', side_effect=RuntimeError('interrupted import')):
+        with patch.object(server.get_application().qualification, 'refresh_network', side_effect=RuntimeError('interrupted import')):
             with self.assertRaisesRegex(RuntimeError, 'interrupted import'):
                 server.ext_list_page(self.conn, self.q, page)
         self.assertFalse(self.conn.in_transaction)

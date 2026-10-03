@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from test_server import Base, db, server
+import backend.collection as collection_backend
 import accounts
 
 
@@ -57,7 +58,7 @@ class PermitApiTest(Base):
             now = start + timedelta(minutes=minute)
             self.conn.execute('UPDATE accounts SET last_seen=? WHERE lane_id=?', (accounts.iso(now), 'lane1'))
             self.conn.commit()
-            with patch.object(server, 'datetime', wraps=datetime) as clock:
+            with patch.object(collection_backend, 'datetime', wraps=datetime) as clock:
                 clock.now.return_value = now
                 result = server.ext_request(self.conn, {}, dict(action='acquire', kind='list',
                     lane_id='lane1', job_id=job['id'], lease_token=job['lease_token']))

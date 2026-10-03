@@ -91,8 +91,8 @@ class PublicControlIntegration(unittest.TestCase):
     def test_local_rules_continue_while_collection_is_paused(self):
         control.stop_all(self.conn)
         server.api_qualify(self.conn, {}, {'on': False, 'local_laya': True})
-        with patch.object(server, 'drain_network_dirty', return_value=0), \
-                patch.object(server, 'qualify_batch', return_value=True) as score:
+        with patch.object(server.get_application().qualification, 'drain_network_dirty', return_value=0), \
+                patch.object(server.get_application().qualification, 'qualify_batch', return_value=True) as score:
             self.assertTrue(server.background_qualify(self.conn))
             score.assert_called_once_with(self.conn)
             control.stop_all(self.conn)
@@ -120,7 +120,7 @@ class PublicControlIntegration(unittest.TestCase):
             model.assert_not_called()
         # A temporary test database must never start/unload actual local services.
         with patch.object(server.local_model, 'maintain_service') as maintain, \
-                patch.object(server, 'schedule_local_services') as start:
+                patch.object(server.get_application().local_services, 'schedule') as start:
             self.assertFalse(server.local_services_step(self.conn))
             maintain.assert_not_called()
             start.assert_not_called()
