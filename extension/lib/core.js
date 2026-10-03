@@ -11,12 +11,6 @@
     netBase: 30e3, netCap: 10 * MIN,   // tab / network trouble: local backoff, never counted as an Instagram limit
     otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
-  // Explicitly requested list-only change for this verified collector identity.
-  // Saved same-job pages averaged ~20 s including a 9.5 s gap: a 0.65 gap
-  // factor targets ~20% more active pages, accounting for fixed overhead.
-  // It is below 1/1.2 for that reason; actual throughput must be measured.
-  const LIST_SPEED_ACCOUNT_ID = '64189916997';
-  const LIST_SPEED_GAP_FACTOR = 0.65;
   const KINDS = ['list', 'profile'];
   // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
   const BUDGET = { list: 3000, profile: 300 };
@@ -339,8 +333,7 @@
       st.profileNextAt = now + rand(...PACE.profileGap, r);
       return st;
     }
-    const listGapFactor = st.accountIgId === LIST_SPEED_ACCOUNT_ID ? LIST_SPEED_GAP_FACTOR : 1;
-    st.listNextAt = now + rand(PACE.listGap[0] * listGapFactor, PACE.listGap[1] * listGapFactor, r);
+    st.listNextAt = now + rand(...PACE.listGap, r);
     if (++st.pages >= st.breakEvery) {
       st.listNextAt += rand(...PACE.breakLen, r);
       st.pages = 0; st.breakEvery = rand(...PACE.breakEvery, r);

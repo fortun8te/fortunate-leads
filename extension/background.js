@@ -779,8 +779,23 @@ async function benchmarkStep(gen) {
 async function nextJob(kinds) {
   await heartbeat(true);
   if (mem.offline || mem.serverPaused) return { job: null, wait: 15e3 };
+  const gatedProfile = kinds.includes('profile') && !FL.controlAllows(mem, 'profile');
   kinds = kinds.filter((kind) => FL.controlAllows(mem, kind));
-  if (!kinds.length) return { job: null, wait: 15e3 };
+  if (!kinds.length) {
+    // An eligible bio can reach this poll while lists wait on their own clock,
+    // then get filtered by the paused bio stage. The verified collector's
+    // requested ~20% adjustment changes only this recheck, never request gaps.
+    // 20.086 s observed cadence - 15 s polling = ~5.086 s overhead; replacing
+    // the poll with 11.65 s targets ~16.736 s, subject to live measurement.
+    const st = await get('st'), now = Date.now();
+    if (gatedProfile && st?.accountIgId === '64189916997' && FL.controlAllows(mem, 'list')
+        && !FL.controlAllows(mem, 'profile') && !st.hold && !(await get('localPaused'))
+        && !['tab_login', 'tab_challenge', 'tab_scraping_warning'].includes(mem.noTab)
+        && !(st.cool?.list?.until > now) && !(FL.windowOf(st, now).until > now)
+        && FL.budgetLeft(st, await get('budget'), now).list > 0)
+      return { job: null, wait: 11650 };
+    return { job: null, wait: 15e3 };
+  }
   const cur = await get('cur'), now = Date.now();
   if (cur && cur.job && now - cur.at < CUR_TTL) {
     if (kinds.includes(cur.job.kind)) return { job: cur.job };
