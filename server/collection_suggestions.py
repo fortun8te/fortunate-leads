@@ -45,7 +45,10 @@ def ensure(conn):
     """Called by database initialization, never by the read-only preview."""
     conn.execute('CREATE TABLE IF NOT EXISTS collection_discovery('
                  'handle TEXT PRIMARY KEY COLLATE NOCASE,person_id INTEGER,ig_id TEXT,'
-                 'state TEXT NOT NULL,at TEXT NOT NULL,reason TEXT NOT NULL,directions TEXT NOT NULL)')
+                 'state TEXT NOT NULL,at TEXT NOT NULL,reason TEXT NOT NULL,directions TEXT NOT NULL,job_id INTEGER)')
+    if 'job_id' not in {r[1] for r in conn.execute('PRAGMA table_info(collection_discovery)')}:
+        conn.execute('ALTER TABLE collection_discovery ADD COLUMN job_id INTEGER')
+    conn.execute('CREATE INDEX IF NOT EXISTS collection_discovery_job ON collection_discovery(job_id)')
     for name, column in (('person', 'person_id'), ('identity', 'ig_id'), ('at', 'at')):
         conn.execute(f'CREATE INDEX IF NOT EXISTS collection_discovery_{name} ON collection_discovery({column})')
     conn.execute("CREATE INDEX IF NOT EXISTS discovery_manual_tags ON tags(lower(trim(tag)),person_id DESC) WHERE source='manual'")
@@ -263,8 +266,13 @@ def queue_when_idle(conn, row, now=None):
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND state='leased' "
                     "AND leased_until>? LIMIT 1", (accounts.iso(now),)).fetchone():
         return None
-    if accounts.pick_job(conn, row['lane_id'], ['list'], now) is not None:
-        return None
+    current = accounts.pick_job(conn, row['lane_id'], ['list'], now)
+    if current is not None:
+        import acquisition_dispatch
+        # The experimental page policy needs a second automatic target to
+        # compare. Manual requests keep their place and the two-job cap stays.
+        if not acquisition_dispatch.enabled(conn) or not acquisition_dispatch.is_automatic(conn, current):
+            return None
     # Automatic exploration never recruits the protected main account.
     all_accounts = conn.execute('SELECT * FROM accounts').fetchall()
     if not accounts.keeps_lists(conn, row, now, accounts.list_share(conn, all_accounts)):
@@ -282,7 +290,10 @@ def queue_when_idle(conn, row, now=None):
               if db.queue_list(conn, candidate['handle'], direction, priority=-10)]
     if not queued:
         return None
-    conn.execute('INSERT INTO collection_discovery(handle,person_id,ig_id,state,at,reason,directions) '
-                 "VALUES(?,?,?,'queued',?,?,?)", (candidate['handle'], candidate['person_id'],candidate['ig_id'],
-                                                now.isoformat(),candidate['reason'],json.dumps(queued)))
+    admitted_job = conn.execute("SELECT id FROM jobs WHERE kind='list' AND seed=? AND direction='following' "
+                                "AND state='queued' ORDER BY id DESC LIMIT 1", (candidate['handle'],)).fetchone()
+    conn.execute('INSERT INTO collection_discovery(handle,person_id,ig_id,state,at,reason,directions,job_id) '
+                 "VALUES(?,?,?,'queued',?,?,?,?)", (candidate['handle'], candidate['person_id'],candidate['ig_id'],
+                                                now.isoformat(),candidate['reason'],json.dumps(queued),
+                                                admitted_job['id']))
     return dict(candidate, directions=queued)

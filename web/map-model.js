@@ -8,8 +8,9 @@
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
   const VIEW_MODES = [
-    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger recorded connection evidence; larger means more saved followers.' },
-    { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Profiles seen in more collected source audiences are larger and closer. Shared audiences are not mutual friends.' }
+    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Closer means stronger saved connection evidence. Profiles with little evidence stay in the outer band.' },
+    { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Closer means more collected source audiences. Shared audiences are not mutual friends.' },
+    { id: 'fit', label: 'Best fit', size: 'fit', distance: 'Saved fit assessment', description: 'Closer means a stronger saved fit assessment. This view does not indicate a connection.' }
   ];
 
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -44,8 +45,8 @@
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
       this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(1); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
-      this.density = [250,500,1000,3000,10000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
-      this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = VIEW_MODES.find(mode => mode.id === this.viewMode).size; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
+      this.density = [250,500,1000,3000,5000,10000,20000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
+      this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = Core.SIZE_OPTIONS.some(size => size.id === o.size) ? o.size : 'followers'; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.connectionsVisible = false; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
@@ -72,7 +73,7 @@
     }
     needsLoad() { return !this.loaded; }
     // While a flight is under way toward a view we already asked for, do not ask for the places in between.
-    moved() { if (this.paused) return; if (!this.hold && this.needsLoad()) this.schedule(); this.emit('camera'); }
+    moved() { if (this.paused) return; if (!this.hold && this.needsLoad() && !this.pending) this.schedule(); this.emit('camera'); }
     async load(opt = {}) {
       if (this.paused) return;
       const cam = opt.cam ? Object.assign(new Camera(), this.cam, { ...opt.cam }) : this.cam;
@@ -166,9 +167,8 @@
       this.seedList = resp.seeds || this.seedList || [];
       this.stale = null;
       this.morph = 0;
-      this.scene.clear();
       const indexStart=this.now();
-      this.scene.apply({ nodes, clusters }, this.now(), { morph: 0, instant: true });
+      this.scene.apply({ nodes, clusters }, this.now(), { morph: this.reduced || nodes.length > 5001 ? 0 : 260, instant: this.reduced });
       this.stats.sceneMs=this.now()-indexStart;
       if (this.selected) {
         const current = nodes.find((n) => String(n.id) === String(this.selected.id));
@@ -189,10 +189,10 @@
     /* ----- modes and filters ----- */
     setViewMode(id) {
       const preset = VIEW_MODES.find(mode => mode.id === id);
-      if (!preset || (id === this.viewMode && this.size === preset.size)) return;
-      this.viewMode = id; this.size = preset.size;
+      if (!preset || id === this.viewMode) return;
+      this.viewMode = id;
       this.repack();
-      this.emit('mode'); this.emit('size');
+      this.emit('mode');
     }
     setMode(mode) {
       if (mode === this.mode) return;
@@ -212,7 +212,7 @@
       if (this.stats.applied === applied) { Object.assign(this, previous); this.emit('scene'); }
     }
     setDensity(n) {
-      if (![250, 500, 1000, 3000, 10000, 50000, 200000].includes(+n) || +n === this.density) return;
+      if (![250, 500, 1000, 3000, 5000, 10000, 20000, 50000, 200000].includes(+n) || +n === this.density) return;
       this.density = +n; this.emit('density'); this.deselect(); this.resetPages(); this.load();
     }
     resetPages() {
@@ -346,8 +346,8 @@
     repack() {
       this.returningNode = null;
       if (!this.cohort) return;
-      const nodes = cohortLayout(this.scene.nodes.map(it => it.d), this.world.me, this.size, this.viewMode);
-      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 3001 ? 0 : 280, instant: true});
+      const nodes = cohortLayout(this.scene.nodes.filter(it => it.ta !== 0).map(it => it.d), this.world.me, this.size, this.viewMode);
+      this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 5001 ? 0 : 280, instant: this.reduced});
       if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
       this.emit('scene');
     }
@@ -360,8 +360,9 @@
     zoomBy(factor, px, py) {
       if (this.hold) { this.viewReq.cancel(); this.pending=0; this.loaded=null; this.hold=false; }
       this.locateReq.cancel(); this.flight = null; this.vel = null;
-      const [wx, wy] = this.goal ? [this.goal.wx, this.goal.wy] : this.cam.toWorld(px, py);
-      const base = this.goal && Math.abs(this.goal.px - px) < 2 && Math.abs(this.goal.py - py) < 2 ? this.goal.k : this.cam.k;
+      const sameAnchor = this.goal && Math.abs(this.goal.px-px)<2 && Math.abs(this.goal.py-py)<2;
+      const [wx,wy] = sameAnchor ? [this.goal.wx,this.goal.wy] : this.cam.toWorld(px,py);
+      const base = sameAnchor ? this.goal.k : this.cam.k;
       const k = clamp(base * factor, Core.K_MIN, this.cam.maxK || K_MAX);
       if (this.reduced) { this.cam.lock(wx, wy, px, py, k); this.goal = null; this.moved(); return; }
       this.goal = { k, wx, wy, px, py };

@@ -323,13 +323,15 @@ async function inTab(tabId, url) {
       const ck = document.cookie;
       const csrf = decodeURIComponent((ck.match(/(?:^|; )csrftoken=([^;]+)/) || [])[1] || '');
       const env = { path: location.pathname, vis: document.visibilityState, csrf: !!csrf, uid: /(?:^|; )ds_user_id=/.test(ck) };
-      if (location.hostname !== 'www.instagram.com') return { status: 0, text: 'tab left instagram.com', env, tabError: true };
+      if (location.hostname !== 'www.instagram.com') return { status: 0, text: 'tab left instagram.com', env, tabError: true, auditSent: false };
       let claim = '0'; try { claim = sessionStorage.getItem('www-claim-v2') || '0'; } catch {}
       const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms); // also covers a body that never finishes
+      let auditHttpStatus = null;
       try {
         const res = await (window.__flFetch || fetch)(u, { credentials: 'include', signal: ctl.signal, headers: {
           'X-IG-App-ID': '936619743392459', 'X-CSRFToken': csrf, 'X-ASBD-ID': '129477', 'X-IG-WWW-Claim': claim,
           'X-Requested-With': 'XMLHttpRequest', 'Accept': '*/*' } });
+        auditHttpStatus = res.status;
         const claimOut = res.headers.get('x-ig-set-www-claim');
         if (claimOut) try { sessionStorage.setItem('www-claim-v2', claimOut); } catch {}
         let text = await res.text();
@@ -338,7 +340,7 @@ async function inTab(tabId, url) {
         return { status: res.status, text, retryAfter: res.headers.get('retry-after'), contentType, url: res.url, redirected: res.redirected, env };
       } catch (e) {
         const aborted = e && e.name === 'AbortError';
-        return { status: 0, text: aborted ? 'no answer from Instagram within ' + ms / 1e3 + ' s (aborted)' : String(e), aborted, env };
+        return { status: 0, text: aborted ? 'no answer from Instagram within ' + ms / 1e3 + ' s (aborted)' : String(e), aborted, env, auditHttpStatus };
       } finally { clearTimeout(timer); }
     } }));
     const p = (r && r.result) || { status: 0, text: 'no result from tab', tabError: true };
@@ -355,10 +357,10 @@ async function assertControl(kind) {
   await heartbeat(true);
   if (!FL.controlAllows(mem, kind) || await get('localPaused')) throw new ControlPaused();
 }
-async function acquireSharedRequest(kind) {
+async function acquireSharedRequest(kind, purpose = 'unknown') {
   await assertControl(kind);
   let response;
-  try { response = await api('/api/ext/request', { action: 'acquire', kind, job_id: mem.job?.id, lease_token: mem.job?.lease_token }); }
+  try { response = await api('/api/ext/request', { action: 'acquire', kind, purpose, job_id: mem.job?.id, lease_token: mem.job?.lease_token }); }
   catch { mem.offline = true; throw new ControlPaused(); }
   if (response.status !== 200 || response.json?.ok === false) { mem.offline = true; throw new ControlPaused(); }
   const grant = response.json;
@@ -372,25 +374,27 @@ async function acquireSharedRequest(kind) {
     throw new ControlPaused();
   }
   if (await get('localPaused') || !FL.controlAllows(mem, kind)) {
-    await releaseSharedRequest(grant.token);
+    await releaseSharedRequest(grant.token, { sent: false });
     throw new ControlPaused();
   }
   // A delayed response must leave enough time for the longest normal action.
   if (Date.parse(grant.expires_at) - Date.now() < 45000) {
-    await releaseSharedRequest(grant.token); // no browser action has started
+    await releaseSharedRequest(grant.token, { sent: false }); // no browser action has started
     mem.sharedWaitUntil = Date.now() + 15000;
     throw new ControlPaused();
   }
   return grant.token;
 }
-async function releaseSharedRequest(token) {
-  try { await api('/api/ext/request', { action: 'release', token }); }
+async function releaseSharedRequest(token, outcome = {}) {
+  const http_status = Number.isInteger(outcome.http_status) && outcome.http_status >= 100 && outcome.http_status <= 599 ? outcome.http_status : null;
+  const sent = http_status !== null ? true : typeof outcome.sent === 'boolean' ? outcome.sent : null;
+  try { await api('/api/ext/request', { action: 'release', token, sent, http_status }); }
   catch { mem.offline = true; } // the server lease expires; never assume an uncertain release succeeded
 }
 async function navigateWithPermit(kind, action) {
   const gen = mem.gen;
   const token = await acquireSharedRequest(kind);
-  if (gen !== mem.gen) { await releaseSharedRequest(token); throw new ControlPaused(); }
+  if (gen !== mem.gen) { await releaseSharedRequest(token, { sent: false }); throw new ControlPaused(); }
   let completed = false;
   try {
     let tab;
@@ -411,8 +415,8 @@ async function igRequest(gen, tab, url, kind, ctx) {
   await assertControl(kind);
   if (gen !== mem.gen) throw new Superseded();
   if (FL.laneBusy(await get('lane'), Date.now())) return { res: { status: 0, text: 'lane busy' }, bad: { code: 'busy' } };
-  const permit = await acquireSharedRequest(kind);
-  if (gen !== mem.gen) { await releaseSharedRequest(permit); throw new Superseded(); }
+  const permit = await acquireSharedRequest(kind, kind === 'list' ? 'list_page' : 'unknown');
+  if (gen !== mem.gen) { await releaseSharedRequest(permit, { sent: false }); throw new Superseded(); }
   await set({ lane: { until: Date.now() + 90e3, url } });
   let res, keepLane = false;
   try {
@@ -421,7 +425,10 @@ async function igRequest(gen, tab, url, kind, ctx) {
     keepLane = !!res.timedOut;
   } finally {
     await set({ lane: keepLane ? { until: Date.now() + 60e3, url, after: 'timeout' } : null });
-    if (!keepLane) await releaseSharedRequest(permit);
+    if (!keepLane) await releaseSharedRequest(permit, {
+      sent: res?.auditSent === false ? false : null,
+      http_status: res?.auditHttpStatus ?? res?.status,
+    });
   }
   if (gen !== mem.gen) throw new Superseded();
   const now = Date.now();
@@ -880,8 +887,8 @@ async function lookupViaPage(gen, handle, kind, near) {
   if (FL.laneBusy(await get('lane'), Date.now())) return { p: null, bad: { code: 'busy' } };
   const key = handle.toLowerCase(), url = IG + '/' + encodeURIComponent(handle) + '/', t0 = Date.now();
   let tab;
-  const permit = await acquireSharedRequest(kind);
-  if (gen !== mem.gen) { await releaseSharedRequest(permit); throw new Superseded(); }
+  const permit = await acquireSharedRequest(kind, kind === 'list' ? 'seed_lookup' : 'profile_view');
+  if (gen !== mem.gen) { await releaseSharedRequest(permit, { sent: false }); throw new Superseded(); }
   await set({ lane: { until: Date.now() + 60e3, url } });
   try {
     const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
@@ -914,7 +921,9 @@ async function lookupViaPage(gen, handle, kind, near) {
       catch { /* Keep the permit: an unconfirmed close may leave the page running. */ }
     }
     await set({ lane: closed ? null : { until: Date.now() + 90e3, url, after: 'close_failed' } });
-    if (closed) await releaseSharedRequest(permit);
+    // A browser navigation is one permitted operation, not a measured count of
+    // HTTP requests. A closed tab alone cannot prove whether anything was sent.
+    if (closed) await releaseSharedRequest(permit, { sent: null, http_status: null });
   }
 }
 

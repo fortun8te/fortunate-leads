@@ -24,7 +24,8 @@
     if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
-  const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000].includes(n)?n:500; } catch (_) { return 500; } };
+  const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000,5000,10000,20000].includes(n)?n:500; } catch (_) { return 500; } };
+  const savedSize = () => { try { return root.localStorage?.getItem('fortunate.map.size'); } catch (_) { return null; } };
   const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
@@ -89,13 +90,13 @@
       const Model = MapModel;
       this.model = new Model({
         container: refs.canvasBox,
-        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
+        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), size: savedSize(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.model.cam.set(.5,.5,1.55);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ max:3072, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
+      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -109,7 +110,7 @@
     onModel(what) {
       if (what === 'density') { try { root.localStorage?.setItem('fortunate.map.count', String(this.model.density)); } catch (_) {} }
       if (what === 'scene' || what === 'mode') this.finishNodeDrag(true);
-      if (what === 'size') { this.renderLegend(); this.invalidate(); }
+      if (what === 'size') { try { root.localStorage?.setItem('fortunate.map.size', this.model.size); } catch (_) {} if(this.sizeEncoding)this.sizeEncoding.value=this.model.size; this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
       if (what === 'edges') { this.edgeAt = performance.now(); this.renderSeeds(); }
       if (what === 'phase' || what === 'scene') { this.renderModes(); this.renderLegend(); this.renderState(); this.renderCount(); }
@@ -147,7 +148,7 @@
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
       if (priorSheet !== sheet && this.model.selected && !this.model.universe) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
       this.measureHud();
-      if (this.model.needsLoad() && this.shown && !this.comparing) this.model.schedule();
+      if (this.model.needsLoad() && !this.model.pending && this.shown && !this.comparing) this.model.schedule();
       this.invalidate();
     }
     measureHud() {
@@ -174,6 +175,7 @@
       const dt = this.last ? Math.min(0.05, (t - this.last) / 1000) : 0.016; this.last = t;
       let busy = this.model.tick(t, dt);
       const t0 = performance.now();
+      this.paintNow=t;
       if (this.shown && this.sized) busy = this.paint(t, dt) || busy;
       const ms = performance.now() - t0;
       this.stats.frames++; this.stats.paintMs += (ms - this.stats.paintMs) * 0.1; this.stats.maxMs = Math.max(this.stats.maxMs * 0.995, ms); this.stats.last = ms;
@@ -260,7 +262,7 @@
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
       this.queuePortraits(plan.nodes, me);
-      let photoBudget = 3001;
+      let photoBudget = 4000;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
@@ -272,7 +274,7 @@
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
 
-        const ownerRadius=m.scene.large?OWNER_RADIUS:Math.min(28,OWNER_RADIUS*k);
+        const ownerRadius=Math.min(28,OWNER_RADIUS*k);
         this.paintPortrait(ctx, P, me, x, y, ownerRadius, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
         ownerCaption = { x, y: y + ownerRadius + 16, text };
@@ -366,19 +368,25 @@
       if (owner) this.portraits.get(owner.pic);
       const x = owner?.x ?? .5, y = owner?.y ?? .5;
       const distance = mark => (mark.it.x - x) ** 2 + (mark.it.y - y) ** 2;
-      for (const mark of [...nodes].sort((a, b) => distance(a) - distance(b)).slice(0, 3001)) {
-        this.portraits.get(mark.it.d.pic);
-      }
+      const selected=this.model?.selected?.pic;
+      const urls=[owner?.pic,selected,...[...nodes].sort((a,b)=>distance(a)-distance(b)).slice(0,4000).map(mark=>mark.it.d.pic)];
+      if(this.portraits.prioritize)this.portraits.prioritize(urls);
+      else for(const url of urls)this.portraits.get(url);
     }
     paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
-      const image = requestPhoto ? this.portraits.get(person.pic) : null;
-      if (!image && !owner) return;
-      ctx.save(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.clip();
+      const image = requestPhoto ? (this.portraits.peek ? this.portraits.peek(person.pic) : this.portraits.get(person.pic)) : null;
+      if(!image && !owner)return;
+      const reveal=image && this.portraits.reveal ? this.portraits.reveal(person.pic,this.paintNow ?? performance.now(),this.model?.reduced) : 1;
+      if(image && reveal<1)this.invalidate();
+      const visibleRadius=radius*(image && !owner ? .88+.12*reveal : 1);
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y, visibleRadius, 0, TAU); ctx.clip();
       ctx.fillStyle = owner ? P.bg2 : P.bg1; ctx.fillRect(x-radius, y-radius, radius*2, radius*2);
       if (image) {
+        ctx.globalAlpha*=reveal;
         const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height, side = Math.min(iw, ih);
-        ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-radius, y-radius, radius*2, radius*2);
+        ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-visibleRadius, y-visibleRadius, visibleRadius*2, visibleRadius*2);
       } else {
+        if(!owner)ctx.globalAlpha*=.5;
         ctx.fillStyle = owner ? P.fg : P.fg2; ctx.font = `${owner ? 600 : 500} ${Math.round(radius * .67)}px ${P.sans}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; if (!person.compact || owner) ctx.fillText(initials(person), x, y+.5);
       }
@@ -496,7 +504,7 @@
         const cam=this.model.cam,[wx,wy]=cam.toWorld(px,py),reach=(this.touch?16:9)/cam.scale;
         const nearby=this.model.scene.spatial.query({x0:wx-reach,y0:wy-reach,x1:wx+reach,y1:wy+reach});
         let best=null,distance=Infinity;
-        for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?OWNER_RADIUS:it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
+        for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?Math.min(28,OWNER_RADIUS*cam.k):it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
         return best;
       }
       const reach = this.touch ? 16 : 9;
@@ -728,7 +736,7 @@
     buildStatic() {
       const r = this.r;
       this.density = h('select', { 'aria-label': 'People per page' },
-        ...[500, 1000, 3000].map(n => h('option', { value: n, text: `${int(n)} people` })));
+        ...[500, 1000, 3000, 5000, 10000, 20000].map(n => h('option', { value: n, text: `${int(n)} people` })));
       this.density.value = this.model.density;
       this.previous = h('button', { type: 'button', text: 'Previous', 'aria-label': 'Previous people' });
       this.next = h('button', { type: 'button', text: 'Next', 'aria-label': 'Next people' });
@@ -742,14 +750,12 @@
       r.fit.title = 'Show this page';
       r.size?.replaceChildren(...VIEW_MODES.map(o=>h('option',{value:o.id,text:o.label})));
       if (r.size) r.size.value=this.model.viewMode;
-      const pop=r.filtersBox?.querySelector('.mv-pop');
-      if(pop) {
-        for(const [select,text] of [[r.size,'Arrange by'],[r.filters.follow,'Following']]) {
-          const label=select?.closest('label');if(!label)continue;
-          label.className='mv-f';label.firstChild.textContent=text+' ';pop.prepend(label);
-        }
-        const scope=pop.querySelector('#map-scope-l');if(scope)scope.textContent='People';
-      }
+      this.sizeEncoding=h('select',{class:'select',id:'map-bubble-size','aria-label':'Bubble size'},...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
+      this.sizeEncoding.value=this.model.size;
+      const sizeLabel=h('label',{class:'mv-size mv-encoding'},h('span',{text:'Size'}),this.sizeEncoding);
+      r.size?.closest('label')?.after(sizeLabel);
+      this.sizeEncoding.addEventListener('change',()=>this.model.setSizeEncoding(this.sizeEncoding.value));
+      const scope=r.filtersBox?.querySelector('#map-scope-l');if(scope)scope.textContent='People';
       this.renderModes();
       this.renderFilters();
     }
@@ -770,6 +776,7 @@
         if(universe)this.r.filtersBox.open=false;
       }
       if(this.pager)this.pager.hidden=universe;
+      if(this.sizeEncoding)this.sizeEncoding.closest('label').hidden=universe;
       if(this.r.size){this.r.size.disabled=universe;this.r.size.title=universe?'The full map uses recorded follow distance and follower size.':'';}
       for(const control of [this.r.filters.fit,this.r.filters.status,this.r.filters.follow,...this.r.filters.scope.children]) {
         if(control){control.disabled=universe;control.title=universe?'Filters are available in the paged map; the full map shows all saved people.':'';}
@@ -788,10 +795,12 @@
       this.r.filtersBtn.setAttribute('aria-label', n ? `Filters, ${plural(n, 'filter')} on` : 'Filters');
     }
     renderLegend() {
-      const shared = this.model.viewMode === 'shared';
+      const shared = this.model.viewMode === 'shared', fit=this.model.viewMode === 'fit';
+      const sizeText={followers:'Size: followers',fit:'Size: fit',connections:'Size: shared audiences',equal:'Size: equal'}[this.model.size];
       const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
-        { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: stronger connection evidence', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Distance orders the saved page by recorded network evidence, not personal familiarity.' },
-        { g: 'size', s: shared ? 'Larger: more shared audiences' : 'Larger: more followers', t: SIZE_HELP[this.model.size] }
+        { g:'centre',s:shared?'Closer: more shared audiences':fit?'Closer: stronger fit':'Closer: stronger connection evidence',
+          t:shared?'Fixed distance bands use distinct collected source audiences, not mutual friends.':fit?'Fixed distance bands use the saved fit assessment. They do not show a connection.':'Fixed distance bands use saved network evidence. Little or unknown evidence stays in the outer band, even when the page contains no close connections. Following does not establish friendship.' },
+        { g:'size',s:sizeText,t:SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
       const glyph = (g) => {
         const svg = (inner) => { const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 20 14'); s.setAttribute('width', '20'); s.setAttribute('height', '14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = inner; return s; };
@@ -813,6 +822,9 @@
     }
     renderCount(announce = true) {
       const m = this.model, el = this.r.count;
+      const key=[m.phase,m.pending,m.loadingCount,m.loadingTotal,m.total,m.pageIndex,m.nextCursor,m.scene.version,m.fallback].join('|');
+      if(!announce && this.countKey===key)return;
+      this.countKey=key;
       if(m.universe){
         const stats=m.universe.stats(), snapshot=m.universe.manifest;
         el.textContent=`${int(stats.loaded||0)} loaded · ${int(m.total)} people`;
@@ -823,9 +835,9 @@
       if(m.pending && m.loadingCount){el.textContent=`${int(m.loadingCount)} / ${int(m.loadingTotal)} loaded`;return;}
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
-      const count=m.scene.nodes.length-(m.world.me && m.scene.get(m.world.me.id)?1:0);
+      const count=m.scene.nodes.filter(it=>it.ta!==0 && String(it.d.id)!==String(m.world.me?.id)).length;
       el.textContent=`${int(count)} ${m.scene.large?'loaded':'shown'} · ${int(m.total)} matching people`;
-      el.title='Zoom magnifies this same page. Use Next, search, or filters to see other people.';
+      el.title='Views arrange the people loaded in this page. Closest to me loads stronger saved network evidence first. Zoom magnifies the same people; use Next, search or filters to see others.';
       if (this.pager) {
         this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
         this.next.disabled = m.pending > 0 || !m.nextCursor;

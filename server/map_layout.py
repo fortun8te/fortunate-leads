@@ -37,7 +37,7 @@ COMMUNITIES = 12                              # default view: largest recorded s
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -443,9 +443,12 @@ def _rank(mode, F, c, n_others, owner_id=0):
         return 1.0
     s = (score or 0) / 100.0
     if mode == 'closeness':
-        raw = 0.62 * c + 0.24 * s + 0.14 * ((fit or 0) / 100.0) + ENGAGED[code]
-        if src:
-            raw += 0.15
+        # Connection pages must put stronger saved network evidence first.
+        # Fit and collection-source status cannot move an unrelated influencer
+        # ahead of a recorded owner connection. Fit only breaks evidence ties.
+        evidence = round(c * 1000) / 1000.0
+        tie = max(0.0, min(1.0, 0.6 * s + 0.4 * ((fit or 0) / 100.0)))
+        raw = 1.3 * (evidence + 0.0005 * tie)
     elif mode == 'fit':
         raw = (0.62 * (fit / 100.0) + 0.05 if fit is not None else 0.0) + 0.24 * c + 0.14 * s + ENGAGED[code]
         if src:

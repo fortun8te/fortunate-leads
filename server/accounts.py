@@ -752,6 +752,8 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             return None
         kinds = ['profile']
         marks = '?'
+    import acquisition_dispatch
+    window = 64 if acquisition_dispatch.enabled(conn) else 1
     query = f"""SELECT j.*, l.lane AS owner, l.prev_lane, l.released_why FROM jobs j
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
@@ -767,11 +769,13 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
           CASE WHEN j.kind='list' AND j.id=? THEN CASE WHEN ? THEN -1 ELSE 1 END ELSE 0 END DESC,
           CASE WHEN ? AND j.kind='list' AND j.direction='following' THEN 1 ELSE 0 END DESC,
           coalesce(l.lane=?, 0) DESC, j.priority DESC, l.cursor IS NOT NULL DESC,
-          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT 1"""
+          coalesce(l.state='running', 0) DESC, coalesce(j.direction='following', 0) DESC, j.id LIMIT {window}"""
     args = (*kinds, ts, ts, ts, lane, *ok, *route_waiting, *viewer_args, *experiment_args,
             prefer_profile, last_list, yield_list, prefer_following, lane)
     while True:
-        candidate = conn.execute(query, args).fetchone()
+        candidate = acquisition_dispatch.select(conn, conn.execute(query, args).fetchall(),
+                                                lane=lane, last_list=last_list, yield_list=yield_list,
+                                                prefer_following=prefer_following)
         if not candidate or candidate['kind'] != 'profile':
             return candidate
         survivor = coalesce_profile_jobs(conn, candidate, now)
@@ -791,6 +795,8 @@ def took(conn, lane, job):
         note_handoff(conn, job['seed'], job['direction'], frm, lane, job['released_why'] or 'offline')
     conn.execute('UPDATE lists SET lane=?, prev_lane=NULL, released_at=NULL, released_why=NULL WHERE seed=? AND direction=?',
                  (lane, job['seed'], job['direction']))
+    import acquisition_dispatch
+    acquisition_dispatch.record_admission(conn, lane, job)
 
 
 # ---------- views ----------

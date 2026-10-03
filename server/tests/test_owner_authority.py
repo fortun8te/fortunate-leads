@@ -1,4 +1,5 @@
 """Owner facts take precedence without rewriting historical research or manual labels."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,13 +69,41 @@ class OwnerAuthority(unittest.TestCase):
         server.requalify(self.conn, self.person(), None)
         result = server.api_person(self.conn, {}, {}, self.pid)
         self.assertTrue(result['scout']['overridden_by_owner'])
-        self.assertFalse(result['scout']['reachable'])  # original evidence remains history
+        self.assertTrue(result['scout']['verified'])
+        self.assertIsNone(result['scout']['reachable'])  # Personal is not proof of unreachable.
+        self.assertFalse(json.loads(self.conn.execute('SELECT raw FROM deep_research WHERE person_id=?',
+                                                     (self.pid,)).fetchone()[0])['reachable'])
         self.assertTrue(result['reachable'])
         self.assertNotEqual(result['verdict']['model'], 'leadscout')
         self.assertNotIn('Not reachable', {t['tag'] for t in result['tags']})
         server.set_status(self.conn, [self.pid], status=None, relationships=[])
         server.requalify(self.conn, self.person(), None)
-        self.assertIn('Not reachable', {t['tag'] for t in server.api_person(self.conn, {}, {}, self.pid)['tags']})
+        result = server.api_person(self.conn, {}, {}, self.pid)
+        self.assertTrue(result['scout']['verified'])
+        self.assertFalse(result['scout']['overridden_by_owner'])
+        self.assertIn('Scout: No', {t['tag'] for t in result['tags']})
+        self.assertNotIn('Not reachable', {t['tag'] for t in result['tags']})
+        self.assertIsNone(result['scout']['reachable'])
+
+    def test_unverified_negative_claim_cannot_create_rejection_or_reachability_badges(self):
+        processing_modes.set_mode(self.conn, 'RLEAI')
+        server.requalify(self.conn, self.person(), None)
+        self.assertFalse(server.deepscout.apply(self.conn, self.person(), {
+            'verdict': 'no', 'reachable': False,
+            'summary': 'Impossible to contact and not a business.', 'tags': ['Not reachable'], 'sources': [],
+            'evidence': [{'source': 'profile.bio', 'quote': 'Not a business and impossible to contact.'}]}))
+        # A normal rule pass must remove legacy unsupported machine badges too.
+        self.conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,'scout','auto')",
+                              [(self.pid, 'Scout: No'), (self.pid, 'Not reachable')])
+        server.requalify(self.conn, self.person(), None)
+        result = server.api_person(self.conn, {}, {}, self.pid)
+        self.assertFalse(result['scout']['verified'])
+        self.assertIsNone(result['scout']['verdict'])
+        self.assertIsNone(result['scout']['reachable'])
+        self.assertEqual(result['scout']['summary'], '')
+        self.assertNotIn('Scout: No', {t['tag'] for t in result['tags']})
+        self.assertNotIn('Not reachable', {t['tag'] for t in result['tags']})
+        self.assertNotEqual(result['verdict']['model'], 'leadscout')
 
     def test_full_story_is_saved_hashed_and_source_labelled(self):
         note = 'We met through a friend. ' * 35 + 'He is founder of a skincare brand.'

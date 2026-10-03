@@ -161,7 +161,7 @@
         if (!it) { it = { key, kind, d, x: d.x, y: d.y, fx: d.x, fy: d.y, tx: d.x, ty: d.y, t0: now, dur: 0, a: o.instant ? 1 : 0, ta: 1, pin: false }; this.items.set(key, it); return; }
         const fromRadius = it.d.portraitRadius, toRadius = d.portraitRadius;
         const radiusChanged = Number.isFinite(fromRadius) && Number.isFinite(toRadius) && Math.abs(fromRadius - toRadius) > 1e-9;
-        it.d = morph && radiusChanged ? { ...d, portraitRadius: fromRadius } : d; it.ta = 1;
+        it.d = morph && radiusChanged ? { ...d, portraitRadius: fromRadius } : d; it.ta = 1; if(o.instant)it.a=1;
         if (radiusChanged || Math.abs(it.tx - d.x) > 1e-7 || Math.abs(it.ty - d.y) > 1e-7) {
           it.tx = d.x; it.ty = d.y;
           if (morph) { it.fx = it.x; it.fy = it.y; it.t0 = now; it.dur = morph; it.fr = fromRadius; it.tr = toRadius; } else { it.x = d.x; it.y = d.y; it.dur = 0; }
@@ -169,7 +169,7 @@
       };
       for (const n of resp.nodes || []) put('n', n);
       for (const c of resp.clusters || []) put('c', c);
-      for (const it of this.items.values()) if (!seen.has(it.key)) it.ta = it.pin ? 1 : 0;
+      for (const [key,it] of this.items) if (!seen.has(key)) { if(o.instant && !it.pin)this.items.delete(key); else it.ta=it.pin?1:0; }
       this.rebuild(); this.animating = !!morph || !o.instant;
     }
     // Keep one person visible whatever the server sends: the selected or searched person.
@@ -241,10 +241,10 @@
   const OWNER_RADIUS = 18;
   const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Shared sources'}, {id:'equal',label:'Equal'}];
   const SIZE_HELP = {
-    followers:'Larger bubbles have more saved followers. Unknown counts use the smallest size. Counts use a compressed scale.',
+    followers:'Size uses a modest saved-follower scale and shrinks gradually farther from you. Unknown follower counts stay unknown.',
     fit:'Larger bubbles have a stronger saved fit assessment. Unread profiles use the smallest size.',
     connections:'Larger bubbles appear in more collected audiences. Shared sources do not establish a relationship.',
-    equal:'Every person has the same bubble size.'
+    equal:'Every person has the same bubble size. Distance still uses the selected view.'
   };
   const radiusFor = (n, k, size = 'followers') => {
     let base = 14;
@@ -269,99 +269,110 @@
     return s;
   }
 
+  // Fixed evidence bands keep a weak page from appearing close merely because
+  // it contains no better-connected people. Size never determines the band.
+  const DISTANCE_BANDS = [[.06,.30],[.30,.35],[.35,.39],[.39,.425],[.425,.46]];
+  function distanceValue(n, mode = 'network') {
+    if (mode === 'fit') return {strong:3,good:2,weak:1,unread:0}[n.fit] ?? 0;
+    const value = mode === 'shared' ? n.source_count : n.closeness;
+    return value != null && Number.isFinite(+value) ? +value : -1;
+  }
+  function distanceBand(n, mode = 'network') {
+    const value = distanceValue(n, mode);
+    if (mode === 'shared') return value >= 8 ? 0 : value >= 4 ? 1 : value >= 2 ? 2 : value >= 1 ? 3 : 4;
+    if (mode === 'fit') return value >= 3 ? 0 : value >= 2 ? 1 : value >= 1 ? 3 : 4;
+    return value >= .65 ? 0 : value >= .4 ? 1 : value >= .2 ? 2 : value >= .09 ? 3 : 4;
+  }
   function cohortLayout(people, owner, size = 'followers', distance = 'network') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
-    const distanceValue = n => {
-      const value = distance === 'shared' ? n.source_count : n.closeness;
-      return value != null && Number.isFinite(+value) ? +value : -1;
-    };
-    members.sort((a, b) => distanceValue(b) - distanceValue(a)
+    members.sort((a, b) => distanceValue(b, distance) - distanceValue(a, distance)
       || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
+    const bands = DISTANCE_BANDS.map(([low,high]) => ({low,high,indices:[],sum:0}));
+    const weights = [];
+    members.forEach((n,i) => bands[distanceBand(n,distance)].indices.push(i));
+    for (const band of bands) band.indices.forEach((i,at) => {
+      const radius = Math.sqrt(band.low**2 + (band.high**2-band.low**2)*(at+.5)/band.indices.length);
+      weights[i] = radiusFor(members[i],1,size) * (size === 'equal' ? 1 : 1-.24*Math.pow((radius-.06)/.4,.8));
+      band.sum += weights[i]**2;
+    });
+    const largest = weights.reduce((maximum,weight)=>Math.max(maximum,weight),0);
+    // The busiest evidence band determines a common scale. A distant influencer
+    // cannot become huge because its own band happens to be mostly empty.
+    let scale = Math.min(.055/largest,...bands.filter(b=>b.sum).map(b=>Math.sqrt(.48*(b.high**2-b.low**2)/b.sum)));
+    let slots = [], portraitScales = null;
     if (members.length > 3000) {
-      const count = members.length, hole = .06, outer = .46, golden = Math.PI * (3 - Math.sqrt(5));
-      const unit = .29 / Math.sqrt(count), maximum = size === 'equal' ? 14 : size === 'fit' ? 24 : 28;
-      const nodes = members.map((n, i) => {
-        const r = Math.sqrt(hole * hole + (outer * outer - hole * hole) * (i + .5) / count);
-        const portraitRadius = unit * radiusFor(n, 1, size) / maximum;
-        let hash=2166136261; for(const char of String(n.id)) hash=Math.imul(hash^char.charCodeAt(0),16777619);
-        hash^=hash>>>16; hash=Math.imul(hash,0x7feb352d); hash^=hash>>>15;
-        // Rotate inside the available clearance: organic spacing without changing
-        // anyone's evidence distance or allowing adjacent circles to overlap.
-        const jitter=((hash>>>0)/4294967296*2-1)*(1.25*unit-portraitRadius);
-        const angle = i * golden + jitter/r;
-        return { ...n, evidenceX: n.evidenceX ?? n.x, evidenceY: n.evidenceY ?? n.y,
-          x: .5 + r * Math.cos(angle), y: .5 + r * Math.sin(angle), cohort: true,
-          portraitRadius, spacing: unit * 2 };
-      });
-      if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: unit * 2 });
-      return nodes;
-    }
-    // Modest follower differences remain readable while portraits gradually
-    // shrink away from the owner. Equal sizing remains strictly equal.
-    const weights = members.map((n, i) => radiusFor(n, 1, size)
-      * (size === 'equal' ? 1 : 1 - .24 * Math.pow(i / Math.max(1, members.length - 1), .8)));
-    const largest = Math.max(...weights), outer = .46, centre = .06;
-    let scale = Math.min(.065 / largest, Math.sqrt(.5 * (outer * outer - centre * centre) / weights.reduce((sum, r) => sum + r * r, 0)));
-    const candidates = [];
-    let seed = 0x6d2b79f5;
-    const random = () => {
-      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
-      return (seed >>> 0) / 4294967296;
-    };
-    const candidateCount = Math.max(800, members.length * 32);
-    for (let i = 0; i < candidateCount; i++) {
-      // Already ordered by radius; random angles avoid a grid or spiral pattern.
-      const distance = Math.sqrt(centre * centre + (outer * outer - centre * centre) * (i + .5) / candidateCount), angle = random() * Math.PI * 2;
-      candidates.push({ x: .5 + distance * Math.cos(angle), y: .5 + distance * Math.sin(angle), distance });
-    }
-    let slots = [];
-    // A single radial pass per attempt preserves evidence ordering. Nearby-cell
-    // checks use the largest radius, so differently sized portraits cannot overlap.
-    for (let attempt = 0; attempt < 12; attempt++) {
-      slots = [];
-      const cellSize = largest * scale * 2.12, cells = new Map();
-      for (const point of candidates) {
-        const radius = weights[slots.length] * scale;
-        if (point.distance < centre + radius || point.distance + radius > outer) continue;
-        // Leave room beneath the owner for its name, without drawing a boundary.
-        if (Math.abs(point.x - .5) < .055 + radius && point.y > .5 && point.y < .585 + radius) continue;
-        const cx = Math.floor(point.x / cellSize), cy = Math.floor(point.y / cellSize);
-        let overlaps = false;
-        for (let dy = -1; dy <= 1 && !overlaps; dy++) {
-          for (let dx = -1; dx <= 1 && !overlaps; dx++) {
-            const nearby = cells.get((cx + dx) + ':' + (cy + dy)) || [];
-            overlaps = nearby.some(other => Math.hypot(point.x - other.x, point.y - other.y) < (radius + other.radius) * 1.06);
-          }
+      const golden = Math.PI*(3-Math.sqrt(5));
+      portraitScales=[];let previous=Infinity;const uniformScale=scale;
+      for(const band of bands) {
+        if(!band.indices.length)continue;
+        const maximum=band.indices.reduce((max,i)=>Math.max(max,weights[i]),0);
+        let bandScale=(size==='equal'?uniformScale:Math.min(.055/largest,(band.high-band.low)*.4/maximum,Math.sqrt(.48*(band.high**2-band.low**2)/band.sum)))*.92;
+        if(size!=='equal')bandScale=Math.min(previous,bandScale);
+        const margin=maximum*bandScale,low=band.low+margin,high=band.high-margin;
+        band.indices.forEach((i,at)=>{
+          const radius=Math.sqrt(low**2+(high**2-low**2)*(at+.5)/band.indices.length),angle=i*golden;
+          slots[i]={x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle)};
+        });
+        // Check neighbours inside each annulus. Its reserved boundary margins
+        // also prevent cross-band overlap. Dense distant bands must not shrink
+        // the readable close portraits in a different band.
+        const cellSize=maximum*bandScale*2,cells=new Map();let clearance=1;
+        for(const i of band.indices) {
+          const point=slots[i],radius=weights[i]*bandScale,cx=Math.floor(point.x/cellSize),cy=Math.floor(point.y/cellSize);
+          for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)for(const other of cells.get((cx+dx)+':'+(cy+dy))||[])
+            clearance=Math.min(clearance,Math.hypot(point.x-other.x,point.y-other.y)/(radius+other.radius)*.99);
+          const key=cx+':'+cy;if(!cells.has(key))cells.set(key,[]);cells.get(key).push({...point,radius});
         }
-        if (overlaps) continue;
-        const placed = { ...point, radius };
-        slots.push(placed);
-        const key = cx + ':' + cy;
-        if (!cells.has(key)) cells.set(key, []);
-        cells.get(key).push(placed);
-        if (slots.length === members.length) break;
+        bandScale*=clearance;
+        if(size==='equal')scale=Math.min(scale,bandScale);
+        else {for(const i of band.indices)portraitScales[i]=bandScale;previous=bandScale;}
       }
-      if (slots.length === members.length) break;
-      scale *= .95;
-    }
-    if (slots.length !== members.length) {
-      // Guaranteed finite fallback for unusually skewed pages: enough square-grid
-      // slots inside the disk, each separated by more than the largest diameter.
-      const step = Math.min(.12, .35 / Math.sqrt(members.length)), limit = Math.ceil(outer / step);
-      scale = step * .45 / largest;
-      slots = [];
-      for (let y = -limit; y <= limit; y++) for (let x = -limit; x <= limit; x++) {
-        const distance = Math.hypot(x * step, y * step), radius = largest * scale;
-        if (distance < centre + radius || distance + radius > outer) continue;
-        if (Math.abs(x * step) < .055 + radius && y > 0 && y * step < .085 + radius) continue;
-        slots.push({ x: .5 + x * step, y: .5 + y * step, distance });
+      if(size==='equal')portraitScales=null;
+    } else {
+      let seed=0x6d2b79f5;
+      const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
+      const candidates=[];
+      bands.forEach((band,which)=>{
+        const count=Math.max(80,band.indices.length*40);
+        if(!band.indices.length)return;
+        for(let i=0;i<count;i++) {
+          const radius=Math.sqrt(band.low**2+(band.high**2-band.low**2)*(i+.5)/count),angle=random()*Math.PI*2;
+          candidates.push({x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle),distance:radius,band:which});
+        }
+      });
+      for(let attempt=0;attempt<24;attempt++) {
+        slots=[];const cellSize=largest*scale*2.12,cells=new Map();
+        for(const point of candidates) {
+          const i=slots.length,which=distanceBand(members[i],distance),band=bands[which],radius=weights[i]*scale;
+          if(point.band!==which || point.distance<band.low+radius || point.distance+radius>band.high)continue;
+          if(Math.abs(point.x-.5)<.055+radius && point.y>.5 && point.y<.585+radius)continue;
+          const cx=Math.floor(point.x/cellSize),cy=Math.floor(point.y/cellSize);let overlaps=false;
+          for(let dy=-1;dy<=1&&!overlaps;dy++)for(let dx=-1;dx<=1&&!overlaps;dx++)
+            overlaps=(cells.get((cx+dx)+':'+(cy+dy))||[]).some(other=>Math.hypot(point.x-other.x,point.y-other.y)<(radius+other.radius)*1.06);
+          if(overlaps)continue;
+          const placed={...point,radius};slots.push(placed);
+          const key=cx+':'+cy;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(placed);
+          if(slots.length===members.length)break;
+        }
+        if(slots.length===members.length)break;
+        scale*=.92;
       }
-      slots.sort((a, b) => a.distance - b.distance || a.x - b.x || a.y - b.y);
+      // Each annulus has finite area. If a pathological page exhausts candidates,
+      // use the same bounded annular spiral rather than inventing closer positions.
+      if(slots.length!==members.length) {
+        slots=[];scale*=.4;const golden=Math.PI*(3-Math.sqrt(5));
+        for(const band of bands)band.indices.forEach((i,at)=>{
+          const margin=largest*scale,low=band.low+margin,high=band.high-margin;
+          const radius=Math.sqrt(low**2+(high**2-low**2)*(at+.5)/band.indices.length),angle=i*golden;
+          slots[i]={x:.5+radius*Math.cos(angle),y:.5+radius*Math.sin(angle)};
+        });
+      }
     }
-    const nodes = members.map((n, i) => ({ ...n, evidenceX: n.evidenceX ?? n.x, evidenceY: n.evidenceY ?? n.y,
-      x: slots[i].x, y: slots[i].y, cohort: true, portraitRadius: weights[i] * scale, spacing: largest * scale * 2.12 }));
-    if (owner) nodes.push({ ...owner, x: .5, y: .5, cohort: true, spacing: largest * scale * 2.12 });
+    const nodes=members.map((n,i)=>({...n,evidenceX:n.evidenceX??n.x,evidenceY:n.evidenceY??n.y,
+      x:slots[i].x,y:slots[i].y,cohort:true,distanceBand:distanceBand(n,distance),
+      portraitRadius:weights[i]*(portraitScales?.[i]??scale),spacing:largest*(portraitScales?.[i]??scale)*2.12}));
+    if(owner)nodes.push({...owner,x:.5,y:.5,cohort:true,spacing:largest*scale*2.12});
     return nodes;
   }
 
@@ -370,20 +381,25 @@
     if (scene.large && scene.spatial) {
       const visible = scene.spatial.query(cam.rect(), 12001);
       const vector = visible.length <= 12000;
-      const marks = vector ? visible.map(it => { const [x,y]=cam.toScreen(it.x,it.y); return {kind:'n',it,x,y,r:String(it.d.id)===String(ownerId)?OWNER_RADIUS:it.d.portraitRadius*cam.scale}; }) : [];
-      const nodes = marks.filter(mark => mark.r >= 5).sort((a,b) => (a.it.x-.5)**2+(a.it.y-.5)**2-(b.it.x-.5)**2-(b.it.y-.5)**2).slice(0,1000);
+      const marks = vector ? visible.map(it => { const [x,y]=cam.toScreen(it.x,it.y); return {kind:'n',it,x,y,r:String(it.d.id)===String(ownerId)?Math.min(28,OWNER_RADIUS*cam.k):it.d.portraitRadius*cam.scale}; }) : [];
+      const priority=(a,b)=>(a.x-.5)**2+(a.y-.5)**2-(b.x-.5)**2-(b.y-.5)**2;
+      // Keep a bounded portrait layer over the cached overview as well. A dense
+      // page should retain some real photos at fit, then reveal more when zoomed.
+      const nodes = vector ? marks.filter(mark=>mark.r>=2).sort((a,b)=>priority(a.it,b.it)).slice(0,1000)
+        : visible.filter(it=>it.d.portraitRadius*cam.scale>=2 || String(it.d.id)===String(ownerId)).sort(priority).slice(0,1000)
+          .map(it=>{const[x,y]=cam.toScreen(it.x,it.y);return{kind:'n',it,x,y,r:String(it.d.id)===String(ownerId)?Math.min(28,OWNER_RADIUS*cam.k):it.d.portraitRadius*cam.scale};});
       return {nodes,groups:[],large:true,vector,marks};
     }
     if (scene.nodes.some(it => it.d.cohort)) {
       const scale = cam.scale / Math.max(1, cam.k);
-      const nodes = scene.nodes.filter(it => it.ta !== 0).map(it => {
+      const nodes = scene.nodes.filter(it => it.a > .001 || it.ta !== 0).map(it => {
         const [x, y] = cam.toScreen(it.x, it.y);
         const owner = String(it.d.id) === String(ownerId);
         const radiusScale = Math.min(1, it.d.spacing * scale * .49 / 15);
         const r = owner ? Math.min(28, OWNER_RADIUS * cam.k) : it.d.portraitRadius ? it.d.portraitRadius * cam.scale : radiusFor(it.d, 1, size) * radiusScale * cam.k;
         return { kind: 'n', it, x, y, r };
       });
-      return { nodes, groups: [] };
+      return { nodes: nodes.filter(n => n.x+n.r>=0 && n.y+n.r>=0 && n.x-n.r<=cam.w && n.y-n.r<=cam.h), groups: [] };
     }
     const inside = (x, y, pad = 20) => x >= pad && y >= pad && x <= cam.w - pad && y <= cam.h - cam.inset.bottom - pad;
     const occupied = [], summaries = new Map(), nodeMarks = [];
@@ -458,9 +474,25 @@
   // Only saved local photos are eligible. Cap decoded images and in-flight requests;
   // drawing thousands of records must never enqueue thousands of image downloads.
   class PortraitCache {
-    constructor({createImage, normalize = null, changed = () => {}, max = 1024, concurrency = 6} = {}) {
+    constructor({createImage, normalize = null, changed = () => {}, max = 1024, concurrency = 6, now = () => performance.now()} = {}) {
       this.createImage = createImage; this.normalize = normalize; this.changed = changed; this.max = max;
-      this.concurrency = concurrency; this.entries = new Map(); this.queue = []; this.active = 0;
+      this.concurrency = concurrency; this.entries = new Map(); this.queue = []; this.active = 0; this.now = now;
+    }
+    peek(url) { const entry=this.entries.get(url); return entry?.state === 'ready' ? entry.image : null; }
+    reveal(url, now, reduced = false) {
+      const entry=this.entries.get(url);
+      if(entry?.state !== 'ready')return 0;
+      return reduced ? 1 : easeOut((now-entry.readyAt)/280);
+    }
+    // Queue the current view first. Old, not-yet-started requests can wait for a
+    // later visit instead of delaying photos at the new pan/zoom location.
+    prioritize(urls) {
+      const wanted=new Set(urls.filter(url=>typeof url === 'string' && /^\/img\/\d+$/.test(url)));
+      for(const [url,entry] of this.entries)if(entry.state==='queued' && !wanted.has(url))this.entries.delete(url);
+      this.queue=this.queue.filter(entry=>wanted.has(entry.url));
+      const order=new Map([...wanted].map((url,i)=>[url,i]));
+      this.queue.sort((a,b)=>order.get(a.url)-order.get(b.url));
+      for(const url of wanted)this.get(url);
     }
     get(url) {
       if (typeof url !== 'string' || !/^\/img\/\d+$/.test(url)) return null;
@@ -483,7 +515,7 @@
         const image = entry.image = this.createImage(); image.decoding = 'async';
         const finish = (ready) => {
           if (entry.state !== 'loading') return;
-          entry.state = ready ? 'ready' : 'failed'; this.active--;
+          entry.state = ready ? 'ready' : 'failed'; if(ready)entry.readyAt=this.now(); this.active--;
           image.onload = image.onerror = null;
           if (!ready) { entry.image = null; image.src = ''; }
           this.pump(); this.changed();
@@ -524,7 +556,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceBand, distanceValue, DISTANCE_BANDS, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

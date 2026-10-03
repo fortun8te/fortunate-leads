@@ -402,6 +402,12 @@ def init(path):
     external_queue.ensure(conn)
     import collection_suggestions
     collection_suggestions.ensure(conn)
+    import acquisition
+    acquisition.ensure(conn)
+    import request_audit
+    request_audit.ensure(conn)
+    import list_import
+    list_import.ensure(conn)
     import processing_progress
     processing_progress.ensure(conn)
     conn.commit()
@@ -462,6 +468,8 @@ def init_map_person_degree(conn):
     The ready marker and trigger installation commit together with the backfill;
     a failed migration is retried from scratch at the next initialization.
     """
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
     columns = {r[1] for r in conn.execute('PRAGMA table_info(map_person_degree)')}
     if 'score' not in columns:
         conn.execute('ALTER TABLE map_person_degree ADD COLUMN score REAL')
@@ -474,7 +482,16 @@ def init_map_person_degree(conn):
         return bool(row and row[0] == 'true' and installed == count)
 
     people_ready = complete('map_people_present_v1', 'map_people_%', 3)
-    ready = complete('map_person_degree_v1', 'map_degree_%', 6) and people_ready
+    members_ready = complete('map_seed_member_v1', 'map_member_%', 6) and conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
+    legacy_marker = conn.execute("SELECT value FROM settings WHERE key='map_person_degree_v1'").fetchone()
+    ready = (complete('map_person_degree_v2', 'map_degree_%', 2) and people_ready and members_ready
+             and legacy_marker is not None and legacy_marker[0] == 'true')
+    # Rebuilds and trigger replacement share the initialization transaction.
+    # Remove only this summary's delta hooks before its own membership repair;
+    # normal collection/import paths never suspend graph maintenance.
+    for name in ('map_degree_member_insert', 'map_degree_member_delete'):
+        conn.execute(f'DROP TRIGGER IF EXISTS {name}')
     if not ready:
         conn.execute('DELETE FROM map_person_degree')
         conn.execute('INSERT INTO map_person_degree(person_id,degree) '
@@ -497,8 +514,6 @@ def init_map_person_degree(conn):
                      'ON CONFLICT(handle) DO UPDATE SET refs=map_source_handles.refs+1')
     # Distinct current source membership is linear in the edge count. It keeps
     # source degrees exact without a source-wide rescan after each page.
-    members_ready = complete('map_seed_member_v1', 'map_member_%', 6) and conn.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_seed_degree_%'").fetchone()[0] == 2
     for name in ('map_seed_degree_insert', 'map_seed_degree_delete'):
         conn.execute(f'DROP TRIGGER IF EXISTS {name}')
     if not members_ready:
@@ -514,8 +529,21 @@ def init_map_person_degree(conn):
     conn.execute('CREATE TRIGGER map_seed_degree_delete AFTER DELETE ON map_seed_member BEGIN '
                  'UPDATE map_seed_degree SET degree=degree-1 WHERE seed=OLD.seed; '
                  'DELETE FROM map_seed_degree WHERE seed=OLD.seed AND degree<=0; END')
+    # Distinct source membership is the single transition boundary for both
+    # degree summaries. These hooks do not depend on sibling trigger order:
+    # membership already reflects the physical edge/evidence change when they run.
+    conn.execute('CREATE TRIGGER map_degree_member_insert AFTER INSERT ON map_seed_member '
+                 'WHEN EXISTS(SELECT 1 FROM people WHERE id=NEW.person_id) BEGIN '
+                 'INSERT INTO map_person_degree(person_id,degree,score,hidden) '
+                 'VALUES(NEW.person_id,1,(SELECT score FROM verdicts WHERE person_id=NEW.person_id),'
+                 "EXISTS(SELECT 1 FROM marks WHERE person_id=NEW.person_id AND status='no')) "
+                 'ON CONFLICT(person_id) DO UPDATE SET degree=degree+1; END')
+    conn.execute('CREATE TRIGGER map_degree_member_delete AFTER DELETE ON map_seed_member BEGIN '
+                 'DELETE FROM map_person_degree WHERE person_id=OLD.person_id AND degree=1; '
+                 'UPDATE map_person_degree SET degree=degree-1 WHERE person_id=OLD.person_id; END')
     # Recreate on open, as revision triggers do. Old and new identities both
-    # matter during merges, renames, and evidence rewrites.
+    # matter during merges, renames, and evidence rewrites. Retire the old full
+    # per-person recount hooks; map membership now supplies constant-work deltas.
     for table in ('edges', 'edge_evidence'):
         for operation in ('INSERT', 'UPDATE', 'DELETE'):
             name = f'map_degree_{table}_{operation.lower()}'
@@ -526,17 +554,6 @@ def init_map_person_degree(conn):
                         'OR OLD.direction IS NOT NEW.direction' +
                         (' OR OLD.active IS NOT NEW.active' if table == 'edge_evidence' else ''))
             refs = ('OLD', 'NEW') if operation == 'UPDATE' else (('OLD',) if operation == 'DELETE' else ('NEW',))
-            body = []
-            for ref in refs:
-                pid = f'{ref}.person_id'
-                body.append(f'DELETE FROM map_person_degree WHERE person_id={pid};')
-                body.append('INSERT INTO map_person_degree(person_id,degree,score,hidden) '
-                            f'SELECT {pid},count(DISTINCT seed),'
-                            f'(SELECT score FROM verdicts WHERE person_id={pid}),'
-                            f"EXISTS(SELECT 1 FROM marks WHERE person_id={pid} AND status='no') "
-                            'FROM current_edges e JOIN people p ON p.id=e.person_id '
-                            f'WHERE e.person_id={pid} HAVING count(DISTINCT e.seed)>0;')
-            conn.execute(f'CREATE TRIGGER {name} AFTER {operation} ON {table}{when} BEGIN {" ".join(body)} END')
             member_name = f'map_member_{table}_{operation.lower()}'
             conn.execute(f'DROP TRIGGER IF EXISTS {member_name}')
             member_body = []
@@ -602,6 +619,8 @@ def init_map_person_degree(conn):
                         'ON CONFLICT(handle) DO UPDATE SET refs=refs+1;')
                 when = f' WHEN OLD.{column} IS NOT NEW.{column}'
             conn.execute(f'CREATE TRIGGER {name} AFTER {operation} ON {table}{when} BEGIN {body} END')
+    conn.execute("INSERT INTO settings(key,value) VALUES('map_person_degree_v2','true') "
+                 'ON CONFLICT(key) DO UPDATE SET value=excluded.value')
     conn.execute("INSERT INTO settings(key,value) VALUES('map_person_degree_v1','true') "
                  'ON CONFLICT(key) DO UPDATE SET value=excluded.value')
     conn.execute("INSERT INTO settings(key,value) VALUES('map_rank_v1','true') "

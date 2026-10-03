@@ -17,3 +17,15 @@ test('older Leadscout research is visible without a current strong-lead claim', 
   const current = vm.runInContext(`${render}\nscoutHTML(${JSON.stringify({ ...scout, stale: false })})`, context);
   assert.match(current, /Strong lead/);
 });
+
+test('unverified research cannot turn unknown reachability into a negative claim', async () => {
+  const source=await readFile(new URL('../../web/app.js',import.meta.url),'utf8');
+  const render=source.slice(source.indexOf('function scoutHTML(sc) {'),source.indexOf('function websiteEvidence(site) {'));
+  const context=vm.createContext({URL,esc:s=>String(s).replaceAll('<','&lt;'),safeUrl:s=>s});
+  for(const reachable of [false,null,undefined]) {
+    const html=vm.runInContext(`${render}\nscoutHTML(${JSON.stringify({verified:false,reachable,verdict:'possible',verification_reason:'No checked source supports this claim.'})})`,context);
+    assert.doesNotMatch(html,/not reachable/);assert.match(html,/No checked source supports this claim/);
+  }
+  const current=vm.runInContext(`${render}\nscoutHTML(${JSON.stringify({verified:true,reachable:false,verdict:'no'})})`,context);
+  assert.match(current,/not reachable/);
+});

@@ -85,7 +85,12 @@ def ready(conn):
                 and conn.execute("SELECT 1 FROM settings WHERE key='lead_rank_ready' AND value='true'").fetchone()
                 and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'lead_rank_%'").fetchone()[0] == 15
                 and conn.execute("SELECT 1 FROM settings WHERE key='map_person_degree_v1' AND value='true'").fetchone()
-                and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6)
+                and conn.execute("SELECT 1 FROM settings WHERE key='map_person_degree_v2' AND value='true'").fetchone()
+                and conn.execute("SELECT 1 FROM settings WHERE key='map_people_present_v1' AND value='true'").fetchone()
+                and conn.execute("SELECT 1 FROM settings WHERE key='map_seed_member_v1' AND value='true'").fetchone()
+                and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 2
+                and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%'").fetchone()[0] == 6
+                and conn.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3)
 
 
 def prepare(conn):

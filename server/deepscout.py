@@ -27,6 +27,7 @@ import meta_network
 import processing_modes
 import external_harness
 import websearch
+import evidence_cleanup
 
 SCOUT_MIN = 60          # bulk AI fit needed before an agent looks
 
@@ -400,10 +401,66 @@ def _clean_tags(tags):
 
 def tags_of(row):
     """The tags a scout result puts on a person (verdict first)."""
-    extra = json.loads(row['tags'] or '[]')
-    if not row['reachable']:
-        extra = ['Not reachable'] + extra
+    evidence = _saved_evidence(row)
+    corpus = '\n'.join(e['quote'] for e in evidence)
+    # Agent-written badges have no independent authority. Keep only product
+    # niches that the checked quotes actually name, never budget/authority prose.
+    try:
+        candidates = json.loads(row['tags'] or '[]')
+    except (TypeError, ValueError):
+        candidates = []
+    if not isinstance(candidates, list):
+        candidates = []
+    extra = [t for t in candidates if isinstance(t, str) and
+             qualify.TAXONOMY.get(t) == 'niche' and qualify.NICHE_RX[t].search(corpus)]
     return [VERDICT_TAG[row['verdict']]] + extra
+
+
+def _saved_evidence(row):
+    try:
+        raw = json.loads(row['raw'] or 'null')
+    except (TypeError, ValueError):
+        return []
+    if _schema_error(raw) or raw['verdict'] != row['verdict'] or raw['reachable'] != bool(row['reachable']):
+        return []
+    return raw['evidence']
+
+
+def _trusted(conn, row, p=None):
+    """No network on reads. Require the stored verification and its snapshot.
+
+    A verified URL is tied to the profile, and profile quotes still match. This
+    checks saved provenance, not current website availability. Quarantine and
+    unsupported legacy summaries can never regain authority by readback alone.
+    """
+    if not row or not row['verified'] or evidence_cleanup.active(conn, row['person_id']) or not _fresh(conn, row, p):
+        return False
+    if p is None:
+        p = conn.execute('SELECT * FROM people WHERE id=?', (row['person_id'],)).fetchone()
+    if not isinstance(p, dict):
+        p = dict(p)
+    evidence = _saved_evidence(row)
+    if not evidence:
+        return False
+    relevant = False
+    for item in evidence:
+        source, quote = item['source'], re.sub(r'\s+', ' ', item['quote']).strip()
+        if source in ('profile.bio', 'profile.name'):
+            corpus = re.sub(r'\s+', ' ', str(p[source.split('.')[1]] or '')).strip()
+            if quote not in corpus:
+                return False
+        elif not _related(source, p):
+            return False
+        relevant = relevant or (_supports_negative(quote) if row['verdict'] == 'no' else _supports_positive(quote))
+    return relevant
+
+
+def _evidence_summary(row):
+    rows = []
+    for item in _saved_evidence(row)[:3]:
+        label = 'Profile' if item['source'].startswith('profile.') else 'Linked website'
+        rows.append(label + ' says: "' + item['quote'].strip() + '".')
+    return ' '.join(rows)
 
 
 def _owner(conn, pid):
@@ -428,7 +485,7 @@ def _overridden(conn, pid, row):
 def retag(conn, pid):
     """Put the scout tags back after a rule or model pass rewrote the automatic tags."""
     row = _row(conn, pid)
-    if row and row['verified'] and _fresh(conn, row) and not _overridden(conn, pid, row):
+    if _trusted(conn, row) and not _overridden(conn, pid, row):
         conn.executemany("INSERT OR IGNORE INTO tags VALUES(?,?,'scout','auto')", [(pid, t) for t in tags_of(row)])
     elif row:
         conn.execute("DELETE FROM tags WHERE person_id=? AND grp='scout' AND source='auto'", (pid,))
@@ -439,10 +496,23 @@ def result(conn, pid):
     row = _row(conn, pid)
     if not row:
         return None
-    return {'overridden_by_owner': _overridden(conn, pid, row), 'stale': not _fresh(conn, row), 'verified': bool(row['verified']),
-            'verification_reason': row['verification_reason'], 'verdict': row['verdict'],
-            'reachable': bool(row['reachable']), 'summary': row['summary'],
-            'tags': json.loads(row['tags'] or '[]'), 'sources': json.loads(row['sources'] or '[]'), 'at': row['at']}
+    trusted = _trusted(conn, row)
+    quarantined = evidence_cleanup.active(conn, pid)
+    reason = (evidence_cleanup.REASON if quarantined else row['verification_reason'] or
+              (None if trusted else 'Saved research needs checked evidence before it can describe this lead.'))
+    # Free-form agent prose and badges are never facts, even for a valid lead.
+    # The detail panel gets attributed exact quotes only after the evidence gate.
+    return {'overridden_by_owner': _overridden(conn, pid, row), 'stale': not _fresh(conn, row), 'verified': trusted,
+            'quarantined': quarantined, 'verification_reason': reason, 'verdict': row['verdict'] if trusted else None,
+            # A checked exclusion such as "personal account only" proves the
+            # business verdict, not that nobody can contact this person. The
+            # stored agent boolean remains historical data; false has no
+            # independent reachability verification in the current pipeline.
+            'reachable': True if trusted and row['reachable'] else None,
+            'summary': _evidence_summary(row) if trusted else '',
+            'tags': tags_of(row)[1:] if trusted else [],
+            'sources': list(dict.fromkeys(item['source'] for item in _saved_evidence(row)
+                if item['source'] not in ('profile.bio', 'profile.name'))) if trusted else [], 'at': row['at']}
 
 
 def _has_table(conn):
@@ -462,12 +532,13 @@ def _fresh(conn, row, p=None):
 
 def fresh(conn, p):
     row = _row(conn, p['id'])
-    return bool(row and row['verified'] and _fresh(conn, row, p))
+    return _trusted(conn, row, p)
 
 
 def apply(conn, p, data, verification=None):
     """Keep every candidate; only verified answers can change fit or tags."""
     verified, reason = verification if verification is not None else verify(p, data)
+    evidence_cleanup.supersede(conn, p['id'])
     reachable = data.get('reachable') is True
     summary = re.sub(r'\s+', ' ', str(data.get('summary') or '')).strip()[:400]
     sources = list(dict.fromkeys(s for s in data.get('sources') or []
@@ -492,7 +563,7 @@ def apply(conn, p, data, verification=None):
 def reapply(conn, p, net=None):
     """Restore the saved scout's final verdict after a later rule pass on this person."""
     row = _row(conn, p['id'])
-    if not row or not row['verified'] or not _fresh(conn, row, p) or _overridden(conn, p['id'], row):
+    if not _trusted(conn, row, p) or _overridden(conn, p['id'], row):
         return False
     v = conn.execute('SELECT content_fit FROM verdicts WHERE person_id=?', (p['id'],)).fetchone()
     if not v:
@@ -505,7 +576,7 @@ def reapply(conn, p, net=None):
     score = qualify.blend(fit, net)
     conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=?, "
                  "role=NULL, prompt=NULL, evidence=NULL WHERE person_id=?",
-                 (fit, score, qualify._tier(score, bool((p.get('bio') or '').strip())), row['summary'] or None, p['id']))
+                 (fit, score, qualify._tier(score, bool((p.get('bio') or '').strip())), _evidence_summary(row) or None, p['id']))
     return True
 
 

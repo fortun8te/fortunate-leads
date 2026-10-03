@@ -33,6 +33,10 @@ import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
 import collection_progress  # noqa: E402
 import collection_efficiency  # noqa: E402
+import acquisition  # noqa: E402
+import acquisition_dispatch  # noqa: E402
+import request_audit  # noqa: E402
+import enrichment_plan  # noqa: E402
 import map_scale  # noqa: E402
 import map_layout  # noqa: E402
 import map_view  # noqa: E402
@@ -231,7 +235,16 @@ def ext_request(conn, q, b):
         token = b.get('token')
         if not isinstance(token, str) or not token:
             raise Bad('request token required')
-        return accounts.request_permit(conn, lane, token=token, now=now)
+        row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        permit = accounts.request_permit(conn, lane, token=token, now=now, commit=False)
+        if permit.get('released') and row:
+            sent = b.get('sent') if type(b.get('sent')) is bool else None
+            status = b.get('http_status')
+            status = status if sent is True and type(status) is int and 100 <= status <= 599 else None
+            request_audit.record_release(conn, lane, row['ig_id'], token, now,
+                                         sent=sent, http_status=status)
+        conn.commit()
+        return permit
     if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
         raise Bad('request action and kind required')
     conn.execute('BEGIN IMMEDIATE')
@@ -277,7 +290,13 @@ def ext_request(conn, q, b):
             if remaining > 0:
                 conn.commit()
                 return {'granted': False, 'wait_ms': max(1000, int(remaining * 1000)), 'lease_renewed': True}
-    permit = accounts.request_permit(conn, lane, kind=b['kind'], now=now, commit=backend != 'mobile')
+    permit = accounts.request_permit(conn, lane, kind=b['kind'], now=now, commit=False)
+    if permit.get('granted'):
+        purpose = b.get('purpose')
+        allowed_purposes = ('list_page', 'seed_lookup') if b['kind'] == 'list' else ('profile_view',)
+        purpose = purpose if isinstance(purpose, str) and purpose in allowed_purposes else 'unknown'
+        request_audit.record_grant(conn, lane, row['ig_id'], b['kind'], job['id'],
+                                   purpose, permit['token'], now)
     if backend == 'mobile':
         # Charge a granted mobile attempt conservatively in the same transaction
         # as its permit. Native clients cannot reset this via stale heartbeats.
@@ -288,7 +307,7 @@ def ext_request(conn, q, b):
                 today = {}
             today[b['kind']] = today.get(b['kind'], 0) + 1
             accounts.touch(conn, lane, today=json.dumps(today))
-        conn.commit()
+    conn.commit()
     return dict(permit, lease_renewed=True)
 
 
@@ -579,6 +598,13 @@ def _ext_list_page(conn, q, b):
     if marked_added or bool(maybe_removed & marked):
         prior_ids.update(r[0] for r in conn.execute('SELECT DISTINCT person_id FROM current_edges WHERE seed=?', (seed,)))
     prior_network = network_snapshot(conn, prior_ids)
+    # Prime against pre-existing observations BEFORE inserting this page. The
+    # opposite list orientation may already establish the same directed fact.
+    acquisition_seed = acquisition_dispatch.seed_identity(conn, seed, seed_ig_id)
+    acquisition_members = [{'ig_id': acquisition.normalize_id(u.get('ig_id'))} for u in valid]
+    if acquisition_seed and len(valid) <= 2000:
+        acquisition.prime_existing(conn, seed_ig_id=acquisition_seed,
+                                   direction=direction, members=acquisition_members)
     ts = db.now()
     lane = accounts.lane_of(q, b)
     next_cursor = b.get('next_cursor') or None
@@ -679,10 +705,21 @@ def _ext_list_page(conn, q, b):
     # A positive observation can restore a previous relationship without adding a new edge row.
     if pids or changed:
         clear_caches()
+    if acquisition_seed and len(valid) <= 2000:
+        try:
+            captured = acquisition.observation_date(b.get('captured_at'))
+        except (ValueError, TypeError, OverflowError):
+            captured = None
+        acquisition.record_page(conn, event_id='collector:' + page_key,
+            source_kind='collector_page' if job else 'legacy_import',
+            seed_ig_id=acquisition_seed, direction=direction, members=acquisition_members,
+            observed_at=captured, job_id=job['id'] if job else None,
+            source_ref=json.dumps({'route': backend + '_list', 'page_key': page_key,
+                                  'timestamp_basis': 'captured_at' if captured else 'unknown'}, sort_keys=True))
     if job:
         conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,'
-                     'http_status,requested_count,returned_count,new_links,saved_entries) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?)',
-                     (ts, lane, job['id'], 'list', direction, 'page',
+                     'http_status,requested_count,returned_count,new_links,saved_entries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (page_key, ts, lane, job['id'], 'list', direction, 'page',
                       metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 200),
                       len(users), new_links, max(0, received - previous_members)))
     trial_stopped = False
@@ -1139,8 +1176,12 @@ def ext_heartbeat(conn, q, b):
 # The summary is maintained transactionally with active evidence. Keep the
 # read-through path for an interrupted backfill or missing summary triggers.
 LISTS_READ_THROUGH = '(SELECT count(DISTINCT e.seed) FROM current_edges e WHERE e.person_id=p.id)'
-LISTS = ("(CASE WHEN (SELECT value FROM settings WHERE key='map_person_degree_v1')='true' "
-         "AND (SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%')=6 "
+DEGREE_READY_SQL = ("(SELECT count(*) FROM settings WHERE key IN ('map_person_degree_v1','map_person_degree_v2',"
+                    "'map_people_present_v1','map_seed_member_v1') AND value='true')=4 "
+                    "AND (SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%')=2 "
+                    "AND (SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%')=3 "
+                    "AND (SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_member_%')=6")
+LISTS = (f"(CASE WHEN {DEGREE_READY_SQL} "
          f"THEN coalesce(d.degree,0) ELSE {LISTS_READ_THROUGH} END)")
 PEOPLE_FROM = ('FROM people p LEFT JOIN verdicts v ON v.person_id=p.id '
                'LEFT JOIN marks m ON m.person_id=p.id LEFT JOIN map_person_degree d ON d.person_id=p.id')
@@ -1936,8 +1977,7 @@ def map_graph(conn, q):
     # retain the exact read-through query until db.init repairs the summary.
     people_ready = db.get_setting(conn, 'map_people_present_v1', False) and conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3
-    summary_ready = people_ready and db.get_setting(conn, 'map_person_degree_v1', False) and conn.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6
+    summary_ready = bool(conn.execute('SELECT ' + DEGREE_READY_SQL).fetchone()[0])
     if summary_ready:
         where = [part.replace(LISTS, 'd.degree') for part in where]
     sources_ready = db.get_setting(conn, 'map_source_handles_v1', False) and conn.execute(
@@ -2563,6 +2603,28 @@ def api_collection_suggestions(conn, q, b):
     return collection_suggestions.suggest(conn, qint(q, 'limit') or 6)
 
 
+def api_acquisition(conn, q, b):
+    """Read graph evidence, or explicitly choose the experimental page policy."""
+    if b:
+        if set(b) != {'policy'}:
+            raise Bad('Use policy only; imports use the local file tool.')
+        acquisition_dispatch.set_policy(conn, b['policy'])
+        conn.commit()
+    result = {'policy': db.get_setting(conn, acquisition_dispatch.POLICY_KEY, 'current'),
+              'experimental': True, 'index': acquisition.stats(conn),
+              'scope': 'indexed_observations_not_complete_lists',
+              'daily_throughput_verified': False}
+    since = (q.get('since') or [datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0).isoformat()])[0]
+    result['request_audit'] = request_audit.rollup(conn, since,
+        viewer=(q.get('viewer') or [None])[0], until=(q.get('until') or [None])[0])
+    if q.get('ig_id'):
+        result['neighbors'] = acquisition.neighbors(conn, q['ig_id'][0],
+            (q.get('direction') or ['following'])[0],
+            after=(q.get('after') or [None])[0], limit=qint(q, 'limit') or 100)
+    return result
+
+
 def api_snowball(conn, q, b):
     """Opt-in: queue the `following` lists of good/client leads as new seeds (their people then get the same network signals)."""
     min_status = status_in(b.get('min_status', 'interested'))
@@ -3054,6 +3116,8 @@ ROUTES = [
     ('GET', r'/api/scraper/status', api_scraper_status), ('GET', r'/api/scraper', api_scraper),
     ('GET', r'/api/scraper/suggestions', api_collection_suggestions),
     ('POST', r'/api/scraper/suggestions', api_collection_suggestions),
+    ('GET', r'/api/scraper/acquisition', api_acquisition),
+    ('POST', r'/api/scraper/acquisition', api_acquisition),
     ('POST', r'/api/scraper/seeds', api_seeds), ('POST', r'/api/scraper/pause', api_pause),
     ('POST', r'/api/scraper/budget', api_budget), ('POST', r'/api/scraper/snowball', api_snowball),
     ('POST', r'/api/settings/qualify', api_qualify),
@@ -3607,10 +3671,9 @@ def _local_processing_step(conn):
     if owner_notes.step(conn):
         return True
     ticket = processing_modes.begin_work(conn, 'local_qualification')
-    jobs = processing_state.next_pending(conn)
-    if not jobs or ticket is None:
+    job = enrichment_plan.next_job(conn)
+    if job is None or ticket is None:
         return False
-    job = jobs[0]
     row = conn.execute(f'SELECT * FROM people p WHERE id=? AND {NOT_ME}', (job['person_id'],)).fetchone()
     if not row:
         conn.execute('DELETE FROM local_queue WHERE person_id=? AND revision=?', (job['person_id'], job['revision']))
@@ -3625,8 +3688,11 @@ def _local_processing_step(conn):
     cached = conn.execute('SELECT * FROM local_reviews WHERE person_id=?', (person['id'],)).fetchone()
     result = dict(cached) if cached else None
     if result:
-        result['verdict'] = json.loads(result['verdict'] or 'null')
-    needs_inference = bool(job['repair_attempt']) or not result or not local_qualification.current_result(result, person, context)
+        try:
+            result['verdict'] = json.loads(result['verdict'] or 'null')
+        except (ValueError, TypeError):
+            result = None
+    needs_inference = bool(job['repair_attempt']) or not result or not enrichment_plan.reusable_result(result, person, context)
     if needs_inference:
         processing_progress.active(conn, person['id'])
     conn.commit()
@@ -4230,11 +4296,7 @@ def plan_profiles(conn):
         return 0
     # The map's transactionally maintained degree has the same distinct-current-seed
     # meaning as LISTS. Keep the exact read-through query if its backfill was interrupted.
-    degree_ready = db.get_setting(conn, 'map_person_degree_v1', False) and db.get_setting(
-        conn, 'map_people_present_v1', False) and conn.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_degree_%'").fetchone()[0] == 6
-    degree_ready = degree_ready and conn.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'map_people_%'").fetchone()[0] == 3
+    degree_ready = bool(conn.execute('SELECT ' + DEGREE_READY_SQL).fetchone()[0])
     if degree_ready:
         degree_join = ('JOIN' if early else 'LEFT JOIN') + ' map_person_degree d ON d.person_id=p.id'
         degree = 'd.degree' if early else 'coalesce(d.degree,0)'

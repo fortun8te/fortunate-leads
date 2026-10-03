@@ -287,7 +287,7 @@ class MapSummaryTest(unittest.TestCase):
     def test_missing_maintenance_trigger_falls_back_then_rebuilds(self):
         self.edge('sourcea', 1)
         self.conn.commit()
-        self.conn.execute('DROP TRIGGER map_degree_edge_evidence_update')
+        self.conn.execute('DROP TRIGGER map_degree_member_delete')
         self.conn.execute('DROP TRIGGER map_member_edge_evidence_update')
         self.conn.execute("UPDATE edge_evidence SET active=0 WHERE seed='sourcea' AND person_id=1")
         self.conn.commit()
