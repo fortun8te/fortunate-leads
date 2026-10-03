@@ -10,11 +10,16 @@ import server
 
 
 class BrowserStartupApiTests(Base):
+    def setUp(self):
+        super().setUp()
+        # Host launching is tested with injected browser functions only.
+        self.app.collection.host_operations_allowed = True
+
     def test_seed_start_reuses_isolation_and_reports_connecting_not_started(self):
         db.set_setting(self.conn,'instagram_collection_isolation',{'accounts':{'one':'101','two':'102'}})
         self.conn.commit()
         pending={'collection_startup':{'state':'opening'},'stages':[{'id':'lists','paused':True},{'id':'bios','paused':True}]}
-        with patch.object(server,'api_control_set',return_value=pending) as start:
+        with patch.object(server.get_application().collection,'api_control_set',return_value=pending) as start:
             code,out=self.call('/api/start',{'handle':'brand','directions':['following']})
         self.assertEqual(code,200)
         self.assertTrue(out['starting']);self.assertFalse(out['started'])
@@ -37,7 +42,7 @@ class BrowserStartupApiTests(Base):
                 apply.assert_not_called()
 
     def test_seed_queue_survives_a_start_validation_error(self):
-        with patch.object(server,'api_control_set',side_effect=ValueError('Account needs attention')):
+        with patch.object(server.get_application().collection,'api_control_set',side_effect=ValueError('Account needs attention')):
             code,out=self.call('/api/start',{'handle':'brand','directions':['following']})
         self.assertEqual(code,200)
         self.assertEqual(out['queued'],1)

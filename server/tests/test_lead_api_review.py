@@ -6,13 +6,19 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 import db
 import server
+from backend import leads as leads_backend
 
 
 class LeadApiReview(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'leads.sqlite'
+        configuration = patch.dict(server.CFG, {'db': str(self.path)})
+        configuration.start()
+        self.addCleanup(configuration.stop)
         self.conn = db.init(self.path)
+        self.app = server.get_application()
+        self.addCleanup(self.app.close)
         server.clear_caches()
 
     def tearDown(self):
@@ -30,7 +36,7 @@ class LeadApiReview(unittest.TestCase):
         self.conn.commit()
         ids = []
         # Expansion is separately tested; exercise the real SQL ordering and offsets.
-        with patch.object(server, 'lead_rows', side_effect=lambda c, rows: [{'id': r['id']} for r in rows]):
+        with patch.object(leads_backend, 'lead_rows', side_effect=lambda c, rows: [{'id': r['id']} for r in rows]):
             offset = 0
             while True:
                 out = server.api_leads(self.conn, {'limit': ['500'], 'offset': [str(offset)]}, {})
@@ -46,13 +52,13 @@ class LeadApiReview(unittest.TestCase):
         self.conn.commit()
         before = server.data_rev(self.conn)
         other = db.connect(self.path)
-        original = server.lead_rows
+        original = leads_backend.lead_rows
         def expand(c, rows):
             db.upsert_person(other, {'handle': 'after'}, '2026-01-01')
             other.commit()
             return original(c, rows)
         try:
-            with patch.object(server, 'lead_rows', side_effect=expand):
+            with patch.object(leads_backend, 'lead_rows', side_effect=expand):
                 out = server.api_leads(self.conn, {}, {})
             self.assertEqual(out['rev'], before)
             self.assertEqual(out['total'], 1)

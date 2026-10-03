@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_server import db, server
+import backend.common as common_backend
 import qual_api
 
 
@@ -61,7 +62,7 @@ class DeeperLocal(unittest.TestCase):
     def test_shared_safety_hold_prevents_new_profile_job_even_with_bios_enabled(self):
         self.conn.execute('UPDATE people SET website=NULL WHERE id=?', (self.pid,))
         self.conn.commit()
-        with patch.object(server, 'workspace_cooldown', return_value=True):
+        with patch.object(common_backend, 'workspace_cooldown', return_value=True):
             result = self.call(self.conn, {}, {}, self.pid)
         self.assertEqual(result['bio']['state'], 'held')
         self.assertEqual(self.conn.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
@@ -120,7 +121,7 @@ class DeeperLocal(unittest.TestCase):
         db.set_setting(self.conn, 'paused', True)
         self.conn.commit()
         self.assertTrue(server.laya_allowed(self.conn))
-        with patch.object(server.qualify, 'llm_verdicts') as model, patch.object(server, 'research') as research:
+        with patch.object(server.qualify, 'llm_verdicts') as model, patch.object(server.get_application().qualification, 'research') as research:
             self.assertEqual(server.run_llm(self.conn, [], {}), 0)
         model.assert_not_called()
         research.assert_not_called()

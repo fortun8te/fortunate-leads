@@ -33,8 +33,8 @@ class ProcessingPipeline(unittest.TestCase):
         self.runtime = patch.object(server.local_model, 'complete_json', return_value=self.output).start()
         self.addCleanup(patch.stopall)
         # These assertions prevent accidental network research in every test.
-        self.external = patch.object(server.qualify, 'llm_verdict', side_effect=AssertionError('External AI called')).start()
-        self.network = patch.object(server, 'network_context', return_value={}).start()
+        self.external = patch.object(server.get_application().qualification.algorithms, 'llm_verdict', side_effect=AssertionError('External AI called')).start()
+        self.network = patch('backend.qualification.network_context', return_value={}).start()
 
     def review_count(self):
         return self.conn.execute('SELECT count(*) FROM local_reviews').fetchone()[0]
@@ -46,7 +46,7 @@ class ProcessingPipeline(unittest.TestCase):
             self.assertFalse(server.local_processing_step(self.conn))
             self.assertFalse(server.laya_step(self.conn))
             laya.assert_not_called()
-        self.assertFalse(server.LLMPool().step(self.conn))
+        self.assertFalse(server.get_application().qualification.llm_pool.step(self.conn))
         self.runtime.assert_not_called()
         self.external.assert_not_called()
         self.assertEqual(self.review_count(), 0)
@@ -58,7 +58,7 @@ class ProcessingPipeline(unittest.TestCase):
         verdict = self.conn.execute('SELECT model,content_fit FROM verdicts').fetchone()
         self.assertTrue(verdict['model'].startswith('local:'))
         self.assertEqual(verdict['content_fit'], 84)
-        self.assertFalse(server.LLMPool().step(self.conn))
+        self.assertFalse(server.get_application().qualification.llm_pool.step(self.conn))
         self.external.assert_not_called()
 
     def test_owner_profile_never_consumes_local_inference(self):
@@ -70,7 +70,7 @@ class ProcessingPipeline(unittest.TestCase):
         self.assertEqual(len(state.next_pending(self.conn)), 0)
 
     def test_manual_pause_does_not_change_mode_or_dispatch_work(self):
-        with patch.object(server, 'schedule_local_services'), patch.object(server.local_model, 'status',
+        with patch.object(server.get_application().local_services, 'schedule'), patch.object(server.local_model, 'status',
                 return_value={'ready': True, 'resources': {'allowed': True}}):
             response = server.api_local_processing(self.conn, {}, {'paused': True})
         self.assertEqual(response['state'], 'stopping')

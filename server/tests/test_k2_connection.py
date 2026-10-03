@@ -16,6 +16,9 @@ import server
 class ConnectionTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        config = patch.dict(server.CFG, {'db': str(Path(self.temp.name) / 'leads.sqlite')})
+        config.start()
+        self.addCleanup(config.stop)
         self.addCleanup(self.temp.cleanup)
         path = Path(self.temp.name) / 'connection.json'
         mock = patch.object(k2_connection, 'CONFIG_PATH', path)
@@ -52,7 +55,7 @@ class ConnectionTest(unittest.TestCase):
 
     def test_api_save_does_not_enable_or_connect_and_test_is_explicit(self):
         body = {'location': 'other_pc', 'host': '10.3.4.5', 'port': 8080}
-        with patch.object(server, 'schedule_local_services') as schedule, patch.object(local_model, '_request') as request:
+        with patch.object(server.get_application().local_services, 'schedule') as schedule, patch.object(local_model, '_request') as request:
             self.assertEqual(server.api_k2_connection(None, {}, body), dict(body, has_api_key=False))
             schedule.assert_not_called()
             request.assert_not_called()

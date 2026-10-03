@@ -154,7 +154,7 @@ class CollectionIntegrityTest(unittest.TestCase):
     def test_ai_pause_stops_background_rules_and_laya(self):
         control.stop_all(self.conn)
         self.conn.commit()
-        with patch.object(server, 'qualify_batch') as rules, patch.object(server.laya, 'available') as laya:
+        with patch.object(server.get_application().qualification, 'qualify_batch') as rules, patch.object(server.laya, 'available') as laya:
             self.assertFalse(server.background_qualify(self.conn))
             self.assertFalse(server.laya_step(self.conn))
             rules.assert_not_called()

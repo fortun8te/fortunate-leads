@@ -19,7 +19,7 @@ class QualifierIntegrity(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.init(str(Path(self.tmp.name) / 'leads.sqlite'))
         db.set_setting(self.conn, 'qualify', True)  # isolated test DB; every model call is mocked
-        self.qualifier = patch.object(server, 'qualify', q)
+        self.qualifier = patch.object(server.get_application().qualification, 'algorithms', q)
         self.qualifier.start()
 
     def tearDown(self):

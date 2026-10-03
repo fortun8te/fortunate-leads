@@ -513,9 +513,7 @@ def edges(database, q):
     return {'available':True,'version':path.name,'edges':[dict(r,source=r['source_id'],target=r['target_id']) for r in rows[:1000]],'truncated':len(rows)>1000}
 
 
-def routes(server):
-    def database(conn):
-        return server._map_database(conn)
+def routes(database):
     return [('GET',r'/api/map/universe/manifest',lambda c,q,b:manifest(database(c))),
             ('GET',r'/api/map/universe/view',lambda c,q,b:view(database(c),q)),
             ('GET',r'/api/map/universe/tile',lambda c,q,b:tile(database(c),q)),

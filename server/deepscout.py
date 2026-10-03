@@ -500,8 +500,8 @@ def reapply(conn, p, net=None):
     fit = v['content_fit'] if v and v['content_fit'] is not None else 50
     fit = 10 if row['verdict'] == 'no' or not row['reachable'] else max(fit, 85) if row['verdict'] == 'strong' else min(max(fit, 50), 75)
     if net is None:
-        import server   # the server owns network context and blending
-        net = server.network_context(conn, [p['id']]).get(p['id'])
+        from backend.evidence import network_context
+        net = network_context(conn, [p['id']]).get(p['id'])
     score = qualify.blend(fit, net)
     conn.execute("UPDATE verdicts SET model='leadscout', content_fit=?, score=?, tier=?, reason=?, "
                  "role=NULL, prompt=NULL, evidence=NULL WHERE person_id=?",
@@ -565,49 +565,88 @@ class ScoutPool:
 
     def __init__(self, db_path):
         self.db_path = db_path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.inflight, self.failed = set(), {}
+        self._executor = None
+        self._closed = False
 
     def step(self, conn):
-        if processing_modes.begin_work(conn, 'deep_dive') is None or not available():
-            return False
-        ensure(conn)
-        workers = max(1, min(8, int(db.get_setting(conn, 'scout_workers') or 3)))
-        now = __import__('time').time()
+        from backend.executor import DaemonExecutor
+
         with self.lock:
+            if self._closed or processing_modes.begin_work(conn, 'deep_dive') is None or not available():
+                return False
+            ensure(conn)
+            workers = max(1, min(8, int(db.get_setting(conn, 'scout_workers') or 3)))
+            now = time.time()
             self.failed = {k: t for k, t in self.failed.items() if t > now}
             free = workers - len(self.inflight)
-            exclude = self.inflight | set(self.failed)
-        if free <= 0:
-            return False
-        rows = candidates(conn, free, exclude)
-        conn.commit()
+            if free <= 0:
+                return False
+            rows = candidates(conn, free, self.inflight | set(self.failed))
+            conn.commit()
+            if not rows:
+                return False
+            if self._executor is None:
+                self._executor = DaemonExecutor(max_workers=8, thread_name_prefix='leadscout')
+            for person in rows[:free]:
+                pid = person['id']
+                self.inflight.add(pid)
+                try:
+                    future = self._executor.submit(self._work, person)
+                except BaseException:
+                    self.inflight.discard(pid)
+                    raise
+                future.add_done_callback(lambda finished, pid=pid: self._finished(pid))
+            return True
+
+    def _finished(self, pid):
         with self.lock:
-            self.inflight.update(r['id'] for r in rows)
-        for r in rows:
-            threading.Thread(target=self._work, args=(r,), daemon=True).start()
-        return bool(rows)
+            self.inflight.discard(pid)
+
+    def idle(self):
+        with self.lock:
+            return not self.inflight
+
+    def shutdown(self, wait=False):
+        with self.lock:
+            self._closed = True
+            executor = self._executor
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=True)
+
+    def _commit_current(self, conn, ticket):
+        with self.lock:
+            if self._closed or not processing_modes.result_current(conn, ticket):
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
 
     def _work(self, p):
         try:
+            if self._closed:
+                return
             conn0 = db.connect(self.db_path)
             try:
                 ticket = processing_modes.begin_work(conn0, 'deep_dive')
-                if ticket is None:
+                if self._closed or ticket is None:
                     return
                 p = enrich(conn0, p)
                 model = db.get_setting(conn0, 'scout_model') or 'grok'
-                if not processing_modes.result_current(conn0, ticket):
+                if self._closed or not processing_modes.result_current(conn0, ticket):
                     return
             finally:
                 conn0.close()
             try:
+                if self._closed:
+                    return
                 data = run(p, model)
                 # Citation verification can fetch pages too. A pause during the
                 # model call must stop that follow-on network work as well.
                 check = db.connect(self.db_path)
                 try:
-                    if not processing_modes.result_current(check, ticket):
+                    if self._closed or not processing_modes.result_current(check, ticket):
                         return
                 finally:
                     check.close()
@@ -615,13 +654,17 @@ class ScoutPool:
             except Exception:
                 traceback.print_exc()
                 data, verification = None, (False, 'Scout run or verification failed')
+            if self._closed:
+                return
             conn = db.connect(self.db_path)
             try:
+                if self._closed:
+                    return
                 ensure(conn)
                 # The agent can spend minutes researching. Check the exact profile it saw
                 # under the same short write transaction that saves its answer.
                 conn.execute('BEGIN IMMEDIATE')
-                if not processing_modes.result_current(conn, ticket):
+                if self._closed or not processing_modes.result_current(conn, ticket):
                     conn.rollback()
                     return
                 current = conn.execute('SELECT * FROM people WHERE id=?', (p['id'],)).fetchone()
@@ -639,20 +682,18 @@ class ScoutPool:
                               json.dumps(data, ensure_ascii=False)[:8000] if data is not None else None,
                               verification[1], retry_after, *(_value(p, field) for field in PROFILE_FIELDS)))
                 if stale:
-                    conn.commit()
+                    self._commit_current(conn, ticket)
                     return
                 if data is not None:
                     apply(conn, p, data, verification)
-                conn.commit()
+                if not self._commit_current(conn, ticket):
+                    return
                 if not verification[0]:
                     with self.lock:
-                        self.failed[p['id']] = __import__('time').time() + RETRY_HOURS * 3600
+                        self.failed[p['id']] = time.time() + RETRY_HOURS * 3600
             finally:
                 conn.close()
         except Exception:
             traceback.print_exc()
             with self.lock:
-                self.failed[p['id']] = __import__('time').time() + 3600
-        finally:
-            with self.lock:
-                self.inflight.discard(p['id'])
+                self.failed[p['id']] = time.time() + 3600

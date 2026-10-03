@@ -4,6 +4,7 @@ import socket
 from unittest import mock
 
 from test_server import Base, db, server
+from backend_http import CompiledRouter
 
 
 class BugTest(Base):
@@ -11,8 +12,8 @@ class BugTest(Base):
         for failure in (KeyError('internal key'), TypeError('internal type')):
             def broken(*args):
                 raise failure
-            with mock.patch.object(server, 'ROUTES', [('POST', '/api/test-failure', broken)]), \
-                    mock.patch.object(server.traceback, 'print_exc') as logged:
+            with mock.patch.object(self.http_app, 'router', CompiledRouter([('POST', '/api/test-failure', broken)])), \
+                    mock.patch.object(self.http_app, 'log_error') as logged:
                 code, body = self.call('/api/test-failure', {})
             self.assertEqual(code, 500)
             self.assertEqual(body['error'], 'Internal server error')

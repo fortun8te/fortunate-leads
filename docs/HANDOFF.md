@@ -2,6 +2,10 @@
 
 Updated 1 October 2026. This file describes the current implementation. Earlier iterations and their validation remain in Git history.
 
+## Proposed backend V2, 3 October 2026
+
+The `codex/backend-v2` PR replaces shared backend orchestration with explicit application, HTTP, storage, cache and worker owners. It preserves the current UI, API routes, SQLite format and collection safeguards. See the [plan](BACKEND_V2_PLAN.md), [architecture](BACKEND_V2.md) and [validation](BACKEND_V2_VALIDATION.md). This is proposed code, not a deployed release; the live checkout, data, browser profiles and collectors were not operated for this work. Generated-data timings do not establish live collection or model performance.
+
 ## Current default: compact portrait map
 
 Michael rejected the large automatic universe view after visual review. The default now uses the established compact portrait map with 500, 1,000 or 3,000 people, a fixed independent owner bubble, modest follower sizing, and recorded connection lines on selection. Large saved count preferences reset to 500. Search and pagination still reach the full database. The universe implementation and snapshots remain available in source but are not selected by the app UI; do not re-enable them without Michael asking. Three later GPU glitch fixes and layout experiments are saved only in the integration working tree. Collection and DALI work remain deferred.

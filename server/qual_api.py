@@ -411,36 +411,40 @@ def site_row(conn, pid):
 
 # ---------- endpoints ----------
 
-def routes(srv):
-    """srv = the server module (for lead_rows, lead_filter, api_read, errors)."""
+def routes(leads):
+    """Bind only the profile-read action; saved-data reads use their own modules."""
+    from backend import common
+    from backend.common import NOT_ME, PEOPLE_FROM, LEAD_SQL, Bad, qint
+    from backend.queries import lead_filter, lead_rows, person_row
+    from backend.evidence import me_handle
 
     def api_qual(conn, q, b):
         _ensure(conn)
         view = q.get('view', ['all'])[0]
-        where, args = srv.lead_filter(q)
-        where = [srv.NOT_ME, 'v.person_id IS NOT NULL'] + where
+        where, args = lead_filter(q)
+        where = [NOT_ME, 'v.person_id IS NOT NULL'] + where
         if view == 'ai':
             where.append("coalesce(v.model,'rules')!='rules'")
         elif view == 'rules':
             where.append("coalesce(v.model,'rules')='rules'")
         elif view != 'all':
-            raise srv.Bad('view must be all, ai or rules')
+            raise Bad('view must be all, ai or rules')
         sort = {'recent': 'v.updated_at DESC', 'score': 'v.score DESC'}.get(q.get('sort', ['score'])[0])
         if not sort:
-            raise srv.Bad('sort must be recent or score')
-        offset = max(0, srv.qint(q, 'offset') or 0)
-        limit = min(100, max(1, srv.qint(q, 'limit') or 30))
+            raise Bad('sort must be recent or score')
+        offset = max(0, qint(q, 'offset') or 0)
+        limit = min(100, max(1, qint(q, 'limit') or 30))
         sw = ' WHERE ' + ' AND '.join(where)
-        total = conn.execute(f'SELECT count(*) {srv.PEOPLE_FROM}{sw}', args).fetchone()[0]
-        rows = conn.execute(f'{srv.LEAD_SQL}{sw} ORDER BY {sort}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+        total = conn.execute(f'SELECT count(*) {PEOPLE_FROM}{sw}', args).fetchone()[0]
+        rows = conn.execute(f'{LEAD_SQL}{sw} ORDER BY {sort}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
         base = {r['id']: r for r in rows}
-        out = srv.lead_rows(conn, rows)
+        out = lead_rows(conn, rows)
         ids = [r['id'] for r in rows]
         vs = {}
         connections = {}
         if ids:
             marks = ','.join('?' * len(ids))
-            me = srv.me_handle(conn)
+            me = me_handle(conn)
             # Keep the direction with each observed link. A source-list name alone
             # cannot tell the reader who follows whom.
             for edge in conn.execute(f'SELECT person_id, seed, direction FROM current_edges '
@@ -467,7 +471,7 @@ def routes(srv):
 
     def api_deeper(conn, q, b, pid):
         _ensure(conn)
-        row = srv.person_row(conn, pid)
+        row = person_row(conn, pid)
         lock = _read_lock(conn, pid)
         if not lock.acquire(blocking=False):
             return {'state': 'pending', 'bio_queued': False, 'site': site_row(conn, pid),
@@ -475,7 +479,7 @@ def routes(srv):
                     'external_ai': not control.stage_paused(conn, 'ai'), 'reused': True,
                     'note': 'This profile is already being checked.'}
         try:
-            held = control.stage_paused(conn, 'bios') or bool(srv.workspace_cooldown(conn, datetime.now(timezone.utc)))
+            held = control.stage_paused(conn, 'bios') or bool(common.workspace_cooldown(conn, datetime.now(timezone.utc)))
             active = conn.execute("SELECT 1 FROM jobs WHERE kind='profile' AND handle=? AND state IN ('queued','leased')",
                                   (row['handle'],)).fetchone()
             fresh = _recent_at(row['bio_at'], SITE_CACHE_AGE)
@@ -489,7 +493,7 @@ def routes(srv):
             elif '~' in row['handle']:
                 bio = {'state': 'unavailable', 'message': 'This account no longer has a readable handle.'}
             else:
-                srv.api_read(conn, q, {}, pid)
+                leads.api_read(conn, q, {}, pid)
                 queued = True
                 bio = {'state': 'pending', 'message': 'A profile read is queued.'}
             url = (row['website'] or '').strip()

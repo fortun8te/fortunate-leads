@@ -13,7 +13,7 @@ JPEG = b'\xff\xd8\xff\xe0a-photo\xff\xd9'
 class PictureTest(Base):
     def setUp(self):
         super().setUp()
-        server._pfp_check_id = 0
+        server.get_application().photos.check_id = 0
 
     def test_collection_stop_preserves_pending_picture_without_network(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
@@ -26,12 +26,12 @@ class PictureTest(Base):
                 for key, value in settings.items():
                     db.set_setting(self.conn, key, value)
                 self.conn.commit()
-                with mock.patch.object(server, 'fetch_pic') as fetch:
+                with mock.patch.object(server.get_application().photos, 'fetch_pic') as fetch:
                     self.assertFalse(server.pfp_step(self.conn))
                     fetch.assert_not_called()
                 self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
         db.set_setting(self.conn, 'cooldown', '2000-01-01T00:00:00Z')
-        with mock.patch.object(server, 'fetch_pic', return_value=JPEG) as fetch:
+        with mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=JPEG) as fetch:
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_called_once()
 
@@ -58,7 +58,7 @@ class PictureTest(Base):
         (server.pfp_dir() / f'{ids[2]}.jpg').write_bytes(b'corrupt')
         db.set_setting(self.conn, 'cooldown', '2099-01-01T00:00:00Z')
         self.conn.commit()
-        with mock.patch.object(server, 'fetch_pic') as fetch:
+        with mock.patch.object(server.get_application().photos, 'fetch_pic') as fetch:
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_not_called()
         self.assertEqual([r[0] for r in self.conn.execute('SELECT pic_file FROM people ORDER BY id')],
@@ -71,11 +71,11 @@ class PictureTest(Base):
         self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
         db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
         self.conn.commit()
-        with mock.patch.object(server.meta_network, 'blocked', return_value=True), mock.patch.object(server, 'fetch_pic') as fetch:
+        with mock.patch.object(server.meta_network, 'blocked', return_value=True), mock.patch.object(server.get_application().photos, 'fetch_pic') as fetch:
             server.pfp_step(self.conn)
             fetch.assert_not_called()
         self.assertEqual(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0], f'{pid}.jpg')
-        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', return_value=None) as fetch:
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=None) as fetch:
             self.assertTrue(server.pfp_step(self.conn))
             fetch.assert_called_once_with('https://a.cdninstagram.com/new.jpg')
             self.assertFalse(server.pfp_step(self.conn))
@@ -88,7 +88,7 @@ class PictureTest(Base):
         def fetch(_):
             db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
             return JPEG
-        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', side_effect=fetch):
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server.get_application().photos, 'fetch_pic', side_effect=fetch):
             server.pfp_step(self.conn)
         self.assertIsNone(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0])
         self.assertEqual(self.conn.execute('SELECT pic_url FROM people WHERE id=?', (pid,)).fetchone()[0], 'https://a.cdninstagram.com/new.jpg')
@@ -101,12 +101,12 @@ class PictureTest(Base):
             (server.pfp_dir() / f'{pid}.jpg').write_bytes(b'corrupt')
             self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
         self.conn.commit()
-        with mock.patch.object(server, 'fetch_pic') as fetch:
+        with mock.patch.object(server.get_application().photos, 'fetch_pic') as fetch:
             self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 2)
-            self.assertEqual(server._pfp_check_id, 2)
+            self.assertEqual(server.get_application().photos.check_id, 2)
             self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 1)
             self.assertEqual(server.repair_pfp_cache(self.conn, limit=2), 0)
-            self.assertEqual(server._pfp_check_id, 0)
+            self.assertEqual(server.get_application().photos.check_id, 0)
             fetch.assert_not_called()
 
     def test_rotating_url_refreshes_cached_photo_when_network_is_available(self):
@@ -117,7 +117,7 @@ class PictureTest(Base):
         db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/new.jpg'})
         replacement = JPEG[:-2] + b'new photo' + JPEG[-2:]
         self.conn.commit()
-        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server, 'fetch_pic', return_value=replacement):
+        with mock.patch.object(server.meta_network, 'blocked', return_value=False), mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=replacement):
             self.assertTrue(server.pfp_step(self.conn))
         self.assertEqual((server.pfp_dir() / f'{pid}.jpg').read_bytes(), replacement)
         self.assertEqual(tuple(self.conn.execute('SELECT pic_file,pic_refresh FROM people WHERE id=?', (pid,)).fetchone()), (f'{pid}.jpg', 0))
@@ -133,8 +133,8 @@ class PictureTest(Base):
             seen.append((os.path.exists(source), os.path.exists(target)))
             real_replace(source, target)
 
-        with mock.patch.object(server, 'fetch_pic', return_value=JPEG) as fetch, \
-                mock.patch.object(server.os, 'replace', side_effect=check_replace):
+        with mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=JPEG) as fetch, \
+                mock.patch('backend.photos.os.replace', side_effect=check_replace):
             self.assertTrue(server.pfp_step(self.conn))
         fetch.assert_called_once_with('https://a.cdninstagram.com/photo.jpg')
         self.assertEqual(seen, [(True, False)])
@@ -147,7 +147,7 @@ class PictureTest(Base):
         self.assertFalse(server.valid_pic(b'RIFF\x00\x00\x00\x00WEBPtruncated'))
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
         self.conn.commit()
-        with mock.patch.object(server, 'fetch_pic', return_value=None):
+        with mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=None):
             self.assertTrue(server.pfp_step(self.conn))
         self.assertEqual(self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,)).fetchone()[0], '')
         server.pfp_dir().mkdir()
@@ -174,7 +174,7 @@ class PictureTest(Base):
         self.conn.commit()
         server.pfp_dir().mkdir()
         (server.pfp_dir() / f'{pid}.jpg').write_bytes(b'broken')
-        with mock.patch.object(server, 'fetch_pic', return_value=JPEG) as fetch:
+        with mock.patch.object(server.get_application().photos, 'fetch_pic', return_value=JPEG) as fetch:
             self.assertTrue(server.pfp_step(self.conn))
         fetch.assert_called_once()
         self.assertEqual((server.pfp_dir() / f'{pid}.jpg').read_bytes(), JPEG)
@@ -183,6 +183,6 @@ class PictureTest(Base):
         for url in ('https://evilcdninstagram.com/p.jpg', 'https://cdninstagram.com.evil.test/p.jpg',
                     'https://x.cdninstagram.com:444/p.jpg', 'https://user@x.cdninstagram.com/p.jpg',
                     'http://x.cdninstagram.com/p.jpg', 'https://x.cdninstagram.com:bad/p.jpg'):
-            with self.subTest(url=url), mock.patch.object(server.PIC_OPENER, 'open') as open_:
+            with self.subTest(url=url), mock.patch.object(server.get_application().photos.pic_opener, 'open') as open_:
                 self.assertIsNone(server.fetch_pic(url))
                 open_.assert_not_called()

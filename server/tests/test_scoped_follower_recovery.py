@@ -4,6 +4,7 @@ from unittest.mock import patch
 import accounts
 import db
 import server
+import backend.collection as collection_backend
 import test_server_accounts as lanes
 
 
@@ -50,7 +51,7 @@ class ScopedFollowerRecoveryTest(lanes.Base):
         self.seeds('healthy', direction='following')
         self.assertIsNone(self.nxt('a', 'list')['job'])
         future = accounts.utc(until) + timedelta(seconds=1)
-        with patch.object(server, 'datetime', wraps=datetime) as clock:
+        with patch('backend.collection.datetime', wraps=datetime) as clock:
             clock.now.return_value = future
             self.assertEqual(self.nxt('a', 'list')['job']['seed'], 'healthy')
         self.assertEqual(db.get_setting(self.conn, 'cooldown'), until)

@@ -252,7 +252,10 @@ def local_context(conn, pid):
             'evidence': [f['quote'] for f in facts]}
 
 
-def step(conn):
+def step(conn, *, allowed=None, result_guard=None):
+    from contextlib import nullcontext
+    if allowed is not None and not allowed():
+        return False
     ticket = processing_modes.begin_work(conn, 'notes')
     if ticket is None:
         return False
@@ -278,6 +281,8 @@ def step(conn):
         conn.execute('INSERT OR REPLACE INTO owner_note_reads VALUES(?,?,?,?,?,?)',
                      (pid, fingerprint, 'pending', '[]', now, now + 90))
         conn.commit()
+        if allowed is not None and not allowed():
+            return False
         try:
             facts, state, retry = interpret(note, context=context), 'ready', 0
         except local_model.Busy as exc:
@@ -286,12 +291,15 @@ def step(conn):
             facts, state, retry = [], 'unavailable', time.time() + 60
         except (ValueError, KeyError, TypeError):
             facts, state, retry = [], 'failed', 0
-        conn.execute('BEGIN IMMEDIATE')
-        if _snapshot(conn, pid)[1] == fingerprint and processing_modes.result_current(conn, ticket):
-            conn.execute('UPDATE owner_note_reads SET state=?,facts=?,updated_at=?,retry_at=? WHERE person_id=? AND snapshot=?',
-                         (state, json.dumps(facts, ensure_ascii=False), time.time(), retry, pid, fingerprint))
-        conn.commit()
-        return True
+        with result_guard if result_guard is not None else nullcontext():
+            if allowed is not None and not allowed():
+                return False
+            conn.execute('BEGIN IMMEDIATE')
+            if _snapshot(conn, pid)[1] == fingerprint and processing_modes.result_current(conn, ticket) and (allowed is None or allowed()):
+                conn.execute('UPDATE owner_note_reads SET state=?,facts=?,updated_at=?,retry_at=? WHERE person_id=? AND snapshot=?',
+                             (state, json.dumps(facts, ensure_ascii=False), time.time(), retry, pid, fingerprint))
+            conn.commit()
+            return True
     return False
 
 
