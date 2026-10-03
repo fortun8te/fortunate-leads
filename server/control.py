@@ -254,13 +254,20 @@ def account_out(conn, a, row, now, all_paused):
     return dict(base, state='idle', now='Online, waiting for work.')
 
 
+def queue_counts(conn):
+    """Pending operational work, excluding directions disabled by the operator."""
+    following = db.get_setting(conn, 'follower_lists') is False
+    return dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
+        "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') "
+        "AND (?=0 OR kind!='list' OR direction='following') GROUP BY kind", (following,)).fetchall())
+
+
 def snapshot(conn, ai_left=None):
     now = datetime.now(timezone.utc)
     rows = {r['lane_id']: r for r in accounts.rows(conn)}
     accts = [accounts.out(conn, r, now) for r in rows.values()]
     c = counts(conn, now)
-    queue = dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
-        "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())
+    queue = queue_counts(conn)
     stages = [stage_out(conn, 'lists', accts, rows, c['lists'], now, queue['list']),
               stage_out(conn, 'bios', accts, rows, c['bios'], now, queue['profile']),
               stage_out(conn, 'ai', accts, rows, c['ai'], now, ai_left or 0)]

@@ -54,3 +54,49 @@ class CollectionScopeTests(Base):
         for scope in ('followers', '', None, True, []):
             self.assertEqual(self.change(scope)[0], 400)
         self.assertEqual(self.change('following')[0], 200)
+
+    def test_following_queue_and_remaining_work_exclude_saved_follower_backlog(self):
+        self.call('/api/scraper/seeds', {'handles':['seed'], 'directions':['followers','following']})
+        self.conn.execute("UPDATE lists SET total=1000 WHERE direction='followers'")
+        self.conn.execute("UPDATE lists SET total=20 WHERE direction='following'")
+        self.conn.commit()
+        self.stop()
+        self.assertEqual(self.change('following')[0], 200)
+        controls = self.call('/api/control')[1]
+        self.assertEqual(next(stage for stage in controls['stages'] if stage['id']=='lists')['queue'], 1)
+        report = self.call('/api/scraper')[1]
+        self.assertEqual(report['queue']['list'], 1)
+        self.assertEqual(report['collection']['pending'], 1)
+        self.assertEqual(report['collection']['total'], 1)
+        self.assertEqual(report['progress']['lists']['left'], 20)
+        self.assertEqual(len(report['lists']), 2)
+        self.assertEqual(report['coverage']['lists']['total_lists'], 2)
+        self.assertEqual(self.change('both')[0], 200)
+        report = self.call('/api/scraper')[1]
+        self.assertEqual(report['queue']['list'], 2)
+        self.assertEqual(report['collection']['total'], 2)
+        self.assertEqual(report['progress']['lists']['left'], 1020)
+
+    def test_following_rate_ignores_follower_pages_and_partial_backlog(self):
+        self.call('/api/scraper/seeds', {'handles':['seed'], 'directions':['followers','following']})
+        follower = self.conn.execute("SELECT id FROM jobs WHERE direction='followers'").fetchone()[0]
+        self.conn.execute("INSERT INTO pages(job_id,cursor,at,users) VALUES(?,'page',?,50000)", (follower, db.now()))
+        self.conn.execute("UPDATE lists SET state='partial',received=10,total=1000 WHERE direction='followers'")
+        self.conn.execute("UPDATE lists SET total=20 WHERE direction='following'")
+        self.conn.commit()
+        self.stop()
+        self.assertEqual(self.change('following')[0], 200)
+        report = self.call('/api/scraper')[1]
+        progress = report['progress']['lists']
+        self.assertIsNone(progress['per_hour'])
+        self.assertIsNone(progress['per_minute'])
+        self.assertIsNone(progress['eta_h'])
+        self.assertEqual(progress['incomplete_lists'], 0)
+        self.assertEqual(report['collection']['partial'], 0)
+        self.assertEqual(self.change('both')[0], 200)
+        report = self.call('/api/scraper')[1]
+        progress = report['progress']['lists']
+        self.assertGreater(progress['per_hour'], 0)
+        self.assertEqual(progress['per_minute'], 50000)
+        self.assertEqual(progress['incomplete_lists'], 1)
+        self.assertEqual(report['collection']['partial'], 1)

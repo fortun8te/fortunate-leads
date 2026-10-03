@@ -33,6 +33,19 @@ class CollectionProgressTest(unittest.TestCase):
     def summary(self):
         return collection_progress.summary(self.conn, self.lists, self.lanes, self.now)
 
+    def test_following_scope_excludes_follower_counts_and_pace_from_eta(self):
+        self.lists[0]['direction'] = 'following'
+        baseline = self.summary()['eta']
+        self.lists.append({'direction':'followers', 'completion':'collecting', 'expected_source':'current_run',
+                           'expected':1000000, 'saved_current_run':0, 'run_job_id':2})
+        for minutes in (9, 7, 5, 3, 1, 0.25):
+            self.event(minutes, added=50000, job=2)
+        db.set_setting(self.conn, 'follower_lists', False)
+        out = self.summary()
+        self.assertEqual(out['pending'], 1)
+        self.assertEqual(out['known_entries_left'], 1000)
+        self.assertEqual(out['eta'], baseline)
+
     def test_upgrade_preserves_old_events_without_inventing_distinct_counts(self):
         self.conn.execute('ALTER TABLE collector_events DROP COLUMN saved_entries')
         self.conn.commit()
