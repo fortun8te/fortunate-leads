@@ -1,7 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {performance}=require('node:perf_hooks');
-const {cohortLayout,radiusFor}=require('../web/map-core.js');
+const {cohortLayout,radiusFor,networkEvidenceTier}=require('../web/map-core.js');
 const owner={id:'owner',x:.5,y:.5};
 const people=count=>Array.from({length:count},(_,i)=>({id:i,x:.2,y:.3,closeness:1-i/count,rank:1-i/count,followers:i%9===0?null:10**(i%7),source_count:i%30,fit:['unread','weak','good','strong'][i%4]}));
 function checkPacking(nodes,count){
@@ -54,4 +54,54 @@ test('default pages keep an organic dense circle with a gradual outward taper',(
 });
 test('all size controls pack 3000 people without overlap',()=>{
  for(const size of ['fit','connections','equal'])checkPacking(cohortLayout(people(3000),owner,size),3000);
+});
+
+test('owner evidence outranks arbitrary source scores, lead status and audience size',()=>{
+ const source=[
+  {id:'source',source:true,closeness:1,rank:1e9,status:'client',source_count:100000,followers:1e12,fit:'strong'},
+  {id:'known',connection_kind:'known',closeness:.01,rank:0,source_count:0,followers:1,fit:'unread'},
+  {id:'outgoing',followed:true,closeness:.02,rank:0,followers:1e12,fit:'strong'},
+  {id:'incoming',follows_me:true,closeness:.03,rank:0,followers:1,fit:'unread'},
+  {id:'mutual',followed:true,follows_me:true,closeness:0,rank:0,followers:1,fit:'unread'}
+ ];
+ for(const size of ['followers','fit','connections','equal']){
+  const packed=cohortLayout(source,owner,size);
+  assert.deepEqual(packed.slice(0,-1).map(n=>n.id),['mutual','incoming','outgoing','known','source']);
+  checkPacking(packed,source.length);
+  assert.deepEqual(cohortLayout(packed,owner,size).map(n=>n.id),packed.map(n=>n.id));
+ }
+ assert.equal(networkEvidenceTier({status:'client',closeness:1,source_count:100}),4,'status and score cannot establish local familiarity');
+ assert.equal(networkEvidenceTier({connection_kind:'known',follows_me:true}),1,'directional evidence takes priority over local familiarity');
+ const shared=cohortLayout(source,owner,'connections','shared');
+ assert.equal(shared[0].id,'source','explicit shared-source mode ranks recorded overlap');
+});
+
+for(const count of [500,3000])test(`direct-follow tiers survive ${count} people and uneven portrait sizes`,()=>{
+ const source=people(count).map((n,i)=>({...n,followed:i%3===0,follows_me:i%7===0,
+  connection_kind:i%11===0?'known':'source',closeness:i/count,
+  status:i%2===0?'client':null,source_count:count-i,followers:i%3===0?1e12:1}));
+ const packed=cohortLayout(source,owner,'followers');
+ checkPacking(packed,count);
+ let previous=-1;
+ for(const n of packed.slice(0,-1)){
+  const tier=networkEvidenceTier(n);
+  assert.ok(tier>=previous,'every weaker evidence tier lies outside every stronger tier');
+  previous=tier;
+ }
+ assert.equal(networkEvidenceTier(packed[0]),0);
+ assert.equal(networkEvidenceTier(packed.at(-2)),4);
+ assert.deepEqual(packed,cohortLayout(source,owner,'followers'),'tier packing is reproducible');
+});
+
+for(const count of [500,3000])test(`one mutual stays inside ${count} following accounts and a source-only celebrity`,()=>{
+ const followed=people(count).map(n=>({...n,followed:true,closeness:1,rank:1,followers:1e12,fit:'strong'}));
+ const mutual={id:'mutual',followed:true,follows_me:true,closeness:0,followers:1,fit:'unread'};
+ const celebrity={id:'celebrity',source:true,source_count:1e6,status:'client',closeness:1,rank:1e9,followers:1e12,fit:'strong'};
+ for(const size of ['followers','fit','connections','equal']){
+  const packed=cohortLayout([celebrity,...followed,mutual],owner,size);
+  assert.equal(packed[0].id,'mutual');
+  assert.equal(packed.at(-2).id,'celebrity');
+  assert.ok(packed.slice(1,-2).every(n=>n.followed&&!n.follows_me));
+  checkPacking(packed,count+2);
+ }
 });

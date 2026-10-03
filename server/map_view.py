@@ -28,7 +28,7 @@ import map_layout as ML
 BUDGET_DEFAULT, BUDGET_MIN, BUDGET_MAX = 600, 50, 1500
 COMPACT_BUDGET_MAX = 20_000
 COMPACT_COLUMNS = ('id', 'x', 'y', 'rank', 'fit', 'closeness', 'followers',
-                   'statusCode', 'followFlags', 'sourceCount', 'hasPhoto', 'source')
+                   'statusCode', 'followFlags', 'sourceCount', 'hasPhoto', 'source', 'connectionTier')
 BUBBLE_MAX = 160          # most (cell, cluster) bubbles in one response
 BUBBLE_GRID = 8           # cells across the longer side of the viewport
 POOL_FRACTION = 0.5       # extra ranked people fetched to name each bubble's top ids
@@ -195,7 +195,7 @@ FOLLOW_FILTERS = {'all': (0, 1, 2, 3, 4, 6), 'following': (1, 3), 'followers': (
 
 def class_mask(mode, scope, min_fit, codes, follow='all'):
     if codes is None:
-        codes = set(range(7)) if mode == 'status' else set(range(6))
+        codes = set(range(7)) if mode in ('closeness', 'status') else set(range(6))
     minband = 0 if min_fit is None else ML.BAND_EDGES.index(min_fit) + 1
     mask = 0
     for direction in FOLLOW_FILTERS[follow]:
@@ -232,7 +232,7 @@ class Query:
         scope = q.get('scope', [''])[0].strip().lower()
         if scope not in ('', 'leads', 'all'):
             raise ValueError('scope must be leads or all')
-        self.scope = scope or ('all' if self.mode == 'status' else 'leads')
+        self.scope = scope or ('all' if self.mode in ('closeness', 'status') else 'leads')
         raw = q.get('min_fit', [''])[0].strip()
         if raw:
             try:
@@ -498,6 +498,16 @@ def _bubbles(groups, shown, pool, label_of, depth, per_cell):
     return out
 
 
+CONNECTION_KINDS = ('mutual', 'follows_me', 'followed', 'known', 'source')
+
+
+def connection_tier(follow, closeness):
+    direction = follow & 3
+    if direction:
+        return {3: 0, 2: 1, 1: 2}[direction]
+    return 3 if 450 <= closeness < 600 else 4
+
+
 def _node(row, people, mode):
     pid, mx, my, rk, cluster, cls, fit, cl, src = row
     handle, name, pic, source_count, followers = people.get(pid, ('', None, None, 0, None))
@@ -507,10 +517,39 @@ def _node(row, people, mode):
             'rank': round(rk, 6), 'fit': fit, 'status': status, 'cluster': cluster, 'closeness': cl / 1000.0,
             'lead': ML.is_lead(cls), 'pic': pic, 'source_count': source_count, 'followers': followers,
             'followed': bool(follow & 1), 'follows_me': bool(follow & 2),
-            'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown'}
+            'following_evidence': 'observed' if follow & 1 else 'absent' if follow & 4 else 'unknown',
+            'connection_tier': connection_tier(follow, cl),
+            'connection_kind': CONNECTION_KINDS[connection_tier(follow, cl)]}
     if src:
         node['source'] = True
     return node
+
+
+def recorded_connections(conn, ids, owner_id=None):
+    """Bounded current follow arrows between displayed people and the owner.
+
+    This decoration samples at most 400 endpoints and 500 arrows. It never
+    turns source membership or audience overlap into an observed follow.
+    """
+    endpoints = list(dict.fromkeys([*([owner_id] if owner_id else []), *ids]))
+    truncated = len(endpoints) > 400
+    endpoints = endpoints[:400]
+    if not endpoints:
+        return [], False
+    marks = ','.join('?' * len(endpoints))
+    rows = conn.execute(
+        f'SELECT s.id,e.person_id,e.direction,e.observed_at FROM current_edges e '
+        f'JOIN people s ON s.handle=e.seed WHERE s.id IN ({marks}) AND e.person_id IN ({marks}) '
+        'ORDER BY e.observed_at DESC,s.id,e.person_id,e.direction LIMIT 1001', endpoints + endpoints).fetchall()
+    lines = {}
+    for source, target, direction, observed in rows:
+        if direction == 'followers':
+            source, target = target, source
+        if source == target:
+            continue
+        lines.setdefault((source, target), {'source': source, 'target': target, 'kind': 'follow',
+                                           'state': 'observed', 'observed_at': observed})
+    return list(lines.values())[:500], truncated or len(lines) > 500 or len(rows) == 1001
 
 
 def view(conn, db_path, q, if_none_match=None, cache=True):
@@ -537,6 +576,10 @@ def view(conn, db_path, q, if_none_match=None, cache=True):
             own = _details(store, [owner_id]).get(owner_id)
             if own is not None and conn.execute('SELECT 1 FROM people WHERE id=?', (owner_id,)).fetchone():
                 result['world']['me'] = _node(own, _people(conn, [owner_id]), query.mode)
+        displayed = [row[0] for row in result.get('rows', [])] if query.compact else [node['id'] for node in result['nodes']]
+        lines, truncated = recorded_connections(conn, displayed, owner_id)
+        result['world']['connections'] = lines
+        result['world']['connections_truncated'] = truncated
         result['layout']['pending'] = ML.pending(conn)
         result['layout']['building'] = ML.is_building(db_path)
         body = _encode(result)
@@ -675,7 +718,7 @@ def _compact_rows(conn, rows):
         followers, photo, degree = facts.get(pid, (None, 0, 0))
         result.append([pid, round(ML.coord(mx), 7), round(ML.coord(my), 7), round(rank, 6),
                        fit, closeness / 1000.0, followers, (cls % 64) >> 3, cls // 64,
-                       degree, photo, source])
+                       degree, photo, source, connection_tier(cls // 64, closeness)])
     return result
 
 

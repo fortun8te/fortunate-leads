@@ -225,6 +225,14 @@
   const RADIUS = { strong: 19, good: 16, weak: 12.5, unread: 10 };
   const followRing = n => n.followed && n.follows_me ? 'mutual' : n.followed ? 'outgoing' : n.follows_me ? 'incoming' : 'unknown';
   const hasRing = n => followRing(n) !== 'unknown';
+  // Owner evidence must outrank any lead score, status or audience overlap.
+  // "Known" is explicit local owner context, never inferred from a lead status.
+  function networkEvidenceTier(n) {
+    if (n.followed && n.follows_me) return 0;
+    if (n.follows_me) return 1;
+    if (n.followed) return 2;
+    return n.connection_kind === 'known' ? 3 : 4;
+  }
   // Which palette slot a person takes in a mode. 'a' is the one accent. Slots 0-5 are neutral tones.
   function toneFor(mode, n) {
     if (mode === 'seeds') return n.status && n.status !== 'no' ? 'a' : 't' + ((n.cluster | 0) % 6);
@@ -275,14 +283,16 @@
       const value = distance === 'shared' ? n.source_count : n.closeness;
       return value != null && Number.isFinite(+value) ? +value : -1;
     };
-    members.sort((a, b) => distanceValue(b) - distanceValue(a)
+    members.sort((a, b) => (distance === 'shared' ? 0 : networkEvidenceTier(a) - networkEvidenceTier(b))
+      || distanceValue(b) - distanceValue(a)
       || (b.closeness || 0) - (a.closeness || 0) || (b.rank || 0) - (a.rank || 0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{ ...owner, x: .5, y: .5, cohort: true, spacing: .075 }] : [];
     if (members.length > 3000) {
       const count = members.length, hole = .06, outer = .46, golden = Math.PI * (3 - Math.sqrt(5));
       const unit = .29 / Math.sqrt(count), maximum = size === 'equal' ? 14 : size === 'fit' ? 24 : 28;
+      const innerCentre = hole + unit, outerCentre = outer - unit;
       const nodes = members.map((n, i) => {
-        const r = Math.sqrt(hole * hole + (outer * outer - hole * hole) * (i + .5) / count);
+        const r = Math.sqrt(innerCentre * innerCentre + (outerCentre * outerCentre - innerCentre * innerCentre) * (i + .5) / count);
         const portraitRadius = unit * radiusFor(n, 1, size) / maximum;
         let hash=2166136261; for(const char of String(n.id)) hash=Math.imul(hash^char.charCodeAt(0),16777619);
         hash^=hash>>>16; hash=Math.imul(hash,0x7feb352d); hash^=hash>>>15;
@@ -524,7 +534,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, networkEvidenceTier, cohortLayout, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

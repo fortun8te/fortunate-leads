@@ -13,10 +13,10 @@ current physical benchmark limits are in [performance](MAP_VIEW_PERFORMANCE.md).
 ## Stable pages used by the UI
 
 Request `/api/map/view?mode=closeness&cohort=1&budget=500` with the normal filters.
-The UI offers 250, 500 or 1,000 people per page. All four viewing modes retain those people,
-their positions and the camera; the selected size metric changes their radius.
+The UI offers 500, 1,000 or 3,000 people per page. Recorded follows is the default;
+Audience overlap is an explicit alternative. Changing arrangement preserves membership and the camera.
 
-- `cohort=1` uses indexed rank/person seeks and caps the page at 1,000 people.
+- `cohort=1` uses indexed rank/person seeks; compact replies support larger bounded pages.
 - `after` is the opaque JSON string returned as `next_cursor`; encode it as a query parameter.
 - `next_cursor:null` means there is no next page. The client retains its previous cursors.
 - `cohort_reset:true` means the layout revision changed and the response starts at page one.
@@ -25,7 +25,10 @@ their positions and the camera; the selected size metric changes their radius.
   waiting to appear on zoom. The spatial cluster-count invariant below applies only to spatial requests.
 
 The client packs each page into deterministic, irregular positions around the owner, ordered
-outward by recorded connection evidence. Distance is an ordering, not a literal social distance.
+outward by recorded connection evidence. Mutual follows come first, then people recorded following
+the owner, then people the owner follows, then explicitly recorded familiarity and source-only evidence.
+Lead fit, pipeline status and audience size cannot override these tiers. Distance is an ordering,
+not a literal social distance.
 The original evidence coordinates remain available on each client node. Every loaded person
 is drawn; no collision culling or count chips replace people. Search can replace one member
 with the requested person and centre that selection without increasing the loaded page size.
@@ -41,9 +44,9 @@ The world always includes `{"w":1,"h":1}`. All current modes also return
 | `mode` | `closeness` (default), `fit`, `seeds` or `status`. Anything else is a 400. |
 | `x0,y0,x1,y1` | Requested rectangle. Default `0,0,1,1`. Values outside `[0,1]` are clamped. `x0<x1` and `y0<y1` are required (400 otherwise). |
 | `budget` | Maximum individual people. Default 600, clamped to 50..1500. |
-| `scope` | `leads` or `all`. Default `leads` (`all` in `status` mode, so "not a fit" is visible). `leads` leaves out people marked "not a fit" and people with a known fit below 45. Unread people remain available until qualified. |
+| `scope` | `leads` or `all`. Default `all` in `closeness` and `status` modes; `leads` in other modes. `leads` leaves out people marked "not a fit" and people with a known fit below 45. Unread people remain available until qualified. |
 | `min_fit` | 0..100. Only people with a qualification fit at or above it. Snapped **down** to 0, 25, 45, 60, 70 or 85; the value used comes back in `filters.min_fit`. Unread people have no fit and never pass. |
-| `status` | Comma list of `interested, contacted, talking, spoke_before, client, no, none`, or `all`. Absent means everything except `no` (in `status` mode: everything). |
+| `status` | Comma list of `interested, contacted, talking, spoke_before, client, no, none`, or `all`. Absent means everything in `closeness` and `status` modes; otherwise everything except `no`. |
 | `follow` | `all` (default), `following` (owner follows them), `followers` (they follow owner), `mutual`, `not_following` or `unknown`. Negative results require explicit outgoing absence recorded by a complete check; missing outgoing evidence stays unknown, even when an incoming follow is known. |
 | `overview` | `1` opts any whole-world mode into spatial overview sampling: up to a quarter of the budget (maximum 120 people) comes from up to 12 occupied spatial sectors. Default `0` keeps exact rank ordering. Search and zoom retain ordinary ranked selection. |
 | `q` | Handle or name text. Restricts the population to matches (see Search limits). `total` counts matches, capped at 2,000 (`filters.q_capped`). |
@@ -91,8 +94,10 @@ Fields:
   - `rank` 0..1 is importance inside this mode (1 is most important). It only orders people.
   - `fit` 0..100 is the qualification fit, `null` when unread. `status` is the pipeline status
     (`interested`, `contacted`, `talking`, `spoke_before`, `client`, `no`) or `null`.
-  - `closeness` 0..1 is how close the person is to Michael, in every mode: links to Michael, to his
-    good and client accounts, seed overlap and pipeline status.
+  - `closeness` 0..1 orders recorded connection evidence. Owner follow directions take precedence
+    over explicitly recorded familiarity and source-only evidence. It does not estimate friendship.
+  - `connection_kind` preserves the evidence tier independently of lead fit and pipeline status.
+    Compact replies carry this category as an additional column.
   - `cluster` is the semantic cluster id for colour (see Modes). `lead` follows `scope=leads`.
   - `source: true` appears only on source (seed) accounts that have a person row.
   - `source_count` is the number of distinct current collected source audiences containing this
@@ -235,3 +240,10 @@ source anchors together. Older layouts report unprepared and remain untouched by
 creates the current schema. Interrupted plans from an older schema are not resumed.
 
 The interface keeps the full filtered population separate from the count inside the current viewport. Layout preparation and browser rendering remain separate from collection and qualification.
+
+## Quiet connection lines and selection
+
+The compact portrait map draws a bounded set of faint recorded follow paths behind portraits even
+without a selection. Audience overlap does not create a follow path. Selecting a person emphasizes
+their recorded directions, draws that portrait above neighbors and enlarges it visibly. Hit testing
+prefers a portrait body over another selection's extra click area.

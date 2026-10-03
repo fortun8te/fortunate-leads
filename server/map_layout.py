@@ -37,7 +37,7 @@ COMMUNITIES = 12                              # default view: largest recorded s
 MICRO_BITS = 22
 MICRO = 1 << MICRO_BITS
 DEPTHS = tuple(range(1, 11))                  # count pyramid depths (cell = 2**-depth wide)
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 M64 = (1 << 64) - 1
 TWO_PI = 2 * math.pi
 POSITIVE = ('interested', 'talking', 'client')
@@ -222,14 +222,15 @@ def _owner_handle(conn):
 
 
 NETWORK_LABELS = ('Direct connections', 'Known sources', 'Shared audiences', 'Other collected', 'You')
-NETWORK_RADII = ((.075, .21), (.16, .32), (.22, .405), (.255, .47))
+NETWORK_RADII = ((.055, .205), (.235, .29), (.325, .385), (.42, .47))
+OWNER_RADII = {3: (.055, .085), 2: (.095, .125), 1: (.135, .165), 0: (.175, .205)}
 
 
 def network_group(F, ctx):
     pid, deg, score, fit, code, me, seeds, src, fam, rel = F
     if pid == ctx.owner_id:
         return 4
-    if me & 3 or fam or rel or code in (3, 4, 5):
+    if me & 3 or fam or rel:
         return 0
     others = [s for s in seeds if s != ctx.owner]
     if any(s in ctx.known_sources for s in others):
@@ -369,6 +370,13 @@ def load_features(conn, ctx, ids=None, lo=None, hi=None):
     for pid, direction in conn.execute(f'SELECT person_id,direction FROM current_edges WHERE seed=? AND {where}',
                                        [owner, *args]):
         me[pid] = me.get(pid, 0) | (2 if direction == 'followers' else 1)
+    # The same direct follow can be observed in either person's list. A source's
+    # following list containing the owner proves source -> owner, not owner -> source.
+    owner_where, owner_args = _clause(ids, lo, hi, column='p.id')
+    for pid, direction in conn.execute(
+            f'SELECT p.id,e.direction FROM current_edges e JOIN people p ON p.handle=e.seed '
+            f'WHERE e.person_id=? AND {owner_where}', [ctx.owner_id, *owner_args]):
+        me[pid] = me.get(pid, 0) | (2 if direction == 'following' else 1)
     # Absence is recorded only when a complete tracked following check disproves
     # a previously observed edge. No edge/partial coverage remains unknown.
     for (pid,) in conn.execute(f"SELECT person_id FROM edge_evidence WHERE seed=? AND direction='following' "
@@ -411,30 +419,20 @@ ME_TERM = (0.0, 0.22, 0.27, 0.35)
 
 
 def closeness(F, ctx):
+    """Evidence ordering for recorded follows; never an interpersonal probability."""
     pid, deg, score, fit, code, me, seeds, src, fam, rel = F
     if pid == ctx.owner_id:
         return 1.0
     others = [s for s in seeds if s != ctx.owner]
-    n = len(others)
-    c = 0.03
-    if n:
-        c = 0.06 + 0.30 * (1 - 0.55 ** (n - 1))
-    c += ME_TERM[me & 3]
-    if n:
-        srcs = ctx.src
-        client = known = 0
-        for s in others:
-            cls = srcs.get(s)
-            if cls:
-                if cls[0] == 1:
-                    client += 1
-                elif cls[0] == 2:
-                    known += 1
-        c += 0.09 * min(3, client) + 0.04 * min(3, known)
-    c += STATUS_CLOSE[code] + 0.05 * fam
-    if rel:
-        c += 0.12
-    return min(1.0, c)
+    # Small shared-source tie breaks cannot outrank any direct owner evidence.
+    support = 0.04 * (1 - 0.55 ** len(others))
+    base = {3: .90, 2: .75, 1: .60}.get(me & 3)
+    if base is not None:
+        return base + support
+    if fam or rel:
+        return .45 + support
+    known = any(s in ctx.known_sources for s in others)
+    return (.20 if known else .10 if len(others) >= 2 else .03) + support
 
 
 def _rank(mode, F, c, n_others, owner_id=0):
@@ -443,9 +441,7 @@ def _rank(mode, F, c, n_others, owner_id=0):
         return 1.0
     s = (score or 0) / 100.0
     if mode == 'closeness':
-        raw = 0.62 * c + 0.24 * s + 0.14 * ((fit or 0) / 100.0) + ENGAGED[code]
-        if src:
-            raw += 0.15
+        raw = c
     elif mode == 'fit':
         raw = (0.62 * (fit / 100.0) + 0.05 if fit is not None else 0.0) + 0.24 * c + 0.14 * s + ENGAGED[code]
         if src:
@@ -480,7 +476,7 @@ def layout_row(mode, F, ctx, c=None):
         audience = ctx.src[chosen][1] if chosen else ctx.k_other
         start, width = ctx.network_sectors[audience]
         theta = start + (.035 + .93 * u1) * width
-        low, high = NETWORK_RADII[category]
+        low, high = OWNER_RADII[me & 3] if category == 0 else NETWORK_RADII[category]
         radius = math.sqrt(low * low + u2 * (high * high - low * low))
         x, y = .5 + radius * math.cos(theta), .5 + radius * math.sin(theta)
         cluster = audience * 4 + category
@@ -820,6 +816,7 @@ def apply_ids(db_path, ids, main=None):
     out = {}
     try:
         feats = None
+        ids = list(dict.fromkeys(ids))
         for mode in MODES:
             if not mode_exists(db_path, mode):
                 continue
@@ -831,7 +828,15 @@ def apply_ids(db_path, ids, main=None):
                 if ctx is None:
                     continue
                 if feats is None:
-                    feats = features_for(main, ctx, list(dict.fromkeys(ids)))
+                    if ctx.owner_id in ids:
+                        # Reverse source-list changes queue the owner member. Refresh
+                        # the source endpoints too, including former follows on deletion.
+                        related = [r[0] for r in main.execute(
+                            'SELECT DISTINCT p.id FROM current_edges e JOIN people p ON p.handle=e.seed '
+                            'WHERE e.person_id=?', (ctx.owner_id,))]
+                        related.extend(r[0] for r in store.execute('SELECT person_id FROM mp WHERE cls>=64'))
+                        ids = list(dict.fromkeys([*ids, *related]))
+                    feats = features_for(main, ctx, ids)
                 out[mode] = _apply_to_store(store, mode, ctx, feats)
             finally:
                 store.close()
