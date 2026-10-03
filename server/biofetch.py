@@ -9,14 +9,12 @@ slows down when the reported usage passes 75 % and stops on any throttling code,
 """
 import json
 import math
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import db
-import control
 import meta_network
 
 GRAPH = 'https://graph.facebook.com/v23.0/'

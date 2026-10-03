@@ -9,7 +9,6 @@ import re
 import sqlite3
 import time
 
-import db
 import local_model
 import processing_modes
 import note_mentions
