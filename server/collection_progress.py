@@ -14,6 +14,8 @@ MAX_EVENTS = 2000
 
 def summary(conn, lists, accts, now=None):
     now = now or datetime.now(timezone.utc)
+    if db.get_setting(conn, 'follower_lists') is False:
+        lists = [row for row in lists if row.get('direction') == 'following']
     pending = [row for row in lists if row['completion'] in ('waiting', 'collecting')]
     known = [row for row in pending if row.get('expected_source') == 'current_run'
              and isinstance(row.get('saved_current_run'), int) and row.get('run_job_id') is not None]

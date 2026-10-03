@@ -2089,8 +2089,7 @@ def api_scraper(conn, q, b):
             'stages': stages, 'control': control_state,
             'people_today': conn.execute('SELECT count(*) FROM people WHERE first_seen>=?', (iso(now)[:10],)).fetchone()[0],
             'lists': lists,
-            'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
-                "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
+            'queue': control.queue_counts(conn)}
 
 
 def api_scraper_status(conn, q, b):
@@ -2107,8 +2106,7 @@ def api_scraper_status(conn, q, b):
             'qualify_auto': bool(db.get_setting(conn, 'qualify_auto')),
             'local_laya': bool(db.get_setting(conn, 'local_laya')),
             'stages': stages, 'control': control_state,
-            'queue': dict.fromkeys(('list', 'profile'), 0) | dict(conn.execute(
-                "SELECT kind, count(*) FROM jobs WHERE state IN ('queued','leased') GROUP BY kind").fetchall())}
+            'queue': control.queue_counts(conn)}
 
 
 def eta_hours(left, per_hour):
@@ -2161,18 +2159,22 @@ def progress(conn, accts):
     lanes = [a for a in accts if not a['paused']]
     list_lanes = [a for a in lanes if (a['role'] or 'both') in ('lists', 'both')]
     bio_lanes = [a for a in lanes if (a['role'] or 'both') in ('bios', 'both')]
+    # Operational progress follows the chosen direction; saved coverage still includes every list.
+    following = db.get_setting(conn, 'follower_lists') is False
+    scope_filter = " AND l.direction='following'" if following else ''
+    page_source = ("pages JOIN jobs j ON j.id=pages.job_id AND j.direction='following'" if following else 'pages')
     # Unknown list sizes fall back to the seed's follower/following count, so the total is an estimate.
     lists_left, unknown = conn.execute(
         "SELECT coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END, 0)"
         " - l.received, 0)), 0), count(CASE WHEN l.total IS NULL THEN 1 END) FROM lists l "
-        "LEFT JOIN people p ON p.handle=l.seed WHERE l.state NOT IN ('done','private','error','partial')").fetchone()
+        "LEFT JOIN people p ON p.handle=l.seed WHERE l.state NOT IN ('done','private','error','partial')" + scope_filter).fetchone()
     incomplete_lists, incomplete_left, capped_lists = conn.execute(
         "SELECT count(*), coalesce(sum(max(coalesce(l.total, CASE l.direction WHEN 'followers' THEN p.followers "
         "ELSE p.following END, l.received) - l.received, 0)), 0), "
         "count(CASE WHEN l.state='partial' AND l.error LIKE 'Instagram limited this list;%' THEN 1 END) "
-        "FROM lists l LEFT JOIN people p ON p.handle=l.seed WHERE l.state IN ('partial','error')").fetchone()
-    pages_h = measured_rate(conn, 'SELECT count(*), min(at), max(at) FROM pages WHERE at>=?', now)
-    people_h = measured_rate(conn, 'SELECT coalesce(sum(users), 0), min(at), max(at) FROM pages WHERE at>=?', now)
+        "FROM lists l LEFT JOIN people p ON p.handle=l.seed WHERE l.state IN ('partial','error')" + scope_filter).fetchone()
+    pages_h = measured_rate(conn, f'SELECT count(*), min(at), max(at) FROM {page_source} WHERE at>=?', now)
+    people_h = measured_rate(conn, f'SELECT coalesce(sum(users), 0), min(at), max(at) FROM {page_source} WHERE at>=?', now)
     per_page = people_h / pages_h if pages_h and people_h else 25
     bio_min = db.get_setting(conn, 'bio_min') or 0
     queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
@@ -2187,7 +2189,7 @@ def progress(conn, accts):
         "AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state='error') "
         "AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state IN ('queued','leased'))").fetchone()[0]
     bios_h = measured_rate(conn, 'SELECT count(*), min(bio_at), max(bio_at) FROM people WHERE bio_at>=?', now)
-    lists_min = observed_per_minute(conn, 'SELECT coalesce(sum(users),0), (SELECT count(*) FROM pages) FROM pages WHERE at>=?', now)
+    lists_min = observed_per_minute(conn, f'SELECT coalesce(sum(users),0), (SELECT count(*) FROM {page_source}) FROM {page_source} WHERE at>=?', now)
     bios_min = observed_per_minute(conn, 'SELECT count(*), (SELECT count(*) FROM people WHERE bio_at IS NOT NULL) FROM people WHERE bio_at>=?', now)
     q_left = ai_left(conn)
     q_rate = measured_rate(conn, 'SELECT count(*), min(scored_at), max(scored_at) FROM ai_scoring_events WHERE scored_at>=?', now)
