@@ -255,3 +255,25 @@ queued photo requests. A bitmap
 lifetime defect found during this review was fixed before sign-off. These are
 implementation checks, not Michael's appearance approval. The separate preview
 remains paused with no collection or research workers running.
+
+## Explicit operator speed adjustment
+
+On October 3 the operator requested roughly 20% more active list collection for
+one existing selected alternate, with no daily list cap. The live list-only run
+retains daily allowance zero, both directions, paused bios and AI, and the same
+identity allowlist. The extension now rechecks a specific paused-bio queue case
+after 11.65 seconds instead of 15 seconds for that identity only. Original
+7–12-second list request gaps, periodic breaks, rolling window, warnings and
+cooldowns remain. The actual issue was an eligible bio getting filtered after
+planning, causing a 15-second recheck even when a list became ready earlier.
+
+A read-only sample before the adjustment measured 114 active same-job intervals
+at 20.086 seconds mean. The short post-application sample measured 7 comparable
+intervals at 16.672 seconds mean. This is early evidence, not a long
+soak or a guaranteed hourly gain. The full branch extension suite passed 213
+tests; an exact copy of the live extension with only this patch passed 195.
+The selected worker was reloaded after collection drained; stored state hashes
+matched, and the main-account worker was unchanged. The manifest and live server
+process were unchanged. Only this narrowly requested extension polling hunk is
+live; the broader upgrade still awaits PR approval. Raw local evidence is in
+connection-upgrade-review/selected-list-speed-2026-10-03.json.
