@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accounts  # noqa: E402
+import account_twin  # noqa: E402
 import edge_benchmark_api  # noqa: E402
 import mobile_collector  # noqa: E402
 import control  # noqa: E402
@@ -958,6 +959,7 @@ def ext_error(conn, q, b):
                 # following remain subject to the unchanged shared hold.
                 db.set_setting(conn, 'followers_route_until', route_until)
     accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    account_twin.after_error(conn, lane, code, b.get('reason'), home_redirect, fields)
     db.set_setting(conn, 'last_error', {'code': code, 'message': b.get('message'), 'at': ts, 'lane': lane})
     profile_siblings = accounts.profile_job_siblings(conn, job) if job and job['kind'] == 'profile' else []
     if job and code not in ('other', 'not_found'):
@@ -1138,6 +1140,7 @@ def ext_heartbeat(conn, q, b):
             fields['hold'] = 'challenge' if tab == 'tab_challenge' or fields.get('hold') == 'challenge' else 'login'
             fields['state'] = tab
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    account_twin.after_heartbeat(conn, row)
     if isinstance(b.get('ready'), dict):   # 3.7+: when each clock allows the next request (the control strip shows breaks)
         ready = db.get_setting(conn, 'ext_ready') or {}
         ready[lane] = {k: clean_iso(b['ready'].get(k)) for k in ('list', 'profile')}
@@ -3098,6 +3101,7 @@ ROUTES += map_universe.routes(sys.modules[__name__])
 ROUTES += qual_api.routes(sys.modules[__name__])
 ROUTES += workflows.routes(sys.modules[__name__])
 ROUTES += dm_import.routes(sys.modules[__name__])
+ROUTES += account_twin.routes(sys.modules[__name__])
 
 
 class Server(ThreadingHTTPServer):

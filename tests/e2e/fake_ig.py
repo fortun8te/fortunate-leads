@@ -185,6 +185,16 @@ class H(BaseHTTPRequestHandler):
                     STATE['counters'][k] = 0
                 STATE['served'].clear(); STATE['pages_good'].clear(); STATE['log'].clear(); STATE['members'].clear()
             return self.reply(200, {'ok': True})
+        if u.path == '/__sim/inject':
+            # twin scenario: the account's NEXT request of this kind fails, whichever Chrome profile makes it
+            with LOCK:
+                acct = STATE.get('accounts', {}).get(str(body.get('ig_id')))
+                if not acct:
+                    return self.reply(400, {'message': 'unknown account', 'status': 'fail'})
+                kind = body.get('kind', 'list')
+                n = STATE['acct_counters'].get((acct['ig_id'], kind), 0) + 1
+                acct['schedule'].setdefault(kind, {})[n] = body.get('type', '429')
+            return self.reply(200, {'ok': True, 'at_request': n})
         self.reply(404, {'message': 'not found', 'status': 'fail'})
 
     def do_GET(self):

@@ -17,3 +17,7 @@ The internal follower_lists database setting defaults to true. Setting the store
 Following lists produced more usable coverage in the September28 trials. Follower endpoints returned capped results. This does not establish a future collection rate or restriction-free pace. See scraping-throughput-trials.md and OPEN_ITEMS.md for measurement limits.
 
 A clean long multi-account soak and controlled comparison of real follower routes remain unverified.
+
+## Two Chrome profiles on one account
+
+Not recommended and off by default. The daily budget belongs to the Instagram account, so a second profile cannot raise the people collected per day. The opt-in test, its evidence and its stop rules are in [SECOND_PROFILE_TEST.md](SECOND_PROFILE_TEST.md).

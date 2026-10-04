@@ -41,3 +41,5 @@ Generated database backups keep the three newest copies and one copy on each of 
 For a manual private snapshot of the whole workspace data, run `python3 ops/backup-workspace.py --output /private/path/snapshot-name`, then `python3 ops/backup-workspace.py --verify /private/path/snapshot-name`. It uses online SQLite backups for the lead, public bio cache, and usage databases, and copies photos, reviews, labels, reports, checkpoints, and the startup profile configuration. It does not install a schedule or include provider keys, browser cookies, model weights, old backups, or work files. Keep the destination private and outside this repository.
 Repo path is taken from the script location; python is `/usr/bin/python3` unless `PYTHON=...` is set.
 Soak test checklist: `ops/soak.md`.
+
+Second-profile test (off by default, @trashtheturtles only): `python3 ops/account_twin.py status`. Steps, stop rules and rollback: `docs/SECOND_PROFILE_TEST.md`. Read-only evidence tables for it: `python3 ops/twin_evidence.py PATH/TO/leads.sqlite`.

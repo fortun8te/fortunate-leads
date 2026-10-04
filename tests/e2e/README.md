@@ -27,6 +27,16 @@ lanes  time to 10k connections  all lists done
 ```
 Lane 2 is logged out for 45 min in the 2- and 4-lane runs, which is why 2 lanes are not twice as fast.
 
+## Two profiles, one Instagram account (`--twin`)
+
+```
+node tests/e2e/driver.mjs --twin
+```
+
+The opt-in second-profile test (`docs/SECOND_PROFILE_TEST.md`) against the real extension, server and fake Instagram: two emulated Chrome profiles signed in to @trashtheturtles (id 64189916997), 6 simulated hours. The simulated operator plays Michael through `/api/account-twin`: a baseline hour with one profile, the twin enabled at that total, one 25% step, then the fake account answers the next list request with a 429 (`POST /__sim/inject` on `fake_ig.py`).
+
+Checks: the second profile sends nothing before the twin is on; both collect afterwards; no list is worked by both; no page fetched or posted twice; combined requests of the account never exceed the step cap in any rolling hour (the baseline hour counts) or 72 in 11 minutes; the cap is used, not starved; after the 429 neither profile asks Instagram again, the server records the stop with the profile and code, pauses the second profile and collection; outboxes empty; no invariant violations. The default run and `--lanes` are unchanged.
+
 ## What runs
 
 | piece | what it is |

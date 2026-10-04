@@ -10,6 +10,7 @@ Resuming lists or bios clears the legacy `paused` and keeps the other stage wher
 from datetime import datetime, timedelta, timezone
 import math
 
+import account_twin
 import accounts
 import db
 import processing_modes
@@ -554,6 +555,7 @@ def apply(conn, b):
         db.set_setting(conn, 'paused', False)
         db.set_setting(conn, 'paused_lists', 'lists' not in stages)
         db.set_setting(conn, 'paused_bios', 'bios' not in stages)
+        account_twin.sync_pause(conn)
         conn.commit()
         return
     if action == 'acknowledge_scraping_warning':

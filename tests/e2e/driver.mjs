@@ -27,7 +27,8 @@ const argv = process.argv.slice(2);
 const flag = (n) => argv.includes('--' + n);
 const opt = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : d; };
 const LANES = opt('lanes', null);
-const HOURS = Number(opt('hours', LANES ? 12 : 8));
+const TWIN = flag('twin'); // two Chrome profiles signed in to ONE Instagram account (the opt-in second-profile test)
+const HOURS = Number(opt('hours', TWIN ? 6 : LANES ? 12 : 8));
 const VERBOSE = flag('verbose');
 const EXT_ID = 'fgdbghllamedgihmdcolaggnbhnakjnf';
 const EXT_ORIGIN = 'chrome-extension://' + EXT_ID;
@@ -1026,6 +1027,177 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   process.exit(ok ? 0 : 1);
 }
 
+// ================================================================ --twin: two Chrome profiles, ONE Instagram account
+// The opt-in second-profile test (docs/SECOND_PROFILE_TEST.md) against the real extension, server and a fake Instagram.
+// Michael's steps are played by the simulated operator through the same HTTP actions the CLI uses:
+//   baseline hour with one profile -> twin at the same total -> +25% step -> the account gets a 429 -> the test must stop both.
+// Checks: the second profile does nothing until the twin is enabled; no list is worked by both profiles; no page is fetched or
+// posted twice; the combined requests of the account never exceed the step cap in any rolling hour (or 72 in 11 minutes);
+// the 429 seen by one profile ends the test for both, and neither profile asks Instagram again afterwards.
+const TWIN_IG = '64189916997', TWIN_HANDLE = 'trashtheturtles';
+
+async function twinMain() {
+  PORT.server = await freePort(); PORT.ig = await freePort();
+  launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
+  await startServer();
+  await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  await finiteScenario();
+  const seeds = LANE_SEEDS.map(([handle, direction, size], j) => {
+    const s = { pk: String(7_300_000_000 + j), username: handle, handle, direction, size, lists: { [direction]: size },
+      followers: direction === 'followers' ? size : 300 + j * 17, following: direction === 'following' ? size : 200 + j * 11 };
+    seedByPk.set(s.pk, s); seedByName.set(handle.toLowerCase(), s);
+    return s;
+  });
+  const account = { ig_id: TWIN_IG, handle: TWIN_HANDLE, schedule: {} };
+  await fetch(`http://127.0.0.1:${PORT.ig}/__sim/config`, { method: 'POST', body: JSON.stringify({ seeds, schedule: {}, accounts: [account] }) });
+  for (const dir of ['followers', 'following']) {
+    await fetch(`http://127.0.0.1:${PORT.server}/api/scraper/seeds`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Sim-Now': String(V.now), Origin: uiOrigin() },
+      body: JSON.stringify({ handles: seeds.filter((s) => s.direction === dir).map((s) => s.handle), directions: [dir] }) });
+  }
+  // two Chrome profiles, one Instagram account; profile 1 is the original, profile 2 signs in a moment later
+  const lanes = [];
+  for (let i = 0; i < 2; i++) {
+    const L = newProfile({ name: 'profile' + (i + 1), prefix: 'T' + (i + 1) + ':', igId: TWIN_IG, handle: TWIN_HANDLE, faults: false });
+    lanes.push(L);
+    L.createTab({ url: IG + '/', active: false, pinned: true });
+    timer(OPS, 2000 + i * 700, () => L.bootSW('install'));
+  }
+  const [A, B] = lanes;
+  const T = { phase: 'boot', at: {}, steps: [], baseline: null, errors: [], status: null, trip: null };
+  const act = async (body) => { const r = await opsHttp('/api/account-twin', body); if (r.ok === false) T.errors.push(`${dhm(V.now)} ${body.action}: ${r.error}`); return r; };
+  let busy = false;
+  const operator = () => {
+    timer(OPS, MIN, operator);
+    if (busy || !serverUp) return;
+    busy = true;
+    (async () => {
+      const laneA = A.store.laneId, laneB = B.store.laneId;
+      if (!laneA || !laneB) return;
+      const status = T.status = await opsHttp('/api/account-twin');
+      if (status.state === 'tripped' && T.phase !== 'tripped') {
+        T.phase = 'tripped'; T.at.tripped = V.now; T.trip = status.trip; ev('twin test stopped', status.trip);
+        timer(OPS, 45 * MIN, () => { V.stop = true; });
+        return;
+      }
+      if (T.phase === 'boot') {
+        const accts = await opsHttp('/api/accounts');
+        const ready = (accts.accounts || []).filter((a) => a.ig_id === TWIN_IG && a.handle === TWIN_HANDLE && a.online);
+        if (ready.length === 2 && V.now - START >= 3 * MIN) {
+          const r = await act({ action: 'start_baseline', reviewed: true, lane_id: laneA });
+          if (r.ok !== false) { T.phase = 'baseline'; T.at.baseline = V.now; ev('operator: baseline started'); }
+        }
+      } else if (T.phase === 'baseline' && V.now - T.at.baseline >= 61 * MIN) {
+        const r = await act({ action: 'finish_baseline', reviewed: true });
+        if (r.ok !== false) { T.phase = 'baseline_done'; T.baseline = r.baseline; T.at.baselineDone = V.now; ev('operator: baseline accepted', { per_hour: r.baseline.per_hour }); }
+      } else if (T.phase === 'baseline_done') {
+        const r = await act({ action: 'enable', reviewed: true, lane_ids: [laneA, laneB] });
+        if (r.ok !== false) { T.phase = 'twin1'; T.at.enable = V.now; T.steps.push({ from: V.now, cap: r.current.cap_per_hour, label: r.current.label }); ev('operator: twin enabled', { cap: r.current.cap_per_hour }); }
+      } else if (T.phase === 'twin1' && V.now - T.at.enable >= 61 * MIN) {
+        const r = await act({ action: 'advance', reviewed: true });
+        if (r.ok !== false) { T.phase = 'twin2'; T.at.twin2 = V.now; T.steps[T.steps.length - 1].to = V.now; T.steps.push({ from: V.now, cap: r.current.cap_per_hour, label: r.current.label }); ev('operator: next step', { cap: r.current.cap_per_hour }); }
+      } else if (T.phase === 'twin2' && V.now - T.at.twin2 >= 20 * MIN) {
+        const r = await io(OPS, async () => (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/inject`, { method: 'POST', body: JSON.stringify({ ig_id: TWIN_IG, kind: 'list', type: '429' }) })).json());
+        T.phase = 'injected'; T.at.inject = V.now; T.injectAt = r.at_request; ev('fake Instagram: next list request of the account gets a 429', { n: r.at_request });
+      }
+    })().catch((e) => T.errors.push('operator: ' + e)).finally(() => { busy = false; });
+  };
+  timer(OPS, MIN, operator);
+  timer(OPS, 15e3, serverTick);
+  await runUntil(END);
+  for (const L of lanes) { if (L.browser.sw) L.browser.sw.alive = false; for (const t of L.browser.tabs.values()) t.alive = false; }
+  OPS.alive = false; BROWSER.alive = false;
+  await twinReport(lanes, T);
+}
+
+async function twinReport(lanes, T) {
+  const fakeLog = await (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/log`)).json();
+  const final = await (await fetch(`http://127.0.0.1:${PORT.server}/api/account-twin`)).json();
+  const accts = await (await fetch(`http://127.0.0.1:${PORT.server}/api/accounts`)).json();
+  const control = await (await fetch(`http://127.0.0.1:${PORT.server}/api/control`)).json();
+  const [A, B] = lanes;
+  const db = pyQuery(DB);
+  const pass = [], fail = [];
+  const check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
+  const reqs = igLog.filter((e) => e.kind !== 'nav');
+  const mine = (L, from, to) => reqs.filter((e) => e.lane === L.name && e.t >= from && e.t < to);
+  const enableAt = T.at.enable ?? Infinity, trippedAt = T.at.tripped ?? Infinity;
+  check(T.phase === 'tripped', 'the test ran to the end: baseline, twin, next step, 429, stop', `phase ${T.phase}${T.errors.length ? '; ' + T.errors.slice(0, 3).join(' | ') : ''}`);
+  check(T.at.enable != null && T.at.twin2 != null, 'twin enabled and advanced one step', `enable ${T.at.enable != null ? dhm(T.at.enable) : '-'}, step 2 ${T.at.twin2 != null ? dhm(T.at.twin2) : '-'}`);
+  // 1. the second profile does nothing until the twin is on
+  const early = mine(B, 0, enableAt);
+  check(!early.length, 'second profile sends no Instagram request before the twin is enabled', `${early.length} requests`);
+  const during = (L) => mine(L, enableAt, trippedAt).filter((e) => e.kind === 'list');
+  check(during(A).length > 20 && during(B).length > 20, 'both profiles collect while the twin is on', `profile1 ${during(A).length}, profile2 ${during(B).length} list requests`);
+  // 2. disjoint work: each list belongs to one profile for the whole test
+  const byList = new Map();
+  for (const e of reqs.filter((x) => x.kind === 'list')) { if (!byList.has(e.list)) byList.set(e.list, new Set()); byList.get(e.list).add(e.lane); }
+  const shared = [...byList].filter(([, s]) => s.size > 1);
+  check(!shared.length, 'no list is worked by both profiles', shared.map(([l, s]) => l + ' ' + [...s]).join('; ') || `${byList.size} lists, one profile each`);
+  const seenPage = new Map(); let dupPages = 0;
+  for (const e of fakeLog.log.filter((x) => x.kind === 'list' && x.users != null)) { const k = e.path + ' ' + e.max_id; if (seenPage.has(k)) dupPages++; seenPage.set(k, 1); }
+  check(!dupPages, 'no page fetched twice', `${seenPage.size} pages, ${dupPages} repeats`);
+  check(!counters.dupResponses, 'no page posted twice', `${counters.dupResponses} duplicate posts`);
+  check(db.edge_rows === db.edge_distinct, 'no duplicate edge rows', `${db.edge_rows}/${db.edge_distinct}`);
+  // 3. the combined cap. The hour before the twin was enabled still counts: the account's rolling hour may not grow past the
+  // step cap, or past what the baseline hour already was at that moment (its busiest hour can sit a little above its average).
+  const capAt = (t) => { const s = T.steps.filter((x) => x.from <= t).at(-1); return s ? s.cap : null; };
+  const atEnable = reqs.filter((e) => e.t > enableAt - HOUR && e.t <= enableAt).length;
+  let worst = { n: 0, cap: 0, excess: -Infinity };
+  for (let i = 0, j = 0; i < reqs.length; i++) {
+    while (reqs[i].t - reqs[j].t >= HOUR) j++;
+    const cap = capAt(reqs[i].t), limit = Math.max(cap || 0, atEnable);
+    if (reqs[i].t > enableAt && reqs[i].t < trippedAt && cap && i - j + 1 - limit > worst.excess) worst = { n: i - j + 1, cap: limit, excess: i - j + 1 - limit, at: reqs[i].t };
+  }
+  check(worst.excess <= 0, 'combined requests in any rolling hour <= the step cap (or the baseline hour, if higher)', `worst ${worst.n} of ${worst.cap} at ${worst.at ? dhm(worst.at) : '-'}`);
+  let peak = 0;
+  for (let i = 0, j = 0; i < reqs.length; i++) { while (reqs[i].t - reqs[j].t >= FL.PACE.window) j++; peak = Math.max(peak, i - j + 1); }
+  check(peak <= FL.PACE.windowMax, 'combined requests in any 11 minutes <= PACE.windowMax', `peak ${peak}`);
+  const reached = T.steps.map((s) => { const to = s.to ?? trippedAt; const n = reqs.filter((e) => e.t >= s.from && e.t < to).length; return { ...s, n, perHour: n / ((to - s.from) / HOUR) }; });
+  check(reached[0] && reached[0].perHour >= 0.7 * reached[0].cap, 'the cap is reached, not starved: step 1 used most of its cap', reached[0] ? `${reached[0].perHour.toFixed(0)} of ${reached[0].cap} an hour` : 'no step');
+  // 4. the 429 from one profile stops both, for good
+  const hit = igLog.find((e) => e.status === 429 && e.kind !== 'nav');
+  check(!!hit, 'the fake account returned its 429', hit ? `${hit.lane} at ${dhm(hit.t)}` : 'none');
+  const after = hit ? reqs.filter((e) => e.t > hit.t + 1000) : [];
+  check(!after.length, 'neither profile asks Instagram again after the 429 (until Michael resumes)', after.slice(0, 3).map((e) => `${e.lane} ${e.path} at ${dhm(e.t)}`).join(', ') || 'none for the rest of the run');
+  check(final.state === 'tripped' && final.trip && final.trip.code === 'rate_limit', 'the server ended the test on the first adverse event', JSON.stringify(final.trip));
+  check(final.trip && [A.store.laneId, B.store.laneId].includes(final.trip.lane), 'the server names the profile that saw it', final.trip && final.trip.lane);
+  const rowB = (accts.accounts || []).find((a) => a.lane_id === B.store.laneId);
+  check(rowB && rowB.paused, 'the second profile is paused after the stop', rowB && String(rowB.paused));
+  check(control.collection && control.collection.paused, 'collection is paused after the stop', JSON.stringify(control.collection));
+  check(new Set(final.history.map((h) => h.label)).size === final.history.length && final.history.length >= 1, 'finished steps are recorded once', final.history.map((h) => h.label).join(', '));
+  // 5. housekeeping
+  check(accts.accounts.filter((a) => a.ig_id === TWIN_IG).length === 2, 'the server sees two Chrome profiles on one Instagram account');
+  for (const L of lanes) check(!(L.store.box || []).length, 'outbox empty', `${L.name} ${(L.store.box || []).length}`);
+  check(!harnessErrors.length, 'no uncaught errors in the extensions', harnessErrors.slice(0, 3).join(' | '));
+  check(!violations.length, 'no invariant violations', violations.slice(0, 3).map((v) => v.what + ' ' + JSON.stringify(v)).join('; '));
+  const rejected = serverLog.filter((e) => e.status >= 400 && e.status < 500);
+  check(!rejected.length, 'server never rejected an extension call', rejected.slice(0, 3).map((e) => `${e.path} ${e.status}`).join('; ') || `${serverLog.length} calls`);
+
+  const pad = (s, n) => String(s).padEnd(n), lpad = (s, n) => String(s).padStart(n);
+  const listPages = (from, to) => serverLog.filter((e) => e.path === '/api/ext/list-page' && e.status === 200 && e.t >= from && e.t < to && !(e.resp && (e.resp.duplicate || e.resp.stale))).length;
+  const rows = [];
+  if (T.at.baseline != null) rows.push(['baseline (one profile)', T.at.baseline, T.at.baselineDone ?? T.at.enable ?? END, null]);
+  for (const s of reached) rows.push([s.label + ' (two profiles)', s.from, s.to ?? hit?.t ?? END, s.cap]);
+  console.log(`\nFortunate Leads e2e — two Chrome profiles, one Instagram account, extension ${manifest.version}, up to ${HOURS} simulated hours`);
+  console.log(pad('phase', 34) + lpad('minutes', 8) + lpad('requests', 10) + lpad('req/h', 8) + lpad('pages/h', 9) + lpad('cap', 6));
+  for (const [name, from, to, cap] of rows) {
+    const n = reqs.filter((e) => e.t >= from && e.t < to).length, h = (to - from) / HOUR;
+    console.log(pad(name, 34) + lpad(Math.round(h * 60), 8) + lpad(n, 10) + lpad((n / h).toFixed(0), 8) + lpad((listPages(from, to) / h).toFixed(0), 9) + lpad(cap ?? '-', 6));
+  }
+  console.log('\n' + lanes.map((L) => `${L.name}: ${reqs.filter((e) => e.lane === L.name).length} requests, ${reqs.filter((e) => e.lane === L.name && e.kind === 'list').length} list pages, lists ${[...byList].filter(([, s]) => s.has(L.name)).length}`).join('   '));
+  console.log('timeline       ' + events.filter((e) => /operator|twin|fake|hit/.test(e.what)).map((e) => `${dhm(e.t)} ${e.what}`).join('; '));
+  console.log(`\nchecks: ${pass.length} passed, ${fail.length} failed`);
+  for (const f of fail) console.log('  FAIL ' + f);
+  if (VERBOSE) for (const p of pass) console.log('  ok   ' + p);
+  const ok = !fail.length;
+  console.log(ok ? '\nPASS' : '\nFAIL');
+  fs.writeFileSync(path.join(TMP, 'result.json'), JSON.stringify({ pass, fail, violations, twin: T, final, events: events.map((e) => ({ ...e, t: dhm(e.t) })) }, null, 1));
+  cleanup();
+  if (!flag('keep') && ok) fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
 const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 16) : [];
-(laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
+(TWIN ? twinMain() : laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
   .catch((e) => { console.error(e); cleanup(); process.exit(2); });

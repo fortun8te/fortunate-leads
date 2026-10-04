@@ -16,6 +16,7 @@ import secrets
 import re
 from datetime import date, datetime, timedelta, timezone
 
+import account_twin
 import db
 
 DEFAULT_LANE = 'default'
@@ -162,7 +163,8 @@ def isolation_allows(conn, row):
     if not row or warning_for(conn, row):
         return False
     isolation = db.get_setting(conn, 'instagram_collection_isolation')
-    return not isolation or isolation.get('accounts', {}).get(row['lane_id']) == row['ig_id']
+    return not isolation or isolation.get('accounts', {}).get(row['lane_id']) == row['ig_id'] \
+        or account_twin.is_member(conn, row)   # opt-in shared-account test, see account_twin.py
 
 
 def touch(conn, lane, acct=None, **fields):
@@ -254,7 +256,7 @@ def identity_owner(conn, row, now):
     Otherwise the oldest available lane wins until it pauses, hits a login
     wall, or misses the normal 10-minute handoff window.
     """
-    if not row['ig_id']:
+    if not row['ig_id'] or account_twin.is_member(conn, row):
         return True
     peers = conn.execute('SELECT * FROM accounts WHERE ig_id=?', (row['ig_id'],)).fetchall()
     available = [peer for peer in peers if account_available(peer, now)]
@@ -268,10 +270,12 @@ def identity_handoff_pending(conn, row, now):
     """Wait for a previous lane's live request before the new owner starts."""
     if not row['ig_id']:
         return False
+    twin = account_twin.peer_lanes(conn, row)   # an active twin works beside its peer, never after it
     return bool(conn.execute(
         "SELECT 1 FROM jobs j JOIN accounts a ON a.lane_id=j.lane "
-        "WHERE a.ig_id=? AND j.lane!=? AND j.state='leased' AND j.leased_until>? LIMIT 1",
-        (row['ig_id'], row['lane_id'], iso(now))).fetchone())
+        "WHERE a.ig_id=? AND j.lane!=? AND j.state='leased' AND j.leased_until>?"
+        + ''.join(' AND j.lane!=?' for _ in twin) + ' LIMIT 1',
+        (row['ig_id'], row['lane_id'], iso(now), *twin)).fetchone())
 
 
 def identity_cooling(conn, row, kind, now):
@@ -918,7 +922,11 @@ def alerts(conn, now=None, accts=None):
         if a['ig_id']:
             seen.setdefault(a['ig_id'], []).append(a)
     for same in seen.values():
-        if len(same) > 1:
+        if len(same) > 1 and all(account_twin.is_member(conn, {'lane_id': a['lane_id'], 'ig_id': a['ig_id']})
+                                 for a in same):
+            out_.append({'level': 'info', 'lane_id': same[1]['lane_id'],
+                         'text': f"{same[0]['name']} is running on two Chrome profiles for the second-profile test"})
+        elif len(same) > 1:
             out_.append({'level': 'warn', 'lane_id': same[1]['lane_id'],
                          'text': f"{same[0]['name']} is logged in on {len(same)} Chrome profiles — log the extra ones into other accounts"})
             available = [a for a in same if a['last_seen'] and now - utc(a['last_seen']) <= RELEASE_AFTER
@@ -994,6 +1002,11 @@ def edit(conn, lane, b):
         conn.execute(f"UPDATE accounts SET {', '.join(k + '=?' for k in sets)} WHERE lane_id=?", (*sets.values(), lane))
     if sets.get('paused'):
         release(conn, db.utc_now(), only=lane)
+    if 'paused' in sets:
+        for peer in account_twin.peer_lanes(conn, row):   # one Instagram account: pause or resume both profiles
+            conn.execute('UPDATE accounts SET paused=? WHERE lane_id=?', (sets['paused'], peer))
+            if sets['paused']:
+                release(conn, db.utc_now(), only=peer)
     return conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
 
 
@@ -1095,6 +1108,8 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True, vie
                 cooldown = None
             if not may_request(lane, kind) or (cooling and (cooldown is None or cooldown > now)):
                 result = {'granted': False, 'wait_ms': 15000}
+            elif (twin_wait := account_twin.capacity_wait(conn, lane, kind, stamp)):
+                result = {'granted': False, 'wait_ms': twin_wait}   # combined cap of the opt-in shared-account test
             elif active and active['lane'] == lane:
                 result = {'granted': False, 'wait_ms': 2000}
             else:
@@ -1110,6 +1125,7 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True, vie
                     active = {'lane': lane, 'ig_id': viewer, 'kind': kind, 'token': secrets.token_hex(24),
                               'until': stamp + REQUEST_LEASE_SECONDS}
                     pipeline_log.record(conn, 'request_acquired', lane=lane, kind=kind, token=active['token'], ig_id=viewer, now=now)
+                    account_twin.note_grant(conn, lane, kind, stamp)
                     next_at = stamp + REQUEST_SPACING_SECONDS
                     result = {'granted': True, 'token': active['token'], 'expires_at': iso(now + timedelta(seconds=REQUEST_LEASE_SECONDS))}
                 else:
