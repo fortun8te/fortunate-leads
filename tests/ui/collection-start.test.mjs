@@ -76,17 +76,20 @@ test('stale status blocks changes and the summary counts selected lists', async 
 });
 
 
-test('one primary button adds without restarting while collection is already on', async () => {
+test('queue button never starts or resumes collection', async () => {
   const paths = [];
   const s = setup(async path => { paths.push(path); return {queued: 2}; });
   s.ctx.S.sc = {paused: false, stages: [{id: 'lists', paused: false}]};
   s.ctx.syncSeed();
-  assert.equal(s.node('#seed-start').textContent, 'Add profiles');
+  assert.equal(s.node('#seed-start').textContent, 'Add to queue');
   await s.node('#seed-start').onclick();
   assert.deepEqual(paths, ['/api/scraper/seeds']);
   s.ctx.S.sc.paused = true;
   s.ctx.syncSeed();
-  assert.equal(s.node('#seed-start').textContent, 'Start collecting');
+  assert.equal(s.node('#seed-start').textContent, 'Add to queue');
+  s.node('#seed-in').value = '@another';
+  await s.node('#seed-start').onclick();
+  assert.deepEqual(paths, ['/api/scraper/seeds', '/api/scraper/seeds']);
 });
 
  test('queued startup reports connecting rather than claiming collection has started',async()=>{

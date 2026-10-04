@@ -2219,7 +2219,7 @@ function renderScraper() {
     if ($('#now').innerHTML !== html) $('#now').innerHTML = html;
     if (!sc) {
       $('#stages').innerHTML = '';
-      $('#lists-body').innerHTML = `<tr><td colspan="5" class="muted">${S.scError ? 'Lists are unavailable until collection status loads.' : 'Loading lists…'}</td></tr>`;
+      $('#lists-body').innerHTML = `<tr><td colspan="4" class="muted">${S.scError ? 'Lists are unavailable until collection status loads.' : 'Loading lists…'}</td></tr>`;
       return;
     }
   }
@@ -2235,7 +2235,7 @@ function renderScraper() {
   const reading = listActive && run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
-  else if (listPaused) { now = 'Paused'; sub = 'Use Start scraping at the top to continue from saved progress.'; }
+  else if (listPaused) { now = 'Paused'; sub = 'Use Start collection above to continue from saved progress.'; }
   else if (listHeld) { now = 'Collection waiting'; sub = listStage.now || collectionReason(listStage.reason_code || listStage.wait?.why || listStage.reason, 'Progress is saved. Waiting to continue.'); }
   else if (!x.online) { now = 'Accounts disconnected'; sub = 'Use Connect accounts to reopen your saved Chrome profiles.'; }
   else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
@@ -2304,15 +2304,13 @@ function renderScraper() {
     const saved = l.saved_entries ?? l.received;
     const expected = l.expected ?? l.total;
     const complete = l.completion === 'complete';
-    const pct = expected ? Math.min(complete ? 100 : 99, (saved / expected) * 100) : null;
-    const label = complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : l.state === 'queued' && saved > 0 ? 'Partial · queued' : l.state === 'queued' && (l.error || l.completion_reason || l.pages > 0) ? 'Waiting to retry' : l.state === 'queued' ? 'Not started' : LIST_STATE[l.state] || ucf(l.state);
+    const label = complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : l.state === 'queued' && saved > 0 ? 'Queued to continue' : l.state === 'queued' && (l.error || l.completion_reason || l.pages > 0) ? 'Waiting to retry' : l.state === 'queued' ? 'Not started' : LIST_STATE[l.state] || ucf(l.state);
     const reason = l.completion_reason || l.error ? collectionReason(l.reason_code || l.error || l.completion_reason, 'Saved progress needs another attempt') : '';
-    return `<tr><td><b>@${esc(l.seed)}</b><small class="list-direction-mobile">${l.direction === 'followers' ? 'Followers' : 'Following'}</small>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Their followers' : 'Who they follow'}</td>
-      <td class="prog"><div class="bar-p ${pct == null ? 'unknown' : complete ? 'done' : l.state === 'running' && listActive ? 'run' : ''}"><i style="width:${pct ?? 0}%"></i></div></td>
-      <td class="r num">${int(saved)}${expected != null ? ' / ' + (l.expected_source === 'estimate' ? '~' : '') + int(expected) : ' / ?'}</td>
+    return `<tr><td><b>@${esc(l.seed)}</b><small class="list-direction-mobile">${l.direction === 'followers' ? 'Followers' : 'Following'}</small>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Followers' : 'Following'}</td>
+      <td class="r num"><b>${int(saved)}</b>${expected != null ? `<small class="list-expected">of ${l.expected_source === 'estimate' ? 'about ' : ''}${int(expected)} expected</small>` : '<small class="list-expected">Total unknown</small>'}</td>
       <td><span class="state ${esc(complete ? 'done' : l.state === 'done' ? 'partial' : l.state)}">${l.state === 'running' && listActive ? '<i class="dot run"></i>' : ''}${esc(label)}</span></td></tr>`;
-  }).join('') + (all.length > rows.length ? `<tr><td colspan="5"><button class="btn ghost" id="lists-all">Show 10 more · ${int(all.length - rows.length)} remaining</button></td></tr>` : '')
-    : `<tr><td colspan="5" class="muted">${empty}</td></tr>`;
+  }).join('') + (all.length > rows.length ? `<tr><td colspan="4"><button class="btn ghost" id="lists-all">Show 10 more · ${int(all.length - rows.length)} remaining</button></td></tr>` : '')
+    : `<tr><td colspan="4" class="muted">${empty}</td></tr>`;
 }
 let listsShown = 10;
 $('#now').addEventListener('click', (e) => { if (e.target.closest('#scr-retry')) loadScraper(); });
@@ -2369,7 +2367,7 @@ function syncSeed() {
   const unavailable = seedAdding || !n || !directions.length || !!S.scStale;
   $('#seed-start').disabled = unavailable;
   $('#seed-in').disabled = seedAdding;
-  $('#seed-start').textContent = seedAdding ? seedAction === 'start' ? 'Starting…' : 'Adding…' : seedCollectionRunning() ? 'Add profiles' : 'Start collecting';
+  $('#seed-start').textContent = seedAdding ? seedAction === 'start' ? 'Starting…' : 'Adding…' : 'Add to queue';
   $$('#seed-dir button').forEach(b => {
     const excluded = seedFollowingOnly() && b.dataset.v === 'followers';
     b.disabled = seedAdding || excluded;
@@ -2398,7 +2396,7 @@ async function submitSeed(start = true) {
   } catch (e) { $('#seed-feedback').textContent = start ? "Couldn't start collection. Your input is kept. Try again." : "Couldn't add these lists. Your input is kept. Try again."; }
   finally { seedAdding = false; seedAction = ''; syncSeed(); }
 }
-$('#seed-start').onclick = () => submitSeed(!seedCollectionRunning());
+$('#seed-start').onclick = () => submitSeed(false);
 window.addEventListener('fl:control-changed', () => loadScraper());
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
@@ -2593,7 +2591,7 @@ function mountCollectionTargets() {
   const form = $('#seed-panel'), table = $('#lists-body')?.closest('.panel');
   if (!form || !table) return;
   if (!collectionTargetHomes) {
-    $('#seed-in').placeholder = '@handle or instagram.com/handle, one per line';
+    $('#seed-in').placeholder = '@brand or instagram.com/founder';
     $('#seed-in').setAttribute('aria-label', 'Target profile handles or Instagram links');
     collectionTargetHomes = [form, table].map(node => {
       const home = document.createComment('collection targets');
@@ -2607,7 +2605,7 @@ function mountCollectionTargets() {
     workspace.id = 'acc-targets';
     workspace.className = 'collection-targets';
     workspace.setAttribute('aria-label', 'Scrape profiles');
-    workspace.innerHTML = '<header class="collection-target-heading"><h2>Collect from profiles</h2></header>';
+    workspace.innerHTML = '<header class="collection-target-heading"><div><h2>Collection queue</h2><p class="muted">Add profiles here. Start or stop collection above.</p></div></header>';
     $('#acc-coverage').after(workspace);
     const suggestions = document.createElement('section');
     suggestions.id = 'collection-suggestions';
@@ -2644,7 +2642,8 @@ function collectionCoverageHTML(sc) {
       ? true : collectionStages.some(stage => stage.stop_acknowledged === false) ? false : undefined,
   };
   const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
-  const state = activity?.stopping ? 'Stopping. Waiting for the current request to finish'
+  const unresolved = sc.control?.instagram_request_attention?.kind === 'request_unconfirmed' || (sc.control?.collection_blockers || []).some(item => item.code === 'request_unconfirmed' && item.blocking);
+  const state = unresolved ? 'Last request needs review' : activity?.stopping ? 'Stopping. Waiting for the current request to finish'
     : pausedByUser ? activity?.stop_acknowledged === true ? 'Stopped' : activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Paused by you'
     : held ? held.now || collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
     : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';

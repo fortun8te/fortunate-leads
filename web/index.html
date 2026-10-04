@@ -198,14 +198,15 @@
         <div class="tiles" id="scr-counts"></div>
         <div class="stages" id="stages"></div>
         <div class="panel" id="seed-panel">
-          <div class="p-head"><h3>Add accounts to scrape</h3><div class="grow"></div><span class="muted hide-sm">We read the people in their lists</span></div>
+          <div class="p-head"><h3>Add profiles to the queue</h3><div class="grow"></div><span class="muted hide-sm">Choose which lists to save</span></div>
           <div class="p-body">
-            <textarea class="input" id="seed-in" aria-label="Accounts to scrape, one handle per line" spellcheck="false" placeholder="@handle, one per line"></textarea>
+            <label class="seed-label" for="seed-in">Profile handles or Instagram links</label>
+            <textarea rows="2" class="input" id="seed-in" aria-label="Profile handles or Instagram links" spellcheck="false" placeholder="@brand or instagram.com/founder"></textarea>
             <div class="row-flex">
-              <div class="seg" id="seed-dir" aria-label="Lists to collect"><button data-v="followers" class="on" aria-pressed="true">Followers</button><button data-v="following" class="on" aria-pressed="true">Following</button></div>
+              <span class="seed-directions-label">Lists to save</span><div class="seg" id="seed-dir" aria-label="Lists to collect"><button data-v="followers" class="on" aria-pressed="true">Followers</button><button data-v="following" class="on" aria-pressed="true">Following</button></div>
               <div class="grow"></div>
               <span class="muted num" id="seed-n" aria-live="polite"></span>
-              <button class="btn solid" id="seed-start" disabled>Start collecting</button>
+              <button class="btn solid" id="seed-start" disabled>Add to queue</button>
             </div>
             <p class="muted" id="seed-feedback" role="status"></p>
           </div>
@@ -218,7 +219,7 @@
         <div class="panel">
           <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Account</th><th class="hide-sm">List</th><th class="prog">Progress</th><th class="r">Saved / expected</th><th>Status</th></tr></thead>
+            <thead><tr><th>Profile</th><th class="hide-sm">List</th><th class="r">Saved</th><th>Status</th></tr></thead>
             <tbody id="lists-body"></tbody>
           </table></div>
         </div>

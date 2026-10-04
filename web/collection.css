@@ -87,3 +87,25 @@
  .collection-targets #seed-panel .row-flex { flex:1 1 100%; }
  .collection-targets #seed-panel .row-flex .grow { display:block; }
 }
+
+/* One clear action per surface: queue profiles here, run collection in the strip. */
+.seed-label { display:block; font-size:12px; font-weight:500; margin-bottom:8px; color:var(--fg2); }
+.collection-targets #seed-panel .p-body { padding:14px 16px; }
+.collection-targets #seed-in { min-height:52px; height:52px; max-height:160px; font-size:13px; }
+.collection-targets .tbl th:first-child { width:34%; }
+.collection-targets .tbl th.r { width:24%; }
+.collection-targets .tbl td .list-expected { display:block; margin-top:4px; font-size:11px; color:var(--fg3); font-weight:400; }
+.fl-ctl-account { font-size:12px; font-weight:500; white-space:nowrap; }
+.fl-ctl-list-summary { font-size:11px; color:var(--fg3); white-space:nowrap; }
+.fl-ctl-panel .fl-ctl-scope { padding:12px 14px; border-bottom:1px solid var(--line); }
+@media(max-width:1000px) { .fl-ctl-top { flex-wrap:wrap; } .fl-ctl-top .fl-ctl-current { display:block; flex:1 1 100%; white-space:normal; padding-bottom:8px; } }
+@media(max-width:600px) { .fl-ctl-list-summary { display:none; } .collection-targets .tbl th:first-child { width:40%; } .collection-targets .tbl th.r { width:30%; } }
+
+.fl-request-review { padding:14px; border-bottom:1px solid var(--line); }
+.fl-request-review p { margin:7px 0 12px; font-size:12px; line-height:1.5; color:var(--fg2); }
+.fl-request-review label { display:flex; align-items:flex-start; gap:8px; margin:0 0 12px; font-size:12px; line-height:1.5; }
+.fl-request-review input { flex:none; margin-top:3px; accent-color:var(--fg); }
+.fl-request-review small { display:block; margin-top:8px; font-size:11px; color:var(--fg3); }
+
+.seed-directions-label { font-size:12px; color:var(--fg3); }
+#seed-dir button[aria-pressed="true"]::before { content:"✓"; margin-right:5px; font-size:11px; }
