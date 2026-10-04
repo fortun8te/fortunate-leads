@@ -101,6 +101,27 @@ class PreparedLeadQueries(ThinLeadPage):
                 with self.assertRaises(server.Bad):
                     server.api_leads(self.conn, query, {})
 
+    def test_web_app_local_date_keeps_prepared_pages_and_counts(self):
+        # The web app adds `today` to every list, count and facet request. It is
+        # only read by the follow_up filter, so it must not disable the shortcut.
+        today = {'today': ['2026-10-04']}
+        for sort in lead_rank.ORDERS:
+            for filters in ({}, {'fit': ['strong,good']}, {'min_lists': ['1']}):
+                query = dict(filters, **today, sort=[sort], limit=['3'], offset=['3'])
+                with self.subTest(sort=sort, filters=filters):
+                    self.assertIsNotNone(lead_rank.page_for_query(self.conn, sort, 3, 3, query))
+                    total, rows = self.oracle(query)
+                    page = server.api_leads(self.conn, query, {})
+                    self.assertEqual((page['total'], page['rows']), (total, rows))
+        with patch.object(lead_rank, 'counts', wraps=lead_rank.counts) as prepared:
+            self.assertEqual(server.counts(self.conn, dict(today)), server.counts(self.conn, {}))
+            self.assertEqual(prepared.call_count, 2)
+        with patch.object(lead_rank, 'counts', side_effect=AssertionError('follow-up needs the exact query')):
+            server.counts(self.conn, dict(today, follow_up=['due']))
+        query = dict(today, follow_up=['due'], sort=['fit'], limit=['3'], offset=['0'])
+        self.assertIsNone(lead_rank.page_for_query(self.conn, 'fit', 3, 0, query))
+        self.assertEqual(server.api_leads(self.conn, query, {})['rows'], self.oracle(query)[1])
+
     def test_populated_connected_index_upgrade_waits_for_explicit_preparation(self):
         self.conn.execute('DROP INDEX lead_rank_connected')
         statements = []

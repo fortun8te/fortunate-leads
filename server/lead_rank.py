@@ -206,8 +206,10 @@ def page_for_query(conn, sort, limit, offset, query):
     Reject every unimplemented query key, including empty-valued filters, so
     the ordinary query remains authoritative for status, tags and other views.
     Parsing matches the shared first-value comma and whole-number semantics.
+    The web app adds the client's local date as ``today`` to every request. Only
+    a follow_up filter reads it (and follow_up is rejected above), so it is ignored.
     """
-    if set(query) - {'sort', 'limit', 'offset', 'fit', 'min_lists'}:
+    if set(query) - {'sort', 'limit', 'offset', 'fit', 'min_lists', 'today'}:
         return None
     fits = [value.strip() for value in query.get('fit', [''])[0].split(',') if value.strip()]
     try:
