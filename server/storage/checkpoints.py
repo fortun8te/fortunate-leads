@@ -141,7 +141,8 @@ def repair_lists(conn, dry=False):
             if r is None:
                 out['added'] += 1
                 todo.append((s, d, 'add'))
-            elif r['state'] in ('paused', 'error', 'queued', 'running', None) and (s.lower(), d) not in live:
+            elif (r['state'] in ('paused', 'error', 'queued', 'running', None) and (s.lower(), d) not in live
+                  and r['released_why'] != 'not_found'):
                 out['requeued'] += 1
                 todo.append((r['seed'], d, 'requeue'))
             elif r['state'] == 'done' and (s.lower(), d) not in live and (

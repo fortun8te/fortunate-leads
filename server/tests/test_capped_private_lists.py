@@ -98,5 +98,30 @@ class CappedAndPrivate(unittest.TestCase):
         row = next(r for r in lists if r['seed'] == 'hidden')
         self.assertEqual(row['completion'], 'blocked')                       # not counted as work waiting
 
+    def gone(self, seed):
+        job = self.lease()
+        server.ext_error(self.conn, self.q, dict(self.acct, job_id=job['id'], lease_token=job['lease_token'], code='not_found',
+                                                  reason='page_not_found', kind='list', message='page not found'))
+        return job
+
+    def test_deleted_or_renamed_seed_is_asked_twice_a_day_apart_then_parked(self):
+        db.queue_list(self.conn, 'gone', 'following')
+        self.conn.commit()
+        self.gone('gone')
+        first = self.lst('gone', 'following')
+        self.assertEqual(first['state'], 'queued')
+        self.assertIsNone(self.lease())                                    # not again today
+        self.conn.execute("UPDATE jobs SET retry_not_before=NULL")
+        self.conn.commit()
+        self.gone('gone')
+        row = self.lst('gone', 'following')
+        self.assertEqual((row['state'], row['released_why']), ('error', 'not_found'))
+        self.assertIn('changed its handle', row['error'])
+        self.assertEqual(db.repair_lists(self.conn, dry=True)['requeued'], 0)
+        db.repair_lists(self.conn)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM jobs WHERE seed='gone' AND direction='following' AND state='queued'").fetchone()[0], 0)
+        self.assertTrue(db.queue_list(self.conn, 'gone', 'following', refresh=True))   # an explicit refresh still works
+
+
 if __name__ == '__main__':
     unittest.main()

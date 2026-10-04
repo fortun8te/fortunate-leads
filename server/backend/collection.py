@@ -817,8 +817,13 @@ class CollectionService:
                 # A home-page HTML redirect does not prove that this list is unavailable.
                 # Keep trying this target after its delay while other lists can run.
                 max_attempts = PROFILE_MAX_ATTEMPTS if job['kind'] == 'profile' else 5
-                final = code in ('private', 'not_found') or (code == 'other' and b.get('reason') != 'list_html_home_redirect'
-                                                           and job['attempts'] >= max_attempts)
+                # A seed whose profile page is gone (deleted or renamed) is asked once more a day later, then parked:
+                # a single "page not found" can be a block or a glitch, but repeating it forever spends requests.
+                gone_twice = job['kind'] == 'list' and code == 'not_found' and conn.execute(
+                    "SELECT count(*) FROM collector_events e JOIN jobs x ON x.id=e.job_id WHERE e.outcome='not_found' "
+                    "AND e.kind='list' AND x.seed=? AND x.direction=?", (job['seed'], job['direction'])).fetchone()[0] >= 2
+                final = code == 'private' or (code == 'not_found' and (job['kind'] == 'profile' or gone_twice)) or (
+                    code == 'other' and b.get('reason') != 'list_html_home_redirect' and job['attempts'] >= max_attempts)
             collected = (conn.execute('SELECT received FROM lists WHERE seed=? AND direction=?',
                                       (job['seed'], job['direction'])).fetchone() if was_list else None)
             job_state = ('partial' if was_list and final and collected and collected['received'] else
@@ -848,6 +853,9 @@ class CollectionService:
                 else:
                     conn.execute('UPDATE jobs SET retry_not_before=?, limit_hits=? WHERE id=?',
                                  (iso(retry), hits, job['id']))
+            elif code == 'not_found' and not final:
+                conn.execute('UPDATE jobs SET retry_not_before=? WHERE id=?',
+                             (iso(datetime.now(timezone.utc) + timedelta(hours=24)), job['id']))
             elif code == 'other' and not final:
                 # Keep a malformed or temporarily failing target from occupying the
                 # whole account through repeated local backoffs.
@@ -870,6 +878,11 @@ class CollectionService:
                 if code == 'private':
                     conn.execute('UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why=?, updated_at=? WHERE seed=? AND direction=?',
                                  (state, b.get('message') or code, lane, ts, 'private', ts, job['seed'], job['direction']))
+                elif code == 'not_found' and final:
+                    conn.execute("UPDATE lists SET state=?, error=?, lane=NULL, prev_lane=?, released_at=?, released_why='not_found', "
+                                 "updated_at=? WHERE seed=? AND direction=?",
+                                 (state, 'This account is gone or changed its handle: ' + str(b.get('message') or code)[:300],
+                                  lane, ts, ts, job['seed'], job['direction']))
                 else:
                     # Keep ownership until release_all/release records the actual
                     # handoff cause and source lane. Clearing it here lost that proof.
@@ -1215,6 +1228,8 @@ class CollectionService:
             return None
         if error.startswith('Instagram limited this list;'):
             return 'Instagram limited this list.'
+        if error.startswith('This account is gone or changed its handle'):
+            return 'This account no longer exists or changed its handle. Re-add it under the new handle.'
         if 'list_html_home_redirect' in error:
             return 'Instagram returned its home page instead of list data.'
         return error.split(' | ', 1)[0][:240]
