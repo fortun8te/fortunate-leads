@@ -12,6 +12,7 @@ import math
 import os
 import threading
 import errno
+import obs_events
 import resource_budget
 import urllib.error
 import time
@@ -134,6 +135,8 @@ def valid_answers(answers):
                     and math.isfinite(p) and 0 <= p <= 1 for p in answers.values()))
 
 
+@obs_events.traced_call('laya', 'decide', lambda a, k: {'people': len(a[0]) if a and hasattr(a[0], '__len__') else None},
+                       lambda a, k, r: {'answered': len(r) if hasattr(r, '__len__') else None})
 def decide(people):
     """Return complete validated batches, or no answers if any batch is invalid."""
     out = {}

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import math
 import sqlite3
 
+import obs
+
 
 def connect(path, *, timeout=15.0, cache_kib=32768, mmap_bytes=268435456):
     """Open a configured connection, preserving the legacy background defaults.
@@ -23,7 +25,7 @@ def connect(path, *, timeout=15.0, cache_kib=32768, mmap_bytes=268435456):
         raise ValueError('cache_kib must be a positive integer')
     if type(mmap_bytes) is not int or mmap_bytes < 0:
         raise ValueError('mmap_bytes must be a nonnegative integer')
-    conn = sqlite3.connect(path, timeout=timeout)
+    conn = sqlite3.connect(path, timeout=timeout, **obs.connect_options())
     try:
         conn.row_factory = sqlite3.Row
         conn.execute(f'PRAGMA busy_timeout={int(timeout * 1000)}')

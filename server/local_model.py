@@ -11,6 +11,7 @@ import os
 import socket
 
 import k2_connection
+import obs_events
 import resource_budget
 
 MODEL = 'k2-horizon-3.7B-q4km'
@@ -185,6 +186,7 @@ def maintain_service(paused=False):
             _lock.release()
 
 
+@obs_events.traced_call('k2', 'complete_json', lambda a, k: {'prompt_chars': len(str(a[0] if a else '')) + len(str(a[1] if len(a) > 1 else ''))})
 def complete_json(system, user, schema, max_tokens=900, timeout=45, reasoning_budget_tokens=None):
     started = time.monotonic()
     _call_state.metrics = {}

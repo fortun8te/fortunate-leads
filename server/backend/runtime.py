@@ -2,7 +2,6 @@
 
 import threading
 import time
-import traceback
 from pathlib import Path
 
 import db
@@ -10,6 +9,7 @@ import edge_benchmark_api
 import engine_start
 import laya
 import local_model
+import obs
 import processing_modes
 import resource_budget
 
@@ -106,7 +106,7 @@ class WorkerSupervisor:
     """Each loop owns one SQLite connection and releases its transaction per step."""
 
     def __init__(self, connection_factory, benchmark_probe=None,
-                 log_error=traceback.print_exc):
+                 log_error=obs.worker_error):
         self.connect = connection_factory
         self.benchmark_probe = benchmark_probe or (lambda conn: edge_benchmark_api.active(conn))
         self.log_error = log_error
@@ -163,6 +163,7 @@ class WorkerSupervisor:
         with self.lock:
             if self.closed:
                 raise RuntimeError('Background runtime is closed')
+            step = obs.wrap_step(name, step)
             thread = threading.Thread(target=self.run, args=(self.stop, step, busy_wait, idle_wait),
                                       name='fortunate-' + name, daemon=True)
             self.threads.append(thread)
@@ -180,10 +181,14 @@ class WorkerSupervisor:
 
     def close(self, timeout=5):
         with self.lock:
+            first = not self.closed
             self.closed = True
             self.stop.set()
             threads = list(self.threads)
         deadline = time.monotonic() + timeout
         for thread in threads:
             thread.join(max(0, deadline - time.monotonic()))
-        return [thread.name for thread in threads if thread.is_alive()]
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if first and threads:
+            obs.info('worker', 'stop', loops=len(threads), still_running=alive or None)
+        return alive

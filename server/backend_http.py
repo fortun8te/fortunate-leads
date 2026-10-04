@@ -11,6 +11,7 @@ import re
 import selectors
 import socket
 import sqlite3
+import sys
 import threading
 import time
 import traceback
@@ -18,6 +19,9 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+import obs
+import obs_events
 
 
 SECURITY_HEADERS = {
@@ -83,7 +87,7 @@ class HttpApplication:
         self.extension_origin = extension_origin
         self.font_path = Path(font_path) if font_path is not None else (
             Path.home() / 'Library' / 'Fonts' / 'ABCArealSuperfamilyVariable.ttf')
-        self.log_error = log_error if log_error is not None else traceback.print_exc
+        self.log_error = log_error if log_error is not None else obs.http_error
         self.read_timeout = float(read_timeout)
         self.body_timeout = float(body_timeout)
         self.write_timeout = float(write_timeout)
@@ -164,6 +168,8 @@ def _sqlite_busy(error):
 class Handler(BaseHTTPRequestHandler):
     """Request handler using only its injected HttpApplication."""
 
+    _obs_ticket = _obs_sent = _obs_exc = None
+
     @property
     def application(self):
         return self.server.application
@@ -242,6 +248,7 @@ class Handler(BaseHTTPRequestHandler):
         self.drain()
         if not isinstance(body, bytes):
             body = json.dumps(body).encode()
+        self._obs_sent = (code, len(body))
         self.connection.settimeout(self.application.write_timeout)
         self.send_response(code)
         self.send_header('Content-Type', ctype)
@@ -256,6 +263,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def route(self, method):
+        # Observability wrapper (docs/LOGGING.md): the real routing is _route.
+        self._obs_sent, self._obs_exc = None, None
+        ticket = obs_events.request_begin(method, self.path)
+        self._obs_ticket = ticket
+        try:
+            return self._route(method)
+        finally:
+            sent = self._obs_sent or (None, 0)
+            obs_events.request_end(ticket, sent[0], sent[1], self._obs_exc)
+
+    def _route(self, method):
         self._drained = False
         app = self.application
         url = urlparse(self.path)
@@ -266,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {'ok': False, 'error': 'host'})
         if len(self.headers.get_all('Origin', [])) > 1:
             return self.send(403, {'ok': False, 'error': 'origin'})
-        if url.path.startswith('/api/ext/') or (url.path.startswith('/api/benchmark/') and origin == app.extension_origin):
+        if url.path.startswith('/api/ext/') or url.path == '/api/ext-log' or (url.path.startswith('/api/benchmark/') and origin == app.extension_origin):
             if origin != app.extension_origin and not (origin is None and self.headers.get('X-FL') == '1'):
                 return self.send(403, {'ok': False, 'error': 'origin'})
         elif origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
@@ -290,6 +308,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_error_response(self, error):
         app = self.application
+        self._obs_exc = error
         if isinstance(error, app.conflict):
             return self.send(409, dict(error.current, ok=False, error=str(error), current=error.current))
         if isinstance(error, app.not_found):
@@ -323,8 +342,10 @@ class Handler(BaseHTTPRequestHandler):
             del data
             if not isinstance(body, dict):
                 raise app.bad('body must be a JSON object')
+            obs_events.bind_api(self._obs_ticket, query, body)
             with app.connection() as connection:
                 output = function(connection, query, body, *arguments)
+            obs_events.done_api(self._obs_ticket, output)
             if isinstance(output, app.raw_type):
                 if output.etag and output.etag in [value.strip() for value in self.headers.get('If-None-Match', '').split(',')]:
                     return self.send(304, b'', headers=output.headers)
@@ -505,6 +526,14 @@ class Server(HTTPServer):
             self._slots.release()
             self.shutdown_request(request)
             raise
+
+    def handle_error(self, request, client_address):
+        # A browser closing a tab mid-response is routine, not a server fault: fold it into a count.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+            obs.agg('http', 'agg', 'client_gone', 0, label=type(exc).__name__, every=60)
+            return
+        obs.log_exception('http', 'handler_crash', client=client_address[0])
 
     def _process_request(self, request, client_address):
         try:

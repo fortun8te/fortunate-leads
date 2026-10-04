@@ -18,6 +18,7 @@ import deepscout
 import websearch
 import accounts
 import edge_benchmark_api
+import obs
 import mobile_collector
 import control
 import connection_graph
@@ -750,10 +751,14 @@ def main():
     args = parser.parse_args()
     config = AppConfig(str(Path(args.db).resolve()), args.port, ROOT,
                        saved_data_only=args.no_workers)
+    # Logs and crash dumps go beside the database; a saved-data preview gets its own folder so it can
+    # never overwrite the live server's run marker.
+    obs.start(Path(config.db).parent, root=ROOT, port=args.port, workers=not args.no_workers,
+              subdir='preview-%d' % args.port if args.no_workers else None)
     application = Application(config)
     def terminate(signum, frame):
         raise SystemExit(0)
-    signal.signal(signal.SIGTERM, terminate)
+    obs.install_signal(signal.SIGTERM, terminate)
     try:
         application.serve(workers=not args.no_workers)
     except KeyboardInterrupt:

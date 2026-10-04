@@ -21,6 +21,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+import obs_events
 import usage_ledger
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -607,6 +608,7 @@ def _retry_after(v):
     return max(1.0, min(seconds, 24 * 3600))
 
 
+@obs_events.traced_call('openrouter', 'chat', obs_events.openrouter_fields, obs_events.openrouter_outcome)
 def _post(url, key, model, messages, timeout, max_tokens, json_mode, usage_out=None):
     if not isinstance(model, str) or not MODEL_RX.fullmatch(model) or not free_id(model):
         raise ValueError('only :free models may be requested')

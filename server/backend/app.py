@@ -14,6 +14,8 @@ import map_layout
 import map_universe
 import map_view
 import note_mentions
+import obs
+import obs_events
 import owner_notes
 import processing_modes
 import processing_state
@@ -148,6 +150,7 @@ class Application:
         routes += qual_api.routes(self.leads)
         routes += workflows.routes()
         routes += dm_import.routes()
+        routes += obs_events.routes()
         return routes
 
     def http_application(self, routes=None):
@@ -178,6 +181,7 @@ class Application:
             processing_state.ensure(conn)
             processing_modes.set_mode(conn, processing_modes.current_mode(conn))
             conn.commit()
+            obs_events.baseline(conn)
             self.qualification.retag_if_changed(conn)
             self.qualification.refresh_laya_prefilter_if_changed(conn)
             if self.config.host_operations_allowed:
@@ -199,6 +203,7 @@ class Application:
         conn.commit()
         if any(out.values()):
             print('repair_lists', out, flush=True)
+            obs.info('repair', 'lists', **out)
         return False
 
     def local_services_step(self, conn):
@@ -213,7 +218,14 @@ class Application:
 
     def map_layout_step(self, conn):
         out = map_layout.step(self.maps._map_database(conn), conn)
-        return bool(out.get('apply', {}).get('applied'))
+        applied = out.get('apply', {}).get('applied')
+        plan = out.get('plan') or {}
+        if plan.get('stale') or plan.get('requeued'):
+            obs.warn('map', 'layout_plan_stale', new_sources=len(plan.get('new_sources') or []), requeued=plan.get('requeued'))
+        if applied and obs.throttle(('map-apply',), 30) is not None:
+            obs.info('map', 'layout_apply', applied=applied, changed=out['apply'].get('changed'),
+                     pending=out['apply'].get('pending'))
+        return bool(applied)
 
     def start_workers(self, stop=None):
         with self.lifecycle_lock:
@@ -247,7 +259,8 @@ class Application:
 
     def serve(self, workers=True):
         try:
-            self.initialize()
+            with obs.span('app', 'initialize', db=Path(self.config.db).name):
+                self.initialize()
             with self.lifecycle_lock:
                 if self.closed:
                     raise RuntimeError('Application is closed')
@@ -255,8 +268,13 @@ class Application:
                 self.bind_port(self.server.server_address[1])
                 self.serve_thread = threading.current_thread()
                 self.serving.set()
+            obs.gauge('http', self.http_gauge)
+            obs.gauge('lanes', obs_events.lane_gauge)
+            obs.gauge('settings', obs_events.settings_gauge)
             if workers:
                 self.start_workers()
+            obs.info('app', 'listening', port=self.server.server_address[1], workers=workers,
+                     loops=len(self.supervisor.threads), db=Path(self.config.db).name)
             print(f'Fortunate Leads on http://127.0.0.1:{self.server.server_address[1]}  '
                   f'db={self.config.db}', flush=True)
             self.server.serve_forever()
@@ -264,12 +282,19 @@ class Application:
             self.serving.clear()
             self.close()
 
+    def http_gauge(self):
+        server = self.server
+        return {} if server is None else {'active': server.active_requests, 'peak': server.peak_active_requests,
+                                          'rejected': server.rejected_requests}
+
     def close(self, timeout=5):
         """Stop admission, join bounded loops and report external work still finishing."""
         with self.lifecycle_lock:
+            first = not self.closed
             self.closed = True
             server = self.server
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
         if server is not None:
             if threading.current_thread() is not self.serve_thread:
                 server.shutdown()
@@ -287,4 +312,6 @@ class Application:
         self.qualification.shutdown(wait=False)
         self.scouts.shutdown(wait=False)
         self.cache.clear()
+        if first:
+            obs.info('app', 'closed', dur_ms=round((time.monotonic() - started) * 1000), pending=pending or None)
         return pending

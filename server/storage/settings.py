@@ -2,6 +2,8 @@
 
 import json
 
+import obs_events
+
 
 # budget: per account per day (list pages, profile reads; profile 0 = no daily number). bio_min: prefilter floor for planned
 # bio reads (an explicit read ignores it).
@@ -17,3 +19,4 @@ def get_setting(conn, key, default=None):
 
 def set_setting(conn, key, value):
     conn.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, json.dumps(value)))
+    obs_events.setting_changed(key, value)
