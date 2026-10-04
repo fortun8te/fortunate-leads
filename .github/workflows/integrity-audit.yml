@@ -31,8 +31,10 @@ jobs:
         run: |
           python3 --version
           node --version
+      # Same tests as `python3 -m unittest discover -s server/tests`, dealt to four worker
+      # processes (the runner has four cores). Failures print the module's full output.
       - name: Python server regression tests
-        run: python3 -m unittest discover -s server/tests -v
+        run: python3 server/tests/run_parallel.py -j 4 --durations 10
       - name: Collection provenance and benchmark regression tests
         if: always()
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -53,6 +55,19 @@ jobs:
           mapfile -d '' tests < <(find tests web -type f \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name '*.test.js' \) -print0)
           test "${#tests[@]}" -gt 0
           node --test "${tests[@]}"
+
+  # The eight-hour simulation takes about three minutes on its own. Running it beside the
+  # regression job instead of after it makes it the only thing the pull request waits on.
+  simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Runtime versions
+        run: |
+          python3 --version
+          node --version
       - name: Collection interruption and recovery simulator
-        if: always()
         run: node tests/e2e/driver.mjs

@@ -14,6 +14,9 @@ single module instead of the sum. Tests build their own temporary databases and 
 ephemeral ports, so workers do not share state. A module's tests still run in one process,
 in the same order as under discover.
 
+The report gives wall time and CPU time. On a busy machine wall time says little; the busiest
+worker's CPU time is what an idle machine would take.
+
 Exit status is 0 only when every worker passes. Failures are printed with the module's
 full unittest output; an import error counts as an error, as under discover.
 """
@@ -72,23 +75,26 @@ def worker(names, verbosity):
     loader = unittest.TestLoader()
     for name in names:
         stream = io.StringIO()
-        started = time.perf_counter()
+        started, cpu_started = time.perf_counter(), time.process_time()
         try:
             suite = loader.loadTestsFromName(name)
         except unittest.SkipTest as reason:   # an optional dependency is missing, as under discover
             print(json.dumps({'module': name, 'run': 0, 'failures': 0, 'errors': 0, 'skipped': 1,
-                              'seconds': round(time.perf_counter() - started, 3), 'output': f'{name}: skipped ({reason})\n'}),
+                              'seconds': round(time.perf_counter() - started, 3), 'cpu': 0.0,
+                              'output': f'{name}: skipped ({reason})\n'}),
                   flush=True)
             continue
         except Exception:   # an import error fails this module only, not the worker
             print(json.dumps({'module': name, 'run': 1, 'failures': 0, 'errors': 1,
-                              'seconds': round(time.perf_counter() - started, 3), 'output': traceback.format_exc()}),
+                              'seconds': round(time.perf_counter() - started, 3), 'cpu': 0.0,
+                              'output': traceback.format_exc()}),
                   flush=True)
             continue
         result = unittest.TextTestRunner(stream=stream, verbosity=verbosity).run(suite)
         print(json.dumps({'module': name, 'run': result.testsRun, 'failures': len(result.failures),
                           'errors': len(result.errors), 'skipped': len(result.skipped),
                           'seconds': round(time.perf_counter() - started, 3),
+                          'cpu': round(time.process_time() - cpu_started, 3),
                           'output': stream.getvalue() if not result.wasSuccessful() or verbosity > 1 else ''}),
               flush=True)
     return 0
@@ -143,20 +149,22 @@ def main(argv=None):
     for modules, code, err in crashed:
         print('=' * 70 + f"\nworker exited with status {code} before finishing: {', '.join(modules)}\n{err[-4000:]}")
     if args.durations:
-        print(f'Slowest {args.durations} modules (seconds, tests)')
-        for r in sorted(results, key=lambda r: -r['seconds'])[:args.durations]:
-            print(f"  {r['seconds']:8.2f}  {r['run']:4d}  {r['module']}")
+        print(f'Slowest {args.durations} modules (CPU seconds, wall seconds, tests)')
+        for r in sorted(results, key=lambda r: -r['cpu'])[:args.durations]:
+            print(f"  {r['cpu']:8.2f}  {r['seconds']:8.2f}  {r['run']:4d}  {r['module']}")
     total = sum(r['run'] for r in results)
     skipped = sum(r['skipped'] for r in results)
     failed = sum(r['failures'] + r['errors'] for r in results)
     print('-' * 70)
-    print(f'Ran {total} tests in {len(results)} modules on {len(shards)} workers in {elapsed:.1f}s '
-          f'(sum of module times {sum(r["seconds"] for r in results):.1f}s)')
+    cpu = {tuple(shard): sum(r['cpu'] for r in results if r['module'] in shard) for shard in shards}
+    print(f'Ran {total} tests in {len(results)} modules on {len(shards)} workers in {elapsed:.1f}s wall; '
+          f'CPU {sum(cpu.values()):.1f}s in total, {max(cpu.values(), default=0):.1f}s on the busiest worker '
+          '(the wall time an otherwise idle machine needs)')
     ok = not failed and not crashed
     print('OK' + (f' (skipped={skipped})' if skipped else '') if ok else
           f'FAILED ({failed} failed or errored' + (f', {len(crashed)} workers crashed' if crashed else '') + ')')
     if args.record and ok:
-        weights = {r['module']: round(r['seconds'], 1) for r in sorted(results, key=lambda r: r['module'])}
+        weights = {r['module']: round(r['cpu'], 1) for r in sorted(results, key=lambda r: r['module'])}
         WEIGHTS.write_text(json.dumps(weights, indent=1, sort_keys=True) + '\n')
         print(f'Recorded {WEIGHTS.relative_to(HERE.parent.parent)}')
     return 0 if ok else 1
