@@ -1089,13 +1089,18 @@ class CollectionService:
         bio_min = db.get_setting(conn, 'bio_min') or 0
         queued = conn.execute("SELECT count(*) FROM jobs WHERE kind='profile' AND state IN ('queued','leased')").fetchone()[0]
         # The planner queues bios in batches; count everyone it will still plan, not just the current batch.
+        # CROSS JOIN fixes the join order: start from the verdicts_prefilter index. Without table
+        # statistics SQLite instead walks every person without a bio (about 140 ms on 170k people).
         unplanned = conn.execute(
-            f"SELECT count(*) FROM people p JOIN verdicts v ON v.person_id=p.id WHERE {NOT_ME} AND p.bio_at IS NULL "
+            f"SELECT count(*) FROM verdicts v CROSS JOIN people p ON p.id=v.person_id WHERE {NOT_ME} AND p.bio_at IS NULL "
             "AND coalesce(p.is_private,0)=0 AND v.prefilter>=? AND instr(p.handle,'~')=0 "
             "AND p.handle NOT IN (SELECT handle FROM seeds) "
             "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)", (bio_min,)).fetchone()[0]
         bios_left = queued + unplanned
-        bios_failed = conn.execute("SELECT count(*) FROM people p WHERE p.bio_at IS NULL "
+        # The IN list is a case-insensitive superset of the exact EXISTS match below. It lets SQLite
+        # start from the few failed jobs instead of every person without a bio (+ keeps bio_at unindexed).
+        bios_failed = conn.execute("SELECT count(*) FROM people p WHERE +p.bio_at IS NULL "
+            "AND p.handle IN (SELECT handle FROM jobs WHERE kind='profile' AND state='error') "
             "AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state='error') "
             "AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle AND j.state IN ('queued','leased'))").fetchone()[0]
         bios_h = self.measured_rate(conn, 'SELECT count(*), min(bio_at), max(bio_at) FROM people WHERE bio_at>=?', now)

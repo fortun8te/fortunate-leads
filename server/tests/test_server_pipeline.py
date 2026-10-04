@@ -48,6 +48,28 @@ class PipelineTest(Base):
         self.conn.commit()
         return ids
 
+    def test_progress_counts_unplanned_and_failed_bio_reads_exactly(self):
+        # The queries start from the verdict and failed-job indexes; the answer must stay what the
+        # plain scans give: job handles match exactly (case included), and private, seed and
+        # already-read people stay out.
+        names = {'plain': 60, 'low': 10, 'private': 80, 'readalready': 70, 'failed': 50,
+                 'retrying': 50, 'cased': 50, 'tilde~x': 90}
+        ids = self.people({name: ('', [('src', 'following')]) for name in names})
+        for name, prefilter in names.items():
+            self.conn.execute('INSERT INTO verdicts(person_id,prefilter,model) VALUES(?,?,?)', (ids[name], prefilter, 'rules'))
+        self.conn.execute('UPDATE people SET is_private=1 WHERE id=?', (ids['private'],))
+        self.conn.execute("UPDATE people SET bio_at='2026-10-01T00:00:00+00:00' WHERE id=?", (ids['readalready'],))
+        db.set_setting(self.conn, 'bio_min', 40)
+        for handle, state in (('failed', 'error'), ('retrying', 'error'), ('retrying', 'queued'), ('Cased', 'error')):
+            self.conn.execute("INSERT INTO jobs(kind,handle,state,created_at) VALUES('profile',?,?,'2026-10-01')", (handle, state))
+        self.conn.commit()
+        bios = server.progress(self.conn, [])['bios']
+        # Only `failed` has a failed job and no retry. `Cased` differs in case from `cased`, so it is no match.
+        self.assertEqual(bios['failed'], 1)
+        # One job is queued. `plain` and `cased` have no job of their own and clear bio_min; `low` does not.
+        self.assertEqual((bios['queued'], bios['left']), (1, 1 + 2))
+        self.assertEqual(bios['unresolved'], bios['left'] + bios['failed'])
+
     def test_progress_reports_observed_trailing_minute_rates(self):
         # No saved work is an insufficient-data state, not a configured-cap estimate.
         self.assertIsNone(server.progress(self.conn, [])['lists']['per_minute'])

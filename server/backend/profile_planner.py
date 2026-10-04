@@ -95,8 +95,10 @@ def plan_profiles(conn):
         degree = 'd.degree' if early else 'coalesce(d.degree,0)'
     else:
         degree_join, degree = '', LISTS_READ_THROUGH
+    # CROSS JOIN keeps verdicts first so the verdicts_prefilter index drives the scan; the planner
+    # otherwise walks every person without a bio (about 140 ms on 170k people, every 15 s).
     rows = conn.execute(f"""SELECT * FROM (SELECT p.handle, v.prefilter, {degree} AS n
-        FROM people p JOIN verdicts v ON v.person_id=p.id {degree_join}
+        FROM verdicts v CROSS JOIN people p ON p.id=v.person_id {degree_join}
         WHERE p.bio_at IS NULL AND coalesce(p.is_private,0)=0 AND v.prefilter>=?
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='profile' AND j.handle=p.handle)
           AND p.handle NOT IN (SELECT handle FROM seeds) AND p.handle!='fortun8te' COLLATE NOCASE AND instr(p.handle, '~')=0
