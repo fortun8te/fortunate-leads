@@ -19,6 +19,10 @@ import time
 # Tables the server cannot start without. Same set as ops/backup.sh and ops/backup-workspace.py.
 REQUIRED_TABLES = ('people', 'seeds', 'lists', 'edges', 'accounts', 'settings')
 
+# The least a file must hold to count as a Fortunate Leads backup that can be restored. Older backups
+# predate the accounts and settings tables; the server adds those when it opens the restored file.
+CORE_TABLES = ('people', 'seeds', 'lists', 'edges')
+
 # User-entered or collected evidence. A schema upgrade or a restore may add rows; it must never lose
 # these. (Derived tables such as lead_rank, laya_queue or map_* are rebuilt and are not compared.)
 EVIDENCE_TABLES = ('people', 'seeds', 'lists', 'edges', 'marks', 'owner_context', 'accounts', 'jobs',
@@ -254,7 +258,7 @@ def verify_backup(path, *, full=False):
                 report['journal_mode'] = conn.execute('PRAGMA journal_mode').fetchone()[0]
                 report['problems'] += check_database(conn, full=full)
                 tables = set(table_names(conn))
-                missing = [t for t in REQUIRED_TABLES if t not in tables]
+                missing = [t for t in CORE_TABLES if t not in tables]
                 if missing:
                     report['problems'].append('missing tables: ' + ', '.join(missing))
                 else:
