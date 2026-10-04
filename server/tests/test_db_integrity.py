@@ -55,6 +55,22 @@ class IntegrityTest(unittest.TestCase):
         self.assertTrue(db.queue_list(c, 'seed', 'followers'))
         self.assertEqual(tuple(c.execute("SELECT state,cursor,received,run_job_id FROM lists WHERE direction='followers'").fetchone()), ('queued', None, 0, None))
 
+    def test_done_lists_without_a_total_queue_one_profile_read_per_unread_seed(self):
+        c = self.conn
+        for handle in ('read', 'unread', 'waiting', 'ghost'):
+            db.queue_list(c, handle, 'followers')
+        db.upsert_person(c, {'handle': 'read', 'bio_at': '2026-01-01'}, '2026-01-01')
+        db.upsert_person(c, {'handle': 'unread'}, '2026-01-01')
+        db.upsert_person(c, {'handle': 'waiting'}, '2026-01-01')
+        c.execute("INSERT INTO jobs(kind,handle,priority,created_at) VALUES('profile','waiting',5,'2026-01-01')")
+        c.execute("UPDATE jobs SET state='done' WHERE kind='list'")
+        c.execute("UPDATE lists SET state='done',received=10,total=NULL,run_job_id=1")
+        self.assertEqual(db.repair_lists(c, dry=True)['seed_bios'], 2)
+        self.assertEqual(c.execute("SELECT count(*) FROM jobs WHERE kind='profile'").fetchone()[0], 1)
+        self.assertEqual(db.repair_lists(c)['seed_bios'], 2)
+        queued = c.execute("SELECT handle,priority FROM jobs WHERE kind='profile' AND handle!='waiting' ORDER BY handle").fetchall()
+        self.assertEqual([tuple(row) for row in queued], [('ghost', 10000), ('unread', 10000)])
+
     def test_identity_fold_rejects_stale_bio(self):
         c = self.conn
         keep = db.upsert_person(c, {'handle': 'old', 'ig_id': '1'}, '2026-01-01')
