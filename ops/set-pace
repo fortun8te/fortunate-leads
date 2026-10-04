@@ -9,6 +9,14 @@
   ops/set-pace --reset [--account @name]        remove the setting
   ops/set-pace fast --dry-run                   say what would happen, save nothing
 
+Automatic speed ramp (off until you turn it on; see docs/RAMP.md and docs/RECOVERY.md):
+  ops/set-pace --ramp on                        start: +1.5x pages/h after every 2 h of clean collection, up to the ceiling
+  ops/set-pace --ramp status                    where it is, what it decided, and why
+  ops/set-pace --ramp off                       stop stepping (the pace stays where it is); --ramp restore also resets the pace
+  ops/set-pace --ramp resume --account @name    carry on after the ramp stopped and a person fixed the cause
+  ops/set-pace --ramp on --ceiling 285 --interval 2 --step-factor 1.5 --account @name
+  --ceiling N above 285 is a separate, explicit choice: nothing above 285 pages/h has been measured clean.
+
 Every value is held inside the bounds in extension/lib/pace-limits.js; anything outside is clamped and reported.
 Talks to the running workspace (default http://127.0.0.1:8777, or --url / $FL_URL). Stdlib only.
 """
@@ -84,7 +92,7 @@ def describe(values):
 def show(data, out):
     glob = data['global']
     limits = data['limits']
-    out(f"Pace for all accounts: {glob['preset']}" + ('  (bounds are provisional: nothing can go faster than normal yet)' if limits['status'] == 'provisional' else ''))
+    out(f"Pace for all accounts: {glob['preset']}" + ('  (bounds are provisional: only the list gap can go faster than normal)' if limits['status'] == 'provisional' else ''))
     for line in describe(glob['values']):
         out(line)
     e = glob['expected']
@@ -159,9 +167,16 @@ def run(argv, out=print, request=call):
     ap.add_argument('--reset', action='store_true', help='remove the setting')
     ap.add_argument('--dry-run', action='store_true', help='say what would happen, save nothing')
     ap.add_argument('--json', action='store_true', help='print the raw answer')
+    ap.add_argument('--ramp', choices=('on', 'off', 'status', 'resume', 'restore'), help='the automatic speed ramp')
+    ap.add_argument('--ceiling', type=float, help='ramp ceiling in list pages per hour (default 285; above that is unmeasured)')
+    ap.add_argument('--interval', type=float, help='ramp: hours of clean collection between steps (default 2)')
+    ap.add_argument('--step-factor', type=float, help='ramp: speed-up per step (default 1.5)')
+    ap.add_argument('--no-auto-resume', action='store_true', help='ramp: never restart collection by itself after a rate limit')
     ap.add_argument('--url', default=os.environ.get('FL_URL', 'http://127.0.0.1:8777'))
     args = ap.parse_args(argv)
     base = args.url.rstrip('/')
+    if args.ramp or args.ceiling is not None or args.interval is not None or args.step_factor is not None:
+        return run_ramp(args, base, out, request)
     values = {key: parse_value(getattr(args, key), integer=key == 'window_max') for key, _, _ in FIELDS if getattr(args, key) is not None}
     budget = {k: v for k, v in (('list', args.budget_list), ('profile', args.budget_profile)) if v is not None}
     if args.no_daily_cap:
@@ -199,6 +214,34 @@ def run(argv, out=print, request=call):
         out(json.dumps(data, indent=2))
     else:
         report(data, out)
+    return 0
+
+
+def run_ramp(args, base, out, request):
+    action = args.ramp or 'set'
+    if action == 'status' and args.ceiling is None and args.interval is None and args.step_factor is None:
+        data = request(base, '/api/ramp')
+    else:
+        body = {'action': action}
+        if args.ceiling is not None:
+            body['ceiling'] = int(args.ceiling) if args.ceiling == int(args.ceiling) else args.ceiling
+        if args.interval is not None:
+            body['interval_s'] = round(args.interval * 3600)
+        if args.step_factor is not None:
+            body['step_factor'] = args.step_factor
+        if args.no_auto_resume:
+            body['auto_resume'] = False
+        if args.account:
+            if action in ('resume', 'restore'):
+                body['account'] = args.account
+            else:
+                body['accounts'] = [a.strip() for a in args.account.split(',') if a.strip()]
+        data = request(base, '/api/ramp', body)
+    if args.json:
+        out(json.dumps(data, indent=2))
+    else:
+        for line in data['lines']:
+            out(line)
     return 0
 
 

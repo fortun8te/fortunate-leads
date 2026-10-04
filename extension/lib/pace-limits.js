@@ -19,9 +19,9 @@
   const LIMITS = {
     "version": 1,
     "status": "provisional",
-    "note": "The fast side of every bound equals the shipped default, so nothing can go faster than today. Install the bounds from the pacing report here; nothing else needs to change.",
+    "note": "Only the list gap can go faster than the shipped default, and only as far as the ramp needs to reach 285 list pages an hour (its proven ceiling). Every other bound still equals the shipped default.",
     "fields": {
-      "list_gap":    { "label": "Seconds between list pages",             "unit": "s",        "kind": "range", "step": 0.1, "default": [7, 12],   "floor": [7, 12],   "ceiling": [96, 120],  "min_spread": 1.25 },
+      "list_gap":    { "label": "Seconds between list pages",             "unit": "s",        "kind": "range", "step": 0.1, "default": [7, 12],   "floor": [4.8, 8.2], "ceiling": [96, 120],  "min_spread": 1.25 },
       "profile_gap": { "label": "Seconds between bio reads",              "unit": "s",        "kind": "range", "step": 0.1, "default": [35, 70],  "floor": [35, 70],  "ceiling": [288, 360], "min_spread": 1.25 },
       "spacing":     { "label": "Seconds between any two requests",       "unit": "s",        "kind": "range", "step": 0.1, "default": [2, 5],    "floor": [2, 5],    "ceiling": [48, 60],   "min_spread": 1.25 },
       "break_every": { "label": "List pages between breaks",              "unit": "pages",    "kind": "range", "step": 1,   "default": [40, 60],  "floor": [10, 13],  "ceiling": [40, 60],   "min_spread": 1.25 },

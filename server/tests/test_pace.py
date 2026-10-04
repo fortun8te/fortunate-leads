@@ -13,6 +13,8 @@ import pace_limits as limits
 SHIPPED_DEFAULTS = {'list_gap': [7, 12], 'profile_gap': [35, 70], 'spacing': [2, 5], 'break_every': [40, 60],
                     'break_len': [90, 180], 'window_max': 72}
 DEFAULT_ID = 'lg7-12|pg35-70|sp2-5|be40-60|bl90-180|wm72'
+# The one deliberate widening: the list gap may go to 4.8-8.2 s, as far as the speed ramp needs to reach 285 pages an hour.
+FASTEST = dict(SHIPPED_DEFAULTS, list_gap=[4.8, 8.2])
 
 
 class LimitsFile(Base):
@@ -22,9 +24,12 @@ class LimitsFile(Base):
         self.assertEqual(limits.defaults(), SHIPPED_DEFAULTS)
         self.assertEqual(limits.ident(limits.defaults()), DEFAULT_ID)
 
-    def test_provisional_bounds_allow_nothing_faster_than_the_defaults(self):
+    def test_bounds_allow_nothing_faster_than_the_defaults_except_the_list_gap(self):
+        self.assertEqual(limits.FIELDS['list_gap']['floor'], [4.8, 8.2])
         for f, d in SHIPPED_DEFAULTS.items():
             spec = limits.FIELDS[f]
+            if f == 'list_gap':
+                continue
             if spec['kind'] == 'int':
                 self.assertEqual(spec['ceiling'], d)       # window_max is a ceiling: smaller is slower
                 continue
@@ -45,15 +50,15 @@ class LimitsFile(Base):
 
     def test_the_file_can_be_swapped_without_touching_code(self):
         text = Path(limits.PATH).read_text()
-        wide = text.replace('"floor": [7, 12]', '"floor": [5, 9]')
+        wide = text.replace('"floor": [4.8, 8.2]', '"floor": [3, 5.5]')
         self.assertNotEqual(text, wide)
         path = Path(self.tmp.name) / 'wide.js'
         path.write_text(wide)
         loaded = limits.load(path)
-        self.assertEqual(loaded['fields']['list_gap']['floor'], [5, 9])
+        self.assertEqual(loaded['fields']['list_gap']['floor'], [3, 5.5])
         with mock.patch.object(limits, 'LIMITS', loaded), mock.patch.object(limits, 'FIELDS', loaded['fields']):
-            values, notes = limits.preset('fast')
-            self.assertEqual(values['list_gap'], [5, 9])    # fast is now really faster, from the file alone
+            values, notes = limits.clamp({'list_gap': [3, 5.5]})
+            self.assertEqual(values['list_gap'], [3, 5.5])    # faster, from the file alone
             self.assertEqual([n['field'] for n in notes if n['field'] == 'list_gap'], [])
 
 
@@ -65,7 +70,7 @@ class Clamp(Base):
     def test_faster_than_the_bounds_is_held_at_the_bound_and_reported(self):
         got, notes = limits.clamp({'list_gap': [1, 2], 'profile_gap': [1, 2], 'spacing': [0, 1], 'break_len': [1, 2],
                                    'break_every': [100, 200], 'window_max': 500})
-        self.assertEqual(got, SHIPPED_DEFAULTS)
+        self.assertEqual(got, FASTEST)
         self.assertEqual({n['field'] for n in notes}, {'list_gap', 'profile_gap', 'spacing', 'break_len', 'break_every', 'window_max'})
         self.assertTrue(all(n['why'] for n in notes))
 
@@ -125,7 +130,7 @@ class Clamp(Base):
             self.assertGreater(slow[f][0], SHIPPED_DEFAULTS[f][0])
         self.assertLess(slow['window_max'], 72)
         fast, notes = limits.preset('fast')
-        self.assertEqual(fast, SHIPPED_DEFAULTS)           # provisional bounds: fast cannot beat normal yet
+        self.assertEqual(fast, dict(SHIPPED_DEFAULTS, list_gap=[5, 9]))   # only the list gap is faster than normal
         self.assertTrue(notes)
         with self.assertRaises(ValueError):
             limits.preset('ludicrous')
@@ -175,8 +180,8 @@ class Api(Base):
         code, out = self.pace({'values': {'list_gap': [1, 2], 'window_max': 500}})
         self.assertEqual(code, 200)
         self.assertEqual({n['field'] for n in out['clamped']}, {'list_gap', 'window_max'})
-        self.assertEqual(self.beat()['pace']['values'], SHIPPED_DEFAULTS)
-        self.assertEqual(db.get_setting(self.conn, 'pace')['global']['values'], SHIPPED_DEFAULTS)
+        self.assertEqual(self.beat()['pace']['values'], FASTEST)
+        self.assertEqual(db.get_setting(self.conn, 'pace')['global']['values'], FASTEST)
 
     def test_bad_input_is_a_plain_400(self):
         self.beat()

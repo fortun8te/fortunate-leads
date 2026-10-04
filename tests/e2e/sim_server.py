@@ -24,6 +24,8 @@ import server  # noqa: E402
 import accounts  # noqa: E402
 import control  # noqa: E402
 import pipeline_log  # noqa: E402
+import pace  # noqa: E402
+import ramp  # noqa: E402
 
 LOCK = threading.Lock()
 VNOW = {'ms': None}
@@ -41,7 +43,7 @@ class SimDateTime(datetime):
 
 # Request ownership, operator review and evidence must share the same clock as
 # the simulated heartbeat. Real time would make healthy virtual accounts stale.
-for mod in (server, db, accounts, control, pipeline_log):
+for mod in (server, db, accounts, control, pipeline_log, pace, ramp):
     mod.datetime = SimDateTime
 
 server.start_workers = lambda stop: None
@@ -56,7 +58,8 @@ def route(self, method):
     if self.path.startswith('/__sim/tick'):
         conn = db.connect(server.CFG['db'])
         try:
-            out = {'qualified': server.qualify_batch(conn, 5000), 'planned': server.plan_profiles(conn)}
+            out = {'qualified': server.qualify_batch(conn, 5000), 'planned': server.plan_profiles(conn),
+                   'ramp': ramp.tick(conn)}   # the speed ramp runs on the simulated clock too
         finally:
             conn.close()
         return self.send(200, out)

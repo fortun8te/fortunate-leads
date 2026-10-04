@@ -1176,6 +1176,80 @@ async function paceReport({ L, marks, results, cap, samples, seeds }) {
   process.exit(ok ? 0 : 1);
 }
 
+// ================================================================ --ramp: the automatic speed ramp, end to end
+// One turtles profile, lists only, 12 simulated hours (--hours N). The real extension, the real server with ramp.tick() on the
+// simulated clock, a fake Instagram. The ramp is switched on with a short pause after start; every step arrives through the
+// ordinary pace delivery. `--ramp-429` adds one Instagram 429 mid-run to show the step back and the hold.
+const RAMP_RUN = flag('ramp');
+async function rampMain() {
+  PORT.server = await freePort(); PORT.ig = await freePort();
+  launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
+  await startServer();
+  await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  await finiteScenario();
+  const seeds = Array.from({ length: 6 }, (_, j) => {
+    const handle = 'rampseed' + j, s = { pk: String(7_400_000_000 + j), username: handle, handle, direction: 'following', size: 400000, lists: { following: 400000 },
+      followers: 300 + j, following: 400000 };
+    seedByPk.set(s.pk, s); seedByName.set(handle, s); return s;
+  });
+  const schedule = flag('ramp-429') ? { list: { [Number(process.env.RAMP_429_AT || 1500)]: '429' } } : {};
+  const ACCT = { ig_id: '64189916997', handle: 'trashtheturtles', schedule };
+  await fetch(`http://127.0.0.1:${PORT.ig}/__sim/config`, { method: 'POST', body: JSON.stringify({ seeds, schedule: {}, accounts: [ACCT] }) });
+  await fetch(`http://127.0.0.1:${PORT.server}/api/scraper/seeds`, { method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Sim-Now': String(V.now), Origin: uiOrigin() },
+    body: JSON.stringify({ handles: seeds.map((s) => s.handle), directions: ['following'] }) });
+  const L = newProfile({ name: 'turtles', prefix: 'T:', igId: ACCT.ig_id, handle: ACCT.handle, faults: false });
+  L.store.laneId = 'ln_sqrscja8tx6z';
+  L.createTab({ url: IG + '/', active: false, pinned: true });
+  timer(OPS, 2000, () => L.bootSW('install'));
+  timer(OPS, 15e3, serverTick);
+  const marks = {}, at = (name, min, fn) => timer(OPS, min * MIN, () => { marks[name] = V.now; ev('phase ' + name); Promise.resolve(fn && fn()).catch((e) => harnessErrors.push(name + ': ' + e)); });
+  const results = { applied: [] };
+  at('start', 0);
+  at('bios-paused', 3, () => opsHttp('/api/control', { stage: 'bios', action: 'pause' }));
+  at('ramp-on', 10, () => opsHttp('/api/ramp', { action: 'on' }));
+  const snap = async () => opsHttp('/api/ramp');
+  const watch = () => { timer(OPS, 60e3, watch); const cfg = L.store.paceCfg; if (cfg && cfg.id !== (results.applied.at(-1) || {}).id) results.applied.push({ t: V.now, id: cfg.id, listGap: cfg.values && cfg.values.list_gap }); };
+  timer(OPS, 60e3, watch);
+  const hours = Number(process.env.RAMP_HOURS || 12);
+  for (let h = 1; h <= hours; h++) at('h' + h, h * 60 + 10, async () => { results['s' + h] = await snap(); });
+  const END = START + (hours * 60 + 15) * MIN;
+  await runUntil(END);
+  for (const o of [OPS, BROWSER]) o.alive = false;
+  if (L.browser.sw) L.browser.sw.alive = false;
+  for (const t of L.browser.tabs.values()) t.alive = false;
+  const final = await snap().catch(() => null);
+  const reqs = igLog.filter((e) => e.lane === 'turtles' && ['list', 'page'].includes(e.kind)).sort((a, b) => a.t - b.t);
+  const t0 = marks['ramp-on'];
+  const rows = [];
+  for (let k = 0; t0 + (k + 1) * 30 * MIN <= END; k++) { const n = reqs.filter((e) => e.t >= t0 + k * 30 * MIN && e.t < t0 + (k + 1) * 30 * MIN).length; rows.push({ from: dhm(t0 + k * 30 * MIN), pages_per_hour: n * 2 }); }
+  const hist = final && final.accounts[0] ? final.accounts[0].history : [];
+  const pass = [], fail = [], check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
+  const steps = hist.filter((h) => h.action === 'step_up');
+  check(!flag('ramp-429') ? steps.length >= 1 : true, 'the ramp stepped up at least once', `${steps.length} step(s)`);
+  check(results.applied.length >= 1 + steps.length, 'every step reached the extension through the pace delivery', `${results.applied.length} pace ids seen by the extension`);
+  check(!restarts.length, 'no extension reload or worker restart was needed', `${restarts.length} restarts`);
+  const minGap = Math.min(...reqs.slice(1).map((e, i) => e.t - reqs[i].t).filter((g) => g > 0));
+  check(minGap >= 4.8e3 - 50, 'no request gap below the lower gap bound (4.8 s)', (minGap / 1e3).toFixed(1) + ' s');
+  check(!harnessErrors.length, 'no uncaught errors in the extension', harnessErrors.slice(0, 3).join(' | '));
+  check(!violations.length, 'no invariant violations', violations.slice(0, 3).map((v) => v.what).join('; '));
+  console.log('\nRamp scenario, extension ' + manifest.version + ', ' + hours + ' simulated hours, ramp on at ' + dhm(t0));
+  console.log('pages/hour in each half hour after the ramp was switched on:');
+  console.log(rows.map((r) => r.from + ' ' + String(r.pages_per_hour).padStart(4)).join('\n'));
+  console.log('\nramp decisions:');
+  for (const h of hist) console.log('  ' + h.at + ' ' + h.action + ' (level ' + h.level + '): ' + h.reason);
+  console.log('pace ids the extension ran: ' + results.applied.map((a) => dhm(a.t) + ' ' + JSON.stringify(a.listGap)).join(', '));
+  console.log(`checks: ${pass.length} passed, ${fail.length} failed`);
+  for (const f of fail) console.log('  FAIL ' + f);
+  if (VERBOSE) for (const p of pass) console.log('  ok   ' + p);
+  fs.writeFileSync(path.join(TMP, 'result.json'), JSON.stringify({ rows, hist, applied: results.applied, pass, fail, final }, null, 1));
+  const ok = !fail.length;
+  console.log(ok ? '\nPASS' : '\nFAIL (temp dir kept: ' + TMP + ')');
+  cleanup();
+  if (ok && !flag('keep')) fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
 const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 16) : [];
-(PACE_RUN ? paceMain() : laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
+(RAMP_RUN ? rampMain() : PACE_RUN ? paceMain() : laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
   .catch((e) => { console.error(e); cleanup(); process.exit(2); });

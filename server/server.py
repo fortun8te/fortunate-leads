@@ -66,6 +66,7 @@ import qualify  # noqa: E402
 import rules  # noqa: E402
 import workflows  # noqa: E402
 import pace  # noqa: E402
+import ramp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
@@ -3101,6 +3102,7 @@ ROUTES += qual_api.routes(sys.modules[__name__])
 ROUTES += workflows.routes(sys.modules[__name__])
 ROUTES += dm_import.routes(sys.modules[__name__])
 ROUTES += pace.routes(sys.modules[__name__])
+ROUTES += ramp.routes(sys.modules[__name__])
 
 
 class Server(ThreadingHTTPServer):
@@ -4567,7 +4569,7 @@ def start_workers(stop):
                 busy.append('research')
         return busy
     edge_benchmark_api.BACKGROUND_PROBE = benchmark_background_busy
-    loops = [(repair_step, 900, 900), (local_services_step, 30, 30), (background_qualify, 0.2, 5),
+    loops = [(repair_step, 900, 900), (ramp.step, 30, 30), (local_services_step, 30, 30), (background_qualify, 0.2, 5),
              (processing_maintenance, 0.1, 5), (pool.step, 1, 5), (laya_step, 0.2, 30),
              (local_processing_step, 0.1, 5), (plan_profiles, 15, 15), (pfp_step, 0.4, 10),
              (biofetch.step, 0.5, 10), (scouts.step, 2, 10), (map_layout_step, 1, 10)]

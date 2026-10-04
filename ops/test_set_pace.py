@@ -60,9 +60,9 @@ class CliTest(unittest.TestCase):
         self.assertIn('slow -> normal', text)
 
     def test_explicit_numbers_are_held_at_the_bounds_and_say_so(self):
-        _, text = self.run_cli('--list-gap', '3-5')
+        _, text = self.run_cli('--list-gap', '3-5', '--dry-run')
         self.assertIn('held at the bound', text)
-        self.assertIn('nothing changed', text)
+        self.assertIn('became 4.8-8.2', text)       # the list gap may go this fast, for the speed ramp, and no faster
         _, text = self.run_cli('--list-gap', '12-20', '--account', '@turtles')
         self.assertIn('Pace for @turtles', text)
         self.assertIn('7-12 -> 12-20', text)
