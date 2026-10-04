@@ -3,6 +3,7 @@
 
     python3 ops/backup-workspace.py --repo . --output /private/path/snapshot-name
     python3 ops/backup-workspace.py --verify /private/path/snapshot-name
+    python3 ops/backup-workspace.py --repo /new/checkout --restore /private/path/snapshot-name
 
 No scheduler is installed. The output directory must not already exist.
 Credentials, browser profiles, model weights, old backups, and work files are
@@ -180,15 +181,61 @@ def verify_snapshot(bundle):
     return {'files': len(actual), 'bytes': sum(v['bytes'] for v in actual.values())}
 
 
+def restore_snapshot(bundle, repo):
+    """Restore a snapshot into `repo`'s data folder and startup configuration.
+
+    The bundle is verified first. Nothing is overwritten: if any file the snapshot would write
+    already exists under `repo`, the restore stops before copying anything. Every copy is checked
+    against the manifest checksum. Stop the server and both LaunchAgents before restoring into a
+    live checkout; restoring into a new folder is always safe.
+    """
+    bundle = Path(bundle).expanduser().resolve(strict=True)
+    repo = Path(repo).expanduser().resolve(strict=False)
+    if bundle == repo or bundle in repo.parents or repo in bundle.parents:
+        raise ValueError('Restore target and snapshot must be separate folders')
+    verify_snapshot(bundle)
+    manifest = json.loads((bundle / 'manifest.json').read_text(encoding='utf-8'))
+    clashes = sorted(rel for rel in manifest['files'] if os.path.lexists(repo / rel))
+    if clashes:
+        raise FileExistsError('Refusing to overwrite existing files: ' + ', '.join(clashes[:5])
+                              + (f' (+{len(clashes) - 5} more)' if len(clashes) > 5 else ''))
+    created = []
+    try:
+        for rel in sorted(manifest['files']):
+            target = repo / rel
+            missing = target.parent
+            while not missing.exists():
+                if missing not in created:
+                    created.append(missing)
+                missing = missing.parent
+            copy_file(bundle / rel, target)
+            if digest(target) != manifest['files'][rel]['sha256']:
+                raise ValueError(f'Checksum differs after copy: {rel}')
+    except BaseException:
+        for rel in manifest['files']:                 # remove only what this call wrote
+            (repo / rel).unlink(missing_ok=True)
+        for directory in sorted(created, key=lambda d: len(d.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        raise
+    return {'files': len(manifest['files']), 'bytes': sum(v['bytes'] for v in manifest['files'].values())}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path)
     parser.add_argument('--verify', type=Path)
+    parser.add_argument('--restore', type=Path, help='Snapshot folder to restore into --repo')
     args = parser.parse_args()
-    if bool(args.output) == bool(args.verify):
-        parser.error('Provide exactly one of --output or --verify')
+    if sum(map(bool, (args.output, args.verify, args.restore))) != 1:
+        parser.error('Provide exactly one of --output, --verify or --restore')
     os.umask(0o077)
+    if args.restore:
+        print(json.dumps(restore_snapshot(args.restore, args.repo), indent=2))
+        return
     result = verify_snapshot(args.verify) if args.verify else create_snapshot(args.repo, args.output)
     print(json.dumps(result if args.verify else {'output': str(args.output),
                                                   'files': len(result['files'])}, indent=2))

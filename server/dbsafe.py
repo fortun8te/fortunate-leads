@@ -245,7 +245,8 @@ def verify_backup(path, *, full=False):
     if not path.is_file():
         report['problems'].append('missing')
         return report
-    with tempfile.TemporaryDirectory(prefix='fl-verify-', dir=path.parent if os.access(path.parent, os.W_OK) else None) as tmp:
+    # Always the system temp directory (same APFS volume, so the clone is instant): never write beside the original.
+    with tempfile.TemporaryDirectory(prefix='fl-verify-') as tmp:
         work = Path(tmp) / 'check.sqlite'
         try:
             clone_database(path, work, allow_copy=True)

@@ -56,6 +56,76 @@ class BackupWorkspaceTests(unittest.TestCase):
                 backup.verify_snapshot(output)
             conn.close()
 
+    def make_repo(self, root):
+        repo = root / 'repo'
+        data = repo / 'data'
+        (data / 'pfp').mkdir(parents=True)
+        conn = sqlite3.connect(data / 'leads.sqlite')
+        for name in ('people', 'seeds', 'lists', 'edges', 'accounts', 'settings'):
+            conn.execute(f'CREATE TABLE {name}(value TEXT)')
+        conn.execute("INSERT INTO people VALUES('ada')")
+        conn.commit()
+        conn.close()
+        (data / 'pfp' / '1.jpg').write_bytes(b'\xff\xd8\xff' + b'x' * 64 + b'\xff\xd9')
+        (repo / 'ops').mkdir()
+        (repo / 'ops/startup_profiles.json').write_text('{"chrome_profiles": []}')
+        return repo
+
+    def test_restore_into_a_new_checkout_matches_the_snapshot_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root)
+            output = root / 'snapshot'
+            backup.create_snapshot(repo, output)
+            fresh = root / 'new-checkout'
+            result = backup.restore_snapshot(output, fresh)
+            self.assertEqual(result['files'], 3)
+            self.assertEqual((fresh / 'data/pfp/1.jpg').read_bytes(), (repo / 'data/pfp/1.jpg').read_bytes())
+            with sqlite3.connect(fresh / 'data/leads.sqlite') as restored:
+                self.assertEqual(restored.execute('SELECT value FROM people').fetchone()[0], 'ada')
+            self.assertEqual((fresh / 'data/leads.sqlite').stat().st_mode & 0o777, 0o600)
+            self.assertEqual((fresh / 'data').stat().st_mode & 0o777, 0o700)
+            # a second restore into the same place must refuse, and change nothing
+            before = (fresh / 'data/leads.sqlite').read_bytes()
+            with self.assertRaisesRegex(FileExistsError, 'Refusing to overwrite'):
+                backup.restore_snapshot(output, fresh)
+            self.assertEqual((fresh / 'data/leads.sqlite').read_bytes(), before)
+            with self.assertRaisesRegex(FileExistsError, 'Refusing to overwrite'):
+                backup.restore_snapshot(output, repo)
+
+    def test_restore_rejects_a_tampered_snapshot_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root)
+            output = root / 'snapshot'
+            backup.create_snapshot(repo, output)
+            (output / 'data/pfp/1.jpg').write_bytes(b'tampered')
+            fresh = root / 'new-checkout'
+            with self.assertRaisesRegex(ValueError, 'checksum'):
+                backup.restore_snapshot(output, fresh)
+            self.assertFalse(fresh.exists())
+
+    def test_restore_cleans_up_what_it_wrote_when_a_copy_fails(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root)
+            output = root / 'snapshot'
+            backup.create_snapshot(repo, output)
+            fresh = root / 'new-checkout'
+            real = backup.copy_file
+            calls = []
+
+            def flaky(source, target):
+                calls.append(target)
+                if len(calls) == 2:
+                    raise OSError('disk full')
+                return real(source, target)
+            with mock.patch.object(backup, 'copy_file', side_effect=flaky):
+                with self.assertRaises(OSError):
+                    backup.restore_snapshot(output, fresh)
+            self.assertFalse(fresh.exists())
+
     def test_symlink_in_data_is_rejected_without_publishing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

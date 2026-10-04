@@ -66,10 +66,9 @@ class DbsafeTest(unittest.TestCase):
 
     def test_verify_never_touches_the_original(self):
         good = make_database(self.root / 'good.sqlite')
-        before = (good.stat().st_mtime_ns, good.read_bytes())
+        before = (good.stat().st_mtime_ns, good.read_bytes(), sorted(p.name for p in good.parent.iterdir()))
         dbsafe.verify_backup(good, full=True)
-        self.assertEqual((good.stat().st_mtime_ns, good.read_bytes()), before)
-        self.assertEqual(dbsafe.sidecars(good), [])
+        self.assertEqual((good.stat().st_mtime_ns, good.read_bytes(), sorted(p.name for p in good.parent.iterdir())), before)
 
     def test_restore_replaces_database_and_keeps_old_files_aside(self):
         live = make_database(self.root / 'data' / 'leads.sqlite', people=3)
@@ -108,6 +107,7 @@ class DbsafeTest(unittest.TestCase):
         live = make_database(self.root / 'data' / 'leads.sqlite', people=3)
         backup = make_database(self.root / 'b.sqlite', people=8)
         before = live.read_bytes()
+        listing = sorted(p.name for p in live.parent.iterdir())
         real_replace = os.replace
 
         def failing(src, dst):
@@ -118,7 +118,7 @@ class DbsafeTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 dbsafe.restore_database(backup, live, self.root / 'recovery', check_open=False)
         self.assertEqual(live.read_bytes(), before)
-        self.assertEqual(sorted(p.name for p in live.parent.iterdir()), ['leads.sqlite'])
+        self.assertEqual(sorted(p.name for p in live.parent.iterdir()), listing)
 
     def test_restore_into_a_missing_target_just_places_the_backup(self):
         backup = make_database(self.root / 'b.sqlite', people=4)
