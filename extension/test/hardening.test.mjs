@@ -238,10 +238,10 @@ test('rememberId: pk cache keyed by handle, pruned oldest first', () => {
 test('statusOf: one bucket cooling keeps the other running and says so', () => {
   const st = FL.fresh(); st.cool.list.until = T0 + 30 * MIN;
   const s = FL.statusOf(st, { job: {} }, T0);
-  assert.equal(s.state, 'running'); assert.match(s.text, /^Instagram list limit until \d\d:\d\d · Scraping$/); assert.equal(s.badge, '30m');
+  assert.equal(s.state, 'running'); assert.match(s.text, /^Instagram list limit until \d\d:\d\d · Collecting$/); assert.equal(s.badge, '30m');
   assert.equal(FL.statusOf(st, {}, T0).state, 'cooldown');
   const p = FL.fresh(); p.cool.profile.until = T0 + 30 * MIN; p.nextAt = T0 + 5e3;
-  assert.match(FL.statusOf(p, {}, T0).text, /^Bios cooling until .* · Next request in 5s$/);
+  assert.match(FL.statusOf(p, {}, T0).text, /^Bios limited until .* · Next request in 5s$/);
   assert.equal(FL.statusOf(FL.fresh(), { noTab: 'tab_login' }, T0).text, 'Instagram tab is on the login page');
   assert.equal(FL.statusOf(FL.fresh(), { laneWait: true }, T0).key, 'wait');
 });

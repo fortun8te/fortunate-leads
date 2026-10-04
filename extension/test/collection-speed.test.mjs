@@ -106,7 +106,7 @@ test('uncertain requests offer explicit review, prevent resume and never resume 
   assert.equal(h.calls.length,0);
   await h.elements.get('finishreview').onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(h.calls)),[{cmd:'review_shared_request'}]);
-  assert.match(h.elements.get('reviewstatus').textContent,/remains paused/);
+  assert.match(h.elements.get('reviewstatus').textContent,/stays paused/);
   assert.equal(h.elements.get('toggle').disabled,true);
 });
 
@@ -130,6 +130,6 @@ test('finished requests with an unsettled release still offer explicit matching 
     await h.elements.get('finishreview').onclick();
     assert.equal(h.calls.length,1);
     assert.equal(h.calls[0].cmd,'review_shared_request');
-    assert.match(h.elements.get('reviewstatus').textContent,/remains paused/);
+    assert.match(h.elements.get('reviewstatus').textContent,/stays paused/);
   }
 });

@@ -49,7 +49,7 @@
     <div class="nums"><div><b id="people">0</b><span>people</span></div><div><b id="pages">0</b><span>pages</span></div><div><b id="bios">0</b><span>bios</span></div></div>
     <p class="lbl">All accounts</p>
     <div class="stages" id="stages"><div class="stage"><span class="word">Loading…</span></div></div>
-    <div class="row"><button class="btn" id="toggle" title="Pause only this Chrome profile's Instagram account. The stages above are for all accounts.">Pause this account</button><button class="btn" id="open">Open workspace</button></div>
+    <div class="row"><button class="btn" id="toggle" title="Pauses only this Chrome profile's account. The rows above apply to all accounts.">Pause this account</button><button class="btn" id="open">Open workspace</button></div>
   </div>
 </div>`;
   const $ = (id) => root.getElementById(id);
@@ -93,7 +93,7 @@
       stageKey = key;
       $('stages').innerHTML = rows.map((r) => `<div class="stage${r.paused ? ' paused' : ''}" title="${escH(r.label + ': ' + r.now + '\n\n' + r.help)}">
         <span class="dot${r.on ? ' on' : ''}"></span><b>${escH(r.name)}</b><span class="word"></span>
-        <button class="sbtn" data-stage="${r.id}" data-action="${r.action}" title="${escH((r.paused ? 'Resume ' : 'Pause ') + r.label.toLowerCase() + ' for all accounts. ' + r.help)}"${stageBusy ? ' disabled' : ''}>${r.paused ? 'Resume' : 'Pause'}</button></div>`).join('');
+        <button class="sbtn" data-stage="${r.id}" data-action="${r.action}" title="${escH((r.paused ? 'Resume ' : 'Pause ') + (r.name === 'AI' ? 'AI' : r.name.toLowerCase()) + ' for all accounts')}"${stageBusy ? ' disabled' : ''}>${r.paused ? 'Resume' : 'Pause'}</button></div>`).join('');
     }
     root.querySelectorAll('.stage .word').forEach((w, i) => { if (rows[i]) w.textContent = rows[i].word; });
   }

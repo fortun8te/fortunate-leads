@@ -522,12 +522,12 @@
     const listIssueText = 'Followers paused after home redirects until ' + t(st.listEndpointUntil);
     if (lc && pc) {
       const until = Math.min(listUntil, st.cool.profile.until);
-      return { state: 'cooldown', text: issue ? listIssueText + ' · Instagram list limit until ' + t(st.cool.list.until) + ' · Bios cooling until ' + t(st.cool.profile.until) :
-        'Cooldown until ' + t(until), badge: badgeFor(until), key: 'cool' };
+      return { state: 'cooldown', text: issue ? listIssueText + ' · Instagram list limit until ' + t(st.cool.list.until) + ' · Bios limited until ' + t(st.cool.profile.until) :
+        'Limited until ' + t(until), badge: badgeFor(until), key: 'cool' };
     }
     if (ctx.offline) return { state: 'idle', text: 'Server offline', badge: '!', key: 'off' };
     if (ctx.noTab) return { state: 'idle', text: TAB_TEXT[ctx.noTab] || TAB_TEXT.no_tab, badge: '!', key: 'off' };
-    if (ctx.budgetDone) return { state: 'idle', text: 'Daily budget reached', badge: '', key: 'stop' };
+    if (ctx.budgetDone) return { state: 'idle', text: 'Daily limit reached', badge: '', key: 'stop' };
     const stages = ctx.stages || {};
     const pausedStages = [stages.list === false ? 'Followers paused' : null,
       stages.profile === false ? 'Bios paused' : null].filter(Boolean);
@@ -538,10 +538,10 @@
     }
     const pre = [pausedStages.join(' · ') || null, issue ? listIssueText : null,
       lc ? 'Instagram list limit until ' + t(st.cool.list.until) : null,
-      pc ? 'Bios cooling until ' + t(st.cool.profile.until) : null].filter(Boolean).join(' · ');
+      pc ? 'Bios limited until ' + t(st.cool.profile.until) : null].filter(Boolean).join(' · ');
     const prefix = pre ? pre + ' · ' : '';
     const badge = lc ? badgeFor(listUntil) : '';
-    if (ctx.job) return { state: 'running', text: prefix + 'Scraping', badge, key: 'run' };
+    if (ctx.job) return { state: 'running', text: prefix + 'Collecting', badge, key: 'run' };
     if (ctx.laneWait) return { state: 'running', text: prefix + 'Waiting for the last request to finish', badge, key: 'wait' };
     const next = Math.min(...KINDS.filter((k) => !(st.cool[k].until > now)).map((k) => readyAt(st, k)));
     if (next > now && next < Infinity) return { state: 'running', text: prefix + 'Next request in ' + Math.ceil((next - now) / 1e3) + 's', badge, key: 'wait' };
@@ -626,7 +626,7 @@
       if (s.state === 'paused') word = 'paused';
       else if (s.state === 'waiting' && s.wait) {
         word = waitWord(s.wait.why, s.wait.seconds != null ? Math.max(0, s.wait.seconds - age) : null, stageClock);
-      } else if (s.state === 'idle') word = /no instagram account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
+      } else if (s.state === 'idle') word = /^no (instagram )?account/i.test(s.now || '') ? 'no account online' : 'nothing to do';
       else if (s.id === 'ai') word = 'running · ' + Math.round(s.minute || 0).toLocaleString('en-US') + '/min · '
         + Math.round(s.hour || 0).toLocaleString('en-US') + '/h';
       else word = 'running' + (s.hour ? ' · ' + Math.round(s.hour).toLocaleString('en-US') + '/h' : '');

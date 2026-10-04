@@ -2,20 +2,20 @@
 const $ = (id) => document.getElementById(id);
 const n = (v) => Math.round(v || 0).toLocaleString('en-US');
 const hm = (t) => new Date(t).toTimeString().slice(0, 5);
-const LABEL = { run: 'Scraping', wait: 'Waiting', cool: 'Cooldown', stop: 'Idle', off: 'Needs attention' };
+const LABEL = { run: 'Collecting', wait: 'Waiting', cool: 'Limited', stop: 'Idle', off: 'Needs attention' };
 const ago = (t) => { const m = Math.max(0, Math.round((Date.now() - t) / 60e3)); return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm ago'; };
 const secs = (t) => Math.max(0, Math.ceil((t - Date.now()) / 1e3));
 
-const CODES = { rate_limit: 'Rate limited', soft_block: 'Temporarily blocked', login: 'Signed out', challenge: 'Security check', not_found: 'Not found', network: 'Connection problem', unsupported: 'Not supported', other: 'Unexpected reply' };
+const CODES = { rate_limit: 'Limited', soft_block: 'Blocked for now', login: 'Signed out', challenge: 'Security check', not_found: 'Not found', network: 'Connection problem', unsupported: 'Not supported', other: 'Unexpected reply' };
 const SAYS = { rate_limit: 'Instagram is limiting requests. Collection resumes on its own.', soft_block: 'Instagram is limiting this account for now. Collection resumes on its own.',
-  network: "Couldn't reach Instagram. Collection retries on its own.", unsupported: 'Instagram declined this request. Trying another route.', not_found: 'Instagram could not find that profile.', other: 'Instagram sent an unexpected reply. Collection retries on its own.' };
+  network: "Couldn't reach Instagram. Collection retries on its own.", unsupported: 'Instagram declined this request. Trying another route.', not_found: "Instagram couldn't find that profile.", other: 'Instagram sent an unexpected reply. Collection retries on its own.' };
 // Errors look like "14:02 rate_limit (reason) on list x | raw sample": show a sentence, keep the raw sample in the details.
 const friendly = (e) => { const m = /^(?:\d\d:\d\d )?(\w+)(?: \([^)]*\))? on /.exec(e); return m && SAYS[m[1]] ? SAYS[m[1]] : e.replace(/ \| .*$/, ''); };
 let current = null, debug = null;
 function bucketText(b, what) {
   if (!b) return '–';
   if (b.until) return 'paused until ' + hm(b.until) + ' · ' + b.hits + ' limit' + (b.hits === 1 ? '' : 's') + ' in 24h';
-  if (b.left === 0) return 'daily budget reached';
+  if (b.left === 0) return 'daily limit reached';
   const wait = b.readyAt ? secs(b.readyAt) : 0;
   const left = b.left == null ? 'no daily cap' : n(b.left) + ' ' + what + ' left'; // null = unlimited (Infinity does not survive storage)
   return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + left + (b.infoOff ? ' · reading page loads' : '');
@@ -25,10 +25,10 @@ function render(v) {
   current = v;
   const key = v.key || 'stop', text = String(v.text || '');
   $('sq').className = 'sq ' + key;
-  // text = "[Lists cooling until 14:20 · ]Next request in 8s": last part is the state, the rest is detail.
+  // text = "[Instagram list limit until 14:20 · ]Next request in 8s": last part is the state, the rest is detail.
   const parts = text.split(' · ');
   let label = parts.pop(), detail = parts.join(' · ');
-  if (key === 'wait' && v.nextAt) label = secs(v.nextAt) ? 'Waiting ' + secs(v.nextAt) + 's' : 'Scraping';
+  if (key === 'wait' && v.nextAt) label = secs(v.nextAt) ? 'Waiting ' + secs(v.nextAt) + 's' : 'Collecting';
   if (v.state === 'network_wait') { label = 'Connection trouble'; detail = text; }
   if (/^Needs attention/.test(text)) { label = 'Needs attention'; detail = text.replace(/^Needs attention:\s*/, ''); }
   $('state').textContent = label || LABEL[key];
@@ -107,9 +107,9 @@ $('speedapply').onclick = async () => {
     FL.collectionSpeedSetting(speedAccount, speedLane, ms);
     speedSaving = true; $('speedapply').disabled = true;
     const reply = await chrome.runtime.sendMessage({ cmd: 'set_collection_speed', poll_wait_ms: ms });
-    if (!reply?.ok) throw new Error(reply?.error || 'Could not save. Try again.');
+    if (!reply?.ok) throw new Error(reply?.error || "Couldn't save. Try again.");
     $('speedstatus').textContent = 'Saved. Applies at the next check; no reload needed.';
-  } catch (e) { $('speedstatus').textContent = e.message || 'Could not save. Try again.'; }
+  } catch (e) { $('speedstatus').textContent = e.message || "Couldn't save. Try again."; }
   finally { speedSaving = false; renderSpeed(); }
 };
 chrome.storage.local.get('account').then((o) => showVer(o.account));
@@ -129,8 +129,8 @@ $('finishreview').onclick = async () => {
     // The worker requires the matching operator review; this only settles the journal, never resumes.
     const reply = await chrome.runtime.sendMessage({cmd: 'review_shared_request'});
     if (!reply?.ok) throw new Error(reply?.error || 'Complete the review in the workspace first.');
-    $('reviewstatus').textContent = 'Review recorded. Collection remains paused.';
-  } catch (e) { $('reviewstatus').textContent = e.message || 'Could not finish the review. Try again.'; }
+    $('reviewstatus').textContent = 'Review recorded. Collection stays paused.';
+  } catch (e) { $('reviewstatus').textContent = e.message || "Couldn't finish the review. Try again."; }
   finally { reviewSaving = false; $('finishreview').disabled = false; }
 };
 $('open').onclick = () => chrome.tabs.create({ url: 'http://127.0.0.1:8777/' });

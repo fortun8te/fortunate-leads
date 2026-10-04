@@ -233,7 +233,7 @@ test('outbox: keeps order, stops on offline, drops rejected', async () => {
 });
 test('statusOf: badge and state', () => {
   const st = FL.fresh();
-  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Scraping', badge: '', key: 'run' });
+  assert.deepEqual(FL.statusOf(st, { job: {} }, T0), { state: 'running', text: 'Collecting', badge: '', key: 'run' });
   assert.equal(FL.statusOf({ ...st, nextAt: T0 + 8e3 }, {}, T0).text, 'Next request in 8s');
   assert.equal(FL.statusOf({ ...st, listNextAt: T0 + 90e3, profileNextAt: T0 + 20e3 }, {}, T0).text, 'Next request in 20s');
   assert.equal(FL.statusOf(st, { localPaused: true }, T0).badge, '‖');
@@ -325,9 +325,9 @@ test('network backoff is shown as connection trouble even while a job lease is r
   const out = FL.statusOf(st, {job: {id: 1}}, T0 + 1000);
   assert.equal(out.state, 'network_wait');
   assert.match(out.text, /connection trouble.*Retrying/);
-  assert.doesNotMatch(out.text, /Scraping/);
+  assert.doesNotMatch(out.text, /Collecting/);
   assert.equal(FL.statusOf(st, {job: {id: 1}, serverPaused:true}, T0).state, 'paused');
-  assert.equal(FL.statusOf(st, {budgetDone:true}, T0).text, 'Daily budget reached');
+  assert.equal(FL.statusOf(st, {budgetDone:true}, T0).text, 'Daily limit reached');
   assert.equal(FL.statusOf(st, {stages:{list:false,profile:false}}, T0).state, 'paused');
   st.hold = {code: 'challenge', message: 'Complete the security check'};
   assert.match(FL.statusOf(st, {job: {id: 1}}, T0).text, /security check/);
