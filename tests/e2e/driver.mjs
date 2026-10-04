@@ -26,7 +26,7 @@ const argv = process.argv.slice(2);
 const flag = (n) => argv.includes('--' + n);
 const opt = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : d; };
 const LANES = opt('lanes', null);
-const HOURS = Number(opt('hours', LANES ? 12 : 8));
+const HOURS = Number(opt('hours', LANES || opt('scenario', null) ? 12 : 8));
 const VERBOSE = flag('verbose');
 const EXT_ID = 'fgdbghllamedgihmdcolaggnbhnakjnf';
 const EXT_ORIGIN = 'chrome-extension://' + EXT_ID;
@@ -475,7 +475,7 @@ function checkRequest(e) {
   if (P.onRequest) P.onRequest(e, st);
 }
 
-return { bootSW, restart, createTab, toWorker };
+return { bootSW, restart, createTab, toWorker, navigate };
 }
 const newProfile = (o) => { const P = { name: 'p0', store: {}, browser: { sw: null, tabs: new Map(), nextTab: 1, alarms: new Map() }, hits: [], holds: [], ...o }; return Object.assign(P, makeProfile(P)); };
 const manifest = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
@@ -1038,6 +1038,168 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   process.exit(ok ? 0 : 1);
 }
 
+// ================================================================ --scenario warning: the scraping-warning hold, review and resume flow
+// Three emulated Chrome profiles on one server. Lane 1 is sent to Instagram's scraping-warning page on its 30th list request;
+// lane 2 is healthy and then takes three rate limits in a row (the 3x429 rest); lane 3 is Michael's protected main account.
+// The operator then does what docs/INSTAGRAM_WARNING_RECOVERY.md says, with wrong turns on the way:
+//   popup Resume (must not restart anything), workspace Resume (refused), acknowledging while the warning tab is still open
+//   (refused), closing that tab, acknowledging (accepted, collection stays stopped), and finally Start collecting.
+// Checks: not one Instagram request from any lane between the warning and Start; the warned list continues from its saved
+// cursor; everything finishes with edges == served and no page twice; lane 2 rests >= 2 h after its third limit; lane 3 sends none.
+const WARN_AT = 30;          // lane 1: list request number that lands on the warning page
+const WARN_SCHEDULE = [{ list: { [WARN_AT]: 'scraping_warning' } }, { list: { 70: '429', 71: '429', 72: '429' } }, {}];
+async function warningMain() {
+  PORT.server = await freePort(); PORT.ig = await freePort();
+  launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
+  await startServer();
+  await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  await finiteScenario();
+  const seeds = LANE_SEEDS.map(([handle, direction, size], j) => {
+    const s = { pk: String(7_300_000_000 + j), username: handle, handle, direction, size, lists: { [direction]: size },
+      followers: direction === 'followers' ? size : 300 + j * 17, following: direction === 'following' ? size : 200 + j * 11 };
+    seedByPk.set(s.pk, s); seedByName.set(handle.toLowerCase(), s);
+    return s;
+  });
+  const accts = WARN_SCHEDULE.map((schedule, i) => ({ ig_id: String(5_600_000_000 + i), handle: ['warned.sim', 'steady.sim', 'owner.sim'][i], schedule }));
+  await fetch(`http://127.0.0.1:${PORT.ig}/__sim/config`, { method: 'POST', body: JSON.stringify({ seeds, schedule: {}, accounts: accts }) });
+  for (const dir of ['followers', 'following']) {
+    await fetch(`http://127.0.0.1:${PORT.server}/api/scraper/seeds`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Sim-Now': String(V.now), Origin: uiOrigin() },
+      body: JSON.stringify({ handles: seeds.filter((s) => s.direction === dir).map((s) => s.handle), directions: [dir] }) });
+  }
+  const lanes = accts.map((a, i) => {
+    const L = newProfile({ name: 'lane' + (i + 1), prefix: 'L' + (i + 1) + ':', igId: a.ig_id, handle: a.handle, faults: false });
+    L.createTab({ url: IG + '/', active: false, pinned: true });
+    timer(OPS, 2000 + i * 700, () => L.bootSW('install'));
+    return L;
+  });
+  const [warned, steady, owner] = lanes;
+  const T = { warnAt: null, steps: {}, startAt: null, savedCursor: null, warnedList: null };
+  const log = (k, v) => { T.steps[k] = v; T.steps[k + 'At'] = V.now; ev('warning flow: ' + k, v && typeof v === 'object' ? v : { v }); };
+  let ownerMarked = false, busy = false;
+  const tick = async () => {
+    if (busy) return; busy = true;
+    try {
+      if (!ownerMarked && owner.store.laneId) {
+        const r = await opsHttp('/api/accounts/' + encodeURIComponent(owner.store.laneId), { is_main: true });
+        if (r && r.ok !== false) { ownerMarked = true; ev('operator: lane 3 marked as the main account'); }
+      }
+      const h = warned.store.st && warned.store.st.hold;
+      if (T.warnAt == null && h && h.manualReview) {
+        T.warnAt = h.at; T.warnedList = warned.store.cur && warned.store.cur.job ? warned.store.cur.job.seed.toLowerCase() + '/' + warned.store.cur.job.direction : null;
+        const posted = serverLog.filter((e) => e.path === '/api/ext/list-page' && e.body && e.body.lane_id === warned.store.laneId && e.status === 200 && e.resp && !e.resp.stale && !e.resp.duplicate);
+        T.savedCursor = posted.length ? { list: posted.at(-1).body.seed.toLowerCase() + '/' + posted.at(-1).body.direction, cursor: posted.at(-1).body.next_cursor } : null;
+        ev('scraping warning', { at: dhm(T.warnAt), lastSaved: T.savedCursor });
+      }
+      if (T.warnAt == null) return;
+      const since = V.now - T.warnAt;
+      const server = await opsHttp('/api/control');
+      if (!T.steps.tabOpened && since >= 10 * MIN) {            // Michael looks: the warning page is open in his tab
+        const tab = [...warned.browser.tabs.values()][0]; warned.navigate(tab, IG + '/accounts/scraping_warning/', 'nav'); log('tabOpened', dhm(V.now));
+      }
+      if (!T.steps.popupResume && since >= 15 * MIN && warned.browser.sw) {
+        for (const fn of warned.browser.sw.L.onMessage) fn({ cmd: 'resume' }, { id: EXT_ID }, () => {});
+        log('popupResume', dhm(V.now));
+      }
+      if (!T.steps.workspaceResume && since >= 20 * MIN) {
+        const r = await opsHttp('/api/control', { stage: 'all', action: 'resume' });
+        log('workspaceResume', { refused: r.ok === false, error: r.error }); T.steps.workspaceResumeRefused = r.ok === false;
+      }
+      if (!T.steps.earlyAck && since >= 25 * MIN) {
+        const r = await opsHttp('/api/control', { action: 'acknowledge_scraping_warning', account: warned.store.laneId, reviewed: true });
+        log('earlyAck', { refused: r.ok === false, error: r.error }); T.steps.earlyAckRefused = r.ok === false;
+      }
+      if (!T.steps.tabClosed && since >= 30 * MIN) {
+        const tab = [...warned.browser.tabs.values()][0]; warned.navigate(tab, IG + '/', 'nav'); log('tabClosed', dhm(V.now));
+      }
+      if (T.steps.tabClosed && !T.steps.ackOk && V.now - T.steps.tabClosedAt >= 3 * MIN) {
+        const r = await opsHttp('/api/control', { action: 'acknowledge_scraping_warning', account: warned.store.laneId, reviewed: true });
+        T.steps.ack = { ok: r.ok !== false, error: r.error }; T.steps.ackOk = r.ok !== false; if (T.steps.ackOk) log('ackDone', dhm(V.now));
+      }
+      if (T.steps.ackOk && !T.steps.start && since >= 45 * MIN && (!warned.store.st.hold)) {
+        const ok = await resumeCollection(); if (ok) { T.startAt = V.now; log('start', dhm(V.now)); }
+      }
+    } catch (e) { harnessErrors.push('warning operator: ' + (e && e.stack || e)); } finally { busy = false; }
+  };
+  timer(OPS, MIN, function loop() { timer(OPS, MIN, loop); tick(); });
+  for (const at of [6e3, 9e3, 12e3]) timer(OPS, at, tick);   // mark the main account before its first request (start offset >= 15 s)
+  timer(OPS, 15e3, serverTick);
+  let tDone = null;
+  const watch = () => {
+    timer(OPS, 5 * MIN, watch);
+    if (!serverUp) return;
+    opsHttp('/api/scraper').then((sc) => {
+      if (sc.lists && sc.lists.length === seeds.length && sc.lists.every((l) => l.state === 'done' || l.state === 'private') && !sc.queue.list) { tDone = tDone ?? V.now - START; V.stop = true; }
+    }).catch(() => {});
+  };
+  timer(OPS, 5 * MIN, watch);
+  await runUntil(END);
+  for (const L of lanes) { if (L.browser.sw) L.browser.sw.alive = false; for (const t of L.browser.tabs.values()) t.alive = false; }
+  OPS.alive = false; BROWSER.alive = false;
+  await warningReport(seeds, lanes, accts, T, tDone);
+}
+
+async function warningReport(seeds, lanes, accts, T, tDone) {
+  const served = await (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/served`)).json();
+  const fakeLog = await (await fetch(`http://127.0.0.1:${PORT.ig}/__sim/log`)).json();
+  const db = pyQuery(DB);
+  const pass = [], fail = [];
+  const check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
+  const [warned, steady, owner] = lanes;
+  check(T.warnAt != null, 'lane 1 reached the scraping-warning page and the extension held');
+  const real = (e) => ['list', 'profile', 'page'].includes(e.kind);
+  const window_ = T.startAt ? [T.warnAt, T.startAt] : [T.warnAt, Infinity];
+  const during = igLog.filter((e) => real(e) && e.t > window_[0] && e.t < window_[1]);
+  check(!during.length, 'no Instagram request from any lane between the warning and Start collecting', `${during.length} requests` + (during[0] ? `, first ${during[0].lane} ${during[0].path} at ${dhm(during[0].t)}` : ''));
+  check(T.steps.popupResume != null && T.steps.workspaceResumeRefused === true, 'popup Resume restarted nothing and workspace Resume was refused', JSON.stringify(T.steps.workspaceResume));
+  check(T.steps.earlyAckRefused === true, 'acknowledging while the warning page is still open is refused', JSON.stringify(T.steps.earlyAck));
+  check(T.steps.ackOk === true, 'acknowledging after the tab is closed is accepted', JSON.stringify(T.steps.ack));
+  check(T.startAt != null, 'Start collecting is accepted after review');
+  const stillHeld = serverLog.filter((e) => e.path === '/api/ext/next' && e.t > T.warnAt && (!T.startAt || e.t < T.startAt) && e.resp && e.resp.job);
+  check(!stillHeld.length, 'the server handed out no job while the warning stood', `${stillHeld.length} jobs`);
+  if (T.savedCursor && T.startAt) {
+    const next = igLog.find((e) => e.kind === 'list' && e.list === T.savedCursor.list && e.t > T.startAt);
+    check(next && next.maxId === T.savedCursor.cursor, 'the warned list continues from its saved cursor', `want ${T.savedCursor.cursor} got ${next ? next.maxId : 'no request'}`);
+  }
+  check(tDone != null, 'every list finished after the review', tDone != null ? (tDone / HOUR).toFixed(2) + ' h' : 'not within ' + HOURS + ' h');
+  for (const s of seeds) {
+    const key = s.handle.toLowerCase() + '/' + s.direction, srv = new Set((served[key] || {}).served || []), got = new Set(db.edges[key] || []);
+    check(srv.size === got.size && [...srv].every((x) => got.has(x)), 'edges == unique users served', key);
+  }
+  check(db.edge_rows === db.edge_distinct, 'no duplicate edge rows');
+  const seen = new Map(); let repeats = 0;
+  for (const e of fakeLog.log.filter((x) => x.kind === 'list' && x.users != null)) { const k = e.path + ' ' + e.max_id; if (seen.has(k)) repeats++; seen.set(k, 1); }
+  check(!repeats, 'no page fetched twice', `${repeats} repeats`);
+  // the 3x429 rest on lane 2
+  const hits3 = steady.hits.filter((h) => h.bucket === 'list').sort((a, b) => a.at - b.at);
+  check(hits3.length >= 3, 'lane 2 took three rate limits', `${hits3.length}`);
+  if (hits3.length >= 3) {
+    const third = hits3[2], until = coolOf(third.post).list.until;
+    check(until - third.at >= 2 * HOUR, 'the third limit rests the list requests of that account for at least 2 hours', `${Math.round((until - third.at) / MIN)} min`);
+    const inside = igLog.filter((e) => e.lane === 'lane2' && real(e) && e.bucket === 'list' && e.t > third.at && e.t < until);
+    check(!inside.length, 'lane 2 sent no list request during that rest', `${inside.length}`);
+    const shared = igLog.filter((e) => e.lane !== 'lane2' && real(e) && e.t > third.at && e.t < third.at + 15 * MIN);
+    check(!shared.length, 'a rate limit stops the other lanes for the shared 15 minutes', `${shared.length}`);
+  }
+  check(!igLog.some((e) => e.lane === 'lane3' && real(e)), 'the protected main account (lane 3) sent no Instagram request', `${igLog.filter((e) => e.lane === 'lane3' && real(e)).length}`);
+  check(!violations.length, 'no invariant violations (hold, cooldown, pace, window)', violations.slice(0, 3).map((v) => v.what).join('; '));
+  check(!harnessErrors.length, 'no uncaught errors', harnessErrors.slice(0, 3).join(' | '));
+  for (const L of lanes) check(!(L.store.box || []).length, 'outbox empty', L.name);
+  console.log(`\nFortunate Leads e2e — scraping-warning flow, ${lanes.length} lanes, up to ${HOURS} simulated hours`);
+  console.log('warning        ' + (T.warnAt ? dhm(T.warnAt) : 'never') + ', Start collecting ' + (T.startAt ? dhm(T.startAt) + ` (${Math.round((T.startAt - T.warnAt) / MIN)} min later)` : 'never'));
+  console.log('hits           ' + lanes.map((L) => L.name + ': ' + (L.hits.map((h) => dhm(h.at) + ' ' + h.bucket).join(', ') || 'none')).join('; '));
+  console.log('steps          ' + JSON.stringify(T.steps));
+  console.log(`\nchecks: ${pass.length} passed, ${fail.length} failed`);
+  for (const f of fail) console.log('  FAIL ' + f);
+  if (VERBOSE) for (const p of pass) console.log('  ok   ' + p);
+  const ok = !fail.length;
+  if (flag('json')) console.log('RESULT ' + JSON.stringify({ scenario: 'warning', ok, hours: tDone != null ? tDone / HOUR : null, checks: pass.length + fail.length }));
+  console.log(ok ? '\nPASS' : '\nFAIL');
+  fs.writeFileSync(path.join(TMP, 'result.json'), JSON.stringify({ pass, fail, violations, steps: T.steps, events: events.map((e) => ({ ...e, t: dhm(e.t) })) }, null, 1));
+  cleanup();
+  if (!flag('keep') && ok) fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
 const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 16) : [];
-(laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
+(opt('scenario', null) === 'warning' ? warningMain() : laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
   .catch((e) => { console.error(e); cleanup(); process.exit(2); });

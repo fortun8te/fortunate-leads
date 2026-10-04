@@ -204,6 +204,10 @@ class H(BaseHTTPRequestHandler):
                 'id': acct['ig_id'], 'username': acct['handle'], 'full_name': acct['handle']}}}) + '</script>') if acct else ''
             return self.reply(200, '<!DOCTYPE html><html lang="en"><head><title>Instagram</title></head><body><main>Feed</main>'
                               + viewer + '</body></html>', 'text/html; charset=utf-8', {'X-Sim-Latency': 900})
+        if u.path.startswith('/accounts/scraping_warning'):
+            return self.reply(200, '<!DOCTYPE html><html lang="en"><head><title>Suspicious activity &bull; Instagram</title></head><body>'
+                              '<main>We noticed unusual activity on your account. Review it to keep using Instagram.</main></body></html>',
+                              'text/html; charset=utf-8')
         if u.path.startswith('/accounts/login'):
             return self.reply(200, '<!DOCTYPE html><html lang="en"><head><title>Login &bull; Instagram</title></head><body>'
                               '<form id="loginForm"><input name="username"><input name="password" type="password">'
@@ -282,6 +286,8 @@ class H(BaseHTTPRequestHandler):
                                           'has_more': True, 'status': 'ok'}, hdr)
         if inject == 'login_redirect':
             return self.done(entry, 302, '', dict(hdr, Location='/accounts/login/?next=' + u.path), ctype='text/html')
+        if inject == 'scraping_warning':   # Instagram's scraping warning page, reached by redirect from a list request
+            return self.done(entry, 302, '', dict(hdr, Location='/accounts/scraping_warning/'), ctype='text/html')
         if inject == 'login_html':
             return self.done(entry, 200, '<!DOCTYPE html><html><head><title>Instagram</title></head><body>'
                              '<div>Log in to see photos and videos from your friends.</div><input name="password">'
