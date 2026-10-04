@@ -16,6 +16,8 @@ Every user-visible string follows this. Plain, specific, calm. No one should nee
 | collection | scraping Instagram lists | scraping, crawling |
 | paused | stopped by you | held, parked |
 | limited | Instagram is slowing this account | soft block, rate limited, cooldown |
+| checking mode | Rules only, Local AI or External AI | qualification, processing mode, R, RLAI, RLEAI |
+| profile checks | the rules or AI check of saved profiles | qualification, scoring |
 
 ## Rules
 
@@ -34,3 +36,6 @@ Every user-visible string follows this. Plain, specific, calm. No one should nee
 13. Placeholders show an example, not an instruction. Labels stay visible; placeholders never replace them.
 14. Every icon-only control has an aria-label in the same wording as its tooltip.
 15. Tab title is "Fortunate Leads". The favicon is the square mark.
+16. No claims we can't prove: never "safe", "guaranteed", "smart", or "so Instagram doesn't flag you". Say what the app does.
+17. Don't explain the screen to itself. If a hint repeats its label, delete it. If a section can't be reached, delete it and its text.
+18. Internal names stay out of the workspace: no lane, permit, lease, job, cursor, engine ids or mode codes. Model names appear only in Settings.
