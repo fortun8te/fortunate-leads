@@ -1,7 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {MapModel}=require('../web/map-model.js');
-const {cohortLayout,Scene,PortraitCache}=require('../web/map-core.js');
+const {cohortLayout,Scene,PortraitCache,rimScale}=require('../web/map-core.js');
 const radius=n=>Math.hypot(n.x-.5,n.y-.5);
 
 test('unknown evidence remains unknown and ties fill a continuous organic disk',()=>{
@@ -31,7 +31,7 @@ test('discrete network, shared and fit values never create rings or spiral steps
     return Math.round(((step+Math.PI*4)%(Math.PI*2))*10);
   }));
   assert.ok(steps.size>50,'angles have organic variation rather than repeating a spiral');
-  const taper=nodes.at(-1).portraitRadius/nodes[0].portraitRadius;
+  const rim=n=>rimScale(radius(n)/.46),taper=(nodes.at(-1).portraitRadius/rim(nodes.at(-1)))/(nodes[0].portraitRadius/rim(nodes[0]));
   assert.ok(taper>.75&&taper<.77,'the gradual taper spans the disk, including score ties');
  }
 });

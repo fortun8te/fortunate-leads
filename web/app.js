@@ -3299,7 +3299,7 @@ $('#ql-list').addEventListener('click', (e) => {
 });
 
 // ---------- map ----------
-// The map lives in map-core.js, map-model.js, map-view.js and map-host.js.
+// The map lives in map-core.js, map-model.js, map-render.js, map-view.js and map-host.js.
 // M is the small surface the rest of this file uses; it waits for the view to attach.
 const M = {
   impl: null, wantShown: false,

@@ -150,7 +150,9 @@
 
   /* ---------- Scene: what is on screen, and how it fades ---------- */
   class Scene {
-    constructor() { this.items = new Map(); this.nodes = []; this.clusters = []; this.animating = false; this.maxCluster = 1; }
+    constructor() { this.items = new Map(); this.nodes = []; this.clusters = []; this.animating = false; this.maxCluster = 1; this.epoch = 0; this._spatial = null; this.large = false; }
+    // The index is rebuilt on demand, so a morph that moves every portrait does not rebuild it every frame.
+    get spatial() { if (!this.large) return null; return this._spatial || (this._spatial = new SpatialIndex(this.nodes)); }
     // Merge a response. Things still present persist and glide; new things fade in; missing things fade out.
     apply(resp, now, o = {}) {
       const morph = o.morph || 0, seen = new Set();
@@ -193,9 +195,9 @@
       this.clusters.sort((a, b) => b.d.count - a.d.count);
       this.maxCluster = max;
       // Dense pages reuse a photo raster; individual records stay in the spatial index.
-      this.large = this.nodes.reduce((count,it)=>count+(it.ta!==0?1:0),0) > 1500; this.spatial = this.large ? new SpatialIndex(this.nodes) : null; this.version = (this.version || 0) + 1;
+      this.large = this.nodes.reduce((count,it)=>count+(it.ta!==0?1:0),0) > 1500; this._spatial = null; this.version = (this.version || 0) + 1; this.epoch++;
     }
-    clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; this.large = false; this.spatial = null; }
+    clear() { this.items.clear(); this.nodes = []; this.clusters = []; this.animating = false; this.pinned = null; this.large = false; this._spatial = null; this.epoch++; }
     // Advance by dt seconds. Returns true while anything is still moving, so the loop can stop when idle.
     step(now, dt, reduced) {
       if (this.large && !this.animating) return false;
@@ -216,7 +218,7 @@
         }
       }
       if (dead) { for (const [key, it] of this.items) if (it.dead) this.items.delete(key); this.rebuild(); }
-      if (moved && this.large && !dead) this.spatial = new SpatialIndex(this.nodes);
+      if (moved) { this.epoch++; if (!dead) this._spatial = null; }
       this.animating = busy;
       return busy;
     }
@@ -240,6 +242,13 @@
     return n.fit === 'strong' ? 't1' : n.fit === 'good' ? 't2' : n.fit === 'weak' ? 't3' : 't4';
   }
   const OWNER_RADIUS = 18;
+  // Bubbles shrink toward the rim of the circle, on top of each person's own size and the
+  // gradual taper by evidence order. `from` is the share of the circle's radius where the
+  // fall-off starts; `floor` is the share of full size reached at the rim. Tune here only.
+  const RIM_SCALE = Object.freeze({ from: .58, floor: .7 });
+  const smoothstep = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  // share: distance from the owner as a fraction of the circle's radius (0 centre, 1 rim).
+  const rimScale = (share, rim = RIM_SCALE) => 1 - (1 - rim.floor) * smoothstep((share - rim.from) / (1 - rim.from));
   const SIZE_OPTIONS = [{id:'followers',label:'Followers'}, {id:'fit',label:'Fit'}, {id:'connections',label:'Shared sources'}, {id:'equal',label:'Equal'}];
   const SIZE_HELP = {
     followers:'Size uses a modest saved-follower scale and shrinks gradually farther from you. Unknown follower counts stay unknown.',
@@ -287,7 +296,12 @@
     const weights=members.map((n,i)=>radiusFor(n,1,size)
       * (size==='equal'?1:1-.24*Math.pow(i/Math.max(1,count-1),.8)));
     const largest=weights.reduce((max,r)=>Math.max(max,r),0);
-    let scale=Math.min(.055*(1-1e-12)/largest,Math.sqrt(.5*(outer*outer-centre*centre)/weights.reduce((sum,r)=>sum+r*r,0)));
+    // The rim fall-off frees room at the edge; size the centre to use it, so the circle keeps its reach.
+    const area=outer*outer-centre*centre;
+    // Equal sizes stay exactly equal; every other size choice shrinks toward the rim.
+    const rimAt=size==='equal'?()=>1:d=>rimScale(d/outer);
+    const reach=weights.reduce((sum,r,i)=>{const rim=rimAt(Math.sqrt(centre*centre+area*(i+.5)/count));return sum+r*r*rim*rim;},0);
+    let scale=Math.min(.055*(1-1e-12)/largest,Math.sqrt(.5*area/reach));
     const candidateCount=Math.max(800,count*32);
     let slots=[];
     // Stream deterministic random-angle candidates rather than generating a
@@ -300,7 +314,7 @@
         seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;
         const angle=(seed>>>0)/4294967296*Math.PI*2;
         const d=Math.sqrt(centre*centre+(outer*outer-centre*centre)*(i+.5)/candidateCount);
-        const r=weights[slots.length]*scale;
+        const r=weights[slots.length]*scale*rimAt(d);
         if(d<centre+r || d+r>outer)continue;
         const x=.5+d*Math.cos(angle),y=.5+d*Math.sin(angle);
         const cx=Math.floor(x/cell),cy=Math.floor(y/cell);let overlap=false;
@@ -321,7 +335,7 @@
     }
     if(slots.length!==count)throw new Error('Could not space the loaded profiles.');
     const nodes=members.map((n,i)=>({...n,evidenceX:n.evidenceX??n.x,evidenceY:n.evidenceY??n.y,
-      x:slots[i].x,y:slots[i].y,cohort:true,portraitRadius:weights[i]*scale,spacing:largest*scale*2.12}));
+      x:slots[i].x,y:slots[i].y,cohort:true,portraitRadius:slots[i].r,spacing:largest*scale*2.12}));
     if(owner)nodes.push({...owner,x:.5,y:.5,cohort:true,spacing:largest*scale*2.12});
     return nodes;
   }
@@ -496,13 +510,14 @@
   // Greedy placement: highest priority first; each label tries right, left, above, below of its marker;
   // it is skipped when every spot collides. A coarse grid keeps the collision test cheap.
   class Labeler {
-    constructor(w, h, cell = 48) { this.w = w; this.h = h; this.cell = cell; this.grid = new Map(); this.out = []; }
+    constructor(w, h, cell = 48) { this.w = w; this.h = h; this.cell = cell; this.grid = new Map(); this.out = []; this.extra = undefined; }
     _keys(b, fn) {
       const c = this.cell;
       for (let gx = Math.floor(b[0] / c); gx <= Math.floor(b[2] / c); gx++) for (let gy = Math.floor(b[1] / c); gy <= Math.floor(b[3] / c); gy++) if (fn(gx + ',' + gy)) return true;
       return false;
     }
-    hit(b) { return this._keys(b, (k) => { const l = this.grid.get(k); if (!l) return false; for (const o of l) if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return true; return false; }); }
+    // `extra(box)` lets a caller report collisions with things it does not want to register one by one.
+    hit(b) { return this._keys(b, (k) => { const l = this.grid.get(k); if (!l) return false; for (const o of l) if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return true; return false; }) || (this.extra !== undefined && this.extra(b)); }
     block(b) { this._keys(b, (k) => { let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(b); return false; }); }
     // marker: {x, y, r}; size: {w, h}; prefer: side used last time, for stability.
     place(marker, size, prefer) {
@@ -519,7 +534,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, RIM_SCALE, rimScale, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

@@ -5,8 +5,14 @@
   'use strict';
   const Core = root.MapCore, { MapModel, VIEW_MODES } = root.MapModel;
   const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, radiusFor, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
+  const Render = root.MapRender || (typeof require === 'function' ? require('./map-render.js') : null);
   const TAU = Math.PI * 2;
   const doc = root.document;
+  // Pages up to this many people draw from pre-masked sprites (and a cached layer while the view
+  // only pans). Larger pages keep the cached overview raster, which holds every photo in one image.
+  const SPRITE_MAX = 4096;
+  // How far unrelated people fade while someone is selected (their share of full brightness).
+  const DIM = .26;
   // Stable ordering fills the overview across its whole disk without changing
   // which faces load first whenever the page count or paint order changes.
   function photoHash(value) {
@@ -103,9 +109,19 @@
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.model.cam.set(.5,.5,1.55);
-      this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
+      this.shown = false; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
+      // ?mapsprites=0 draws every portrait the way it was drawn before sprites, for comparison.
+      this.spritesOff = new URLSearchParams(root.location.search).get('mapsprites') === '0';
+      this.photoEpoch = 0; this.hoverPending = null; this.fs = null; this.grid = null; this.lastScale = null; this.paletteEpoch = 0;
+      if (Render) {
+        const makeCanvas = (w, h) => { const c = doc.createElement('canvas'); c.width = w; c.height = h; return c; };
+        this.clock = new Render.FrameClock((cb) => root.requestAnimationFrame(cb), (id) => root.cancelAnimationFrame && root.cancelAnimationFrame(id));
+        this.clock.onFrame = (t) => this.frame(t);
+        this.atlas = new Render.SpriteAtlas({ makeCanvas, max: SPRITE_MAX }); this.layer = new Render.PortraitLayer({ makeCanvas }); this.grid = new Render.CircleGrid();
+        this.atlas.onReset = () => this.restoreGraphics();
+      }
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: entry => { this.captureOverviewPortrait(entry); this.invalidate(); } });
+      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: entry => { this.captureOverviewPortrait(entry); this.photoEpoch++; this.invalidate('photo'); } });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -135,12 +151,12 @@
     /* ---------- lifecycle ---------- */
     show() {
       this.shown = true;
-      this.measure(true); this.readPalette();
+      this.measure(!this.sized); this.readPalette();
       this.model.pause(this.comparing);
       clearInterval(this.poller);
       this.poller = setInterval(() => { if (!doc.hidden && this.shown) this.model.poll(); }, 45000);
       if (!this.comparing) { if (this.model.phase === 'idle' || this.model.phase === 'error' || this.model.phase === 'offline') this.model.load(); }
-      this.invalidate();
+      this.invalidate('show');
     }
     hide() { this.finishNodeDrag(true); this.shown = false; clearInterval(this.poller); this.model.pause(true); this.closeResults(); this.hideTip(); }
     resize() { this.measure(false); }
@@ -151,6 +167,7 @@
       const narrow = root.matchMedia('(max-width: 760px)').matches, sheet = this.r.card.hidden || !narrow ? 0 : this.r.card.offsetHeight;
       if (w === cam.w && h === cam.h && dpr === this.dpr && cam.inset.bottom === sheet && !first) return;
       this.dpr = dpr; this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr);
+      this.layer?.invalidate();
       this.model.setSize(w, h);
       this.sized = true;
       const priorSheet = cam.inset.bottom;
@@ -158,7 +175,8 @@
       if (priorSheet !== sheet && this.model.selected && !this.model.universe) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
       this.measureHud();
       if (this.model.needsLoad() && !this.model.pending && this.shown && !this.comparing) this.model.schedule();
-      this.invalidate();
+      // Replacing the backing store blanks the canvas. Draw before the browser can show that.
+      if (this.shown) this.paintSync();
     }
     measureHud() {
       const legend = this.r.hud.getBoundingClientRect(), stage = this.r.canvasBox.getBoundingClientRect();
@@ -175,24 +193,33 @@
       };
       this.palette.tones.a = this.palette.accent;
       this.dark = doc.documentElement.dataset.theme !== 'light';
+      this.paletteEpoch++; this.layer?.invalidate();
       // The overview now contains actual photo pixels rather than themed dots.
       // Keep it and its pending image holds intact when the palette changes.
     }
 
     /* ---------- frame loop ---------- */
-    invalidate() { if (!this.raf && this.shown) this.raf = root.requestAnimationFrame((t) => this.frame(t)); }
+    get raf() { return this.clock ? this.clock.id : 0; }
+    // Ask for a repaint. Frames are only requested when something changed, so an idle map runs none.
+    invalidate(reason) { if (this.shown) this.clock.invalidate(reason); }
     frame(t) {
-      this.raf = 0;
       const dt = this.last ? Math.min(0.05, (t - this.last) / 1000) : 0.016; this.last = t;
       let busy = this.model.tick(t, dt);
-      const t0 = performance.now();
-      this.paintNow=t;
-      if (this.shown && this.sized) busy = this.paint(t, dt) || busy;
-      const ms = performance.now() - t0;
-      this.stats.frames++; this.stats.paintMs += (ms - this.stats.paintMs) * 0.1; this.stats.maxMs = Math.max(this.stats.maxMs * 0.995, ms); this.stats.last = ms;
-      if (!this.stats.drawTimes) this.stats.drawTimes=[]; this.stats.drawTimes.push(ms); if(this.stats.drawTimes.length>240)this.stats.drawTimes.shift();
-      if (busy) this.invalidate(); else this.last = 0;
+      if (this.hoverPending) this.applyHover();
+      // A frame asked for only to look at the pointer does not repaint the map.
+      if (this.clock.take() || busy) {
+        const t0 = performance.now();
+        this.paintNow = t;
+        if (this.shown && this.sized) busy = this.paint(t, dt) || busy;
+        const ms = performance.now() - t0;
+        this.stats.frames++; this.stats.paintMs += (ms - this.stats.paintMs) * 0.1; this.stats.maxMs = Math.max(this.stats.maxMs * 0.995, ms); this.stats.last = ms;
+        if (!this.stats.drawTimes) this.stats.drawTimes=[]; this.stats.drawTimes.push(ms); if(this.stats.drawTimes.length>240)this.stats.drawTimes.shift();
+      }
+      if (busy) this.invalidate('busy'); else this.last = 0;
     }
+    // Draw now instead of waiting for the next frame. A resized canvas is blank until redrawn, and
+    // waiting a frame would show that blank.
+    paintSync() { this.clock.stop(); this.clock.dirty = true; this.last = 0; this.frame(performance.now()); }
 
     /* ---------- painting ---------- */
     text(font, s) {
@@ -207,6 +234,7 @@
       ctx.clearRect(0, 0, W, H);
       if (m.universe) return this.paintUniverse(now, dt);
       if (!m.scene.nodes.length && !m.scene.clusters.length && !m.selected) { this.labelA.clear(); return false; }
+      if (this.spriteScene()) return this.paintCohort(now, dt);
       const sx = (x) => (x - cam.cx) * S + mx, sy = (y) => (y - cam.cy) * S + my;
       const lab = new Labeler(W, H);
       if (this.hud) lab.block([this.hud.x0, this.hud.y0, this.hud.x1, this.hud.y1]);
@@ -336,6 +364,340 @@
       this.renderCount(false);
       return this.labelsBusy;
     }
+    /* ---------- Sprite path: pages up to SPRITE_MAX people ----------
+     * Portraits are drawn from pre-masked sprites. While the camera only pans, the finished picture is
+     * kept in a layer and moved; anything that is still easing (photos fading in, a selection dimming
+     * the rest, a drag) is drawn directly each frame until it settles. */
+    spriteScene() {
+      const m = this.model, nodes = m.scene.nodes;
+      return !!(this.atlas && !this.spritesOff && !m.universe && nodes.length && nodes.length <= SPRITE_MAX && nodes[0].d.cohort);
+    }
+    ownerOf(m) {
+      return m.world && m.world.me && (m.world.layout === 'network_disk' || m.mode === 'closeness') ? m.world.me : null;
+    }
+    // Per-page data derived once from the scene: who is drawn and which photos they wait for.
+    syncFast() {
+      const m = this.model, scene = m.scene, me = this.ownerOf(m), ownerId = me ? String(me.id) : null;
+      let fs = this.fs;
+      if (fs && fs.scene === scene && fs.version === scene.version && fs.ownerId === ownerId) return fs;
+      const items = [], revealing = [];
+      let ownerItem = null;
+      for (const it of scene.nodes) {
+        if (ownerId !== null && String(it.d.id) === ownerId) { ownerItem = it; continue; }
+        if (it.ph === undefined) { it.lit = 1; it.litT = 1; it.spr = -1; it.ph = 0; it.ddx = 0; it.ddy = 0; }
+        if (it.ph === 1) revealing.push(it);
+        items.push(it);
+      }
+      fs = this.fs = {
+        scene, version: scene.version, ownerId, ownerItem, items, revealing, photoSeen: -1, relSel: undefined, relEdges: null,
+        litBusy: false, stateEpoch: 0, displaced: new Set(), push: new Map(), active: null, grow: 0, byDistance: null, byHash: null, pinned: null
+      };
+      this.layer.invalidate();
+      return fs;
+    }
+    gridFor(fs) {
+      const grid = this.grid, scene = this.model.scene;
+      if (grid.epoch !== scene.epoch || grid.source !== fs) {
+        grid.build(fs.items, (it) => it.d.portraitRadius || 0); grid.epoch = scene.epoch; grid.source = fs;
+      }
+      return grid;
+    }
+    // Move every easing quantity one step. Returns true while something is still changing.
+    advanceFast(fs, now, dt) {
+      const m = this.model, reduced = m.reduced, scene = m.scene, items = fs.items, portraits = this.portraits, atlas = this.atlas;
+      let busy = false;
+      const sel = m.selected;
+      // Selection focus, used to grow the selected portrait.
+      const ease = reduced ? 1 : 1 - Math.exp(-dt / .07), ft = sel ? 1 : 0;
+      this.focusMix = (this.focusMix || 0) + (ft - (this.focusMix || 0)) * ease;
+      if (Math.abs(this.focusMix - ft) > .005) busy = true; else this.focusMix = ft;
+      // Who stays bright. Each person eases on their own, so a neighbour whose line arrives a moment
+      // after the click brightens smoothly instead of jumping.
+      const edges = sel && m.connectionsVisible && m.edges && m.edges.id === sel.id && m.edges.state === 'ready' ? m.edges : null;
+      const selId = sel ? String(sel.id) : null;
+      if (fs.relSel !== selId || fs.relEdges !== edges) {
+        fs.relSel = selId; fs.relEdges = edges;
+        let related = null;
+        if (sel) {
+          related = new Set([selId]);
+          if (edges) for (const line of directedConnections(edges.lines, sel.id)) { related.add(String(line.selected.id)); related.add(String(line.other.id)); }
+        }
+        let changed = false;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i], t = related && !related.has(String(it.d.id)) ? DIM : 1;
+          if (it.litT !== t) { it.litT = t; changed = true; }
+        }
+        if (changed) fs.litBusy = true;
+        fs.stateEpoch++;
+      }
+      if (fs.litBusy) {
+        let any = false;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i], gap = it.litT - it.lit;
+          if (gap === 0) continue;
+          if (Math.abs(gap) < .004 || ease >= 1) it.lit = it.litT; else { it.lit += gap * ease; any = true; }
+        }
+        if (!any) { fs.litBusy = false; fs.stateEpoch++; } else busy = true;
+      }
+      // Photos: turn each decoded image into a sprite once, then let it fade in.
+      if (fs.photoSeen !== this.photoEpoch) {
+        fs.photoSeen = this.photoEpoch;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i], pic = it.d.pic;
+          if (it.ph === 3 && !pic) continue;
+          if ((it.ph === 1 || it.ph === 2) && atlas.owner[it.spr] === pic) continue;
+          let ph = 0;
+          if (!pic) ph = 3;
+          else {
+            const entry = portraits.entries.get(pic);
+            if (entry && entry.state === 'failed') ph = 3;
+            else if (entry && entry.state === 'ready' && entry.image) {
+              let slot = atlas.slotOf(pic);
+              if (slot < 0) slot = atlas.add(pic, entry.image, fs.pinned || (fs.pinned = new Set(items.map((x) => x.d.pic))));
+              if (slot >= 0) { it.spr = slot; ph = portraits.reveal(pic, now, reduced) >= 1 ? 2 : 1; }
+            }
+          }
+          if (ph !== it.ph) { it.ph = ph; fs.stateEpoch++; if (ph === 1) fs.revealing.push(it); }
+        }
+      }
+      if (fs.revealing.length) {
+        let w = 0;
+        for (let i = 0; i < fs.revealing.length; i++) {
+          const it = fs.revealing[i];
+          if (it.ph !== 1) continue;
+          if (portraits.reveal(it.d.pic, now, reduced) >= 1) { it.ph = 2; fs.stateEpoch++; } else { fs.revealing[w++] = it; busy = true; }
+        }
+        fs.revealing.length = w;
+      }
+      // The portrait being inspected grows a little, and its neighbours step aside.
+      const dragged = this.nodeDrag && scene.get(this.nodeDrag.d.id) === this.nodeDrag ? this.nodeDrag : null;
+      let active = dragged || (sel ? scene.get(sel.id) : null);
+      if (active && String(active.d.id) === fs.ownerId) active = null;
+      if (active) this.lastActive = active; else if (this.focusMix <= .005) this.lastActive = null;
+      const lead = active || (this.focusMix > .005 ? this.lastActive : null);
+      fs.active = lead && items.includes(lead) ? lead : null;
+      const grow = dragged ? .06 : .07 * this.focusMix;
+      if (fs.grow !== grow) { fs.grow = grow; fs.stateEpoch++; }
+      const push = fs.push; push.clear();
+      if (fs.active) {
+        const cam = m.cam, S = cam.scale, lead = fs.active, ar = lead.d.portraitRadius * S * (1 + grow), ax = (lead.x - cam.cx) * S, ay = (lead.y - cam.cy) * S;
+        const grid = this.gridFor(fs);
+        grid.near(lead.x, lead.y, (ar + 8) / S + grid.maxR * 2, (it) => {
+          if (it === lead || it.ta === 0) return;
+          const r = it.d.portraitRadius * S, x = (it.x - cam.cx) * S - ax, y = (it.y - cam.cy) * S - ay, d = Math.hypot(x, y), gap = ar + r + 4;
+          if (d > 0 && d < gap) { const p = Math.min(14, (gap - d) * .8); push.set(it, [x / d * p, y / d * p]); fs.displaced.add(it); }
+        });
+      }
+      if (fs.displaced.size) {
+        const k = reduced ? 1 : 1 - Math.exp(-dt / .06);
+        for (const it of fs.displaced) {
+          const t = push.get(it), tx = t ? t[0] : 0, ty = t ? t[1] : 0;
+          it.ddx += (tx - it.ddx) * k; it.ddy += (ty - it.ddy) * k;
+          if (Math.abs(it.ddx - tx) + Math.abs(it.ddy - ty) > .05) busy = true;
+          else { it.ddx = tx; it.ddy = ty; if (!t) fs.displaced.delete(it); }
+        }
+        fs.stateEpoch++;
+      }
+      if (this.nodeDrag || m.returningNode || scene.animating) busy = true;
+      return busy;
+    }
+    // Draw every visible portrait. (tx, ty) shifts the picture, (w, h) bound it: the screen for a direct
+    // draw, the screen plus its margin for the layer.
+    drawFast(ctx, fs, P, tx, ty, w, h, now) {
+      const m = this.model, cam = m.cam, S = cam.scale, mx = cam.mid[0] + tx - cam.cx * S, my = cam.mid[1] + ty - cam.cy * S;
+      const items = fs.items, atlas = this.atlas, portraits = this.portraits, reduced = m.reduced, dpr = this.dpr, lead = fs.active;
+      let alphaNow = -1;
+      const setAlpha = (a) => { if (a !== alphaNow) { ctx.globalAlpha = alphaNow = a; } };
+      // Confirmed-absent photos get a faint dot, drawn first so a portrait always covers it.
+      let dots = null;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.ph !== 3) continue;
+        const a = it.a * it.lit; if (a <= .002) continue;
+        const r = it.d.portraitRadius * S, x = it.x * S + mx + it.ddx, y = it.y * S + my + it.ddy;
+        if (x + r < 0 || y + r < 0 || x - r > w || y - r > h) continue;
+        (dots || (dots = [])).push(x, y, Math.max(.6, r * .32), a);
+      }
+      if (dots) {
+        ctx.fillStyle = P.fg3;
+        for (let i = 0, batch = -1; i < dots.length; i += 4) {
+          const a = Math.round(dots[i + 3] * 20) / 20;
+          if (a !== batch) { if (batch >= 0) ctx.fill(); batch = a; setAlpha(.18 * a); ctx.beginPath(); }
+          ctx.moveTo(dots[i] + dots[i + 2], dots[i + 1]); ctx.arc(dots[i], dots[i + 1], dots[i + 2], 0, TAU);
+          if (i + 4 >= dots.length) ctx.fill();
+        }
+      }
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i], ph = it.ph;
+        if (ph === 0 || ph === 3 || it === lead) continue;
+        let a = it.a * it.lit; if (a <= .002) continue;
+        let r = it.d.portraitRadius * S; const x = it.x * S + mx + it.ddx, y = it.y * S + my + it.ddy;
+        if (x + r < 0 || y + r < 0 || x - r > w || y - r > h) continue;
+        if (ph === 1) { const rev = portraits.reveal(it.d.pic, this.paintNow ?? now, reduced); a *= rev; r *= .88 + .12 * rev; }
+        setAlpha(a);
+        atlas.draw(ctx, it.spr, atlas.levelFor(r * 2 * dpr), x, y, r);
+      }
+      if (lead) {
+        const a = lead.a * lead.lit, r = lead.d.portraitRadius * S * (1 + fs.grow), x = lead.x * S + mx + lead.ddx, y = lead.y * S + my + lead.ddy;
+        if (lead.ph === 1 || lead.ph === 2) {
+          const rev = lead.ph === 1 ? portraits.reveal(lead.d.pic, this.paintNow ?? now, reduced) : 1;
+          setAlpha(a * rev); atlas.draw(ctx, lead.spr, atlas.levelFor(r * 2 * dpr), x, y, r * (.88 + .12 * rev));
+        } else if (lead.ph === 3) { setAlpha(.18 * a); ctx.fillStyle = P.fg3; ctx.beginPath(); ctx.arc(x, y, Math.max(.6, r * .32), 0, TAU); ctx.fill(); }
+      }
+      ctx.globalAlpha = 1;
+    }
+    layerKey(fs, edges) {
+      const m = this.model, sel = m.selected;
+      return `${m.scene.epoch}|${this.atlas.epoch}|${fs.stateEpoch}|${this.paletteEpoch}|${m.size}|${sel ? sel.id : ''}|${edges ? 1 : 0}`;
+    }
+    // Photos are requested for the people on screen, nearest the owner first, after the first 48 in a
+    // fixed shuffled order so a dense page fills evenly. Only recomputed when the view moved noticeably.
+    queueFast(fs, owner) {
+      const m = this.model, cam = m.cam, sel = m.selected;
+      const key = `${fs.version}|${Math.round(cam.cx * 40)},${Math.round(cam.cy * 40)}|${Math.round(Math.log2(cam.k) * 6)}|${cam.w}x${cam.h}|${sel ? sel.pic : ''}`;
+      if (this.queueKey === key) return;
+      this.queueKey = key;
+      const items = fs.items;
+      if (!fs.byDistance) {
+        const ox = owner ? owner.x : .5, oy = owner ? owner.y : .5;
+        fs.byDistance = items.slice().sort((a, b) => (a.x - ox) ** 2 + (a.y - oy) ** 2 - ((b.x - ox) ** 2 + (b.y - oy) ** 2));
+        fs.byHash = null;
+      }
+      const rect = cam.rect(), visible = (it) => it.ta !== 0 && it.x + it.d.portraitRadius >= rect.x0 && it.x - it.d.portraitRadius <= rect.x1 && it.y + it.d.portraitRadius >= rect.y0 && it.y - it.d.portraitRadius <= rect.y1;
+      const near = [];
+      for (const it of fs.byDistance) if (visible(it)) near.push(it);
+      let ordered = near;
+      if (near.length > 500) {
+        if (!fs.byHash) {
+          for (const it of items) it.photoOrder ??= photoHash(String(it.d.id) + '|' + (it.d.pic || ''));
+          fs.byHash = items.slice().sort((a, b) => a.photoOrder - b.photoOrder);
+        }
+        const first = new Set(near.slice(0, 48)), rest = [];
+        for (const it of fs.byHash) if (!first.has(it) && visible(it)) rest.push(it);
+        ordered = [...near.slice(0, 48), ...rest];
+      }
+      const urls = [owner && owner.pic, sel && sel.pic];
+      for (let i = 0; i < ordered.length && i < 4000; i++) urls.push(ordered[i].d.pic);
+      if (this.portraits.prioritize) this.portraits.prioritize(urls); else for (const url of urls) this.portraits.get(url);
+    }
+    paintCohort(now, dt) {
+      const ctx = this.ctx, P = this.palette, m = this.model, cam = m.cam, W = cam.w, H = cam.h, S = cam.scale, mx = cam.mid[0], my = cam.mid[1];
+      const sx = (x) => (x - cam.cx) * S + mx, sy = (y) => (y - cam.cy) * S + my;
+      const sel = m.selected, me = this.ownerOf(m), k = cam.k;
+      const t0 = performance.now();
+      const fs = this.syncFast();
+      let busy = this.advanceFast(fs, now, dt);
+      this.queueFast(fs, me);
+      const t1 = performance.now();
+      this.displayMarks = null;
+      const edges = m.connectionsVisible && m.edges && sel && m.edges.id === sel.id ? m.edges : null;
+      const font = (w, px) => `${w} ${px}px ${P.sans}`;
+      // Lines first, so portraits cover their ends. Lines that go away fade out instead of vanishing.
+      if (edges && edges.state === 'ready') { const g = this.edgeGhost || (this.edgeGhost = {}); g.edges = edges; g.sel = sel; g.from = 0; }
+      else if (this.edgeGhost && !this.edgeGhost.from) this.edgeGhost.from = now;
+      if (edges && edges.state === 'ready') this.paintEdges(ctx, P, edges, sx, sy, now, sel);
+      else if (this.edgeGhost) {
+        const g = this.edgeGhost, left = 1 - (now - g.from) / 160;
+        if (left > 0 && !m.reduced && m.scene.get(g.sel.id)) { this.paintEdges(ctx, P, g.edges, sx, sy, now, g.sel, left); busy = true; } else this.edgeGhost = null;
+      }
+      const zooming = this.lastScale !== null && Math.abs(this.lastScale - S) > 1e-9;
+      this.lastScale = S;
+      if (!busy && !zooming) {
+        const key = this.layerKey(fs, edges), layer = this.layer;
+        if (!layer.usable(cam, this.dpr, key)) {
+          const lctx = layer.begin(cam, this.dpr, key);
+          this.drawFast(lctx, fs, P, layer.margin, layer.margin, W + layer.margin * 2, H + layer.margin * 2, now);
+          this.stats.layerDraws = (this.stats.layerDraws || 0) + 1;
+        }
+        layer.blit(ctx, cam);
+      } else {
+        this.layer.invalidate();
+        this.drawFast(ctx, fs, P, 0, 0, W, H, now);
+      }
+      const t2 = performance.now();
+      // The owner is always drawn on top at a fixed on-screen size.
+      let ownerCaption = null, ownerBox = null;
+      if (me) {
+        const x = sx(me.x), y = sy(me.y), ownerRadius = Math.min(28, OWNER_RADIUS * k);
+        ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
+        this.paintPortrait(ctx, P, me, x, y, ownerRadius, true, true);
+        const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
+        ownerCaption = { x, y: y + ownerRadius + 16, text };
+        ownerBox = [[x - ownerRadius - 2, y - ownerRadius - 2, x + ownerRadius + 2, y + ownerRadius + 2], [x - width / 2 - 4, y + ownerRadius + 7, x + width / 2 + 4, y + ownerRadius + 25]];
+      }
+      // Labels. A box may not cover a portrait: asked of the grid, not of every portrait in turn.
+      const lab = new Labeler(W, H), want = [];
+      if (this.hud) lab.block([this.hud.x0, this.hud.y0, this.hud.x1, this.hud.y1]);
+      if (ownerBox) for (const box of ownerBox) lab.block(box);
+      const grid = this.gridFor(fs);
+      lab.extra = (b) => {
+        let hit = false;
+        const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2, wx = (cx - mx) / S + cam.cx, wy = (cy - my) / S + cam.cy;
+        grid.near(wx, wy, Math.max(b[2] - b[0], b[3] - b[1]) / 2 / S, (it) => {
+          if (hit || it.ta === 0) return;
+          const r = it.d.portraitRadius * S + 2, x = sx(it.x) + it.ddx, y = sy(it.y) + it.ddy;
+          if (x + r > b[0] && x - r < b[2] && y + r > b[1] && y - r < b[3]) hit = true;
+        });
+        return hit;
+      };
+      if (edges && edges.state === 'ready') for (const n of edges.seeds.filter((n) => m.scene.get(n.id))) {
+        const placed = m.scene.get(n.id) || n;
+        want.unshift({ key: 'e:' + n.id, text: '@' + n.handle, x: sx(placed.x), y: sy(placed.y), r: 5, w: 500 });
+      }
+      if (sel) {
+        const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x) + (it?.ddx || 0), y = sy(it ? it.y : sel.y) + (it?.ddy || 0);
+        const r = (it?.d.portraitRadius ? Math.max(2, it.d.portraitRadius * S) * (1 + (fs.active === it ? fs.grow : 0)) : radiusFor(sel, k, m.size));
+        if (!it || !fs.items.includes(it)) this.paintPortrait(ctx, P, sel, x, y, r, true);
+        if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || (sel.compact ? 'Saved profile' : '@' + sel.handle), x, y, r: r + 6, w: 600, strong: true });
+      }
+      const maxPeople = clamp(Math.round(W * H / 80000 * Math.min(k, 2)), 3, 12);
+      let np = 0; const peoplePerGroup = new Map();
+      for (let i = 0; i < fs.items.length && np < maxPeople; i++) {
+        const it = fs.items[i], d = it.d;
+        if (d.compact || it.a < 0.9 || it.ta === 0 || (sel && d.id === sel.id)) continue;
+        if (cam.k < 2.5 && (peoplePerGroup.get(d.cluster) || 0) >= 2) continue;
+        const x = sx(it.x), y = sy(it.y);
+        if (x < 8 || y < 8 || x > W - 8 || y > H - 8) continue;
+        want.push({ key: 'n:' + d.id, text: d.name || '@' + d.handle, x, y, r: d.portraitRadius * S + 2, w: 500, dimmed: !!edges });
+        np++; peoplePerGroup.set(d.cluster, (peoplePerGroup.get(d.cluster) || 0) + 1);
+      }
+      this.paintLabels(ctx, P, lab, want, dt);
+      if (ownerCaption) {
+        ctx.font = font(600, 12); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.strokeStyle = P.bg; ctx.lineWidth = 4; ctx.strokeText(ownerCaption.text, ownerCaption.x, ownerCaption.y);
+        ctx.fillStyle = P.fg; ctx.fillText(ownerCaption.text, ownerCaption.x, ownerCaption.y); ctx.textAlign = 'left';
+      }
+      this.renderCount(false);
+      const t3 = performance.now();
+      this.stats.advanceMs = t1 - t0; this.stats.drawMs = t2 - t1; this.stats.overlayMs = t3 - t2;
+      return busy || this.labelsBusy;
+    }
+    // Which portrait is under the pointer. Asked of the grid in world space, so cost does not grow with the page.
+    pickFast(px, py) {
+      const m = this.model, cam = m.cam, fs = this.fs, S = cam.scale;
+      if (!fs || fs.scene !== m.scene) return null;
+      const reach = this.touch ? 16 : 9, make = (it, x, y, r) => ({ kind: 'n', it, x, y, r });
+      const at = (it) => { const r = it.d.portraitRadius * S; return [(it.x - cam.cx) * S + cam.mid[0] + (it.ddx || 0), (it.y - cam.cy) * S + cam.mid[1] + (it.ddy || 0), r]; };
+      const lead = fs.active;
+      if (lead) { const [x, y, r] = at(lead), grown = r * (1 + fs.grow); if (Math.hypot(x - px, y - py) <= grown + 3) return make(lead, x, y, grown); }
+      const moving = this.nodeDrag || m.returningNode;
+      if (moving) { const [x, y, r] = at(moving); if (Math.hypot(px - x, py - y) <= r) return make(moving, x, y, r); }
+      if (fs.ownerItem) {
+        const o = fs.ownerItem, [x, y] = at(o), r = Math.min(28, OWNER_RADIUS * cam.k);
+        if (Math.hypot(px - x, py - y) <= r) return make(o, x, y, r);
+      }
+      const [wx, wy] = cam.toWorld(px, py);
+      let body = null, bodyD = Infinity, nearest = null, nearestD = Infinity, nx = 0, ny = 0, nr = 0, bx = 0, by = 0, br = 0;
+      this.gridFor(fs).near(wx, wy, reach / S, (it) => {
+        if (it.ta === 0) return;
+        const [x, y, r] = at(it), d = Math.hypot(x - px, y - py);
+        if (d <= r) { if (d < bodyD) { body = it; bodyD = d; bx = x; by = y; br = r; } }
+        else if (d <= Math.max(r + 3, reach) && d < nearestD) { nearest = it; nearestD = d; nx = x; ny = y; nr = r; }
+      });
+      if (body) return make(body, bx, by, br);
+      return nearest ? make(nearest, nx, ny, nr) : null;
+    }
+
     paintUniverse(now, dt) {
       const m=this.model, cam=m.cam, ctx=this.ctx, P=this.palette;
       m.universe.render(cam);
@@ -532,9 +894,9 @@
       }
       ctx.globalAlpha = 1;
     }
-    paintEdges(ctx, P, edges, sx, sy, now, sel) {
+    paintEdges(ctx, P, edges, sx, sy, now, sel, fade = 1) {
       const a = clamp((now - this.edgeAt) / 260, 0, 1), reduced = this.model.reduced;
-      ctx.globalAlpha = (reduced ? 1 : a) * .7;
+      ctx.globalAlpha = (reduced ? 1 : a) * .7 * fade;
       for (const line of directedConnections(edges.lines, sel.id)) {
         const from = this.model.scene.get(line.selected.id) || line.selected;
         const to = this.model.scene.get(line.other.id) || line.other;
@@ -591,6 +953,7 @@
         const [x,y]=this.model.cam.toScreen(person.x,person.y);
         return {kind:'n',it:{d:person,x:person.x,y:person.y},x,y,r:Math.max(3,(person.portraitRadius||0)*this.model.cam.scale)};
       }
+      if (this.fs && this.spriteScene()) return this.pickFast(px, py);
       const plan = this.displayMarks; if (!plan) return null;
       const selected=plan.nodes.find(mark=>String(mark.it.d.id)===String(this.model?.selected?.id));
       if(selected && Math.hypot(selected.x-px,selected.y-py)<=selected.r+3)return selected;
@@ -690,7 +1053,7 @@
       c.addEventListener('pointerup', end);
       const cancel = () => { this.finishNodeDrag(true); pts.clear(); pinch=null; drag=null; m.interruptCamera(); c.classList.remove('drag'); };
       c.addEventListener('pointercancel', cancel); c.addEventListener('lostpointercapture', (e) => { if (pts.has(e.pointerId)) cancel(); });
-      c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { this.hover = null; this.hideTip(); this.invalidate(); } });
+      c.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { const group = this.hover?.kind === 'c'; this.hover = null; this.hideTip(); if (group) this.invalidate('hover'); } });
       c.addEventListener('wheel', (e) => {
         e.preventDefault();
         const [x, y] = pos(e), unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 300 : 1;
@@ -739,6 +1102,22 @@
       root.addEventListener('online', () => { if (this.shown && (m.phase === 'offline' || m.phase === 'error' || m.stale)) m.retry(); });
       new MutationObserver(() => { this.readPalette(); this.renderLegend(); this.invalidate(); }).observe(doc.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
       if (root.matchMedia) root.matchMedia('(prefers-reduced-motion: reduce)').addEventListener?.('change', (e) => { m.reduced = e.matches; });
+      // Moving the window to another display, or zooming the page, changes the pixel ratio without resizing the box.
+      const watchRatio = () => {
+        const query = root.matchMedia && root.matchMedia(`(resolution: ${root.devicePixelRatio}dppx)`);
+        if (query && query.addEventListener) query.addEventListener('change', () => { this.measure(false); watchRatio(); }, { once: true });
+      };
+      watchRatio();
+      doc.addEventListener('visibilitychange', () => { if (!doc.hidden && this.shown) this.invalidate('visible'); });
+      // A lost canvas context comes back empty: redraw everything, and rebuild the sprites from the photo cache.
+      c.addEventListener('contextlost', (e) => e.preventDefault());
+      c.addEventListener('contextrestored', () => this.restoreGraphics());
+    }
+    restoreGraphics() {
+      if (this.atlas) this.atlas.reset();
+      if (this.layer) this.layer.invalidate();
+      this.photoEpoch++; this.palette = null;
+      this.invalidate('restore');
     }
     zoomCentre(f) { const [mx, my] = this.model.cam.mid; this.model.zoomBy(f, mx, my); this.invalidate(); }
     key(e, onCanvas) {
@@ -752,16 +1131,23 @@
       else if (e.key === 'Escape') { if (m.deselect()) { e.preventDefault(); e.stopPropagation(); } }
       else if (/^[0-5]$/.test(e.key) && m.selected) { e.stopPropagation(); this.setStatus(m.selected, e.key === '0' ? null : this.host.statuses[+e.key - 1]); }
     }
-    hoverAt(x, y, e) {
+    // Pointer moves are noted and handled once per frame, whatever the mouse's report rate.
+    hoverAt(x, y) { this.hoverPending = [x, y]; this.clock.wake(); }
+    applyHover() {
+      const [x, y] = this.hoverPending; this.hoverPending = null;
       const hit = this.pick(x, y), prev = this.hover;
       const same = hit && prev && hit.it.d.id === prev.it.d.id;
       this.hover = hit;
-      this.canvas.style.cursor = hit?.kind === 'n' && String(hit.it.d.id) !== String(this.model.world.me?.id) ? 'grab' : hit ? 'pointer' : '';
-      if (!hit) { this.hideTip(); if (prev) this.invalidate(); return; }
+      const cursor = hit?.kind === 'n' && String(hit.it.d.id) !== String(this.model.world.me?.id) ? 'grab' : hit ? 'pointer' : '';
+      if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor;
+      // Only summary bubbles change how they are painted when hovered; portraits do not.
+      const repaint = hit?.kind === 'c' || prev?.kind === 'c';
+      if (!hit) { this.hideTip(); if (repaint) this.invalidate('hover'); return; }
       if (!same) this.showTip(hit);
-      const tip = this.r.tip, box = this.r.canvasBox;
-      tip.style.transform = `translate(${Math.round(Math.min(x + 14, box.clientWidth - tip.offsetWidth - 8))}px, ${Math.round(Math.min(y + 14, box.clientHeight - tip.offsetHeight - 8))}px)`;
-      if (!same) this.invalidate();
+      const tip = this.r.tip, box = this.r.canvasBox, size = this.tipSize || [0, 0];
+      const transform = `translate(${Math.round(Math.min(x + 14, box.clientWidth - size[0] - 8))}px, ${Math.round(Math.min(y + 14, box.clientHeight - size[1] - 8))}px)`;
+      if (this.tipTransform !== transform) { this.tipTransform = transform; tip.style.transform = transform; }
+      if (!same && repaint) this.invalidate('hover');
     }
     showTip(hit) {
       const tip = this.r.tip, d = hit.it.d;
@@ -774,8 +1160,9 @@
         if (d.status) tip.append(h('span', { text: SLABEL(d.status) }));
       }
       tip.hidden = false;
+      this.tipSize = [tip.offsetWidth, tip.offsetHeight];   // measured once per tip, not on every move
     }
-    hideTip() { this.r.tip.hidden = true; }
+    hideTip() { this.hoverPending = null; this.r.tip.hidden = true; }
     activate(hit) {
       this.hover = null; this.hideTip();
       const m = this.model;
