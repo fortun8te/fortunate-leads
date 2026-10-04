@@ -168,6 +168,34 @@ class PictureTest(Base):
             self.assertEqual(response.headers['Cache-Control'], 'no-cache')
             self.assertEqual(response.headers['Content-Type'], 'image/jpeg')
 
+        self.conn.execute('UPDATE people SET pic_file=NULL WHERE id=?', (pid,))
+        self.conn.commit()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/img/{pid}")
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
+    def test_ownership_connection_tracks_database_replacement(self):
+        import sqlite3
+        from pathlib import Path
+        cache = server.PictureOwnership()
+        path = Path(server.CFG['db']).parent / 'ownership.sqlite'
+        replacement = path.with_name('replacement.sqlite')
+        try:
+            for target, filename in ((path, '1.jpg'), (replacement, None)):
+                conn = sqlite3.connect(target)
+                try:
+                    conn.execute('CREATE TABLE people(id INTEGER PRIMARY KEY, pic_file TEXT)')
+                    conn.execute('INSERT INTO people VALUES(1, ?)', (filename,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            self.assertTrue(cache.owns(path, '1'))
+            os.replace(replacement, path)
+            self.assertFalse(cache.owns(path, '1'))
+        finally:
+            cache.close()
+
     def test_corrupt_cached_file_is_replaced(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
         self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))

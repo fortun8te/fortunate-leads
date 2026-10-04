@@ -106,7 +106,7 @@ test('modest owner portrait keeps its fixed identity caption clear', () => {
   }
 });
 
-test('stable cohorts draw every member at every zoom without collision culling',()=>{
+test('stable cohorts retain every member while painting only the visible viewport',()=>{
  const {cohortLayout,displayPlan,Camera,Scene,followRing}=require('../web/map-core.js');
  for(const count of [250,500,1000]) {
   const people=Array.from({length:count},(_,i)=>({id:i+1,closeness:i/count,rank:i/count,followers:i*1000}));
@@ -121,7 +121,10 @@ test('stable cohorts draw every member at every zoom without collision culling',
   const members=before.nodes.filter(n=>n.it.d.id!==0);
   for(let i=0;i<members.length;i++)for(let j=i+1;j<members.length;j++)assert.ok(Math.hypot(members[i].x-members[j].x,members[i].y-members[j].y)>members[i].r+members[j].r);
   const ids=before.nodes.map(n=>n.it.d.id);cam.set(.65,.3,4);
-  assert.deepEqual(displayPlan(scene,cam,[],null,null,0).nodes.map(n=>n.it.d.id),ids);
+  const close=displayPlan(scene,cam,[],null,null,0).nodes;
+  assert.ok(close.length<ids.length,'offscreen portraits are not repainted');
+  assert.ok(close.every(mark=>mark.x+mark.r>=0 && mark.y+mark.r>=0 && mark.x-mark.r<=cam.w && mark.y-mark.r<=cam.h));
+  assert.deepEqual(scene.nodes.map(n=>n.d.id),ids,'pan and zoom preserve page membership');
  }
  assert.equal(followRing({status:'client'}),'unknown');assert.equal(followRing({followed:true}),'outgoing');assert.equal(followRing({follows_me:true}),'incoming');assert.equal(followRing({followed:true,follows_me:true}),'mutual');
 });

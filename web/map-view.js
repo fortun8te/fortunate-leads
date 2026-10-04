@@ -7,6 +7,15 @@
   const { OWNER_RADIUS, LEGENDS, FIT_LABEL, STATUS_LABEL, int, plural, compact, clamp, Labeler, whyLine, radiusFor, displayPlan, PortraitCache, SIZE_OPTIONS, SIZE_HELP } = Core;
   const TAU = Math.PI * 2;
   const doc = root.document;
+  // Stable ordering fills the overview across its whole disk without changing
+  // which faces load first whenever the page count or paint order changes.
+  function photoHash(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+    hash ^= hash >>> 16;
+    hash = Math.imul(hash, 0x7feb352d);
+    return (hash ^ (hash >>> 15)) >>> 0;
+  }
 
   const h = (tag, attrs, ...kids) => {
     const el = doc.createElement(tag);
@@ -24,7 +33,8 @@
     if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
-  const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000].includes(n)?n:500; } catch (_) { return 500; } };
+  const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000,5000,10000,20000].includes(n)?n:500; } catch (_) { return 500; } };
+  const savedSize = () => { try { return root.localStorage?.getItem('fortunate.map.size'); } catch (_) { return null; } };
   const savedViewMode = () => { try { return root.localStorage?.getItem('fortunate.map.view'); } catch (_) { return null; } };
   const reducedMotion = () => !!(root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const SLABEL = (s) => STATUS_LABEL[s] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
@@ -89,13 +99,13 @@
       const Model = MapModel;
       this.model = new Model({
         container: refs.canvasBox,
-        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
+        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), size: savedSize(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.model.cam.set(.5,.5,1.55);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ max:3072, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: () => this.invalidate() });
+      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: entry => { this.captureOverviewPortrait(entry); this.invalidate(); } });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();
@@ -109,7 +119,7 @@
     onModel(what) {
       if (what === 'density') { try { root.localStorage?.setItem('fortunate.map.count', String(this.model.density)); } catch (_) {} }
       if (what === 'scene' || what === 'mode') this.finishNodeDrag(true);
-      if (what === 'size') { this.renderLegend(); this.invalidate(); }
+      if (what === 'size') { try { root.localStorage?.setItem('fortunate.map.size', this.model.size); } catch (_) {} if(this.sizeEncoding)this.sizeEncoding.value=this.model.size; this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
       if (what === 'edges') { this.edgeAt = performance.now(); this.renderSeeds(); }
       if (what === 'phase' || what === 'scene') { this.renderModes(); this.renderLegend(); this.renderState(); this.renderCount(); }
@@ -147,7 +157,7 @@
       cam.inset = { top: 0, right: 0, bottom: sheet, left: 0 };
       if (priorSheet !== sheet && this.model.selected && !this.model.universe) { const it = this.model.scene.get(this.model.selected.id); if (it) this.ensureVisible(it); }
       this.measureHud();
-      if (this.model.needsLoad() && this.shown && !this.comparing) this.model.schedule();
+      if (this.model.needsLoad() && !this.model.pending && this.shown && !this.comparing) this.model.schedule();
       this.invalidate();
     }
     measureHud() {
@@ -164,7 +174,9 @@
         tones: { t0: tone(0.12), t1: tone(0.26), t2: tone(0.38), t3: tone(0.5), t4: tone(0.6), t5: tone(0.68) }
       };
       this.palette.tones.a = this.palette.accent;
-      this.dark = doc.documentElement.dataset.theme !== 'light'; this.overviewRaster = null;
+      this.dark = doc.documentElement.dataset.theme !== 'light';
+      // The overview now contains actual photo pixels rather than themed dots.
+      // Keep it and its pending image holds intact when the palette changes.
     }
 
     /* ---------- frame loop ---------- */
@@ -174,6 +186,7 @@
       const dt = this.last ? Math.min(0.05, (t - this.last) / 1000) : 0.016; this.last = t;
       let busy = this.model.tick(t, dt);
       const t0 = performance.now();
+      this.paintNow=t;
       if (this.shown && this.sized) busy = this.paint(t, dt) || busy;
       const ms = performance.now() - t0;
       this.stats.frames++; this.stats.paintMs += (ms - this.stats.paintMs) * 0.1; this.stats.maxMs = Math.max(this.stats.maxMs * 0.995, ms); this.stats.last = ms;
@@ -260,7 +273,7 @@
       const me = m.world && m.world.me && (disk || mode === 'closeness') ? m.world.me : null;
       let ownerCaption = null;
       this.queuePortraits(plan.nodes, me);
-      let photoBudget = 3001;
+      let photoBudget = 4000;
       for (const mark of plan.nodes) {
         const {it, x, y, r} = mark, d = it.d;
         if (me && d.id === me.id) continue;
@@ -272,7 +285,7 @@
         const x = sx(me.x), y = sy(me.y);
         ctx.strokeStyle = P.line3; ctx.lineWidth = 1;
 
-        const ownerRadius=m.scene.large?OWNER_RADIUS:Math.min(28,OWNER_RADIUS*k);
+        const ownerRadius=Math.min(28,OWNER_RADIUS*k);
         this.paintPortrait(ctx, P, me, x, y, ownerRadius, true, true);
         const text = 'You · ' + (me.name || '@' + me.handle), width = this.text(font(600, 12), text);
         ownerCaption = { x, y: y + ownerRadius + 16, text };
@@ -338,47 +351,138 @@
       this.paintLabels(ctx,P,lab,want,dt);
       return this.labelsBusy;
     }
-    paintLargeOverview(ctx, P, plan) {
-      const m=this.model,cam=m.cam,ownerId=String(m.world.me?.id);
-      ctx.fillStyle=P.fg3;
-      if (plan.vector) {
-        ctx.beginPath();
-        for(const mark of plan.marks) { if(String(mark.it.d.id)===ownerId)continue; ctx.moveTo(mark.x+mark.r,mark.y);ctx.arc(mark.x,mark.y,mark.r,0,TAU); }
-        ctx.fill(); return;
+    captureOverviewPortrait(entry) {
+      const atlas=this.overviewRaster;
+      if(!atlas || atlas.version!==this.model.scene.version)return;
+      if(entry?.state!=='ready' && entry?.state!=='failed')return;
+      for(const it of atlas.byPic.get(entry.url)||[]) {
+        const id=String(it.d.id);
+        if(!atlas.complete.has(id)){if(entry.state==='ready')entry.retained=true;atlas.incoming.set(id,entry);}
       }
-      if (!this.overviewRaster || this.overviewRaster.version!==m.scene.version) {
-        const start=performance.now(),side=2048,canvas=doc.createElement('canvas');canvas.width=side;canvas.height=side;
-        const draw=canvas.getContext('2d');draw.fillStyle=P.fg3;
-        for(let offset=0;offset<m.scene.nodes.length;offset+=2048) {
-          draw.beginPath();
-          for(const it of m.scene.nodes.slice(offset,offset+2048)) {
-            if(String(it.d.id)===ownerId)continue;
-            const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
-            draw.moveTo(x+r,y);draw.arc(x,y,r,0,TAU);
-          }
-          draw.fill();
+    }
+    prepareOverview() {
+      const m=this.model,previous=this.overviewRaster;
+      if(previous?.version===m.scene.version)return previous;
+      for(const entry of previous?.incoming.values()||[])entry.retained=false;
+      const side=2048,canvas=doc.createElement('canvas');canvas.width=side;canvas.height=side;
+      const atlas={canvas,draw:canvas.getContext('2d'),version:m.scene.version,nodes:new Map(),byPic:new Map(),positions:new Map(),complete:new Set(),incoming:new Map(),order:[],cursor:0};
+      const ownerId=String(m.world.me?.id);
+      for(const it of m.scene.nodes) {
+        if(String(it.d.id)===ownerId || it.ta===0)continue;
+        const id=String(it.d.id),pic=/^\/img\/\d+$/.test(it.d.pic||'')?it.d.pic:null;
+        atlas.nodes.set(id,it);atlas.positions.set(id,{x:it.x,y:it.y,r:it.d.portraitRadius,pic});
+        if(pic) {if(!atlas.byPic.has(pic))atlas.byPic.set(pic,[]);atlas.byPic.get(pic).push(it);}
+        else atlas.incoming.set(id,{state:'failed',image:null});
+        const old=previous?.positions.get(id);
+        if(old && old.pic===pic && previous.complete.has(id)) {
+          // Preserve rendered photos when view or sizing changes. The overview
+          // needs its old pixels, not another decoded image or a disappearance.
+          const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
+          const ox=old.x*side,oy=old.y*side,or=old.r*side;
+          atlas.draw.save();atlas.draw.beginPath();atlas.draw.arc(x,y,r,0,TAU);atlas.draw.clip();
+          atlas.draw.drawImage(previous.canvas,ox-or,oy-or,or*2,or*2,x-r,y-r,r*2,r*2);atlas.draw.restore();
+          atlas.complete.add(id);atlas.incoming.delete(id);
         }
-        this.overviewRaster={canvas,version:m.scene.version};this.stats.rasterMs=performance.now()-start;
       }
-      const [x,y]=cam.toScreen(0,0);ctx.drawImage(this.overviewRaster.canvas,x,y,cam.scale,cam.scale);
+      // Stable shuffled loading fills the whole disk progressively. The same
+      // photo URL can belong to several people; each keeps its own position.
+      atlas.order=[...atlas.byPic.keys()].map(url=>({url,hash:photoHash(url)})).sort((a,b)=>a.hash-b.hash).map(item=>item.url);
+      this.overviewRaster=atlas;
+      for(const entry of this.portraits.entries.values())this.captureOverviewPortrait(entry);
+      return atlas;
+    }
+    paintMissingPortrait(ctx,P,x,y,r) {
+      // A confirmed absent photo gets a faint small individual mark. Pending
+      // photos never turn into bright placeholder circles or a grey wall.
+      ctx.save();ctx.globalAlpha*=.18;ctx.fillStyle=P.fg3;
+      ctx.beginPath();ctx.arc(x,y,Math.max(.6,r*.32),0,TAU);ctx.fill();ctx.restore();
+    }
+    paintLargeOverview(ctx, P, plan) {
+      const start=performance.now(),m=this.model,cam=m.cam,atlas=this.prepareOverview(),side=atlas.canvas.width;
+      const now=this.paintNow??performance.now();
+      for(const [id,entry] of atlas.incoming) {
+        const it=atlas.nodes.get(id),image=entry.image;
+        if(!it){atlas.incoming.delete(id);continue;}
+        const x=it.x*side,y=it.y*side,r=it.d.portraitRadius*side;
+        if(entry.state==='failed') {
+          this.paintMissingPortrait(atlas.draw,P,x,y,r);atlas.complete.add(id);atlas.incoming.delete(id);continue;
+        }
+        if(!image || !(image.naturalWidth||image.width) || !(image.naturalHeight||image.height)) {
+          entry.retained=false;atlas.incoming.delete(id);
+          // A detached bitmap from an earlier scene must be fetched again. Do
+          // not let one expired image throw and stop the whole frame loop.
+          if(this.portraits.entries.get(entry.url)===entry)this.portraits.entries.delete(entry.url);
+          const at=atlas.order.indexOf(entry.url);if(at>=0)atlas.cursor=Math.min(atlas.cursor,at);
+          this.invalidate();continue;
+        }
+        const reveal=m.reduced?1:Core.easeOut((now-entry.readyAt)/280);
+        if(reveal<1 || it.a<.99) {
+          const [x,y]=cam.toScreen(it.x,it.y);
+          ctx.globalAlpha=it.a;this.paintPortrait(ctx,P,it.d,x,y,it.d.portraitRadius*cam.scale,true);this.invalidate();
+          continue;
+        }
+        const width=image.naturalWidth||image.width,height=image.naturalHeight||image.height,crop=Math.min(width,height);
+        atlas.draw.save();atlas.draw.beginPath();atlas.draw.arc(x,y,r,0,TAU);atlas.draw.clip();
+        atlas.draw.drawImage(image,(width-crop)/2,(height-crop)/2,crop,crop,x-r,y-r,r*2,r*2);atlas.draw.restore();
+        atlas.complete.add(id);atlas.incoming.delete(id);entry.retained=false;
+      }
+      if(atlas.cursor<atlas.order.length && atlas.incoming.size===0 && !this.portraits.active)this.invalidate();
+      ctx.globalAlpha=1;
+      const [x,y]=cam.toScreen(0,0);ctx.drawImage(atlas.canvas,x,y,cam.scale,cam.scale);
+      this.stats.rasterMs=performance.now()-start;
     }
     queuePortraits(nodes, owner) {
-      if (owner) this.portraits.get(owner.pic);
-      const x = owner?.x ?? .5, y = owner?.y ?? .5;
-      const distance = mark => (mark.it.x - x) ** 2 + (mark.it.y - y) ** 2;
-      for (const mark of [...nodes].sort((a, b) => distance(a) - distance(b)).slice(0, 3001)) {
-        this.portraits.get(mark.it.d.pic);
+      if(owner)this.portraits.get(owner.pic);
+      const x=owner?.x??.5,y=owner?.y??.5;
+      const distance=mark=>(mark.it.x-x)**2+(mark.it.y-y)**2;
+      const selected=this.model?.selected?.pic;
+      if(!this.model?.scene?.large && this.overviewRaster) {
+        for(const entry of this.overviewRaster.incoming.values())entry.retained=false;
+        this.overviewRaster.incoming.clear();
       }
+      let ordered=[...nodes].sort((a,b)=>distance(a)-distance(b));
+      if(ordered.length>500) {
+        const priority=ordered.slice(0,48),rest=ordered.slice(48);
+        for(const mark of rest)mark.it.photoOrder??=photoHash(String(mark.it.d.id)+'|'+(mark.it.d.pic||''));
+        rest.sort((a,b)=>a.it.photoOrder-b.it.photoOrder);ordered=[...priority,...rest];
+      }
+      const urls=[owner?.pic,selected,...ordered.slice(0,4000).map(mark=>mark.it.d.pic)];
+      if(this.model?.scene?.large) {
+        const atlas=this.prepareOverview();
+        const finished=url=>(atlas.byPic.get(url)||[]).every(it=>atlas.complete.has(String(it.d.id)));
+        while(atlas.cursor<atlas.order.length) {
+          const url=atlas.order[atlas.cursor],entry=this.portraits.entries.get(url);
+          if(!finished(url) && entry?.state!=='ready' && entry?.state!=='failed')break;
+          atlas.cursor++;
+        }
+        // A moving bounded window streams all saved photos into the persistent
+        // raster. Pan and zoom promote readable photos without erasing others.
+        for(let i=atlas.cursor;i<Math.min(atlas.order.length,atlas.cursor+128);i++)
+          if(!finished(atlas.order[i]))urls.push(atlas.order[i]);
+      }
+      if(this.portraits.prioritize)this.portraits.prioritize(urls);
+      else for(const url of urls)this.portraits.get(url);
+      if(this.model?.scene?.large)for(const url of urls)this.captureOverviewPortrait(this.portraits.entries.get(url));
     }
     paintPortrait(ctx, P, person, x, y, radius, requestPhoto, owner = false) {
-      const image = requestPhoto ? this.portraits.get(person.pic) : null;
-      if (!image && !owner) return;
-      ctx.save(); ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.clip();
+      const image = requestPhoto ? (this.portraits.peek ? this.portraits.peek(person.pic) : this.portraits.get(person.pic)) : null;
+      if(!image && !owner) {
+        if(!person.pic || !/^\/img\/\d+$/.test(person.pic) || this.portraits.entries?.get(person.pic)?.state==='failed') {
+          if(!this.model?.scene?.large || !this.overviewRaster?.complete.has(String(person.id)))this.paintMissingPortrait(ctx,P,x,y,radius);
+        }
+        return;
+      }
+      const reveal=image && this.portraits.reveal ? this.portraits.reveal(person.pic,this.paintNow ?? performance.now(),this.model?.reduced) : 1;
+      if(image && reveal<1)this.invalidate();
+      const visibleRadius=radius*(image && !owner ? .88+.12*reveal : 1);
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y, visibleRadius, 0, TAU); ctx.clip();
       ctx.fillStyle = owner ? P.bg2 : P.bg1; ctx.fillRect(x-radius, y-radius, radius*2, radius*2);
       if (image) {
+        ctx.globalAlpha*=reveal;
         const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height, side = Math.min(iw, ih);
-        ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-radius, y-radius, radius*2, radius*2);
+        ctx.drawImage(image, (iw-side)/2, (ih-side)/2, side, side, x-visibleRadius, y-visibleRadius, visibleRadius*2, visibleRadius*2);
       } else {
+        if(!owner)ctx.globalAlpha*=.5;
         ctx.fillStyle = owner ? P.fg : P.fg2; ctx.font = `${owner ? 600 : 500} ${Math.round(radius * .67)}px ${P.sans}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; if (!person.compact || owner) ctx.fillText(initials(person), x, y+.5);
       }
@@ -496,7 +600,7 @@
         const cam=this.model.cam,[wx,wy]=cam.toWorld(px,py),reach=(this.touch?16:9)/cam.scale;
         const nearby=this.model.scene.spatial.query({x0:wx-reach,y0:wy-reach,x1:wx+reach,y1:wy+reach});
         let best=null,distance=Infinity;
-        for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?OWNER_RADIUS:it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
+        for(const it of nearby){const [x,y]=cam.toScreen(it.x,it.y),r=String(it.d.id)===String(this.model.world.me?.id)?Math.min(28,OWNER_RADIUS*cam.k):it.d.portraitRadius*cam.scale,d=Math.hypot(x-px,y-py);if(d<=Math.max(r,4)&&d<distance){best={kind:'n',it,x,y,r};distance=d;}}
         return best;
       }
       const reach = this.touch ? 16 : 9;
@@ -728,7 +832,7 @@
     buildStatic() {
       const r = this.r;
       this.density = h('select', { 'aria-label': 'People per page' },
-        ...[500, 1000, 3000].map(n => h('option', { value: n, text: `${int(n)} people` })));
+        ...[500, 1000, 3000, 5000, 10000, 20000].map(n => h('option', { value: n, text: `${int(n)} people` })));
       this.density.value = this.model.density;
       this.previous = h('button', { type: 'button', text: 'Previous', 'aria-label': 'Previous people' });
       this.next = h('button', { type: 'button', text: 'Next', 'aria-label': 'Next people' });
@@ -742,14 +846,12 @@
       r.fit.title = 'Show this page';
       r.size?.replaceChildren(...VIEW_MODES.map(o=>h('option',{value:o.id,text:o.label})));
       if (r.size) r.size.value=this.model.viewMode;
-      const pop=r.filtersBox?.querySelector('.mv-pop');
-      if(pop) {
-        for(const [select,text] of [[r.size,'Arrange by'],[r.filters.follow,'Following']]) {
-          const label=select?.closest('label');if(!label)continue;
-          label.className='mv-f';label.firstChild.textContent=text+' ';pop.prepend(label);
-        }
-        const scope=pop.querySelector('#map-scope-l');if(scope)scope.textContent='People';
-      }
+      this.sizeEncoding=h('select',{class:'select',id:'map-bubble-size','aria-label':'Bubble size'},...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
+      this.sizeEncoding.value=this.model.size;
+      const sizeLabel=h('label',{class:'mv-size mv-encoding'},h('span',{text:'Size'}),this.sizeEncoding);
+      r.size?.closest('label')?.after(sizeLabel);
+      this.sizeEncoding.addEventListener('change',()=>this.model.setSizeEncoding(this.sizeEncoding.value));
+      const scope=r.filtersBox?.querySelector('#map-scope-l');if(scope)scope.textContent='People';
       this.renderModes();
       this.renderFilters();
     }
@@ -770,6 +872,7 @@
         if(universe)this.r.filtersBox.open=false;
       }
       if(this.pager)this.pager.hidden=universe;
+      if(this.sizeEncoding)this.sizeEncoding.closest('label').hidden=universe;
       if(this.r.size){this.r.size.disabled=universe;this.r.size.title=universe?'The full map uses recorded follow distance and follower size.':'';}
       for(const control of [this.r.filters.fit,this.r.filters.status,this.r.filters.follow,...this.r.filters.scope.children]) {
         if(control){control.disabled=universe;control.title=universe?'Filters are available in the paged map; the full map shows all saved people.':'';}
@@ -788,10 +891,12 @@
       this.r.filtersBtn.setAttribute('aria-label', n ? `Filters, ${plural(n, 'filter')} on` : 'Filters');
     }
     renderLegend() {
-      const shared = this.model.viewMode === 'shared';
+      const shared = this.model.viewMode === 'shared', fit=this.model.viewMode === 'fit';
+      const sizeText={followers:'Size: followers',fit:'Size: fit',connections:'Size: shared audiences',equal:'Size: equal'}[this.model.size];
       const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
-        { g: 'centre', s: shared ? 'Closer: more shared audiences' : 'Closer: stronger connection evidence', t: shared ? 'Distance orders the saved page by distinct collected source audiences. It does not show mutual friends.' : 'Distance orders the saved page by recorded network evidence, not personal familiarity.' },
-        { g: 'size', s: shared ? 'Larger: more shared audiences' : 'Larger: more followers', t: SIZE_HELP[this.model.size] }
+        { g:'centre',s:shared?'Closer: more shared audiences':fit?'Closer: stronger fit':'Closer: stronger connection evidence',
+          t:shared?'Distance orders this page by distinct collected source audiences. Shared audiences are not mutual friends.':fit?'Distance orders this page by the saved fit assessment. It does not show a connection.':'Distance orders this page by saved network evidence. Similar evidence spreads continuously. Following does not establish friendship.' },
+        { g:'size',s:sizeText,t:SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
       const glyph = (g) => {
         const svg = (inner) => { const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 20 14'); s.setAttribute('width', '20'); s.setAttribute('height', '14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = inner; return s; };
@@ -813,6 +918,9 @@
     }
     renderCount(announce = true) {
       const m = this.model, el = this.r.count;
+      const key=[m.phase,m.pending,m.loadingCount,m.loadingTotal,m.total,m.pageIndex,m.nextCursor,m.scene.version,m.fallback].join('|');
+      if(!announce && this.countKey===key)return;
+      this.countKey=key;
       if(m.universe){
         const stats=m.universe.stats(), snapshot=m.universe.manifest;
         el.textContent=`${int(stats.loaded||0)} loaded · ${int(m.total)} people`;
@@ -823,9 +931,9 @@
       if(m.pending && m.loadingCount){el.textContent=`${int(m.loadingCount)} / ${int(m.loadingTotal)} loaded`;return;}
       if (m.phase !== 'ready' && m.phase !== 'empty') { el.textContent = ''; return; }
       if (m.fallback) { el.textContent = `Overview · ${int(m.shown)} shown of ${int(m.total)} people`; el.title = `A ranked sample of up to 400 people. Filters apply to this sample. Prepare the spatial layout locally for the full map.`; return; }
-      const count=m.scene.nodes.length-(m.world.me && m.scene.get(m.world.me.id)?1:0);
+      const count=m.scene.nodes.filter(it=>it.ta!==0 && String(it.d.id)!==String(m.world.me?.id)).length;
       el.textContent=`${int(count)} ${m.scene.large?'loaded':'shown'} · ${int(m.total)} matching people`;
-      el.title='Zoom magnifies this same page. Use Next, search, or filters to see other people.';
+      el.title='Views arrange the people loaded in this page. Closest to me loads stronger saved network evidence first. Zoom magnifies the same people; use Next, search or filters to see others.';
       if (this.pager) {
         this.previous.disabled = m.pending > 0 || m.pageIndex === 0;
         this.next.disabled = m.pending > 0 || !m.nextCursor;

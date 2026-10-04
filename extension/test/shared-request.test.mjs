@@ -4,12 +4,13 @@ import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source = readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 function harness(grant = {granted:true, token:'token', expires_at:new Date(Date.now()+90000).toISOString()}) {
-  const calls = [], mem = {}, cur = {job:{id:1},at:0};
+  const calls = [], mem = {}, cur = {job:{id:1},at:0}, data={};
   const context = vm.createContext({Date, Number, Math, mem, FL:{controlAllows:()=>true}, ControlPaused:class extends Error {},
-    assertControl:async()=>{}, api:async(path,body)=>{ calls.push(body); if(grant instanceof Error) throw grant; return {status:200,json:grant}; },
-    get:async key=>key==='cur'?cur:false, set:async()=>{}, sleep:async()=>{}, chrome:{tabs:{get:async()=>({status:'complete'})}} });
+    assertControl:async()=>{}, api:async(path,body)=>{ calls.push(body); if(grant instanceof Error) throw grant; return {status:200,json:body.action==='release'?{released:true}:grant}; },
+    tagged:async body=>({...body,lane_id:'test'}), locked:async fn=>fn(), trail:async()=>{},
+    get:async key=>key==='cur'?cur:data[key], set:async value=>Object.assign(data,value), sleep:async()=>{}, chrome:{tabs:{get:async()=>({status:'complete'})}} });
   vm.runInContext(source.slice(source.indexOf('async function acquireSharedRequest('),source.indexOf('async function igRequest(')),context);
-  return {context,calls,mem};
+  return {context,calls,mem,data};
 }
 test('permit denial or unavailable server never starts navigation', async()=>{
   for(const grant of [{granted:false,wait_ms:15000},new Error('offline'),{granted:true,token:'x',expires_at:'invalid'}]) {
@@ -18,11 +19,11 @@ test('permit denial or unavailable server never starts navigation', async()=>{
     assert.equal(opened,false);
   }
 });
-test('failed browser action releases its permit immediately',async()=>{
+test('rejected browser action retains uncertain ownership',async()=>{
   const h=harness();
   await assert.rejects(h.context.navigateWithPermit('list',async()=>{throw Error('tab refused');}),/tab refused/);
-  assert.equal(h.calls.at(-1).action,'release');
-  assert.equal(h.calls.at(-1).token,'token');
+  assert.equal(h.calls.at(-1).action,'acquire');
+  assert.equal(h.data.sharedRequest.phase,'started');
 });
 test('completed navigation releases and next action needs a new acquire',async()=>{
   const h=harness();
@@ -48,7 +49,7 @@ function lookupHarness(remove) {
     Superseded:class extends Error {}, assertControl:async()=>{}, get:async()=>null,
     set:async value=>saved.push(value), editSt:async fn=>fn({}), trail:async()=>{},
     checkedProfileDom:async()=>({url:'https://www.instagram.com/example/'}),
-    acquireSharedRequest:async()=>'lookup-token', releaseSharedRequest:async t=>releases.push(t),
+    beginSharedRequest:async()=>{}, acquireSharedRequest:async()=>'lookup-token', releaseSharedRequest:async t=>releases.push(t),
     chrome:{tabs:{create:async()=>({id:12}),remove}} });
   vm.runInContext(source.slice(source.indexOf('async function lookupViaPage('),source.indexOf('// ---- passive capture')),context);
   return {context,releases,saved};
@@ -92,7 +93,7 @@ test('account change while waiting for a permit cannot start the old lookup',asy
 test('stop while navigation permit is pending releases it without opening a tab',async()=>{
   const h=harness();
   let opened=false;
-  h.context.acquireSharedRequest=async()=>{h.mem.gen=1;return 'cancelled-navigation';};
+  h.context.acquireSharedRequest=async()=>{h.mem.gen=1;h.data.sharedRequest={phase:'not_sent',body:{action:'release',token:'cancelled-navigation'}};return 'cancelled-navigation';};
   await assert.rejects(h.context.navigateWithPermit('list',async()=>{opened=true;}));
   assert.equal(opened,false);
   assert.equal(h.calls.at(-1).action,'release');
@@ -102,7 +103,7 @@ test('stop while navigation permit is pending releases it without opening a tab'
 test('local pause while a grant arrives releases it without a browser action',async()=>{
   const h=harness();
   let opened=false;
-  h.context.get=async key=>key==='localPaused';
+  h.context.get=async key=>key==='localPaused'?true:h.data[key];
   await assert.rejects(h.context.navigateWithPermit('list',async()=>{opened=true;}));
   assert.equal(opened,false);
   assert.deepEqual(h.calls.map(c=>c.action),['acquire','release']);

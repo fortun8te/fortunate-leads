@@ -8,10 +8,12 @@ Processing modes are cumulative: R, RLAI and RLEAI. Pausing external AI retains 
 Resuming lists or bios clears the legacy `paused` and keeps the other stage where it was, so the three stay independent.
 """
 from datetime import datetime, timedelta, timezone
+import math
 
 import accounts
 import db
 import processing_modes
+import pipeline_log
 
 STAGES = ('lists', 'bios', 'ai')
 LABEL = {'lists': 'Collect lists', 'bios': 'Read bios', 'ai': 'AI scoring'}
@@ -154,6 +156,41 @@ def reserved(conn, row, kind):
     return accounts.collection_protected(conn, row)
 
 
+def warning_excluded(conn, marker):
+    isolation = db.get_setting(conn, 'instagram_collection_isolation')
+    if not isinstance(isolation, dict) or not isinstance(marker, dict):
+        return False
+    try:
+        if not marker.get('at') or utc(marker['at']) > utc(isolation['at']):
+            return False
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+    selected = isolation.get('accounts')
+    if not isinstance(selected, dict) or not selected:
+        return False
+    for lane, identity in selected.items():
+        row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        if (not row or not identity or row['ig_id'] != identity or accounts.collection_protected(conn, row)
+                or not accounts.isolation_allows(conn, row)):
+            return False
+        if marker.get('lane') == lane or marker.get('ig_id') == identity:
+            return False
+    return True
+
+
+def collection_attention(conn):
+    """Show new blocking warnings first; do not let old isolated warnings mask a request stop."""
+    request = db.get_setting(conn, 'instagram_request_attention')
+    warning = db.get_setting(conn, 'instagram_scraping_warning')
+    markers = [warning, *(warning or {}).get('pending', {}).values()]
+    blocking = next((w for w in markers if isinstance(w, dict) and w.get('message') and not warning_excluded(conn, w)), None)
+    if blocking:
+        return blocking
+    if isinstance(request, dict) and request.get('message'):
+        return request
+    return warning
+
+
 def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
     paused = stage_paused(conn, stage)
     out = {'id': stage, 'label': LABEL[stage], 'help': HELP[stage], 'paused': paused, 'unit': UNIT[stage],
@@ -164,7 +201,7 @@ def stage_out(conn, stage, accts, rows, c, now, queue, ai_rate=None):
         why = 'Paused by you.' if stage == 'ai' or db.get_setting(conn, 'paused_' + stage) else 'Paused in the workspace.'
         if stage == 'ai' and processing_modes.allows(conn, 'laya'):
             return dict(out, label='External AI scoring', state='paused', now='External AI is off; local Laya remains enabled.')
-        attention = db.get_setting(conn, 'instagram_scraping_warning') or db.get_setting(conn, 'instagram_request_attention')
+        attention = collection_attention(conn)
         if stage != 'ai' and isinstance(attention, dict) and attention.get('message'):
             return dict(out, state='paused', now=attention['message'], attention=attention)
         return dict(out, state='paused', now=why)
@@ -262,6 +299,31 @@ def queue_counts(conn):
         "AND (?=0 OR kind!='list' OR direction='following') GROUP BY kind", (following,)).fetchall())
 
 
+def collection_blockers(conn, attention=None, warning=None, request=None):
+    request = request or db.get_setting(conn, 'instagram_request_attention')
+    out = []
+    if isinstance(request, dict) and request.get('message'):
+        out.append({'code': 'request_unconfirmed', 'blocking': True, 'detail': request})
+    if isinstance(warning, dict):
+
+        for marker in [warning, *warning.get('pending', {}).values()]:
+            if isinstance(marker, dict) and marker.get('message'):
+                out.append({'code': 'scraping_warning', 'blocking': not warning_excluded(conn, marker), 'detail': marker})
+    return out
+
+
+def expired_request_attention(request, now):
+    """Read-only marker with stable expiry time, even before another gate call."""
+    until = request.get('until') if isinstance(request, dict) else None
+    if (not isinstance(until, (int, float)) or isinstance(until, bool)
+            or until <= 0 or until > now.timestamp() or not math.isfinite(until)):
+        return None
+    return {'lane': request.get('lane'), 'ig_id': request.get('ig_id'),
+            'kind': request.get('kind'), 'token_ref': pipeline_log.token_ref(request.get('token')),
+            'at': iso(datetime.fromtimestamp(until, timezone.utc)),
+            'message': 'An Instagram request did not confirm completion. Check the account tab before continuing.'}
+
+
 def snapshot(conn, ai_left=None):
     now = datetime.now(timezone.utc)
     rows = {r['lane_id']: r for r in accounts.rows(conn)}
@@ -278,13 +340,17 @@ def snapshot(conn, ai_left=None):
     active = bool(request and isinstance(until, (int, float)) and not isinstance(until, bool)
                   and until > now.timestamp())
     request_attention = db.get_setting(conn, 'instagram_request_attention')
-    attention = db.get_setting(conn, 'instagram_scraping_warning') or request_attention
+    warning = db.get_setting(conn, 'instagram_scraping_warning')
+    attention = collection_attention(conn)
     unconfirmed = bool(request and not active) or bool(isinstance(request_attention, dict) and request_attention.get('message'))
-    if request and not active and not attention:
+    if request and not active and not request_attention:
         # Expiry does not prove that a browser request stopped. GET reports the
         # uncertainty; only the existing request gate changes collection policy.
-        attention = {'lane': request.get('lane'), 'message':
-                     'An Instagram request did not confirm completion. Check the account tab before continuing.'}
+        request_attention = expired_request_attention(request, now) or {
+            'lane': request.get('lane'), 'message':
+            'An Instagram request did not confirm completion. Check the account tab before continuing.'}
+        if not attention or (attention is warning and warning_excluded(conn, warning)):
+            attention = request_attention
     for stage in stages[:2]:
         stage['active'] = active and request.get('kind') == KIND[stage['id']]
         stage['stop_acknowledged'] = stage['paused'] and not stage['active'] and not unconfirmed
@@ -299,7 +365,9 @@ def snapshot(conn, ai_left=None):
                          'bios_read': c['bios'], 'timezone': 'UTC'}, 'stages': stages, 'accounts': [account_out(conn, a, rows[a['lane_id']], now, both) for a in accts],
             'all_paused': all(s['paused'] for s in stages) and not processing_modes.allows(conn, 'laya'),
             'local_laya': processing_modes.allows(conn, 'laya'), 'processing': processing_modes.snapshot(conn),
-            'instagram_request_attention': attention, 'collection_isolation': db.get_setting(conn, 'instagram_collection_isolation'), 'active': active, 'stopping': stopping,
+            'instagram_request_attention': attention, 'instagram_scraping_warning': warning,
+            'instagram_request_review': db.get_setting(conn, 'instagram_request_review'),
+            'collection_blockers': collection_blockers(conn, attention, warning, request_attention), 'collection_isolation': db.get_setting(conn, 'instagram_collection_isolation'), 'active': active, 'stopping': stopping,
             'stop_acknowledged': acknowledged,
             'collection_scope': 'following' if db.get_setting(conn, 'follower_lists') is False else 'both',
             'collection': {'paused': both, 'active': active, 'stopping': stopping,
@@ -357,9 +425,75 @@ def stop_benchmark(conn, body):
         raise
 
 
+def review_unconfirmed_request(conn, body):
+    """Explicit tab review closes one unknown marker, never resumes collection."""
+    if body.get('reviewed') is not True or body.get('checked_account_tab') is not True:
+        raise ValueError('Check that the account tab has finished or closed before confirming review.')
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        now = datetime.now(timezone.utc)
+        marker = db.get_setting(conn, 'instagram_request_attention')
+        if not marker:
+            gate_marker = (db.get_setting(conn, 'instagram_request_gate') or {}).get('active')
+            marker = expired_request_attention(gate_marker, now)
+        lane, identity, at = body.get('lane'), body.get('ig_id'), body.get('attention_at')
+        if (not isinstance(marker, dict) or not lane or not identity or not at
+                or marker.get('lane') != lane or marker.get('at') != at):
+            raise ValueError('The request or account changed. Check the current account before reviewing it.')
+        legacy = not marker.get('ig_id')
+        isolation = db.get_setting(conn, 'instagram_collection_isolation') or {}
+        try:
+            legacy_bound = (isolation.get('accounts', {}).get(lane) == identity
+                            and utc(isolation['at']) <= utc(at))
+        except (KeyError, ValueError, TypeError, AttributeError):
+            legacy_bound = False
+        # Older markers lacked a viewer ID. Only an already selected identity,
+        # bound before this stop, can be explicitly reviewed without a live gate.
+        if marker.get('ig_id') != identity and not (legacy and legacy_bound):
+            raise ValueError('The stopped request identity is not verified. Collection stays stopped.')
+        if not stage_paused(conn, 'lists') or not stage_paused(conn, 'bios'):
+            raise ValueError('Stop collection before reviewing an unknown request.')
+        row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        if (not row or row['ig_id'] != identity or accounts.collection_protected(conn, row)
+                or accounts.warning_for(conn, row) or row['hold'] or not row['last_seen']
+                or now - utc(row['last_seen']) > accounts.ONLINE_FOR
+                or row['state'] in ('tab_login', 'tab_challenge', 'tab_scraping_warning', 'login', 'challenge')):
+            raise ValueError('The account needs a healthy, verified connection before this request can be reviewed.')
+        warning = db.get_setting(conn, 'instagram_scraping_warning') or {}
+        if any(not warning_excluded(conn, w) for w in [warning, *warning.get('pending', {}).values()] if w):
+            raise ValueError('A scraping warning still needs review. Collection stays stopped.')
+        gate = db.get_setting(conn, 'instagram_request_gate') or {}
+        active = gate.get('active') or {}
+        if active:
+            if legacy:
+                raise ValueError('The older request has no verified identity. Collection stays stopped.')
+            until = active.get('until')
+            if (not expired_request_attention(active, now)
+                    or active.get('lane') != lane or active.get('ig_id') != identity
+                    or pipeline_log.token_ref(active.get('token')) != marker.get('token_ref')):
+                raise ValueError('A current or different request remains. Wait and check the account again.')
+            db.set_setting(conn, 'instagram_request_gate', dict(gate, active=None,
+                           next_at=max(gate.get('next_at') or 0, now.timestamp() + accounts.REQUEST_SPACING_SECONDS)))
+        review = {'at': iso(now), 'lane': lane, 'ig_id': identity, 'attention_at': at,
+                  'token_ref': marker.get('token_ref'), 'legacy_identity_bound': legacy,
+                  'outcome': 'operator_confirmed_stopped'}
+        db.set_setting(conn, 'instagram_request_review', review)
+        db.set_setting(conn, 'instagram_request_attention', None)
+        pipeline_log.record(conn, 'request_operator_reviewed', lane=lane, ig_id=identity,
+                            kind=marker.get('kind') if marker.get('kind') in ('list', 'profile') else None,
+                            token=active.get('token'), now=now, reason='operator_confirmed')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def apply(conn, b):
     """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
+    if action == 'review_unconfirmed_request':
+        return review_unconfirmed_request(conn, b)
     if action in ('acknowledge_scraping_warning', 'resume_selected_accounts') and not conn.in_transaction:
         conn.execute('BEGIN IMMEDIATE')
     warning = db.get_setting(conn, 'instagram_scraping_warning')

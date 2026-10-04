@@ -1,3 +1,4 @@
+import atexit
 import argparse
 import biofetch
 import deepscout
@@ -29,6 +30,7 @@ import accounts  # noqa: E402
 import edge_benchmark_api  # noqa: E402
 import mobile_collector  # noqa: E402
 import control  # noqa: E402
+import pipeline_log  # noqa: E402
 import connection_graph  # noqa: E402
 import collection_suggestions  # noqa: E402
 import collection_progress  # noqa: E402
@@ -230,7 +232,8 @@ def ext_request(conn, q, b):
         token = b.get('token')
         if not isinstance(token, str) or not token:
             raise Bad('request token required')
-        return accounts.request_permit(conn, lane, token=token, now=now)
+        return accounts.request_permit(conn, lane, token=token, now=now,
+                                       viewer=(accounts.account_from(q, b) or {}).get('ig_id'), require_viewer=True)
     if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
         raise Bad('request action and kind required')
     conn.execute('BEGIN IMMEDIATE')
@@ -3025,9 +3028,25 @@ def api_start(conn, q, b):
 
 
 
+def api_pipeline_summary(conn, q, b):
+    try:
+        with read_snapshot(conn):
+            result = pipeline_log.summary(conn, q.get('since', [None])[0], q.get('lane', [None])[0],
+                                          ig_id=q.get('ig_id', [None])[0])
+            ctl = control.snapshot(conn)
+            result['blockers'] = [{'code': marker['code'], 'blocking': marker['blocking'],
+                                   'lane': marker['detail'].get('lane'), 'at': marker['detail'].get('at')}
+                                  for marker in ctl['collection_blockers']]
+            result['collection'] = ctl['collection']
+            return result
+    except ValueError as exc:
+        raise Bad(str(exc)) from exc
+
+
 LANE = r'(?P<lane>[A-Za-z0-9_-]{1,64})'   # named groups stay text; unnamed (\d+) groups become ints
 KEY = r'(?P<key>proxy|[0-9a-f]{10})'
 ROUTES = [
+    ('GET', r'/api/pipeline/summary', api_pipeline_summary),
     ('GET', r'/api/mobile/state', api_mobile_state), ('POST', r'/api/mobile/queue', api_mobile_queue),
     ('GET', r'/api/processing-mode', api_processing_mode), ('POST', r'/api/processing-mode', api_processing_mode),
     ('GET', r'/api/engines', api_engines),
@@ -3090,6 +3109,49 @@ class Server(ThreadingHTTPServer):
 
 
 SECURITY_HEADERS = {'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff'}
+
+
+class PictureOwnership:
+    """Reuse SQLite's parsed schema, but read current picture ownership on every request."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.conn = None
+        self.identity = None
+
+    def close(self):
+        with self.lock:
+            if self.conn is not None:
+                self.conn.close()
+            self.conn = None
+            self.identity = None
+
+    def owns(self, path, pid):
+        with self.lock:
+            path = Path(path).resolve()
+            stat = path.stat()
+            identity = (str(path), stat.st_dev, stat.st_ino)
+            if identity != self.identity:
+                if self.conn is not None:
+                    self.conn.close()
+                self.conn = None
+                self.identity = None
+                # A fresh autocommit SELECT sees committed ownership changes, including
+                # WAL updates. Do not use immutable mode or cache the query result.
+                self.conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+                                            timeout=15, isolation_level=None, check_same_thread=False)
+                self.identity = identity
+            # Look up the primary key first; combining the filename predicate can
+            # select a much slower index on large saved-profile databases.
+            cursor = self.conn.execute('SELECT pic_file FROM people WHERE id=?', (pid,))
+            try:
+                row = cursor.fetchone()
+                return row is not None and row[0] == f'{pid}.jpg'
+            finally:
+                cursor.close()
+
+
+_picture_ownership = PictureOwnership()
+atexit.register(_picture_ownership.close)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3200,12 +3262,7 @@ class Handler(BaseHTTPRequestHandler):
     def image(self, pid):
         if not re.fullmatch(r'[0-9]+', pid):
             return self.send(404, {'ok': False, 'error': 'no image'})
-        conn = db.connect(CFG['db'])
-        try:
-            owned = conn.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?', (pid, f'{pid}.jpg')).fetchone()
-        finally:
-            conn.close()
-        if not owned:
+        if not _picture_ownership.owns(CFG['db'], pid):
             return self.send(404, {'ok': False, 'error': 'no image'})
         f = pfp_dir() / f'{pid}.jpg'
         if not f.is_file():

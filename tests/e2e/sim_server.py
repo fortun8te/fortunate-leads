@@ -21,6 +21,9 @@ SERVER_DIR = Path(os.environ.get('FL_SERVER_DIR') or ROOT / 'server')  # overrid
 sys.path.insert(0, str(SERVER_DIR))
 import db  # noqa: E402
 import server  # noqa: E402
+import accounts  # noqa: E402
+import control  # noqa: E402
+import pipeline_log  # noqa: E402
 
 LOCK = threading.Lock()
 VNOW = {'ms': None}
@@ -36,7 +39,9 @@ class SimDateTime(datetime):
         return d.astimezone(tz) if tz else datetime.fromtimestamp(ms / 1000)
 
 
-for mod in (server, db):
+# Request ownership, operator review and evidence must share the same clock as
+# the simulated heartbeat. Real time would make healthy virtual accounts stale.
+for mod in (server, db, accounts, control, pipeline_log):
     mod.datetime = SimDateTime
 
 server.start_workers = lambda stop: None

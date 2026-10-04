@@ -13,11 +13,23 @@
     <dt id="boxdt" hidden>Outbox</dt><dd id="box" hidden>–</dd>
   </dl>
   <div id="note" class="note"></div>
+  <section id="speedwrap" class="speed" hidden aria-labelledby="speedlabel">
+    <label id="speedlabel" for="speedpreset">Collection speed</label>
+    <div class="row"><select id="speedpreset" aria-describedby="speedhelp"><option value="8000">Faster</option><option value="11650">Current</option><option value="15000">Standard</option><option value="30000">Slower</option><option value="custom">Custom</option></select><button id="speedapply">Apply</button></div>
+    <p id="speedhelp">Changes how often we check for work while bio reading is off. Instagram waits still apply.</p>
+    <details id="speeddetails"><summary>Custom check interval</summary><div class="row"><input id="speed" type="number" min="8" max="30" step="0.05" aria-label="Check interval in seconds"><span class="speedunit">seconds, from 8 to 30</span></div></details>
+    <p id="speedstatus" role="status" aria-live="polite"></p>
+    <p id="speedactual"></p>
+  </section>
   <div id="errwrap" class="error" hidden>
     <div id="error"></div>
     <details id="raw"><summary id="rawsum">Instagram response</summary><pre id="sample"></pre></details>
   </div>
+  <div id="requestreview" class="error" hidden>
+    <p>Check the account tab and complete the review in the workspace first. Collection stays paused.</p>
+    <button id="finishreview">Finish request review</button><p id="reviewstatus" role="status" aria-live="polite"></p>
+  </div>
   <div class="row"><button id="toggle">Pause</button><button id="copy">Copy diagnostics</button></div>
   <div class="row"><button id="open">Open workspace</button></div>
-  <script src="popup.js"></script>
+  <script src="lib/core.js"></script><script src="popup.js"></script>
 </body></html>

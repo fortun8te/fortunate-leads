@@ -259,14 +259,18 @@ async function heartbeat(force) {
 async function status(st) {
   st = st || await loadSt();
   const now = Date.now(), budget = FL.budgetOf(await get('budget')), left = FL.budgetLeft(st, budget, now);
-  const s = FL.statusOf(st, { ...mem, localPaused: !!(await get('localPaused')) }, now);
+  let s = FL.statusOf(st, { ...mem, localPaused: !!(await get('localPaused')) }, now);
+  const request = await get('sharedRequest');
+  const uncertain = request && !['not_sent', 'completed'].includes(request.phase);
+  if (uncertain && !st.hold) s = { state: 'paused', text: 'Request completion unknown. Check the account tab.', badge: '!', key: 'off' };
   chrome.action.setBadgeText({ text: s.badge });
   chrome.action.setBadgeBackgroundColor({ color: s.badge === '!' ? '#b3261e' : '#555' });
   const bucket = (k) => ({ until: st.cool[k].until > now ? st.cool[k].until : 0,
     hits: st.cool[k].hits.filter((t) => now - t < FL.DAY).length,
     left: Number.isFinite(left[k]) ? left[k] : null, readyAt: FL.readyAt(st, k) });
   await set({ view: { ...s, today: st.today, budget, job: mem.job ? mem.label : '', nextAt: Math.min(FL.readyAt(st, 'list'), FL.readyAt(st, 'profile')),
-    lastError: st.hold ? st.hold.message : st.lastError, note: st.note, rate: FL.rateOf(st, now), at: now,
+    lastError: st.hold ? st.hold.message : uncertain ? s.text : st.lastError,
+    request: request ? { phase: request.phase, at: request.at } : null, stages: mem.stages || null, note: st.note, rate: FL.rateOf(st, now), at: now,
     buckets: { list: bucket('list'), profile: { ...bucket('profile'), infoOff: st.infoOffUntil > now } },
     box: ((await get('box')) || []).length, tab: mem.noTab || 'ok' } });
   return s;
@@ -323,7 +327,7 @@ async function inTab(tabId, url) {
       const ck = document.cookie;
       const csrf = decodeURIComponent((ck.match(/(?:^|; )csrftoken=([^;]+)/) || [])[1] || '');
       const env = { path: location.pathname, vis: document.visibilityState, csrf: !!csrf, uid: /(?:^|; )ds_user_id=/.test(ck) };
-      if (location.hostname !== 'www.instagram.com') return { status: 0, text: 'tab left instagram.com', env, tabError: true };
+      if (location.hostname !== 'www.instagram.com') return { status: 0, text: 'tab left instagram.com', env, tabError: true, settled: true };
       let claim = '0'; try { claim = sessionStorage.getItem('www-claim-v2') || '0'; } catch {}
       const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms); // also covers a body that never finishes
       try {
@@ -335,19 +339,20 @@ async function inTab(tabId, url) {
         let text = await res.text();
         const contentType = res.headers.get('content-type') || '';
         if (!/json|javascript/.test(contentType) && text.length > 200e3) text = text.slice(0, 200e3);
-        return { status: res.status, text, retryAfter: res.headers.get('retry-after'), contentType, url: res.url, redirected: res.redirected, env };
+        return { status: res.status, text, retryAfter: res.headers.get('retry-after'), contentType, url: res.url, redirected: res.redirected, env, settled: true };
       } catch (e) {
         const aborted = e && e.name === 'AbortError';
-        return { status: 0, text: aborted ? 'no answer from Instagram within ' + ms / 1e3 + ' s (aborted)' : String(e), aborted, env };
+        return { status: 0, text: aborted ? 'no answer from Instagram within ' + ms / 1e3 + ' s (aborted)' : String(e), aborted, env, settled: true };
       } finally { clearTimeout(timer); }
     } }));
     const p = (r && r.result) || { status: 0, text: 'no result from tab', tabError: true };
-    p.sent = !p.tabError; p.ms = Date.now() - t0;
+    p.uncertain = p.settled !== true;
+    p.sent = !p.tabError && !p.uncertain; p.ms = Date.now() - t0;
     p.json = FL.parseBody(p.text);
     return p;
   } catch (e) {
     const msg = String((e && e.message) || e);
-    return { status: 0, text: msg, json: null, tabError: true, sent: false, timedOut: /did not respond/.test(msg), ms: Date.now() - t0 };
+    return { status: 0, text: msg, json: null, tabError: true, sent: false, timedOut: /did not respond/.test(msg), uncertain: true, ms: Date.now() - t0 };
   }
 }
 // One Instagram request. kind = bucket ('list' | 'profile'). ctx = list context for classify.
@@ -356,13 +361,22 @@ async function assertControl(kind) {
   if (!FL.controlAllows(mem, kind) || await get('localPaused')) throw new ControlPaused();
 }
 async function acquireSharedRequest(kind) {
+  if (!(await flushSharedRequest())) throw new ControlPaused();
   await assertControl(kind);
+  const body = await tagged({ action: 'acquire', kind, job_id: mem.job?.id, lease_token: mem.job?.lease_token });
+  // A lost acquire response is uncertain: never reissue it on worker restart.
+  const requestedAt = Date.now();
+  await set({ sharedRequest: { phase: 'acquiring', body, at: requestedAt } });
   let response;
-  try { response = await api('/api/ext/request', { action: 'acquire', kind, job_id: mem.job?.id, lease_token: mem.job?.lease_token }); }
+  try { response = await api('/api/ext/request', body); }
   catch { mem.offline = true; throw new ControlPaused(); }
   if (response.status !== 200 || response.json?.ok === false) { mem.offline = true; throw new ControlPaused(); }
   const grant = response.json;
-  if (grant?.stale) { await set({ cur: null }); throw new ControlPaused(); }
+  if (grant?.stale) { await set({ sharedRequest: null, cur: null }); throw new ControlPaused(); }
+  if (grant?.granted === false) await set({ sharedRequest: null });
+  if (grant?.granted && grant.token && Number.isFinite(Date.parse(grant.expires_at)))
+    await set({ sharedRequest: { phase: 'not_sent', body: { action: 'release', token: grant.token,
+      lane_id: body.lane_id, account: body.account }, kind, at: requestedAt } });
   if (grant?.lease_renewed) {
     const cur = await get('cur');
     if (cur?.job?.id === mem.job?.id) await set({ cur: { ...cur, at: Date.now() } });
@@ -383,9 +397,73 @@ async function acquireSharedRequest(kind) {
   }
   return grant.token;
 }
+// Completion outbox is separate from page results. Only a confirmed completed or
+// never-started browser action may release ownership. Time passing is no proof.
+let sharedFlushing = null;
+function flushSharedRequest() {
+  if (sharedFlushing) return sharedFlushing;
+  sharedFlushing = (async () => {
+    const pending = await get('sharedRequest');
+    if (!pending) return true;
+    if (!['completed', 'not_sent'].includes(pending.phase) || !pending.body?.token) return false;
+    try {
+      const response = await api('/api/ext/request', pending.body);
+      if (response.status !== 200 || response.json?.released !== true) {
+        mem.offline = true;
+        return false;
+      }
+      await locked(async () => {
+        const current = await get('sharedRequest');
+        if (current?.body?.token === pending.body.token && current.phase === pending.phase)
+          await set({ sharedRequest: null });
+      });
+      await trail('request released', { kind: pending.kind || null });
+      return !(await get('sharedRequest'));
+    } catch { mem.offline = true; return false; }
+  })().finally(() => { sharedFlushing = null; });
+  return sharedFlushing;
+}
+async function beginSharedRequest(token) {
+  await locked(async () => {
+    const pending = await get('sharedRequest');
+    if (pending?.body?.token !== token || pending.phase !== 'not_sent') throw new ControlPaused();
+    await set({ sharedRequest: { ...pending, phase: 'started', started_at: Date.now() } });
+  });
+}
 async function releaseSharedRequest(token) {
-  try { await api('/api/ext/request', { action: 'release', token }); }
-  catch { mem.offline = true; } // the server lease expires; never assume an uncertain release succeeded
+  await locked(async () => {
+    const pending = await get('sharedRequest');
+    if (pending?.body?.token !== token) throw new ControlPaused();
+    await set({ sharedRequest: { ...pending, phase: 'completed', completed_at: Date.now() } });
+  });
+  return flushSharedRequest();
+}
+// Explicit operator review is the sole path for uncertain local ownership.
+// A server review is tied to the stopped request, never a general "clear" flag.
+async function reviewSharedRequest() {
+  const pending = await get('sharedRequest');
+  if (!pending) return { ok: true, cleared: false };
+  const account = await get('account'), lane = await get('laneId'), st = await get('st');
+  if (!account?.ig_id || account.ig_id !== st?.accountIgId || st?.hold ||
+      lane !== pending.body?.lane_id || account.ig_id !== pending.body?.account?.ig_id)
+    throw Error('Account identity must match the stopped request');
+  const response = await api('/api/ext/control');
+  const reviewed = response.status === 200 && response.json?.instagram_request_review;
+  if (!reviewed || reviewed.outcome !== 'operator_confirmed_stopped' || reviewed.lane !== lane ||
+      reviewed.ig_id !== account.ig_id || !(Date.parse(reviewed.at) > pending.at) ||
+      !(Date.parse(reviewed.attention_at) >= pending.at)) throw Error('Check and review the account tab in the workspace first');
+  if (pending.body.token) {
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pending.body.token));
+    const ref = Array.from(new Uint8Array(bytes), x => x.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    if (ref !== reviewed.token_ref) throw Error('Review belongs to a different request');
+  }
+  return locked(async () => {
+    const current = await get('sharedRequest'), currentAccount = await get('account'), currentSt = await get('st');
+    if (JSON.stringify(current) !== JSON.stringify(pending) || currentAccount?.ig_id !== account.ig_id ||
+        currentSt?.accountIgId !== account.ig_id || currentSt?.hold) throw Error('Request state changed; review it again');
+    await set({ sharedRequest: null });
+    return { ok: true, cleared: true };
+  });
 }
 async function navigateWithPermit(kind, action) {
   const gen = mem.gen;
@@ -394,7 +472,8 @@ async function navigateWithPermit(kind, action) {
   let completed = false;
   try {
     let tab;
-    try { tab = await action(); } catch (error) { completed = true; throw error; }
+    await beginSharedRequest(token);
+    tab = await action(); // Rejection cannot prove Chrome never started navigation.
     const until = Date.now() + 45000;
     while (Date.now() < until) {
       const current = await chrome.tabs.get(tab.id);
@@ -414,15 +493,17 @@ async function igRequest(gen, tab, url, kind, ctx) {
   const permit = await acquireSharedRequest(kind);
   if (gen !== mem.gen) { await releaseSharedRequest(permit); throw new Superseded(); }
   await set({ lane: { until: Date.now() + 90e3, url } });
-  let res, keepLane = false;
+  let res, keepLane = true;
   try {
+    await beginSharedRequest(permit);
     res = await inTab(tab.id, url);
     // A timed-out executeScript may still have its fetch running in the page: hold the lane until that fetch aborted too.
-    keepLane = !!res.timedOut;
+    keepLane = !!(res.timedOut || res.uncertain);
   } finally {
     await set({ lane: keepLane ? { until: Date.now() + 60e3, url, after: 'timeout' } : null });
     if (!keepLane) await releaseSharedRequest(permit);
   }
+  if (keepLane) { await trail('request uncertain', { kind }); throw new ControlPaused(); }
   if (gen !== mem.gen) throw new Superseded();
   const now = Date.now();
   if (res.sent) await editSt((st) => { if (gen !== mem.gen) throw new Superseded(); FL.afterRequest(st, kind, now); });
@@ -745,8 +826,22 @@ async function benchmarkStep(gen) {
 async function nextJob(kinds) {
   await heartbeat(true);
   if (mem.offline || mem.serverPaused) return { job: null, wait: 15e3 };
+  const gatedProfile = kinds.includes('profile') && !FL.controlAllows(mem, 'profile');
   kinds = kinds.filter((kind) => FL.controlAllows(mem, kind));
-  if (!kinds.length) return { job: null, wait: 15e3 };
+  if (!kinds.length) {
+    // An eligible bio can reach this poll while lists wait on their own clock,
+    // then get filtered by the paused bio stage. The verified collector's
+    // saved speed setting changes only this recheck, never request gaps.
+    // Read it on each cycle: changing the popup never needs a worker reload.
+    const st = await get('st'), now = Date.now();
+    if (gatedProfile && st?.accountIgId === '64189916997' && FL.controlAllows(mem, 'list')
+        && !FL.controlAllows(mem, 'profile') && !st.hold && !(await get('localPaused'))
+        && !['tab_login', 'tab_challenge', 'tab_scraping_warning'].includes(mem.noTab)
+        && !(st.cool?.list?.until > now) && !(FL.windowOf(st, now).until > now)
+        && FL.budgetLeft(st, await get('budget'), now).list > 0)
+      return { job: null, wait: FL.pollWaitFor(await get('account'), await get('laneId'), await get('collectionSpeed')) };
+    return { job: null, wait: 15e3 };
+  }
   const cur = await get('cur'), now = Date.now();
   if (cur && cur.job && now - cur.at < CUR_TTL) {
     if (kinds.includes(cur.job.kind)) return { job: cur.job };
@@ -772,6 +867,7 @@ async function step(gen) {
   const now = Date.now();
   const st = await loadSt();
   mem.budgetDone = false; mem.laneWait = false;
+  if (!(await flushSharedRequest())) return 15000;
   if (!(await flushBenchmark())) return 15000;
   if (!(await flushBox())) return (mem.backoff = Math.min(mem.backoff * 2, 60e3));
   if (st.hold || (await get('localPaused'))) return 15e3;
@@ -805,7 +901,13 @@ async function loop() {
       let wait = 30e3;
       try { wait = await step(gen); } catch (e) {
         if (e instanceof Superseded) break;
-        if (e instanceof ControlPaused) { await sleep(Math.max(1000, Math.min(15000, (mem.sharedWaitUntil || 0) - Date.now()) || 15000)); continue; }
+        if (e instanceof ControlPaused) {
+          // A protective wait is alive, not a stale worker. Refresh the watchdog
+          // without resetting the request journal or any collection protection.
+          mem.beat = Date.now();
+          await sleep(Math.max(1000, Math.min(15000, (mem.sharedWaitUntil || 0) - Date.now()) || 15000));
+          continue;
+        }
         const m = String((e && e.message) || e).slice(0, 200);
         await editSt((s) => { s.lastError = 'extension error: ' + m; });
         await trail('step threw', { err: m });
@@ -859,6 +961,7 @@ async function lookupViaPage(gen, handle, kind, near) {
   try {
     const got = new Promise((r) => { waiters[key] = r; setTimeout(() => r(null), 25e3); });
     const where = near ? { windowId: near.windowId, index: near.index + 1 } : {};
+    await beginSharedRequest(permit);
     tab = await chrome.tabs.create({ url, active: false, ...where });
     if (gen !== mem.gen) throw new Superseded();
     mem.lookups.add(tab.id);
@@ -880,7 +983,7 @@ async function lookupViaPage(gen, handle, kind, near) {
     return { p: null, bad: { code: 'network', reason: 'lookup_tab' }, res: { status: 0, text: String((e && e.message) || e) } };
   } finally {
     delete waiters[key];
-    let closed = !tab;
+    let closed = false; // A rejected tab creation can have an ambiguous outcome.
     if (tab) {
       mem.lookups.delete(tab.id);
       try { await chrome.tabs.remove(tab.id); closed = true; await set({ lookupTab: null }); }
@@ -916,10 +1019,40 @@ async function passive(user) {
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg && msg.type === 'fl-profile' && sender.tab) passive(msg.user).catch(() => {});
+  if (msg?.cmd === 'review_shared_request') {
+    reviewSharedRequest().then(reply, error => reply({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg?.cmd === 'set_collection_speed') {
+    locked(async () => {
+      const account = await get('account'), st = await get('st'), lane = await get('laneId');
+      if (!account?.ig_id || st?.accountIgId !== account.ig_id) throw Error('Account identity must be verified');
+      const setting = FL.collectionSpeedSetting(account, lane, msg.poll_wait_ms, Date.now());
+      await set({ collectionSpeed: setting });
+      return { ok: true, poll_wait_ms: setting.poll_wait_ms };
+    }).then(async result => {
+      // trail uses the same storage queue, so append it after releasing the lock.
+      await trail('speed changed', { poll_wait_ms: result.poll_wait_ms });
+      reply(result);
+    }, error => reply({ ok: false, error: error.message }));
+    return true;
+  }
   if (msg && msg.cmd === 'pause') set({ localPaused: true }).then(() => status()).then(() => reply({ ok: true }));
   if (msg && msg.cmd === 'resume') {
-    set({ localPaused: false }).then(() => editSt((s) => { s.hold = null; s.lastError = null; FL.succeeded(s); }))
-      .then(() => { mem.lastBeat = 0; mem.badTab = null; return status(); }).then(() => { reply({ ok: true }); loop(); });
+    (async () => {
+      const request = await get('sharedRequest'), st = await get('st');
+      if (request && !['completed', 'not_sent'].includes(request.phase)) throw Error('Review the stopped request in the workspace first');
+      if (st?.hold?.manualReview) throw Error('Review the Instagram warning in the workspace first');
+      const control = await api('/api/ext/control');
+      if (control.status !== 200 || !control.json || control.json.collection?.unconfirmed ||
+          control.json.collection_blockers?.some(item => item.blocking))
+        throw Error('Check the collection stop in the workspace first');
+      await set({ localPaused: false });
+      await editSt(s => { s.hold = null; s.lastError = null; FL.succeeded(s); });
+      mem.lastBeat = 0; mem.badTab = null;
+      await status();
+      reply({ ok: true }); loop();
+    })().catch(error => reply({ ok: false, error: error.message }));
   }
   if (msg && msg.type === 'fl-view') {
     chrome.storage.local.get(['view', 'account']).then((o) => reply({ view: o.view || null, account: o.account || null }), () => reply(null));
@@ -965,6 +1098,10 @@ booted.then(loop);
 // The workspace can reload the extension after an update (loopback origin only).
 chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {
   if (sender.origin !== SERVER) return false;
+  if (msg?.type === 'REVIEW_REQUEST_COMPLETION') {
+    reviewSharedRequest().then(respond, error => respond({ ok: false, error: error.message }));
+    return true;
+  }
   if (msg?.type === 'OPEN_INSTAGRAM') {
     openWorkspaceInstagram(chrome, msg).then(respond, error => respond({ok: false, error: error.message}));
     return true;

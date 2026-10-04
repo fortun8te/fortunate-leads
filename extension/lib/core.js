@@ -12,6 +12,23 @@
     otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
   const KINDS = ['list', 'profile'];
+  // This controls idle checks only. Request clocks, breaks and limits are independent.
+  const COLLECTION_SPEED = Object.freeze({ igId: '64189916997', laneId: 'ln_sqrscja8tx6z',
+    min: 8000, max: 30000, default: 11650, standard: 15000 });
+  const speedEligible = (account, laneId) => account?.ig_id === COLLECTION_SPEED.igId && laneId === COLLECTION_SPEED.laneId;
+  function collectionSpeedSetting(account, laneId, pollWaitMs, now = Date.now()) {
+    if (!speedEligible(account, laneId)) throw new Error('Speed changes are only available for turtles.');
+    if (!Number.isInteger(pollWaitMs) || pollWaitMs < COLLECTION_SPEED.min || pollWaitMs > COLLECTION_SPEED.max)
+      throw new Error('Choose a check interval from 8 to 30 seconds.');
+    return { v: 1, ig_id: account.ig_id, lane_id: laneId, poll_wait_ms: pollWaitMs, updated_at: new Date(now).toISOString() };
+  }
+  function pollWaitFor(account, laneId, setting) {
+    if (!speedEligible(account, laneId)) return COLLECTION_SPEED.standard;
+    if (setting?.v === 1 && setting.ig_id === account.ig_id && setting.lane_id === laneId &&
+        Number.isInteger(setting.poll_wait_ms) && setting.poll_wait_ms >= COLLECTION_SPEED.min && setting.poll_wait_ms <= COLLECTION_SPEED.max)
+      return setting.poll_wait_ms;
+    return COLLECTION_SPEED.default;
+  }
   // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
   const BUDGET = { list: 3000, profile: 300 };
   const BOX_MAX = 3000;
@@ -577,7 +594,7 @@
     if (job.page_size != null && ![25, 50].includes(job.page_size)) throw new Error('invalid follower page size');
     return job.page_size === 50 ? 50 : 25;
   }
-  const api = { controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
+  const api = { COLLECTION_SPEED, speedEligible, collectionSpeedSetting, pollWaitFor, controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, recordListRedirect, listPageSucceeded,
     plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf, privateWall };

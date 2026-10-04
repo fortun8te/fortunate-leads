@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS collector_events(id INTEGER PRIMARY KEY, event_id TEX
   http_status INT, requested_count INT, returned_count INT, new_links INT);
 CREATE INDEX IF NOT EXISTS collector_events_at ON collector_events(at);
 CREATE INDEX IF NOT EXISTS collector_events_lane_at ON collector_events(lane,at);
+-- Compact local lifecycle evidence; tokens are hashed, no response content is stored.
+CREATE TABLE IF NOT EXISTS pipeline_events(id INTEGER PRIMARY KEY, v INT NOT NULL DEFAULT 1,
+ at TEXT NOT NULL, code TEXT NOT NULL, lane TEXT, kind TEXT, ig_id TEXT, job_id INT,
+ direction TEXT, token_ref TEXT, reason TEXT);
+CREATE INDEX IF NOT EXISTS pipeline_events_at ON pipeline_events(at);
+CREATE INDEX IF NOT EXISTS pipeline_events_lane_at ON pipeline_events(lane,at);
 CREATE TABLE IF NOT EXISTS accounts(lane_id TEXT PRIMARY KEY, ig_id TEXT, handle TEXT, label TEXT,
   role TEXT NOT NULL DEFAULT 'both' CHECK(role IN('lists','bios','both')), budget TEXT, paused INT NOT NULL DEFAULT 0,
   is_main INT NOT NULL DEFAULT 0, first_seen TEXT, last_seen TEXT, version TEXT, state TEXT, hold TEXT, cooldown_until TEXT,

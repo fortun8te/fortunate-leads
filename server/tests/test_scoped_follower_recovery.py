@@ -12,7 +12,19 @@ class ScopedFollowerRecoveryTest(lanes.Base):
     post = lanes.LaneTest.post
     seeds = lanes.LaneTest.seeds
 
-    def prepare(self, direction='followers'):
+    def prepare(self, direction='followers', evidence=True):
+        if evidence:
+            # Recovery needs actual same-viewer persisted following rows; merely
+            # enabling the option/heartbeat must never establish route health.
+            self.seeds('proved_following', direction='following')
+            prior = self.nxt('a', 'list')['job']
+            code, result = self.post('a', '/api/ext/list-page', {
+                'job_id': prior['id'], 'lease_token': prior['lease_token'],
+                'seed': prior['seed'], 'direction': 'following',
+                'users': [{'ig_id': '888001', 'handle': 'observed_person'}],
+                'requested_cursor': '', 'next_cursor': None, 'done': True,
+                'requested_count': prior['page_size'], 'http_status': 200})
+            self.assertEqual(code, 200, result)
         self.seeds('failed', direction=direction)
         job = self.nxt('a', 'list')['job']
         db.set_setting(self.conn, 'follower_redirect_recovery', 'route')
@@ -110,4 +122,10 @@ class ScopedFollowerRecoveryTest(lanes.Base):
         self.report_redirect(job,code='rate_limit',reason='http_429',http_status=429)
         self.seeds('healthy',direction='following')
         self.assertIsNone(self.nxt('b','list')['job'])
+        self.assertIsNotNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))
+
+    def test_opt_in_without_saved_same_viewer_evidence_remains_shared(self):
+        job = self.prepare(evidence=False)
+        self.report_redirect(job)
+        self.assertIsNone(db.get_setting(self.conn, 'followers_route_until'))
         self.assertIsNotNone(server.workspace_cooldown(self.conn, datetime.now(timezone.utc)))

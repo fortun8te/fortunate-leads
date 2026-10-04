@@ -98,3 +98,15 @@ class PermitApiTest(Base):
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'queued')
         self.assertEqual(self.conn.execute("SELECT cursor FROM lists WHERE seed=? AND direction='followers'", (job['seed'],)).fetchone()[0], 'saved-cursor')
         self.assertIsNone(db.get_setting(self.conn, 'instagram_request_gate'))
+
+
+    def test_identity_bound_release_requires_explicit_original_viewer(self):
+        accounts.touch(self.conn, 'lane1', {'ig_id': '777', 'handle': 'viewer'}, version='3.9.30')
+        self.conn.commit()
+        permit = accounts.request_permit(self.conn, 'lane1', kind='list')
+        body = {'action': 'release', 'lane_id': 'lane1', 'token': permit['token']}
+        self.assertFalse(self.call('/api/ext/request', body)[1]['released'])
+        self.assertFalse(self.call('/api/ext/request', {**body, 'account': {'ig_id': '888'}})[1]['released'])
+        self.assertTrue(self.call('/api/ext/request', {**body, 'account': {'ig_id': '777'}})[1]['released'])
+        self.assertFalse(self.call('/api/ext/request', body)[1]['released'])
+        self.assertTrue(self.call('/api/ext/request', {**body, 'account': {'ig_id': '777'}})[1]['replayed'])

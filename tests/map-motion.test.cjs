@@ -31,11 +31,14 @@ test('camera flight eases into and out of a bounded move',()=>{
   for(let i=1;i<=100;i++)assert.ok(easing(i/100)>=easing((i-1)/100));
  }
 });
-test('the 3000-person page draws every bubble through the normal portrait path',()=>{
+test('the 3000-person page retains every identity behind the bounded photo raster',()=>{
  const cam=new Camera();cam.resize(1400,1000);const scene=new Scene();
  const nodes=cohortLayout(Array.from({length:3000},(_,i)=>({id:i+1,closeness:1-i/3000,followers:1000})),{id:0});
  scene.apply({nodes,clusters:[]},0,{instant:true});
- assert.equal(scene.large,false);assert.equal(displayPlan(scene,cam,[],null,null,0).nodes.length,3001);
+ assert.equal(scene.large,true);
+ const plan=displayPlan(scene,cam,[],null,null,0);
+ assert.equal(plan.marks.length,3001);assert.ok(plan.nodes.length<=1000);
+ assert.equal(scene.spatial.query({x0:0,y0:0,x1:1,y1:1}).length,3001);
 });
 test('large scene spatial queries follow moving portraits',()=>{
  const scene=new Scene();const nodes=Array.from({length:5001},(_,i)=>({id:i,x:.1,y:.1,portraitRadius:.001}));

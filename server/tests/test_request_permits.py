@@ -181,3 +181,57 @@ class RequestPermitTest(unittest.TestCase):
         self.conn.commit()
         self.assertTrue(accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)['released'])
         self.assertTrue(self.acquire(1, 2)['granted'])
+
+
+    def test_completion_ack_replay_preserves_newer_request_and_all_protections(self):
+        first = self.acquire(0)
+        release = accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)
+        self.assertTrue(release['released'])
+        second = self.acquire(1, 2)
+        db.set_setting(self.conn, 'paused_lists', True)
+        db.set_setting(self.conn, 'instagram_request_attention', {'lane': 'lane1', 'message': 'new hold'})
+        self.conn.commit()
+        replay = accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=3))
+        self.assertEqual(replay, {'released': True, 'replayed': True})
+        self.assertEqual(db.get_setting(self.conn, 'instagram_request_gate')['active']['token'], second['token'])
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertEqual(db.get_setting(self.conn, 'instagram_request_attention')['message'], 'new hold')
+
+    def test_release_and_receipt_bind_original_viewer_even_after_lane_identity_changes(self):
+        first = self.acquire(0)
+        self.conn.execute("UPDATE accounts SET ig_id='999' WHERE lane_id='lane0'")
+        self.conn.commit()
+        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], viewer='999', now=self.now)['released'])
+        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], require_viewer=True, now=self.now)['released'])
+        self.assertTrue(accounts.request_permit(self.conn, 'lane0', token=first['token'], viewer='100', require_viewer=True, now=self.now)['released'])
+        self.assertFalse(accounts.request_permit(self.conn, 'lane0', token=first['token'], viewer='999', require_viewer=True, now=self.now)['released'])
+        self.assertTrue(accounts.request_permit(self.conn, 'lane0', token=first['token'], viewer='100', require_viewer=True, now=self.now)['replayed'])
+
+    def test_receipts_bounded_and_store_no_raw_tokens(self):
+        for i in range(140):
+            first = self.acquire(0, i*3)
+            self.assertTrue(first['granted'])
+            accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=i*3))
+        receipts = db.get_setting(self.conn, 'instagram_request_gate')['released']
+        self.assertEqual(len(receipts), 1)
+        self.assertTrue(all('token' not in entry and len(entry['token_hash']) == 64 for entry in receipts))
+
+
+    def test_busy_other_lane_does_not_evict_pending_completion_receipt(self):
+        first = self.acquire(0)
+        accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now)
+        for i in range(140):
+            next_ = self.acquire(1, (i+1)*3)
+            accounts.request_permit(self.conn, 'lane1', token=next_['token'], now=self.now+timedelta(seconds=(i+1)*3))
+        replay = accounts.request_permit(self.conn, 'lane0', token=first['token'], now=self.now+timedelta(seconds=425))
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(len(db.get_setting(self.conn, 'instagram_request_gate')['released']), 2)
+
+    def test_receipt_distinct_identity_cap_is_bounded(self):
+        for i in range(140):
+            accounts.touch(self.conn, f'lane{i}', {'ig_id': str(100+i), 'handle': f'acct{i}'}, version='3.9.30')
+            self.conn.commit()
+            permit = self.acquire(i, i*3)
+            self.assertTrue(permit['granted'])
+            accounts.request_permit(self.conn, f'lane{i}', token=permit['token'], now=self.now+timedelta(seconds=i*3))
+        self.assertEqual(len(db.get_setting(self.conn, 'instagram_request_gate')['released']), 128)

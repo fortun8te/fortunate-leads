@@ -8,6 +8,8 @@
   const names = {k2:'Bio checks', laya:'Ranking hints'};
   let control = null, engines = null, local = null, controlError = false, engineError = false, localError = false;
   let error = '', busy = '', open = false, pollPromise = null, timer = 0, revision = 0;
+  let requestReviewed = false, reviewMarker = '';
+
   const el = document.createElement('div');
   el.className = 'fl-ctl';
   el.setAttribute('role', 'region');
@@ -57,14 +59,16 @@
     const stages = control?.stages || [];
     const collection = stages.filter(stage => ['lists','bios'].includes(stage.id));
     const paused = collection.length === 2 && collection.every(stage => stage.paused);
-    const attention = control?.instagram_request_attention?.message || collection.find(stage => stage.attention?.message)?.attention.message;
+    const primaryAttention = control?.instagram_request_attention;
+    const warningBlocked = (control?.collection_blockers || []).some(item => item.code === 'scraping_warning' && item.blocking);
+    const attention = primaryAttention?.kind === 'scraping_warning' && control?.collection_isolation && !warningBlocked ? '' : primaryAttention?.message || collection.find(stage => stage.attention?.message)?.attention.message;
     const wait = collection.find(stage => stage.state === 'waiting' && stage.wait?.scope === 'workspace')?.wait;
     const until = wait?.until && Number.isFinite(Date.parse(wait.until)) ? ` until ${new Date(wait.until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : '';
     const startup = control?.collection_startup;
     const connecting = ['opening','waiting'].includes(startup?.state);
-    const state = controlError || collection.length !== 2 ? 'Unknown' : connecting ? 'Connecting' : attention && !control?.collection_isolation ? 'Needs attention' : paused ? collection.some(stage => stage.active || stage.state === 'stopping') ? 'Stopping' : 'Off' : wait ? `Waiting${until}` : collection.some(stage => stage.state === 'running') ? 'Running' : collection.some(stage => stage.state === 'waiting') ? 'Waiting' : 'On';
+    const state = controlError || collection.length !== 2 ? 'Unknown' : connecting ? 'Connecting' : attention ? 'Needs attention' : paused ? collection.some(stage => stage.active || stage.state === 'stopping') ? 'Stopping' : 'Off' : wait ? `Waiting${until}` : collection.some(stage => stage.state === 'running') ? 'Running' : collection.some(stage => stage.state === 'waiting') ? 'Waiting' : 'On';
     const progress = control?.collection?.progress || collection.find(stage => stage.progress)?.progress;
-    const detail = (connecting || startup?.state === 'failed' ? startup.message : '') || (!control?.collection_isolation && attention) || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
+    const detail = (connecting || startup?.state === 'failed' ? startup.message : '') || attention || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
     return {state, detail, paused, connecting, reconnect:!connecting && !paused && control?.accounts?.some(a => !a.paused && !a.hold && !a.online), available:!controlError && collection.length === 2};
   }
   // One calm word for the whole strip. Details live in the popover.
@@ -80,6 +84,16 @@
     return scrape.state === 'Running' ? 'collecting' : 'ready';
   }
   const SUMMARY_ICON = '<svg class="ic fl-ctl-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M4 6.5l4 4 4-4"/></svg>';
+  function unfinishedRequest(snapshot) {
+    const blocker = (snapshot?.collection_blockers || []).find(item => item.code === 'request_unconfirmed' && item.blocking);
+    return blocker?.detail || (snapshot?.instagram_request_attention?.kind === 'request_unconfirmed' ? snapshot.instagram_request_attention : null);
+  }
+  function requestIdentity(snapshot, marker) {
+    if (marker?.ig_id) return marker.ig_id;
+    const isolation = snapshot?.collection_isolation;
+    const selected = isolation?.accounts?.[marker?.lane];
+    return selected && Number.isFinite(Date.parse(isolation.at)) && Number.isFinite(Date.parse(marker?.at)) && Date.parse(isolation.at) <= Date.parse(marker.at) ? selected : null;
+  }
   function render() {
     mount();
     const modelsOpen = el.querySelector('.fl-models')?.open || false;
@@ -87,8 +101,19 @@
     const scroll = el.querySelector('.fl-ctl-panel')?.scrollTop || 0;
     const qualify = qualification(), scrape = scraping(), k2 = engineState('k2'), laya = engineState('laya');
     const overall = overallState(scrape);
-    const warning = control?.instagram_request_attention?.kind === 'scraping_warning' ? control.instagram_request_attention : null;
+    const blockingWarning = (control?.collection_blockers || []).find(item => item.code === 'scraping_warning' && item.blocking);
+    const warning = blockingWarning?.detail || (control?.instagram_request_attention?.kind === 'scraping_warning' ? control.instagram_request_attention : null) || control?.instagram_scraping_warning;
+    const warningBlocks = !!blockingWarning || !!(warning && !control?.collection_isolation && control?.instagram_request_attention?.kind === 'scraping_warning');
     const warningAccount = warning && control.accounts?.find(account => account.lane_id === warning.lane);
+    const unfinished = warningBlocks ? null : unfinishedRequest(control);
+    const requestIgId = requestIdentity(control, unfinished);
+    const marker = unfinished ? `${unfinished.lane}:${requestIgId}:${unfinished.at}` : '';
+    if (marker !== reviewMarker) { requestReviewed = false; reviewMarker = marker; }
+    const reviewAccount = unfinished && control.accounts?.find(account => account.lane_id === unfinished.lane);
+    const reviewName = String(reviewAccount?.name || reviewAccount?.handle || 'this account').replace(/^@/, '');
+    const requestReviewReady = !!(unfinished?.lane && requestIgId && unfinished.at && reviewAccount?.online && !reviewAccount.collection_protected && !reviewAccount.hold && !reviewAccount.is_main && !reviewAccount.personal);
+    const requestReview = unfinished ? `<div class="fl-request-review"><strong>Check the unfinished request</strong><p>Open ${reviewAccount ? '@' : ''}${esc(reviewName)} in its collection Chrome profile. Check that the list request has finished, or close that account’s collection tab.</p>${requestReviewReady ? `<label><input type="checkbox" data-request-checked data-focus="request-checked" ${requestReviewed ? 'checked' : ''} ${busy ? 'disabled' : ''}> I checked the account. Its collection tab has finished or is closed.</label><button type="button" class="btn" data-request-review data-focus="request-review" ${!requestReviewed || busy ? 'disabled' : ''}>${busy === 'request-review' ? 'Saving…' : 'Confirm review'}</button><small>Collection stays stopped. If the extension still shows an unfinished request, confirm the review in this account’s extension too. No Instagram warning is cleared.</small>` : '<small>Reconnect this account and check its collection tab before reviewing this request.</small>'}</div>` : '';
+
     const newProfiles = control?.progress?.unique_new_profiles?.today;
     const savedToday = newProfiles == null ? '' : `<div class="fl-engine-row" title="Counts since midnight UTC"><strong>${Number(newProfiles).toLocaleString()} new profiles today</strong></div>`;
     const review = warning ? `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Review Instagram warning</strong><small>Review ${esc(warningAccount?.name || 'the affected account')} in its Chrome profile. ${control?.collection_isolation ? 'This account stays blocked.' : 'Collection stays stopped.'}</small></div><button type="button" class="btn" data-warning-ack data-focus="warning-ack" ${!warning.review_ready || busy || scrape.connecting || control?.collection_isolation && !scrape.paused ? 'disabled' : ''}>I've reviewed it</button></div>` : '';
@@ -97,17 +122,23 @@
       const verb = state.modeOff ? state.enabled ? 'Exclude' : 'Include' : state.enabled ? 'Turn off' : 'Turn on';
       return `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${dot(state.item?.state || 'unknown')}${names[id]} <span class="fl-engine-state">${esc(state.label)}</span></strong><small>${esc(state.detail)}</small></div><button type="button" class="btn fl-engine-action" data-engine="${id}" data-focus="${id}" aria-label="${verb} ${names[id].toLowerCase()}${state.modeOff ? ' in AI modes' : ''}" ${busy || !state.available || state.item?.state === 'stopping' ? 'disabled' : ''}>${busy === id ? 'Saving…' : verb}</button></div>`;
     };
+    const unresolvedRequest = control?.instagram_request_attention?.kind === 'request_unconfirmed' || (control?.collection_blockers || []).some(item => item.code === 'request_unconfirmed' && item.blocking);
     const stopped = scrape.paused && !scrape.connecting;
     const action = scrape.connecting ? 'Stop collection' : busy === 'collection' ? scrape.paused ? 'Starting…' : 'Stopping…' : scrape.state === 'Stopping' ? 'Stopping…' : scrape.paused ? 'Start collection' : 'Stop collection';
     const wait = stopped ? 'Start collection' : 'Stop collection';
     const scope = control?.collection_scope;
     const scopeReady = scrape.available && stopped && control?.stop_acknowledged !== false && scrape.state !== 'Stopping' && ['following', 'both'].includes(scope);
-    const scopeNote = !scrape.available || !scope ? 'Checking list selection…' : scope === 'following' ? 'Follower lists stay saved.' : 'Both types of list are included.';
-    const scopeControls = `<div class="fl-ctl-scope"><span>Collect</span><div class="seg" role="group" aria-label="Lists to collect">${[['following','Following only'],['both','Both lists']].map(([value,label]) => `<button type="button" data-list-scope="${value}" data-focus="scope-${value}" aria-pressed="${scope === value}" ${busy || !scopeReady ? 'disabled' : ''}>${label}</button>`).join('')}</div><span class="fl-ctl-scope-note">${esc(scopeNote)}${!stopped && scrape.available ? ' Stop collection to change.' : ''}</span></div>`;
-    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button><span class="fl-ctl-current">${esc(scrape.state === 'Off' && control?.collection_startup?.state !== 'failed' ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span>${scrape.reconnect ? `<button type="button" class="btn fl-ctl-direct" data-connect="true" data-focus="connect" ${busy ? 'disabled' : ''}>Connect accounts</button>` : ''}${warning && !control?.collection_isolation ? `<button type="button" class="btn fl-ctl-direct" data-warning-review data-focus="warning-review">Review Instagram warning</button>` : `<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${stopped ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' ? 'disabled' : ''}>${action}</button>`}</div>`
-      + scopeControls + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
+    const scopeNote = !scrape.available || !scope ? 'Checking list selection…' : 'Applies to queued lists.';
+    const scopeControls = `<div class="fl-ctl-scope"><span>Lists</span><div class="seg" role="group" aria-label="Lists to collect">${[['following','Following only'],['both','Followers + following']].map(([value,label]) => `<button type="button" data-list-scope="${value}" data-focus="scope-${value}" aria-pressed="${scope === value}" ${busy || !scopeReady ? 'disabled' : ''}>${label}</button>`).join('')}</div><span class="fl-ctl-scope-note">${esc(scopeNote)}${!stopped && scrape.available ? ' Stop collection to change.' : ''}</span></div>`;
+    const selectedLanes = Object.keys(control?.collection_isolation?.accounts || {});
+    const selectedAccounts = (control?.accounts || []).filter(account => selectedLanes.length ? selectedLanes.includes(account.lane_id) : !account.paused && !account.is_main && !account.personal);
+    const accountNames = selectedAccounts.map(account => '@' + String(account.name || account.handle || '').replace(/^@/, '')).filter(name => name !== '@').join(', ');
+    const selection = accountNames ? `<span class="fl-ctl-account">${esc(accountNames)}</span>` : '';
+    const listSummary = ['following', 'both'].includes(scope) ? `<span class="fl-ctl-list-summary">${scope === 'following' ? 'Following' : 'Followers + following'}</span>` : '';
+    const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button>${selection}${listSummary}<span class="fl-ctl-current">${esc(scrape.state === 'Off' && control?.collection_startup?.state !== 'failed' && !control?.instagram_request_attention && !(control?.collection_blockers || []).some(item => item.blocking) ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span>${scrape.reconnect ? `<button type="button" class="btn fl-ctl-direct" data-connect="true" data-focus="connect" ${busy ? 'disabled' : ''}>Connect accounts</button>` : ''}${warningBlocks ? `<button type="button" class="btn fl-ctl-direct" data-warning-review data-focus="warning-review">Review Instagram warning</button>` : `<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${stopped ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' || stopped && unresolvedRequest ? 'disabled' : ''} ${stopped && unresolvedRequest ? 'title="Review the unfinished request in Accounts before starting"' : ''}>${action}</button>`}</div>`
+      + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
 
-      + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? scope === 'following' ? 'Following lists' : 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
+      + requestReview + scopeControls + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? scope === 'following' ? 'Following lists' : 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     if (el.innerHTML === html) return;
     el.innerHTML = html;
@@ -132,8 +163,12 @@
     if (busy) return;
     busy = target; error = ''; ++revision; render();
     try {
-      const result = await request(['collection','scope'].includes(target) ? '/api/control' : target === 'qualification' ? '/api/local-processing' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if (target === 'scope') {
+      const result = await request(['collection','scope','request-review'].includes(target) ? '/api/control' : target === 'qualification' ? '/api/local-processing' : '/api/engines', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if (target === 'request-review') {
+        if (!Array.isArray(result.stages) || unfinishedRequest(result) || result.stages.filter(stage => ['lists','bios'].includes(stage.id)).some(stage => !stage.paused)) throw new Error('Unconfirmed');
+        control = result; controlError = false; requestReviewed = false;
+      }
+      else if (target === 'scope') {
         if (result.collection_scope !== body.scope || !Array.isArray(result.stages)) throw new Error('Unconfirmed');
         control = result; controlError = false;
       }
@@ -147,13 +182,21 @@
       else { if (!result.engines?.[target] || result.engines[target].enabled !== body.enabled) throw new Error('Unconfirmed'); engines = result; engineError = false; }
       render();
       window.dispatchEvent(new Event('fl:control-changed'));
-    } catch { open = true; error = `Couldn't confirm ${target === 'scope' ? 'list selection' : target === 'collection' ? 'collection' : target === 'qualification' ? 'bio checks' : names[target].toLowerCase()} change. Check status and try again.`; }
+    } catch { open = true; error = `Couldn't confirm ${target === 'request-review' ? 'request review' : target === 'scope' ? 'list selection' : target === 'collection' ? 'collection' : target === 'qualification' ? 'bio checks' : names[target].toLowerCase()} change. Check status and try again.`; }
     finally { busy = ''; render(); await poll(true); }
   }
   el.addEventListener('click', event => {
     // Rendering replaces the clicked button before this click reaches document.
     // Keep the outside-click handler from treating that detached button as outside.
     event.stopPropagation();
+    const check = event.target.closest('[data-request-checked]');
+    if (check && !check.disabled) { requestReviewed = !!check.checked; render(); return; }
+    const requestReviewButton = event.target.closest('[data-request-review]');
+    if (requestReviewButton && !requestReviewButton.disabled && requestReviewed) {
+      const marker = unfinishedRequest(control), igId = requestIdentity(control, marker);
+      if (marker && igId) act('request-review', {action:'review_unconfirmed_request',lane:marker.lane,ig_id:igId,attention_at:marker.at,reviewed:true,checked_account_tab:true});
+      return;
+    }
     const scopeButton = event.target.closest('[data-list-scope]');
     if (scopeButton && !scopeButton.disabled) {
       if (scopeButton.dataset.listScope !== control?.collection_scope) act('scope', {action:'set_list_scope',scope:scopeButton.dataset.listScope});
@@ -163,7 +206,7 @@
     if (summary) { open = !open; render(); if (open) poll(true); return; }
     if (event.target.closest('[data-warning-review]')) { open = true; render(); return; }
     const acknowledgment = event.target.closest('[data-warning-ack]');
-    if (acknowledgment && !acknowledgment.disabled) { act('collection', {action:'acknowledge_scraping_warning', account:control.instagram_request_attention.lane, reviewed:true}); return; }
+    if (acknowledgment && !acknowledgment.disabled) { act('collection', {action:'acknowledge_scraping_warning', account:((control.collection_blockers || []).find(item => item.code === 'scraping_warning' && item.blocking)?.detail || (control.instagram_request_attention?.kind === 'scraping_warning' ? control.instagram_request_attention : null) || control.instagram_scraping_warning).lane, reviewed:true}); return; }
     const qualifier = event.target.closest('[data-qualification]');
     if (qualifier && !qualifier.disabled) { act('qualification', {paused:!qualification().paused}); return; }
     const engine = event.target.closest('[data-engine]');

@@ -16,6 +16,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -232,7 +233,7 @@ async function pageFetch(tab, input, init = {}) {
   const m = u.pathname.match(/^\/api\/v1\/friendships\/(\d+)\/(followers|following)\/$/);
   const info = /^\/api\/v1\/users\/[^/]+\/info\/$/.test(u.pathname);
   const kind = m ? 'list' : info ? 'profile' : 'api';
-  const entry = { t: V.now, lane: P.name, kind, bucket: kind === 'api' ? 'list' : kind, path: u.pathname, maxId: u.searchParams.get('max_id'),
+  const entry = { t: V.now, tabId: tab.id, lane: P.name, kind, bucket: kind === 'api' ? 'list' : kind, path: u.pathname, maxId: u.searchParams.get('max_id'),
     list: m ? (seedByPk.get(m[1]) || { handle: '?' + m[1] }).handle + '/' + m[2] : null, sw: browser.sw && browser.sw.name };
   if (kind === 'list') entry.n = ++counters.listReq;
   checkRequest(entry);
@@ -273,7 +274,7 @@ function makePage(tab, html) {
   class XHR { open() {} send() {} addEventListener() {} }
   const doc = { cookie: 'csrftoken=SimCsrf0; ds_user_id=' + (P.igId || '4242424242') + '; sessionid=sim', visibilityState: 'hidden', title,
     body: { innerText: text }, readyState: 'complete', addEventListener: on(L.doc), querySelectorAll: (sel) => (/application\/json/.test(sel) ? scripts : []) };
-  const g = { console: quiet, Date: SimDate, setTimeout: (fn, ms, ...a) => timer(tab, ms, () => fn(...a)), clearTimeout: clearTimer,
+  const g = { crypto: webcrypto, console: quiet, Date: SimDate, setTimeout: (fn, ms, ...a) => timer(tab, ms, () => fn(...a)), clearTimeout: clearTimer,
     AbortController, URL, DOMException, document: doc, location: { href: u.href, hostname: u.hostname, pathname: u.pathname, origin: u.origin },
     sessionStorage: tab.session, XMLHttpRequest: XHR, addEventListener: on(L.win), fetch: (i, o) => pageFetch(tab, i, o) };
   g.window = g; g.self = g;
@@ -375,7 +376,7 @@ function makeChrome(inst) {
 function bootSW(reason) {
   const inst = { name: (P.prefix || '') + 'sw#' + (++swSeq), alive: true, L: { onMessage: [], onInstalled: [], onStartup: [], onAlarm: [], onMessageExternal: [] } };
   counters.swBoots++;
-  const g = { console: quiet, Date: SimDate, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, DOMException,
+  const g = { crypto: webcrypto, console: quiet, Date: SimDate, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, DOMException,
     setTimeout: (fn, ms, ...a) => timer(inst, ms, () => fn(...a)), clearTimeout: clearTimer,
     setInterval: (fn, ms) => { const loop = () => { fn(); timer(inst, ms, loop); }; return timer(inst, ms, loop); }, clearInterval: clearTimer,
     fetch: (u, o) => swFetch(inst, u, o), chrome: makeChrome(inst) };
@@ -514,10 +515,27 @@ function attentionOperator() {
   if (attn.busy) return;
   attn.busy = true;
   opsHttp('/api/control').then(async (c) => {
-    const a = c && c.instagram_request_attention;
+    const a = c && c.collection?.unconfirmed && c.instagram_request_attention;
     if (!a) { attn.seen = null; return; }
     if (attn.seen == null) { attn.seen = V.now; ev('server paused collection: request never confirmed'); }
-    if (V.now - attn.seen >= 10 * MIN && await resumeCollection()) { attn.log.push({ start: attn.seen, end: V.now }); attn.seen = null; }
+    if (V.now - attn.seen < 10 * MIN || !store.sharedRequest || !browser.sw) return;
+    // Simulated human review: first prove the fake browser action finished, or
+    // close its exact frozen tab. This is never an automatic production retry.
+    for (const entry of igLog.filter(e => e.lane === P0.name && e.done == null && e.kind !== 'nav')) {
+      const tab = browser.tabs.get(entry.tabId);
+      if (tab) { tab.alive = false; browser.tabs.delete(entry.tabId); }
+      entry.operator_closed = V.now;
+    }
+    await opsHttp('/api/control', { stage: 'all', action: 'pause' });
+    const reviewed = await opsHttp('/api/control', { action: 'review_unconfirmed_request', reviewed: true,
+      checked_account_tab: true, lane: a.lane, ig_id: store.account?.ig_id, attention_at: a.at });
+    if (reviewed.ok === false) { ev('operator request review refused', { error: reviewed.error || reviewed.message }); return; }
+    const cleared = await new Promise(resolve => {
+      for (const fn of browser.sw.L.onMessage) fn({ cmd: 'review_shared_request' }, { id: EXT_ID }, resolve);
+    });
+    if (!cleared?.ok) { ev('operator local request review refused', { error: cleared?.error }); return; }
+    ev('operator: reviewed stopped request without changing saved progress');
+    if (await resumeCollection()) { attn.log.push({ start: attn.seen, end: V.now }); attn.seen = null; }
   }).catch(() => {}).finally(() => { attn.busy = false; });
 }
 function operator() {

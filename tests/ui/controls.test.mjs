@@ -19,9 +19,9 @@ function harness() {
   const el = {isConnected:false,dataset:{},setAttribute(){},contains:node => buttons.includes(node),
     addEventListener:(name, callback) => {listeners[`el:${name}`]=callback;},
     querySelector:s => s === '.fl-ctl-panel' ? panel : buttons.find(button => s.includes(`data-focus="${button.dataset.focus}"`)),
-    get innerHTML(){return html;},set innerHTML(value){html=value;buttons=[...value.matchAll(/<button\b([^>]*)>/g)].map(([,attrs]) => {
+    get innerHTML(){return html;},set innerHTML(value){html=value;buttons=[...value.matchAll(/<(?:button|input)\b([^>]*)>/g)].map(([,attrs]) => {
       const dataset = {};for (const [,key,val] of attrs.matchAll(/data-([\w-]+)="([^"]+)"/g)) dataset[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=val;
-      const button = {dataset,disabled:/\sdisabled(?:\s|$)/.test(attrs),focus(){document.activeElement=this;}};
+      const button = {dataset,checked:/\schecked(?:\s|$)/.test(attrs),disabled:/\sdisabled(?:\s|$)/.test(attrs),focus(){document.activeElement=this;}};
       return button;
     });}};
   vm.runInNewContext(source,{document,Date,AbortController,Event:class Event{constructor(type){this.type=type;}},
@@ -30,7 +30,7 @@ function harness() {
     fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}});
   const respond = (index,data,ok=true) => requests[index].resolve({ok,status:ok?200:500,json:async()=>data});
   const fail = index => requests[index].reject(new Error('offline'));
-  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-list-scope]' && button.dataset.listScope ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-connect]' && button.dataset.connect ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
+  const click = (selector) => {const button=buttons.find(selector);assert.ok(button);let stopped=false;const event={stopPropagation(){stopped=true;},target:{closest:query => query === '.fl-ctl-summary' && button.dataset.focus === 'panel' ? button : query === '[data-request-checked]' && button.dataset.focus === 'request-checked' ? button : query === '[data-request-review]' && button.dataset.focus === 'request-review' ? button : query === '[data-list-scope]' && button.dataset.listScope ? button : query === '[data-warning-review]' && button.dataset.focus === 'warning-review' ? button : query === '[data-warning-ack]' && button.dataset.focus === 'warning-ack' ? button : query === '[data-qualification]' && button.dataset.focus === 'qualification' ? button : query === '[data-engine]' && button.dataset.engine ? button : query === '[data-connect]' && button.dataset.connect ? button : query === '[data-stage="collection"]' && button.dataset.stage === 'collection' ? button : null}};listeners['el:click'](event);if(!stopped)listeners.click?.(event);return button;};
   return {requests,respond,fail,click,el,document,buttons,poll:()=>timer?.(),visibility:()=>listeners.visibilitychange?.()};
 }
 async function ready() {const h=harness();h.respond(0,collection());h.respond(1,engines());await settle();return h;}
@@ -141,7 +141,7 @@ test('stop waits for the active request to finish before offering Continue', asy
   const stopping = collection(true); stopping.stages[0].active = true; stopping.stages[0].state = 'stopping';
   post.resolve({ ok: true, json: async () => stopping }); await settle();
   assert.match(h.el.innerHTML, /fl-ctl-word">Stopping…/);
-  assert.match(h.el.innerHTML, /disabled>Stopping…/);
+  assert.match(h.el.innerHTML, /disabled\s*>Stopping…/);
   assert.doesNotMatch(h.el.innerHTML, />Start collection<\/button>/);
   const last = h.requests.length;
   h.respond(last - 2, collection(true)); h.respond(last - 1, engines()); await settle();
@@ -178,7 +178,7 @@ test('qualification lives in details and pauses independently of collection', as
   const post=h.requests.find(r=>r.options?.method==='POST');
   assert.equal(post.url,'/api/local-processing');assert.deepEqual(JSON.parse(post.options.body),{paused:true});
   post.resolve({ok:true,json:async()=>({paused:true,state:'stopping',stop_acknowledged:false})});await settle();
-  assert.match(h.el.innerHTML,/disabled>Stopping…/);
+  assert.match(h.el.innerHTML,/disabled\s*>Stopping…/);
   assert.match(h.el.innerHTML,/>Stop collection<\/button>/);
   assert.doesNotMatch(h.el.innerHTML,/>Continue checks<\/button>/);
 });
@@ -260,8 +260,10 @@ test('enabled collection offers one-click reconnect without claiming a request i
 test('following-only choice is visible and waits for server confirmation', async () => {
   const h = await ready();
   const top = h.el.innerHTML.split('<div class="fl-ctl-panel"')[0];
-  assert.match(top, /Following only/);
-  assert.match(top, /data-list-scope="both"[^>]*aria-pressed="true"/);
+  assert.match(top, /Followers \+ following/);
+  assert.doesNotMatch(top, /data-list-scope/);
+  h.click(b => b.dataset.focus === 'panel');
+  assert.match(h.el.innerHTML, /data-list-scope="both"[^>]*aria-pressed="true"/);
   h.click(b => b.dataset.listScope === 'following');
   const post = h.requests.find(r => r.options?.method === 'POST');
   assert.deepEqual(JSON.parse(post.options.body), {action:'set_list_scope', scope:'following'});
@@ -270,7 +272,7 @@ test('following-only choice is visible and waits for server confirmation', async
   post.resolve({ok:true, json:async () => ({...collection(),collection_scope:'following'})});
   await settle();
   assert.match(h.el.innerHTML, /data-list-scope="following"[^>]*aria-pressed="true"/);
-  assert.match(h.el.innerHTML, /Follower lists stay saved/);
+  assert.match(h.el.innerHTML, /Applies to queued lists/);
   assert.match(h.el.innerHTML, /<strong>Following lists/);
   assert.match(h.el.innerHTML, />Start collection<\/button>/);
 });
@@ -312,4 +314,74 @@ test('selected-account resume retains following-only stages and confirms bios st
   post.resolve({ok:true,json:async()=>resumed});await settle();
   assert.doesNotMatch(h.el.innerHTML,/Couldn&#39;t confirm collection change/);
   assert.match(h.el.innerHTML,/>Stop collection<\/button>/);
+});
+
+
+test('selected account and its unresolved request stay visible above an excluded old warning', async () => {
+  const h=harness(),status=collection();
+  status.collection_isolation={accounts:{turtles:'64189916997'}};
+  status.accounts=[{lane_id:'turtles',name:'trashtheturtles',paused:true},{lane_id:'dih',name:'dihfluencer',paused:true}];
+  status.instagram_request_attention={kind:'request_unconfirmed',lane:'turtles',message:'A request did not finish. Check this account before continuing.'};
+  status.instagram_scraping_warning={kind:'scraping_warning',lane:'dih',message:'Old warning',review_ready:false};
+  h.respond(0,status);h.respond(1,engines());await settle();
+  const top=h.el.innerHTML.split('<div class="fl-ctl-panel"')[0];
+  assert.match(top,/@trashtheturtles/);
+  assert.match(top,/A request did not finish/);
+  assert.equal(h.el.querySelector('[data-focus="collection"]').disabled,true);
+  assert.doesNotMatch(top,/Old warning|dihfluencer|Progress is saved/);
+  assert.match(h.el.innerHTML,/dihfluencer in its Chrome profile/);
+});
+
+
+test('a new blocking warning identifies the actual warned account despite an old isolated warning', async () => {
+ const h=harness(),status=collection();
+ status.collection_isolation={accounts:{turtles:'64189916997'}};
+ status.accounts=[{lane_id:'turtles',name:'trashtheturtles'},{lane_id:'dih',name:'dihfluencer'}];
+ status.instagram_scraping_warning={kind:'scraping_warning',lane:'dih',message:'Old warning',review_ready:false};
+ const current={kind:'scraping_warning',lane:'turtles',message:'Review turtles warning',review_ready:true};
+ status.instagram_request_attention=current;
+ status.collection_blockers=[{code:'scraping_warning',blocking:true,detail:current}];
+ h.respond(0,status);h.respond(1,engines());await settle();
+ assert.doesNotMatch(h.el.innerHTML,/data-stage="collection"/);
+ assert.match(h.el.innerHTML,/trashtheturtles in its Chrome profile/);
+ assert.doesNotMatch(h.el.innerHTML,/dihfluencer in its Chrome profile/);
+ h.click(b=>b.dataset.focus==='warning-ack');
+ const post=h.requests.find(r=>r.options?.method==='POST');
+ assert.deepEqual(JSON.parse(post.options.body),{action:'acknowledge_scraping_warning',account:'turtles',reviewed:true});
+});
+
+
+test('unfinished request review requires a fresh explicit account-tab confirmation and never resumes', async () => {
+ const h=harness(),status=collection();
+ status.accounts=[{lane_id:'turtles',name:'trashtheturtles',online:true,collection_protected:false,hold:false}];
+ status.instagram_request_attention={kind:'list',lane:'turtles',ig_id:'64189916997',at:'2026-10-04T01:00:00Z',message:'Request unfinished'};
+ status.collection_blockers=[{code:'request_unconfirmed',blocking:true,detail:status.instagram_request_attention}];
+ h.respond(0,status);h.respond(1,engines());await settle();
+ assert.equal(h.el.querySelector('[data-focus="request-review"]').disabled,true);
+ const check=h.el.querySelector('[data-focus="request-checked"]');check.checked=true;
+ h.click(b=>b.dataset.focus==='request-checked');
+ assert.equal(h.el.querySelector('[data-focus="request-review"]').disabled,false);
+ h.click(b=>b.dataset.focus==='request-review');
+ const post=h.requests.find(r=>r.options?.method==='POST');
+ assert.deepEqual(JSON.parse(post.options.body),{action:'review_unconfirmed_request',lane:'turtles',ig_id:'64189916997',attention_at:'2026-10-04T01:00:00Z',reviewed:true,checked_account_tab:true});
+ post.resolve({ok:true,json:async()=>collection(true)});await settle();
+ assert.match(h.el.innerHTML,/>Start collection<\/button>/);
+ assert.equal(h.requests.filter(r=>r.options?.method==='POST').length,1);
+ assert.doesNotMatch(h.el.innerHTML,/data-request-review/);
+});
+
+
+test('legacy list-shaped request uses only an older identity-bound selection for manual review', async () => {
+ const h=harness(),status=collection();
+ status.accounts=[{lane_id:'turtles',name:'trashtheturtles',online:true,collection_protected:false,hold:false}];
+ status.collection_isolation={at:'2026-10-04T00:00:00Z',accounts:{turtles:'64189916997'}};
+ status.instagram_request_attention={kind:'list',lane:'turtles',at:'2026-10-04T01:00:00Z',message:'Request unfinished'};
+ status.collection_blockers=[{code:'request_unconfirmed',blocking:true,detail:status.instagram_request_attention}];
+ h.respond(0,status);h.respond(1,engines());await settle();
+ assert.match(h.el.innerHTML,/data-request-checked/);
+ assert.equal(h.el.querySelector('[data-focus="request-review"]').disabled,true);
+ const check=h.el.querySelector('[data-focus="request-checked"]');check.checked=true;h.click(b=>b.dataset.focus==='request-checked');
+ h.click(b=>b.dataset.focus==='request-review');
+ const post=h.requests.find(r=>r.options?.method==='POST');
+ assert.equal(JSON.parse(post.options.body).ig_id,'64189916997');
 });

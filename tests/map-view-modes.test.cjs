@@ -27,7 +27,7 @@ test('view presets repack the same people without changing camera, cursors, evid
  model.cam.set(.6,.4,2);model.cursor='saved';model.pages=['','saved'];model.pageIndex=1;
  const camera=model.cam.state(),ids=model.scene.nodes.map(it=>it.d.id).sort();
  model.setViewMode('shared');
- assert.equal(model.viewMode,'shared');assert.equal(model.size,'connections');
+ assert.equal(model.viewMode,'shared');assert.equal(model.size,'followers','distance never overrides the size choice');
  assert.deepEqual(model.scene.nodes.map(it=>it.d.id).sort(),ids);
  assert.deepEqual(model.cam.state(),camera);assert.equal(model.cursor,'saved');assert.equal(model.nextCursor,'next');assert.equal(model.pageIndex,1);
  assert.equal(model.selected.id,1);
@@ -35,10 +35,11 @@ test('view presets repack the same people without changing camera, cursors, evid
  model.setViewMode('network');assert.equal(model.size,'followers');assert.deepEqual(model.cam.state(),camera);
 });
 test('invalid or retired saved modes return to My network',()=>{
- for(const viewMode of [undefined,'fit','equal','audience','bogus']){
+ for(const viewMode of [undefined,'equal','audience','bogus']){
   const model=new MapModel({viewMode});assert.equal(model.viewMode,'network');assert.equal(model.size,'followers');
  }
- assert.equal(new MapModel({viewMode:'shared'}).size,'connections');
+ assert.equal(new MapModel({viewMode:'shared',size:'connections'}).size,'connections');
+ assert.equal(new MapModel({viewMode:'fit'}).viewMode,'fit');
 });
 test('selecting a person immediately shows their recorded connections',()=>{
  const model=new MapModel({fetchJson:()=>new Promise(()=>{})});

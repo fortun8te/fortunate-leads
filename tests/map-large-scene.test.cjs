@@ -6,9 +6,14 @@ const {MapModel}=require('../web/map-model.js');
 const people=n=>Array.from({length:n},(_,i)=>({id:i+1,x:.5,y:.5,closeness:1-i/n,rank:1-i/n,followers:10**(i%7),source_count:i%30}));
 let scene,layout;
 test('200k real records lay out and index within a bounded build without spread or candidate explosion',()=>{
- const start=performance.now();layout=cohortLayout(people(200000),{id:0});scene=new Scene();scene.apply({nodes:layout},0,{instant:true});
+ const start=performance.now(),cpuStart=process.cpuUsage();layout=cohortLayout(people(200000),{id:0});scene=new Scene();scene.apply({nodes:layout},0,{instant:true});
  assert.equal(scene.nodes.length,200001);assert.equal(new Set(scene.nodes.map(it=>it.d.id)).size,200001);
- assert.ok(performance.now()-start<5000);assert.ok(scene.spatial);assert.equal(scene.large,true);
+ // The combined suite runs beside browser and server tests. Keep the 5s CPU
+ // budget (isolated measurement 1.5–1.8s) without counting another process's work.
+ const cpu=process.cpuUsage(cpuStart);
+ assert.ok((cpu.user+cpu.system)/1000<5000,'layout and index CPU remains bounded');
+ assert.ok(performance.now()-start<15000,'wall-time guard still catches stalls');
+ assert.ok(scene.spatial);assert.equal(scene.large,true);
  assert.equal(scene.step(100,.016,false),false);
  const cam=new Camera();cam.resize(1440,900);
  const overview=displayPlan(scene,cam,[],null,null,0);
@@ -19,18 +24,23 @@ test('200k real records lay out and index within a bounded build without spread 
  const hits=scene.spatial.query({x0:target.x-.00001,y0:target.y-.00001,x1:target.x+.00001,y1:target.y+.00001});
  assert.ok(hits.some(it=>it.d.id===target.id));assert.ok(hits.length<100);
 });
-test('overview raster contains every person once and is reused while panning',()=>{
- const fs=require('node:fs'),vm=require('node:vm');let arcs=0,blits=0;
- const draw={beginPath(){},moveTo(){},arc(){arcs++;},fill(){}};
+test('overview retains ready photos after bitmap eviction and never paints a grey placeholder wall',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');let arcs=0,blits=0,stamps=0;
+ const draw={save(){},restore(){},beginPath(){},arc(){arcs++;},clip(){},drawImage(){stamps++;}};
  const context={MapCore:require('../web/map-core.js'),MapModel:require('../web/map-model.js'),performance,document:{createElement(){return {getContext:()=>draw};}}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../web/map-view.js'),'utf8'),context);
- const view={model:{scene,cam:new Camera(),world:{me:{id:0}}},stats:{}};
+ const sample=layout.slice(0,3).map(n=>({...n,pic:'/img/'+n.id}));
+ const photoScene=new Scene();photoScene.apply({nodes:[...sample,...layout.slice(3).map(n=>({...n,pic:'/img/'+n.id}))]},0,{instant:true});
+ const entries=new Map(sample.map(n=>[n.pic,{url:n.pic,state:'ready',readyAt:0,image:{width:64,height:64}}]));
+ const view=Object.assign(Object.create(context.MapViewModule.MapView.prototype),{model:{scene:photoScene,cam:new Camera(),world:{me:{id:0}},reduced:true},portraits:{entries},stats:{}});
  const ctx={drawImage(){blits++;}};
- context.MapViewModule.MapView.prototype.paintLargeOverview.call(view,ctx,{fg3:'#888'},{vector:false});
- assert.equal(arcs,200000);assert.equal(view.overviewRaster.canvas.width,2048);
- view.model.cam.panBy(100,50);
- context.MapViewModule.MapView.prototype.paintLargeOverview.call(view,ctx,{fg3:'#888'},{vector:false});
- assert.equal(arcs,200000);assert.equal(blits,2);
+ view.paintLargeOverview(ctx,{fg3:'#888'},{vector:false});
+ assert.equal(arcs,3,'only real decoded portraits are painted');assert.equal(stamps,3);
+ assert.equal(view.overviewRaster.complete.size,3);assert.equal(view.overviewRaster.nodes.size,200000);
+ assert.equal(view.overviewRaster.canvas.width,2048);
+ entries.clear();view.model.cam.panBy(100,50);
+ view.paintLargeOverview(ctx,{fg3:'#888'},{vector:false});
+ assert.equal(arcs,3);assert.equal(stamps,3);assert.equal(blits,2,'cached pixels survive decoding-cache eviction and pan');
 });
 test('compact chunks accumulate once, report progress, preserve IDs and stop exactly at the requested count',async()=>{
  let requests=0;const counts=[];
@@ -68,4 +78,55 @@ test('large circles have deterministic organic angles without changing distance 
 test('saved supported density restores while invalid preferences keep default500',()=>{
  assert.equal(new MapModel({density:'200000'}).density,200000);
  for(const density of [undefined,null,'junk',-1,10000000])assert.equal(new MapModel({density}).density,500);
+});
+
+test('shared photo URLs keep separate people and absent photos retain faint selectable marks through repacking',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');let photos=0,missing=0;
+ const draw={save(){},restore(){},beginPath(){},arc(){},clip(){},fill(){missing++;},drawImage(){photos++;},globalAlpha:1};
+ const context={MapCore:require('../web/map-core.js'),MapModel:require('../web/map-model.js'),performance,document:{createElement(){return {getContext:()=>draw};}}};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../web/map-view.js'),'utf8'),context);
+ const scene=new Scene(),nodes=[{id:1,pic:'/img/1',x:.2,y:.2,portraitRadius:.02},{id:2,pic:'/img/1',x:.4,y:.4,portraitRadius:.01},{id:3,pic:null,x:.7,y:.7,portraitRadius:.015}];
+ scene.apply({nodes},0,{instant:true});
+ const entries=new Map([['/img/1',{url:'/img/1',state:'ready',readyAt:0,image:{width:64,height:64}}]]);
+ const view=Object.assign(Object.create(context.MapViewModule.MapView.prototype),{model:{scene,cam:new Camera(),world:{},reduced:true},portraits:{entries},stats:{}});
+ view.paintLargeOverview({drawImage(){}},{fg3:'#888'},{});
+ assert.equal(photos,2);assert.equal(missing,1);assert.equal(view.overviewRaster.complete.size,3);
+ assert.equal(view.overviewRaster.byPic.get('/img/1').length,2);
+ assert.ok(scene.get(1)&&scene.get(2)&&scene.get(3),'all loaded identities remain selectable');
+ entries.clear();scene.apply({nodes:nodes.map(n=>({...n,x:n.x+.1}))},0,{instant:true});
+ view.paintLargeOverview({drawImage(){}},{fg3:'#888'},{});
+ assert.equal(photos,5,'each old rendered individual transfers to its new position without another photo request');
+ assert.equal(view.overviewRaster.complete.size,3);assert.equal(missing,1,'missing mark also transfers once');
+});
+
+test('an incoming bitmap cannot be evicted before stamping, and a detached older bitmap recovers',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');let closes=0,wakes=0;
+ const draw={save(){},restore(){},beginPath(){},arc(){},clip(){},fill(){},drawImage(source){assert.ok(source.width>0,'never draw a detached bitmap');},globalAlpha:1};
+ const context={MapCore:require('../web/map-core.js'),MapModel:require('../web/map-model.js'),performance,document:{createElement(){return {getContext:()=>draw};},documentElement:{dataset:{theme:'light'}}},getComputedStyle(){return {getPropertyValue(){return '';}};}};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../web/map-view.js'),'utf8'),context);
+ const {PortraitCache}=require('../web/map-core.js'),requests=[];
+ const cache=new PortraitCache({max:2,concurrency:1,createImage:()=>{const image={};requests.push(image);return image;}});
+ const bitmap={width:64,height:64,close(){closes++;this.width=this.height=0;}},entry={url:'/img/1',state:'ready',readyAt:0,image:bitmap};
+ cache.entries.set(entry.url,entry);
+ const scene=new Scene();scene.apply({nodes:[{id:1,pic:'/img/1',x:.3,y:.3,portraitRadius:.01}]},0,{instant:true});
+ const view=Object.assign(Object.create(context.MapViewModule.MapView.prototype),{model:{scene,cam:new Camera(),world:{},reduced:true},portraits:cache,stats:{},ctx:draw,invalidate(){wakes++;}});
+ view.prepareOverview();assert.equal(entry.retained,true);
+ cache.get('/img/2');cache.get('/img/3');
+ assert.equal(closes,0,'cache pressure cannot detach a pending raster image');assert.equal(cache.entries.get('/img/1'),entry);
+ const atlas=view.overviewRaster;view.readPalette();assert.equal(view.overviewRaster,atlas,'theme changes preserve both pixels and pending image holds');
+ view.paintLargeOverview({drawImage(){}},{fg3:'#888'},{});assert.equal(entry.retained,false);assert.equal(atlas.complete.size,1);
+ cache.get('/img/3');assert.equal(closes,1,'bitmap becomes evictable once its pixels are retained');
+ // Reproduce the original failure from an older unprotected cache entry.
+ scene.apply({nodes:[{id:1,pic:'/img/1',x:.3,y:.3,portraitRadius:.01}]},0,{instant:true});
+ view.overviewRaster=null;cache.entries.clear();cache.queue=[];cache.active=0;
+ cache.entries.set(entry.url,entry);view.prepareOverview();
+ assert.doesNotThrow(()=>view.paintLargeOverview({drawImage(){}},{fg3:'#888'},{}));
+ assert.equal(cache.entries.has('/img/1'),false);assert.equal(view.overviewRaster.cursor,0);assert.ok(wakes>0);
+ view.queuePortraits([],null);cache.get('/img/1');assert.equal(requests.at(-1).src,'/img/1','expired image is eligible for a fresh local request');
+});
+test('a small page does not replace a completed large raster while departed people fade out',()=>{
+ const scene=new Scene();scene.apply({nodes:Array.from({length:6000},(_,i)=>({id:i,x:.3,y:.3}))},0,{instant:true});
+ assert.equal(scene.large,true);
+ scene.apply({nodes:Array.from({length:1000},(_,i)=>({id:i,x:.3,y:.3}))},1);
+ assert.equal(scene.nodes.length,6000,'departed people can finish their fade');assert.equal(scene.large,false,'render mode follows the currently loaded page');
 });

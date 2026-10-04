@@ -10,6 +10,8 @@ A lane is identified by the `lane_id` its extension keeps in chrome.storage (old
     including duplicate Chrome lanes for their Instagram identity.
 """
 import json
+import hashlib
+import pipeline_log
 import secrets
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -1009,7 +1011,7 @@ REQUEST_LEASE_SECONDS = 90
 REQUEST_QUEUE_MAX = 64
 
 
-def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
+def request_permit(conn, lane, kind=None, token=None, now=None, commit=True, viewer=None, require_viewer=False):
     """FIFO, persisted single-request lease; caller checks workspace controls first."""
     now = now or datetime.now(timezone.utc)
     stamp = now.timestamp()
@@ -1018,15 +1020,29 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
     try:
         state = db.get_setting(conn, 'instagram_request_gate') or {}
         active = state.get('active')
-        matching_release = bool(token is not None and active and active['lane'] == lane and active['token'] == token)
+        owner = conn.execute('SELECT ig_id FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+        supplied_viewer = viewer
+        viewer = viewer if viewer is not None else (owner['ig_id'] if owner else None)
+        token_hash = hashlib.sha256(token.encode()).hexdigest() if token is not None else None
+        receipts = [entry for entry in state.get('released', []) if entry['at'] > stamp - 86400][-128:]
+        # An ACK can be lost after committing. Replaying that exact lane/viewer/token
+        # confirms only the old completion; it cannot release a newer live request.
+        if token is not None and any(entry['lane'] == lane and entry.get('ig_id') == viewer
+                                     and (not require_viewer or not entry.get('ig_id') or supplied_viewer is not None)
+                                     and entry['token_hash'] == token_hash for entry in receipts):
+            if commit:
+                conn.commit()
+            return {'released': True, 'replayed': True}
+        matching_release = bool(token is not None and active and active['lane'] == lane and active['token'] == token and (not active.get('ig_id') or active['ig_id'] == viewer) and (not require_viewer or not active.get('ig_id') or supplied_viewer is not None))
         if active and active['until'] <= stamp and not matching_release:
             # Expiry proves the worker stopped reporting, not that its browser stopped.
             # Pause new collection until the owner checks the tab and explicitly resumes.
             message = 'Collection paused: an Instagram request did not confirm completion. Check the account tab before resuming collection.'
             db.set_setting(conn, 'paused_lists', True)
             db.set_setting(conn, 'paused_bios', True)
-            db.set_setting(conn, 'instagram_request_attention', {'lane': active['lane'], 'at': iso(now), 'message': message})
+            db.set_setting(conn, 'instagram_request_attention', {'lane': active['lane'], 'ig_id': active.get('ig_id'), 'kind': active['kind'], 'token_ref': pipeline_log.token_ref(active['token']), 'at': iso(now), 'message': message})
             conn.execute('UPDATE accounts SET last_error=? WHERE lane_id=?', (message, active['lane']))
+            pipeline_log.record(conn, 'request_expired_unknown', lane=active['lane'], kind=active['kind'], token=active['token'], ig_id=active.get('ig_id'), now=now)
             active = None
             state['queue'] = []
         queue = [item for item in state.get('queue', []) if item['seen'] > stamp - REQUEST_LEASE_SECONDS]
@@ -1058,8 +1074,14 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
         queue = [item for item in queue if may_request(item['lane'], item['kind'])]
         next_at = state.get('next_at', 0)
         if token is not None:
-            released = bool(active and active['lane'] == lane and active['token'] == token)
+            released = matching_release
             if released:
+                pipeline_log.record(conn, 'request_released', lane=lane, kind=active['kind'], token=token, ig_id=active.get('ig_id'), now=now)
+                # One pending completion per lane/viewer: other busy lanes must
+                # not evict its lost-ACK receipt by generating many requests.
+                receipts = [entry for entry in receipts if (entry['lane'], entry.get('ig_id')) != (lane, active.get('ig_id'))]
+                receipts.append({'lane': lane, 'ig_id': active.get('ig_id'), 'token_hash': token_hash, 'at': stamp})
+                receipts = receipts[-128:]
                 active = None
                 next_at = max(next_at, stamp + REQUEST_SPACING_SECONDS)
             result = {'released': released}
@@ -1085,14 +1107,15 @@ def request_permit(conn, lane, kind=None, token=None, now=None, commit=True):
                 if not active and stamp >= next_at and queue and queue[0]['lane'] == lane:
                     queue.pop(0)
                     db.set_setting(conn, 'instagram_request_attention', None)
-                    active = {'lane': lane, 'kind': kind, 'token': secrets.token_hex(24),
+                    active = {'lane': lane, 'ig_id': viewer, 'kind': kind, 'token': secrets.token_hex(24),
                               'until': stamp + REQUEST_LEASE_SECONDS}
+                    pipeline_log.record(conn, 'request_acquired', lane=lane, kind=kind, token=active['token'], ig_id=viewer, now=now)
                     next_at = stamp + REQUEST_SPACING_SECONDS
                     result = {'granted': True, 'token': active['token'], 'expires_at': iso(now + timedelta(seconds=REQUEST_LEASE_SECONDS))}
                 else:
                     wait = REQUEST_SPACING_SECONDS if active else next_at - stamp
                     result = {'granted': False, 'wait_ms': max(1000, min(15000, int(wait * 1000)))}
-        db.set_setting(conn, 'instagram_request_gate', {'active': active, 'queue': queue, 'next_at': next_at})
+        db.set_setting(conn, 'instagram_request_gate', {'active': active, 'queue': queue, 'next_at': next_at, 'released': receipts})
         if commit:
             conn.commit()
         return result
