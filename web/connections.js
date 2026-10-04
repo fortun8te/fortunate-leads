@@ -19,7 +19,7 @@
     return Number.isNaN(d.getTime()) ? 'unknown' : d.toLocaleString();
   };
   const heading = el('h2', 'Compare profiles');
-  const intro = el('p', 'Check who follows whom and which accounts appear on both sides. Evidence comes from collected lists, not personal relationships. Uses all collected lists.', 'connections-note');
+  const intro = el('p', 'Who follows whom, and which accounts both profiles share. Based on collected lists only.', 'connections-note');
   const form = el('form', undefined, 'connections-form');
   const inputs = ['Starting profile', 'Target profile'].map((title, i) => {
     const label = el('label', title);
@@ -40,7 +40,7 @@
   const submit = el('button', 'Compare', 'btn solid');
   submit.type = 'submit';
   form.append(submit);
-  const status = el('p', 'Start with @fortun8te and enter a target to see recorded follow paths.', 'connections-note');
+  const status = el('p', 'Enter a target profile to see recorded follows.', 'connections-note');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const results = el('div', undefined, 'connections-results');
@@ -74,7 +74,8 @@
       for (const observation of link.evidence || []) {
         const seed = String(observation.seed || 'unknown').replace(/^@/, '');
         item.append(el('p', `Source: @${seed} · ${observation.direction || 'unknown'} list. First observed: ${date(observation.first_observed)}. Last observed: ${date(observation.last_observed)}.`));
-        item.append(el('p', `Recorded observations: ${observation.observation_count ?? 'unknown'}. Latest import job: ${observation.last_job_id ?? 'unknown'}; page: ${observation.last_page_key ?? 'unknown'}.`));
+        const seenCount = observation.observation_count;
+        item.append(el('p', seenCount == null ? 'Times seen unknown.' : `Seen ${seenCount} ${seenCount === 1 ? 'time' : 'times'}.`));
       }
       if (!link.evidence?.length) item.append(el('p', 'Source-list details unavailable.'));
       list.append(item);
@@ -124,9 +125,9 @@
     const total = data.total_candidates ?? connectors.length;
     results.append(el('h3', `Results for ${handle(data.source)} and ${handle(data.target)}`));
     status.textContent = `${direct.length} direct follow${direct.length === 1 ? '' : 's'} observed · Showing ${connectors.length} of ${total} shared accounts${data.truncated ? ' (limited to the top results)' : ''}.`;
-    results.append(el('p', 'Experimental ordering: follow patterns first; fewer observed connections breaks ties. Not a friendship score.', 'connections-note'));
+    results.append(el('p', 'Ordered by follow pattern, then by fewer connections. Not a friendship score.', 'connections-note'));
     if (!connectors.length && !direct.length) {
-      results.append(el('p', 'No direct follows or shared accounts were observed in the collected lists. The relationship is unknown; missing or incomplete lists can hide connections.', 'connections-empty'));
+      results.append(el('p', 'No follows or shared accounts in the collected lists. Missing or incomplete lists can hide connections.', 'connections-empty'));
     }
     const layout = el('div', undefined, 'connections-layout');
     const choices = el('div', undefined, 'connections-choices');
@@ -159,7 +160,7 @@
       selectionStatus.textContent = `Selected evidence: ${option.title}.`;
       detail.setAttribute('aria-label', `Selected connection evidence: ${option.title}`);
       detail.replaceChildren(el('h3', option.title), diagram(option.nodes, option.links));
-      detail.append(el('p', 'Arrows mean “follows”. They show the direction observed in collected lists.', 'connections-note'));
+      detail.append(el('p', 'Each arrow points from the follower to the account they follow.', 'connections-note'));
       const byId = new Map(option.nodes.map(node => [node.id, node]));
       const directions = el('ul');
       directions.id = 'connection-directions';
@@ -173,8 +174,8 @@
         patterns.append(list);
         detail.append(patterns);
       }
-      if (option.connector?.manual_known) detail.append(el('p', 'Michael tagged this account as someone he knows. This does not mean they know the target.', 'connections-note'));
-      if (option.connector) detail.append(el('p', `${option.connector.rank?.observed_degree ?? 'Unknown'} observed connections in this dataset. This is not their Instagram follower count.`, 'connections-note'));
+      if (option.connector?.manual_known) detail.append(el('p', 'You tagged this account as someone you know. That doesn\'t mean they know the target.', 'connections-note'));
+      if (option.connector) detail.append(el('p', `${option.connector.rank?.observed_degree ?? 'Unknown'} connections in your collected lists. Not their Instagram follower count.`, 'connections-note'));
       detail.append(evidenceDetails(option.links, option.nodes));
     }
     for (const option of options) {
@@ -185,7 +186,7 @@
         const motifs = option.connector.motifs || [];
         if (motifs.length) button.append(el('span', names[motifs[0]] || motifs[0]));
         if (motifs.length > 1) button.append(el('span', `+${motifs.length - 1} more follow pattern${motifs.length === 2 ? '' : 's'}`));
-        if (option.connector.manual_known) button.append(el('span', 'Tagged: Michael knows this account'));
+        if (option.connector.manual_known) button.append(el('span', 'Tagged: you know this account'));
       } else button.append(el('span', 'Follow evidence between these two profiles'));
       button.setAttribute('aria-pressed', 'false');
       button.setAttribute('aria-controls', detail.id);
@@ -211,11 +212,11 @@
     }
     const coverage = el('details', undefined, 'connections-evidence');
     coverage.append(el('summary', 'Collection coverage and limits'));
-    coverage.append(el('p', 'Coverage describes collection progress, not a guarantee that Instagram returned every account. First observed is an import timestamp, not the date a follow began. Unknown last observation means freshness is not established.'));
+    coverage.append(el('p', 'Coverage shows collection progress. Instagram may not return every account. First observed is when the entry was saved, not when the follow began.'));
     const rows = el('ul');
     const coverageNames = { uncollected: 'Not collected', partial: 'Partially collected', count_mismatch: 'Recorded and reported counts differ', reported_complete: 'Collection reported complete' };
     const stateNames = { done: 'Finished', pending: 'Waiting', queued: 'Queued', running: 'Collecting', active: 'Collecting', paused: 'Paused', error: 'Collection error', failed: 'Collection failed', blocked: 'Collection blocked' };
-    for (const row of data.coverage || []) rows.append(el('li', `@${String(row.seed || 'unknown').replace(/^@/, '')} · ${row.direction || 'unknown'}: ${coverageNames[row.status] || 'Coverage unknown'} · ${row.received ?? '?'} recorded across imports; ${row.total ?? 'unknown'} total reported · collection: ${stateNames[row.state] || (row.state ? String(row.state).replaceAll('_', ' ') : 'unknown')} · updated ${date(row.updated_at)}`));
+    for (const row of data.coverage || []) rows.append(el('li', `@${String(row.seed || 'unknown').replace(/^@/, '')} · ${row.direction || 'unknown'}: ${coverageNames[row.status] || 'Coverage unknown'} · ${row.received ?? '?'} saved of ${row.total ?? 'unknown'} reported · collection: ${stateNames[row.state] || (row.state ? String(row.state).replaceAll('_', ' ') : 'unknown')} · updated ${date(row.updated_at)}`));
     coverage.append(rows);
     for (const limitation of data.limitations || []) coverage.append(el('p', typeof limitation === 'string' ? limitation : (limitation.message || limitation.code || 'Additional data limitations apply.')));
     results.append(coverage);
@@ -229,15 +230,15 @@
     const source = normalize(inputs[0].value), target = normalize(inputs[1].value);
     results.replaceChildren();
     if (![source, target].every(value => /^[a-z0-9._]{1,30}$/.test(value)) || source === target) {
-      status.textContent = 'Enter two different Instagram handles (letters, numbers, dots or underscores).';
+      status.textContent = 'Enter two different Instagram handles.';
       return;
     }
     if (new URLSearchParams(location.search).get('mock') === '1') {
-      status.textContent = 'Comparison requires collected data. Open the app without demo mode to compare real profiles.';
+      status.textContent = 'Comparing needs real collected data. Demo mode has none.';
       return;
     }
     controller = new AbortController();
-    status.textContent = 'Comparing collected follow evidence…';
+    status.textContent = 'Comparing…';
     panel.setAttribute('aria-busy', 'true');
     try {
       const query = new URLSearchParams({ source, target, limit: '20' });
@@ -250,7 +251,7 @@
     } catch (error) {
       if (current !== request || error.name === 'AbortError') return;
       results.replaceChildren();
-      status.textContent = `Could not compare profiles: ${error.message}. No conclusion about their connection can be drawn.`;
+      status.textContent = `Couldn't compare profiles: ${error.message}`;
     } finally {
       if (current === request) panel.removeAttribute('aria-busy');
     }

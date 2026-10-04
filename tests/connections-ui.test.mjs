@@ -51,7 +51,7 @@ test('requires explicit comparison and demo never fetches fabricated data', asyn
   assert.deepEqual(ui.events, ['connections-viewchange', 'connections-viewchange']);
   await ui.submit('@Alice', 'Bob');
   assert.equal(ui.calls.length, 0);
-  assert.match(ui.status.textContent, /requires collected data/);
+  assert.match(ui.status.textContent, /needs real collected data/);
 });
 test('late response cannot overwrite newer comparison and missing edges stay unknown', async () => {
   const ui = mount();
@@ -64,7 +64,7 @@ test('late response cannot overwrite newer comparison and missing edges stay unk
   ui.calls[0].resolve(response({ ...payload(), total_candidates: 999 }));
   await first;
   assert.equal(text(ui.results), displayed);
-  assert.match(displayed, /relationship is unknown/);
+  assert.match(displayed, /can hide connections/);
   assert.match(ui.status.textContent, /of 0/);
 });
 test('invalid follow-up cancels loading and does not make another request', async () => {
@@ -96,7 +96,8 @@ test('server failure does not imply absent connection', async () => {
   const pending = ui.submit('alice', 'bob');
   ui.calls[0].resolve({ ok: false, json: async () => ({ error: 'Unavailable' }) });
   await pending;
-  assert.match(ui.status.textContent, /No conclusion/);
+  assert.match(ui.status.textContent, /Couldn't compare profiles/);
+  assert.doesNotMatch(ui.status.textContent, /no connection|not connected|No follows/i);
   assert.equal(ui.panel.attrs['aria-busy'], undefined);
 });
 
@@ -108,8 +109,8 @@ test('render failure removes any partial evidence before announcing no conclusio
   data.coverage = {};
   ui.calls[0].resolve(response(data));
   await pending;
-  assert.match(ui.status.textContent, /Could not compare profiles/);
-  assert.match(ui.status.textContent, /No conclusion/);
+  assert.match(ui.status.textContent, /Couldn't compare profiles/);
+  assert.doesNotMatch(ui.status.textContent, /no connection|not connected|No follows/i);
   assert.equal(ui.results.children.length, 0);
   assert.equal(ui.panel.attrs['aria-busy'], undefined);
 });
@@ -122,8 +123,8 @@ test('coverage separates historical recorded counts from reported totals', async
   ui.calls[0].resolve(response(data));
   await pending;
   assert.match(text(ui.results), /Recorded and reported counts differ/);
-  assert.match(text(ui.results), /120 recorded across imports; 100 total reported/);
-  assert.match(text(ui.results), /Experimental ordering/);
+  assert.match(text(ui.results), /120 saved of 100 reported/);
+  assert.match(text(ui.results), /Not a friendship score/);
 });
 
 test('empty results identify submitted profiles after pending and completed form edits', async () => {
@@ -135,7 +136,7 @@ test('empty results identify submitted profiles after pending and completed form
   await pending;
   assert.equal(ui.results.children[0].tag, 'h3');
   assert.equal(ui.results.children[0].textContent, 'Results for @alice and @bob');
-  assert.match(text(ui.results), /No direct follows or shared accounts/);
+  assert.match(text(ui.results), /No follows or shared accounts/);
   ui.form.children[0].children[0].value = 'eve';
   assert.equal(ui.results.children[0].textContent, 'Results for @alice and @bob');
 });
