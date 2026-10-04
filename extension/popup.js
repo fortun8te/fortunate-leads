@@ -20,6 +20,13 @@ function bucketText(b, what) {
   const left = b.left == null ? 'no daily cap' : n(b.left) + ' ' + what + ' left'; // null = unlimited (Infinity does not survive storage)
   return (wait ? 'next in ' + wait + 's' : 'ready') + ' · ' + left + (b.infoOff ? ' · reading page loads' : '');
 }
+// The workspace (or ops/set-pace) sets the pace; this only shows what this extension is running.
+const PACE_NAME = { slow: 'Slow', normal: 'Normal', fast: 'Fast', custom: 'Custom' };
+function paceText(p) {
+  if (!p) return '–';
+  const g = Array.isArray(p.list_gap) ? ', a list page every ' + p.list_gap[0] + ' to ' + p.list_gap[1] + ' s' : '';
+  return (PACE_NAME[p.preset] || (p.preset ? p.preset : 'Normal')) + g + (p.scope === 'account' ? ' · set for this account' : '');
+}
 function render(v) {
   if (!v) return;
   current = v;
@@ -40,6 +47,7 @@ function render(v) {
   $('hour').textContent = r ? n(r.people_hour) + ' people · ' + n(r.pages_hour) + ' pages · ' + n(r.bios_hour) + ' bios · ' + n(r.requests_hour) + ' requests' : '–';
   $('lists').textContent = v.stages?.list === false ? 'Off' : bucketText(v.buckets && v.buckets.list, 'pages');
   $('bios').textContent = v.stages?.profile === false ? 'Off' : bucketText(v.buckets && v.buckets.profile, 'reads');
+  $('pace').textContent = paceText(v.pace);
   $('limits').textContent = r && r.last_hit_at ? n(r.hits_24h) + ' in 24h, last ' + ago(Date.parse(r.last_hit_at)) : 'none reached';
   $('boxdt').hidden = $('box').hidden = !v.box;
   $('box').textContent = n(v.box) + (v.box === 1 ? ' result' : ' results') + ' waiting to reach the server';
@@ -157,6 +165,7 @@ function compactLocalReport(o) {
       hold: o.st?.hold?.code || null, current_job: o.cur?.job ? {id: o.cur.job.id, kind: o.cur.job.kind, direction: o.cur.job.direction || null} : null},
     counts: {today: metrics(o.view?.today, ['people','list','bios']), last_hour: metrics(o.view?.rate, ['people_hour','pages_hour','bios_hour','requests_hour','hits_24h']), outbox: Array.isArray(o.box) ? o.box.length : 0},
     checks: {requested_ms: FL.pollWaitFor(o.account, o.laneId, o.collectionSpeed), applies_to: 'idle_list_checks'},
+    pace: o.view?.pace ? {id: o.view.pace.id, preset: o.view.pace.preset, scope: o.view.pace.scope} : null,
     request: request ? {phase: request.phase || 'unknown', age_seconds: request.at ? Math.max(0, Math.floor((Date.now()-request.at)/1000)) : null,
       kind: request.body?.kind || null, job_id: request.body?.job_id || null} : null,
   };

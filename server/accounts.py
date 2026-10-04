@@ -17,6 +17,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 import db
+import pace_limits
 
 DEFAULT_LANE = 'default'
 LANE_RX = re.compile(r'[A-Za-z0-9_-]{1,64}')
@@ -24,7 +25,7 @@ ROLES = ('lists', 'bios', 'both')
 HOLDS = ('login', 'challenge')
 RELEASE_AFTER = timedelta(minutes=10)   # offline this long: its list moves on
 ONLINE_FOR = timedelta(seconds=90)      # heartbeats come every <= 30 s
-BUDGET_MAX = {'list': 3000, 'profile': 5000}   # per day; 0 = no daily limit
+BUDGET_MAX = pace_limits.budget_max()   # per day, from extension/lib/pace-limits.js (the one place); 0 = no daily limit
 HANDOFFS_KEEP = 30
 IDENTITY_WAITS = ('cooldown_until', 'list_cool_until', 'profile_cool_until', 'list_endpoint_until')
 

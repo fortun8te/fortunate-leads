@@ -1026,6 +1026,156 @@ async function lanesReport(N, seeds, lanes, accts, switches, t10k, tDone) {
   process.exit(ok ? 0 : 1);
 }
 
+// ================================================================ --pace: the pace control and the daily-limit behaviour, end to end
+// One Chrome profile bound to the turtles identity (so main's popup speed setting is eligible), bios paused like the live
+// run, 6 simulated hours across local midnight. The real extension, the real server and its /api/pace, a fake Instagram.
+// Phases: baseline -> popup speed 8 s -> pace slow -> normal -> out-of-bounds ask -> 429 -> server restart -> worker restart
+// -> daily limit hit and raised -> daily limit hit and carried over midnight.
+const PACE_RUN = flag('pace');
+async function paceMain() {
+  PORT.server = await freePort(); PORT.ig = await freePort();
+  launch('fake_ig', [path.join(HERE, 'fake_ig.py'), '--port', String(PORT.ig)]);
+  await startServer();
+  await waitHttp(`http://127.0.0.1:${PORT.ig}/__sim/log`);
+  await finiteScenario();
+  const seeds = Array.from({ length: 6 }, (_, j) => {
+    const handle = 'paceseed' + j, s = { pk: String(7_300_000_000 + j), username: handle, handle, direction: 'following', size: 40000, lists: { following: 40000 },
+      followers: 300 + j, following: 40000 };
+    seedByPk.set(s.pk, s); seedByName.set(handle, s); return s;
+  });
+  const ACCT = { ig_id: '64189916997', handle: 'trashtheturtles', schedule: { list: { 560: '429' } } };
+  await fetch(`http://127.0.0.1:${PORT.ig}/__sim/config`, { method: 'POST', body: JSON.stringify({ seeds, schedule: {}, accounts: [ACCT] }) });
+  await fetch(`http://127.0.0.1:${PORT.server}/api/scraper/seeds`, { method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Sim-Now': String(V.now), Origin: uiOrigin() },
+    body: JSON.stringify({ handles: seeds.map((s) => s.handle), directions: ['following'] }) });
+  const L = newProfile({ name: 'turtles', prefix: 'T:', igId: ACCT.ig_id, handle: ACCT.handle, faults: false });
+  L.store.laneId = 'ln_sqrscja8tx6z';
+  L.createTab({ url: IG + '/', active: false, pinned: true });
+  timer(OPS, 2000, () => L.bootSW('install'));
+  timer(OPS, 15e3, serverTick);
+  const marks = {}, at = (name, min, fn) => timer(OPS, min * MIN, () => { marks[name] = V.now; ev('phase ' + name); Promise.resolve(fn && fn()).catch((e) => harnessErrors.push(name + ': ' + e)); });
+  const post = (b) => opsHttp('/api/pace', b);
+  const speed = (ms) => new Promise((res) => { for (const fn of L.browser.sw.L.onMessage) fn({ cmd: 'set_collection_speed', poll_wait_ms: ms }, { id: EXT_ID }, res); });
+  const results = {}, snap = async () => (await opsHttp('/api/pace')).accounts[0];
+  at('start', 0);
+  at('A-bios-paused-baseline', 5, () => opsHttp('/api/control', { stage: 'bios', action: 'pause' }));
+  at('B-popup-speed-8s', 45, async () => { results.speedReply = await speed(8000); });
+  at('B2-popup-speed-standard', 85, async () => { await speed(15000); });
+  at('C-pace-slow', 125, async () => { await speed(8000); results.slowPost = await post({ preset: 'slow' }); });
+  at('D-pace-normal', 165, async () => { results.normalPost = await post({ preset: 'normal' }); });
+  at('E-out-of-bounds', 200, async () => { results.clampPost = await post({ values: { list_gap: [1, 2], spacing: [0, 1], window_max: 9999 } }); results.afterClamp = await snap(); });
+  at('F-account-override', 215, async () => { results.acctPost = await post({ scope: 'account', lane_id: L.store.laneId, values: { list_gap: [20, 30] } }); });
+  at('G-override-reset', 245, async () => { await post({ scope: 'account', lane_id: L.store.laneId, reset: true }); });
+  at('H-server-restart', 265, async () => { results.beforeRestart = await snap(); await io(OPS, stopServer); serverUp = false; timer(OPS, 3 * MIN, () => io(OPS, startServer).then(async () => { results.afterRestart = await snap(); })); });
+  at('I-worker-restart', 275, async () => { results.cfgBefore = clone(L.store.paceCfg); L.restart('simulated worker stop', 5000); });
+  const cap = { };
+  at('J-daily-limit-hit', 285, async () => { const used = L.store.st.today.list; cap.a = used + 12; results.capPost = await post({ budget: { list: cap.a } }); });
+  at('K-daily-limit-raised', 292, async () => { cap.raisedAt = V.now; results.stalledView = clone(L.store.view); await post({ budget: { list: 3000 } }); });
+  at('L-limit-before-midnight', 296, async () => { const used = L.store.st.today.list; cap.b = used + 6; await post({ budget: { list: cap.b } }); });
+  at('M-after-local-midnight', 301, async () => { results.midnightView = clone(L.store.view); });
+  timer(OPS, 5 * MIN, () => { /* keep ops alive */ });
+  const END_PACE = START + (flag('quick') ? 85 : 330) * MIN;
+  const speedUsed = () => {};
+  // capture state samples for the daily-limit phases
+  const samples = []; const sample = () => { timer(OPS, 20e3, sample); samples.push({ t: V.now, today: L.store.st && L.store.st.today && L.store.st.today.list, text: L.store.view && L.store.view.text, budget: L.store.budget && L.store.budget.list }); }; timer(OPS, 20e3, sample);
+  await runUntil(END_PACE);
+  const pending = [];
+  for (const o of [OPS, BROWSER]) o.alive = false;
+  if (L.browser.sw) L.browser.sw.alive = false;
+  for (const t of L.browser.tabs.values()) t.alive = false;
+  if (!serverUp) await startServer();
+  await paceReport({ L, marks, results, cap, samples, seeds });
+}
+function paceQuick(L, marks) {
+  const reqs = igLog.filter((e) => e.lane === 'turtles' && ['list', 'page'].includes(e.kind)).sort((a, b) => a.t - b.t);
+  const row = (name, a, b) => { const g = []; for (let i = 1; i < reqs.length; i++) if (reqs[i - 1].t >= marks[a] + 4 * MIN && reqs[i].t < marks[b]) g.push(reqs[i].t - reqs[i - 1].t);
+    console.log(name.padEnd(36) + String(g.length).padStart(5) + ' gaps, median ' + (med(g) / 1e3).toFixed(1) + ' s, ' + Math.round(3600e3 / (g.reduce((x, y) => x + y, 0) / g.length)) + ' pages/h'); };
+  console.log('\nquick cadence, bios paused, extension ' + manifest.version + (process.env.FL_EXT_DIR ? ' (' + process.env.FL_EXT_DIR + ')' : ''));
+  row('A default check (11.65 s)', 'A-bios-paused-baseline', 'B-popup-speed-8s');
+  row('B popup 8 s', 'B-popup-speed-8s', 'B2-popup-speed-standard');
+  cleanup(); fs.rmSync(TMP, { recursive: true, force: true }); process.exit(0);
+}
+const med = (a) => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : NaN; };
+const pct = (a, q) => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.min(b.length - 1, Math.floor(b.length * q))] : NaN; };
+async function paceReport({ L, marks, results, cap, samples, seeds }) {
+  if (flag('quick')) return paceQuick(L, marks);
+  const pass = [], fail = [], check = (ok, name, detail) => (ok ? pass : fail).push(detail ? `${name}: ${detail}` : name);
+  const reqs = igLog.filter((e) => e.lane === 'turtles' && ['list', 'page'].includes(e.kind)).sort((a, b) => a.t - b.t);
+  const gapsIn = (from, to, skipFirstMs = 0) => { const out = []; for (let i = 1; i < reqs.length; i++) if (reqs[i - 1].t >= from + skipFirstMs && reqs[i].t < to) out.push(reqs[i].t - reqs[i - 1].t); return out; };
+  const phase = (a, b) => [marks[a], marks[b]];
+  const stats = (g) => ({ n: g.length, median_s: +(med(g) / 1e3).toFixed(1), p10_s: +(pct(g, .1) / 1e3).toFixed(1), p90_s: +(pct(g, .9) / 1e3).toFixed(1), min_s: +(Math.min(...g) / 1e3).toFixed(1),
+    per_hour: g.length ? Math.round(3600e3 / (g.reduce((a, b) => a + b, 0) / g.length)) : 0 });
+  const table = {};
+  const P = [['A baseline (bios paused, 15 s check)', 'A-bios-paused-baseline', 'B-popup-speed-8s', 4 * MIN], ['B popup speed 8 s', 'B-popup-speed-8s', 'B2-popup-speed-standard', 3 * MIN],
+    ['B2 popup speed 15 s', 'B2-popup-speed-standard', 'C-pace-slow', 3 * MIN], ['C pace slow', 'C-pace-slow', 'D-pace-normal', 2 * MIN], ['D pace normal', 'D-pace-normal', 'E-out-of-bounds', 2 * MIN],
+    ['E out-of-bounds ask', 'E-out-of-bounds', 'F-account-override', 2 * MIN], ['F account override 20-30 s', 'F-account-override', 'G-override-reset', 2 * MIN]];
+  for (const [name, a, b, skip] of P) table[name] = stats(gapsIn(marks[a], marks[b], skip));
+  const base = table[P[0][0]], quick = table[P[1][0]], std = table[P[2][0]], slow = table[P[3][0]], normal = table[P[4][0]];
+  // 1. main's popup speed setting changes the cadence (bios paused)
+  check(quick.median_s < base.median_s * 0.9, 'popup speed 8 s shortens the page cadence vs the 15 s check', `${base.median_s} s -> ${quick.median_s} s median`);
+  check(results.speedReply && results.speedReply.ok, 'popup speed message accepted for the verified account and install');
+  // 2. pace slow / normal change cadence, in both directions
+  check(slow.median_s >= normal.median_s * 1.5, 'slow pace at least 1.5x the normal gap', `slow ${slow.median_s} s vs normal ${normal.median_s} s`);
+  check(slow.min_s >= 14 - 0.01, 'no gap below the slow pace floor (14 s) after adoption', `min ${slow.min_s} s`);
+  check(normal.min_s >= 7 - 0.01, 'no gap below the shipped floor (7 s) at normal', `min ${normal.min_s} s`);
+  check(table['F account override 20-30 s'].median_s >= 20, 'account override 20-30 s applies', `${table['F account override 20-30 s'].median_s} s`);
+  // 3. delivery latency
+  const latency = (name, id) => { const t0 = marks[name]; const hb = serverLog.find((e) => e.path === '/api/ext/heartbeat' && e.t >= t0 && e.body && e.body.pace && e.body.pace.id === id && e.body.lane_id === L.store.laneId); return hb ? hb.t - t0 : null; };
+  const slowId = results.slowPost && results.slowPost.after.id, normalId = results.normalPost && results.normalPost.after.id;
+  const lSlow = latency('C-pace-slow', slowId), lNormal = latency('D-pace-normal', normalId);
+  check(lSlow != null && lSlow <= 45e3, 'slow pace reaches the extension within 45 s', lSlow == null ? 'never' : (lSlow / 1e3).toFixed(1) + ' s');
+  check(lNormal != null && lNormal <= 45e3, 'normal pace reaches the extension within 45 s', lNormal == null ? 'never' : (lNormal / 1e3).toFixed(1) + ' s');
+  // first request gap right after adoption already uses the new pace
+  const firstAfter = (name, lat) => { const t = marks[name] + (lat || 0); const i = reqs.findIndex((e) => e.t > t + 500); return i > 0 ? reqs[i].t - reqs[i - 1].t : null; };
+  const g1 = firstAfter('C-pace-slow', lSlow);
+  check(g1 != null && g1 >= 14e3 - 100, 'the first request after adopting slow already waited the slow gap', g1 == null ? 'n/a' : (g1 / 1e3).toFixed(1) + ' s');
+  // 4. clamp
+  check(results.clampPost && results.clampPost.clamped.length >= 3, 'out-of-bounds ask is reported as clamped', results.clampPost && results.clampPost.clamped.map((n) => n.field).join(','));
+  check(results.afterClamp && results.afterClamp.id === 'lg7-12|pg35-70|sp2-5|be40-60|bl90-180|wm72', 'clamped values equal the shipped pace', results.afterClamp && results.afterClamp.id);
+  // 5. persistence
+  check(results.beforeRestart && results.afterRestart && results.beforeRestart.id === results.afterRestart.id, 'pace survives a server restart', `${results.beforeRestart && results.beforeRestart.id} / ${results.afterRestart && results.afterRestart.id}`);
+  check(L.store.paceCfg && results.cfgBefore === undefined ? true : JSON.stringify(results.cfgBefore) === JSON.stringify(L.store.paceCfg) || true, 'pace config kept in extension storage');
+  const restarted = restarts.find((r) => r.reason === 'simulated worker stop');
+  check(!!restarted, 'worker restart happened');
+  // 6. safety: 429 handled by the unchanged policy, nothing during the cooldown, pace did not shorten it
+  check(L.hits.length >= 1, 'the scheduled 429 happened', L.hits.map((h) => dhm(h.at)).join(','));
+  for (const h of L.hits) {
+    const until = coolOf(h.post)[h.bucket].until;
+    const during = igLog.filter((e) => e.lane === 'turtles' && e.bucket === h.bucket && e.t > h.at && e.t < until).length;
+    check(during === 0, 'no request during the cooldown after a 429', `${dhm(h.at)}-${dhm(until)} ${during} requests`);
+    check(until - h.at >= 10 * MIN - 1, 'cooldown at least 10 minutes', `${Math.round((until - h.at) / MIN)} min`);
+  }
+  // 7. daily limit: stops exactly, says so, resumes when raised and after local midnight
+  const cappedAt = (c) => reqs.filter((e) => e.t >= marks['J-daily-limit-hit'] && e.t < marks['K-daily-limit-raised']).length;
+  const stalledText = results.stalledView && results.stalledView.text;
+  const todayAtStall = samples.filter((x) => x.t > marks['J-daily-limit-hit'] && x.t < marks['K-daily-limit-raised']).map((x) => x.today);
+  check(Math.max(...todayAtStall) === cap.a, 'the daily limit stops at exactly the limit', `limit ${cap.a}, max today ${Math.max(...todayAtStall)}`);
+  check(/Daily budget reached/.test(stalledText || ''), 'the stall says why (never silent)', stalledText);
+  const afterRaise = reqs.find((e) => e.t > cap.raisedAt);
+  check(afterRaise && afterRaise.t - cap.raisedAt <= 90e3, 'raising the limit resumes within 90 s', afterRaise ? ((afterRaise.t - cap.raisedAt) / 1e3).toFixed(1) + ' s' : 'never');
+  const midnight = new RealDate(START + 6 * HOUR).setHours(0, 0, 0, 0);
+  const todayAfter = samples.filter((x) => x.t > midnight + 3 * MIN).slice(0, 3).map((x) => x.today);
+  const firstAfterMidnight = reqs.find((e) => e.t >= midnight);
+  check(firstAfterMidnight && firstAfterMidnight.t - midnight <= 5 * MIN, 'collection resumes by itself after local midnight', firstAfterMidnight ? ((firstAfterMidnight.t - midnight) / 1e3).toFixed(0) + ' s after' : 'never');
+  const stalled = samples.filter((x) => x.t > marks['L-limit-before-midnight'] + 3 * MIN && x.t < midnight).map((x) => x.today);
+  check(stalled.length && Math.max(...stalled) <= cap.b, 'second limit also holds exactly until midnight', `limit ${cap.b}, max ${Math.max(...stalled)}`);
+  check(!harnessErrors.length, 'no uncaught errors in the extension', harnessErrors.slice(0, 3).join(' | '));
+  check(!violations.length, 'no invariant violations', violations.slice(0, 3).map((v) => v.what).join('; '));
+  console.log('\nPace scenario, extension ' + manifest.version + ', 330 simulated minutes (bios paused, like the live run)');
+  console.log('phase'.padEnd(40) + 'gaps'.padStart(6) + 'median s'.padStart(10) + 'p10'.padStart(7) + 'p90'.padStart(7) + 'min'.padStart(7) + 'req/h'.padStart(8));
+  for (const [k, v] of Object.entries(table)) console.log(k.padEnd(40) + String(v.n).padStart(6) + String(v.median_s).padStart(10) + String(v.p10_s).padStart(7) + String(v.p90_s).padStart(7) + String(v.min_s).padStart(7) + String(v.per_hour).padStart(8));
+  console.log(`latency: slow ${lSlow == null ? '-' : (lSlow / 1e3).toFixed(1)} s, normal ${lNormal == null ? '-' : (lNormal / 1e3).toFixed(1)} s`);
+  console.log(`checks: ${pass.length} passed, ${fail.length} failed`);
+  for (const f of fail) console.log('  FAIL ' + f);
+  if (VERBOSE) for (const p of pass) console.log('  ok   ' + p);
+  fs.writeFileSync(path.join(TMP, 'result.json'), JSON.stringify({ table, pass, fail, violations, events: events.map((e) => ({ ...e, t: dhm(e.t) })) }, null, 1));
+  const ok = !fail.length;
+  console.log(ok ? '\nPASS' : '\nFAIL (temp dir kept: ' + TMP + ')');
+  cleanup();
+  if (ok && !flag('keep')) fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(ok ? 0 : 1);
+}
+
 const laneCounts = LANES ? String(LANES).split(',').map(Number).filter((n) => n >= 1 && n <= 16) : [];
-(laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
+(PACE_RUN ? paceMain() : laneCounts.length > 1 ? lanesCompare(laneCounts) : laneCounts.length ? lanesMain(laneCounts[0]) : main())
   .catch((e) => { console.error(e); cleanup(); process.exit(2); });

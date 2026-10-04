@@ -65,6 +65,7 @@ import usage_ledger  # noqa: E402
 import qualify  # noqa: E402
 import rules  # noqa: E402
 import workflows  # noqa: E402
+import pace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / 'web'
@@ -193,7 +194,7 @@ def ext_state(conn, row=None):
     reviewed = db.get_setting(conn, 'instagram_scraping_warning_reviewed') or {}
     mobile = row is not None and row['collection_backend'] == 'mobile'
     upgrade = not collector_capable(row)
-    return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row),
+    return {'paused': accounts.paused_for(conn, row), 'budget': accounts.budget_of(conn, row), 'pace': pace.wire(conn, row),
             **({'scraping_warning_reviewed_at': reviewed[row['lane_id']]} if row is not None and row['lane_id'] in reviewed else {}),
             'stages': {k: not cooling and not upgrade and k not in control.paused_kinds(conn)
                        and (not mobile or (k == 'list' and not row['hold'])) for k in ('list', 'profile')},
@@ -1138,6 +1139,7 @@ def ext_heartbeat(conn, q, b):
             fields['hold'] = 'challenge' if tab == 'tab_challenge' or fields.get('hold') == 'challenge' else 'login'
             fields['state'] = tab
     row = accounts.touch(conn, lane, accounts.account_from(q, b), **fields)
+    pace.note_applied(conn, lane, b.get('pace'))   # which pace this extension runs, for the pace readout
     if isinstance(b.get('ready'), dict):   # 3.7+: when each clock allows the next request (the control strip shows breaks)
         ready = db.get_setting(conn, 'ext_ready') or {}
         ready[lane] = {k: clean_iso(b['ready'].get(k)) for k in ('list', 'profile')}
@@ -3098,6 +3100,7 @@ ROUTES += map_universe.routes(sys.modules[__name__])
 ROUTES += qual_api.routes(sys.modules[__name__])
 ROUTES += workflows.routes(sys.modules[__name__])
 ROUTES += dm_import.routes(sys.modules[__name__])
+ROUTES += pace.routes(sys.modules[__name__])
 
 
 class Server(ThreadingHTTPServer):

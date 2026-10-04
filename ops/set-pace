@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Show or change how fast Instagram accounts collect. One line, no code change, no extension reload.
+
+  ops/set-pace                                  what is running now, and why
+  ops/set-pace slow | normal | fast             all accounts
+  ops/set-pace slow --account @trashtheturtles  one account (it overrides the all-accounts setting)
+  ops/set-pace --list-gap 9-14 --break-len 90-150
+  ops/set-pace --budget-list 400 --budget-profile 100
+  ops/set-pace --reset [--account @name]        remove the setting
+  ops/set-pace fast --dry-run                   say what would happen, save nothing
+
+Every value is held inside the bounds in extension/lib/pace-limits.js; anything outside is clamped and reported.
+Talks to the running workspace (default http://127.0.0.1:8777, or --url / $FL_URL). Stdlib only.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+
+FIELDS = (('list_gap', '--list-gap', 'seconds between list pages'),
+          ('profile_gap', '--profile-gap', 'seconds between bio reads'),
+          ('spacing', '--spacing', 'seconds between any two requests'),
+          ('break_every', '--break-every', 'list pages between breaks'),
+          ('break_len', '--break-len', 'seconds per break'),
+          ('window_max', '--window-max', 'requests allowed in any 11 minutes'))
+
+
+class Fail(Exception):
+    pass
+
+
+def call(base, path, body=None):
+    request = urllib.request.Request(base + path, method='POST' if body is not None else 'GET',
+                                     data=json.dumps(body).encode() if body is not None else None)
+    request.add_header('Origin', base)          # the workspace only accepts its own origin on POST
+    if body is not None:
+        request.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            message = json.loads(exc.read()).get('error')
+        except (ValueError, AttributeError):
+            message = None
+        raise Fail(message or f'The workspace answered {exc.code}.') from None
+    except (urllib.error.URLError, OSError) as exc:
+        raise Fail(f"Can't reach the workspace at {base}. Is it running? ({getattr(exc, 'reason', exc)})") from None
+
+
+RANGE = re.compile(r'^\s*(\d+(?:\.\d+)?)\s*(?:-|:|\.\.|,|to)\s*(\d+(?:\.\d+)?)\s*$')
+
+
+def parse_value(text, integer=False):
+    """"9-14" is a range; "9" is one number (the default range scaled to that centre; a plain count for window-max)."""
+    found = RANGE.match(str(text))
+    if found:
+        return [float(found.group(1)), float(found.group(2))]
+    try:
+        value = float(str(text).strip())
+    except ValueError:
+        raise Fail(f'"{text}" is not a number or a range like 9-14.') from None
+    return int(value) if integer and value == int(value) else value
+
+
+def n(x):
+    x = round(float(x), 1)
+    return str(int(x)) if x == int(x) else str(x)
+
+
+def rng(pair, unit=''):
+    return f'{n(pair[0])}-{n(pair[1])}{unit}'
+
+
+def describe(values):
+    return [f"  pages   one every {rng(values['list_gap'], ' s')}, then a {rng(values['break_len'], ' s')} break every {rng(values['break_every'], ' pages')}",
+            f"  bios    one every {rng(values['profile_gap'], ' s')}",
+            f"  spacing {rng(values['spacing'], ' s')} between any two requests, at most {values['window_max']} in any 11 minutes"]
+
+
+def show(data, out):
+    glob = data['global']
+    limits = data['limits']
+    out(f"Pace for all accounts: {glob['preset']}" + ('  (bounds are provisional: nothing can go faster than normal yet)' if limits['status'] == 'provisional' else ''))
+    for line in describe(glob['values']):
+        out(line)
+    e = glob['expected']
+    out(f"  expected {e['list_per_hour']} pages/h, {e['bio_per_hour']} bios/h; {e['all_per_hour']} requests/h together (cap {e['window_per_hour']}/h)")
+    out('')
+    if not data['accounts']:
+        out('No accounts connected yet.')
+    for a in data['accounts']:
+        if a['collection_protected']:
+            out(f"{a['name']}: main account, never used for collection")
+            continue
+        scope = 'its own setting' if a['scope'] == 'account' else 'all accounts'
+        ap = a['applied']
+        state = ('not reported yet: reload the extension to 3.9.31' if ap is None else
+                 'running it' if ap['matches'] else 'applying (not picked up yet)')
+        out(f"{a['name']}: {a['preset']} ({scope}), {state}, {'online' if a['online'] else 'offline'}")
+        e = a['expected']
+        out(f"  expected {e['list_per_hour']} pages/h, {e['bio_per_hour']} bios/h, {e['all_per_hour']} together. {e['text']}")
+        b = a['budget']
+        used = b.get('used_today') or {}
+        cap = lambda v, word: f'no daily cap on {word}' if not v else f'daily limit {v:,} {word}'
+        out(f"  {cap(b['list'], 'pages')} ({used.get('list', 0):,} today); {cap(b['profile'], 'bios')} ({used.get('profile', 0):,} today)")
+        if a['observed'].get('pages_hour') is not None:
+            out(f"  last hour {n(a['observed']['pages_hour'])} pages")
+    out('')
+    for item in data['safety']['now']:
+        out('Stopped right now: ' + item['text'])
+    out('Always on, whatever the pace: ' + data['safety']['fixed'][0])
+
+
+def report(data, out):
+    before, after = data['before'], data['after']
+    who = 'all accounts' if data['scope'] == 'global' else (data['affects'][0]['name'] if data['affects'] else data['lane_id'])
+    head = f"Pace for {who}: {before['preset']} -> {after['preset']}"
+    out(head if data['saved'] else f"Would change {who}: {before['preset']} -> {after['preset']} (nothing saved)")
+    changed = [f for f in data['changed'] if f != 'budget']
+    for key, _, label in FIELDS:
+        if key in changed:
+            b, a = before['values'][key], after['values'][key]
+            out(f"  {key.replace('_', ' '):<12} {rng(b) if isinstance(b, list) else b} -> {rng(a) if isinstance(a, list) else a}   ({label})")
+    if 'budget' in data['changed']:
+        for kind in ('list', 'profile'):
+            b, a = data['budget']['before'].get(kind), data['budget']['after'].get(kind)
+            if b != a:
+                out(f"  daily {kind:<7} {'no cap' if not b else format(b, ',')} -> {'no cap' if not a else format(a, ',')}")
+    if not data['changed']:
+        out('  nothing changed: already running these values')
+    for note in data['clamped']:
+        want, got = note['requested'], note['applied']
+        out(f"  held at the bound: {note['field'].replace('_', ' ')} {rng(want) if isinstance(want, list) else want} became "
+            f"{rng(got) if isinstance(got, list) else got}. {note['why']}")
+    be, af = data['expected']['before'], data['expected']['after']
+    out(f"Expected requests per hour: {be['all_per_hour']} -> {af['all_per_hour']}  "
+        f"(pages {be['list_per_hour']} -> {af['list_per_hour']}, bios {be['bio_per_hour']} -> {af['bio_per_hour']})")
+    out('What sets it: ' + af['text'])
+    if data['saved']:
+        online = sum(1 for a in data['affects'] if a['online'])
+        out(f"{online} online and {len(data['affects']) - online} offline account(s) affected. {data['delivery']}")
+    else:
+        out('Nothing was saved.')
+
+
+def run(argv, out=print, request=call):
+    ap = argparse.ArgumentParser(prog='set-pace', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('preset', nargs='?', choices=('slow', 'normal', 'fast'))
+    ap.add_argument('--account', help='@handle or lane id; omit for all accounts')
+    for key, flag, label in FIELDS:
+        ap.add_argument(flag, help=label + ' (A-B, or one number to scale the default range)')
+    ap.add_argument('--budget-list', type=int, help='daily list pages')
+    ap.add_argument('--budget-profile', type=int, help='daily bio reads')
+    ap.add_argument('--no-daily-cap', action='store_true', help='remove the daily limits (0 = no cap)')
+    ap.add_argument('--reset', action='store_true', help='remove the setting')
+    ap.add_argument('--dry-run', action='store_true', help='say what would happen, save nothing')
+    ap.add_argument('--json', action='store_true', help='print the raw answer')
+    ap.add_argument('--url', default=os.environ.get('FL_URL', 'http://127.0.0.1:8777'))
+    args = ap.parse_args(argv)
+    base = args.url.rstrip('/')
+    values = {key: parse_value(getattr(args, key), integer=key == 'window_max') for key, _, _ in FIELDS if getattr(args, key) is not None}
+    budget = {k: v for k, v in (('list', args.budget_list), ('profile', args.budget_profile)) if v is not None}
+    if args.no_daily_cap:
+        budget = {'list': 0, 'profile': 0}
+    verbs = [bool(args.preset), bool(values), args.reset]
+    if sum(verbs) > 1:
+        raise Fail('Choose one of a preset, explicit values, or --reset.')
+    if not any(verbs) and not budget:
+        data = request(base, '/api/pace')
+        if args.json:
+            out(json.dumps(data, indent=2))
+        else:
+            show(data, out)
+        return 0
+    body = {'scope': 'global'}
+    if args.account:
+        wanted = args.account.lstrip('@').lower()
+        accounts = request(base, '/api/pace')['accounts']
+        match = [a for a in accounts if a['lane_id'] == args.account or (a['handle'] or '').lower() == wanted]
+        if len(match) != 1:
+            raise Fail(f'No single account matches "{args.account}". Known: ' + ', '.join(a['name'] for a in accounts) + '.')
+        body = {'scope': 'account', 'lane_id': match[0]['lane_id']}
+    if args.preset:
+        body['preset'] = args.preset
+    if values:
+        body['values'] = values
+    if args.reset:
+        body['reset'] = True
+    if budget:
+        body['budget'] = budget
+    if args.dry_run:
+        body['dry_run'] = True
+    data = request(base, '/api/pace', body)
+    if args.json:
+        out(json.dumps(data, indent=2))
+    else:
+        report(data, out)
+    return 0
+
+
+def main():
+    try:
+        return run(sys.argv[1:])
+    except Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

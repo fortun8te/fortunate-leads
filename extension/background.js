@@ -1,9 +1,9 @@
 // Fortunate Leads: paced executor. Server owns the queue; this worker owns pacing, budgets and cooldowns.
 // MV3 lifecycle: every piece of state that must survive the worker being stopped lives in chrome.storage.local
-// (st, box, cur, prog, lane, ids, seen, trail, debug). The in-memory loop is single-flight with a staleness expiry;
+// (st, box, cur, prog, lane, ids, seen, trail, debug, paceCfg). The in-memory loop is single-flight with a staleness expiry;
 // the 30 s alarm restarts it after the worker was stopped or if it stalls. Instagram requests are serialised by the
 // stored `lane` marker, so a restarted worker never fires while an earlier request may still be in flight.
-importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js', 'lib/workspace.js');
+importScripts('lib/pace-limits.js', 'lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js', 'lib/workspace.js');
 const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
@@ -202,7 +202,36 @@ async function queueDone(path, body, success = true, gen = mem.gen) {
   if (success) await editSt((st) => { if (gen === mem.gen) FL.succeeded(st); });
   await flushBox();
 }
+// ---- pace: the six timing values the workspace may change at run time (lib/pace-limits.js holds the bounds) ---
+// The server sends the account's effective pace with every heartbeat and lease reply. It is clamped again here with this
+// extension's own copy of the bounds, stored, and the pending waits are redrawn at once. A server that sends no pace (an
+// older one) means the shipped defaults; a malformed pace is ignored and what runs keeps running. Cooldowns, holds,
+// budgets and the window are never touched by a pace value.
+async function loadPace() {
+  const cfg = await get('paceCfg'), got = cfg && FL.paceFromWire({ v: 1, values: cfg.values, preset: cfg.preset, scope: cfg.scope });
+  FL.setPace(got ? got.values : FL.paceDefaults());
+  mem.pace = { preset: got ? got.preset : null, scope: got ? got.scope : null, at: got && cfg.at ? cfg.at : null };
+}
+async function applyPace(j) {
+  if (!j || typeof j.paused !== 'boolean') return;   // only a valid control reply speaks for the server
+  const next = j.pace == null ? { values: FL.paceDefaults(), preset: null, scope: null } : FL.paceFromWire(j.pace);
+  if (!next) { if (!mem.paceIgnored) await trail('pace ignored', { why: 'malformed' }); mem.paceIgnored = true; return; }
+  mem.paceIgnored = false;
+  const id = FL.paceId(next.values);
+  if (id === FL.getPace().id) {
+    if (mem.pace && (mem.pace.preset !== next.preset || mem.pace.scope !== next.scope)) mem.pace = { ...mem.pace, preset: next.preset, scope: next.scope };
+    return;
+  }
+  const now = Date.now();
+  FL.setPace(next.values);
+  mem.pace = { preset: next.preset, scope: next.scope, at: now };
+  await set({ paceCfg: { v: 1, values: next.values, preset: next.preset, scope: next.scope, at: now } });
+  await editSt((st) => { FL.repace(st, now); });
+  await trail('pace changed', { id, preset: next.preset, scope: next.scope });
+  mem.lastBeat = 0;   // tell the server what runs now at the next opportunity
+}
 async function applyServer(j) {
+  await applyPace(j);
   if (j && j.budget && typeof j.budget === 'object') await set({ budget: j.budget });
   if (j && j.stages) mem.stages = j.stages;
   if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.17') + ' before collecting.'; });
@@ -248,7 +277,8 @@ async function heartbeat(force) {
       hold: st.hold ? st.hold.code : null, list_endpoint_until: st.listEndpointUntil > now ? iso(st.listEndpointUntil) : null,
       day: FL.dayKey(now), today: { list: st.today.list, profile: st.today.profile }, budget: FL.budgetOf(await get('budget')),
       last_error: st.hold ? st.hold.message : st.lastError, activity: mem.label || null, text: s.text, people_today: st.today.people || 0,
-      rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) } }, 10e3);
+      rate: FL.rateOf(st, now), ready: { list: iso(FL.readyAt(st, 'list')), profile: iso(FL.readyAt(st, 'profile')) },
+      pace: { id: FL.getPace().id, preset: mem.pace?.preset || null, scope: mem.pace?.scope || null, since: iso(mem.pace?.at) } }, 10e3);
     if (r.status !== 200 || typeof r.json?.paused !== 'boolean') throw new Error('Control state unavailable');
     mem.offline = false;
     await applyServer(r.json);
@@ -271,6 +301,7 @@ async function status(st) {
   await set({ view: { ...s, today: st.today, budget, job: mem.job ? mem.label : '', nextAt: Math.min(FL.readyAt(st, 'list'), FL.readyAt(st, 'profile')),
     lastError: st.hold ? st.hold.message : uncertain ? s.text : st.lastError,
     request: request ? { phase: request.phase, at: request.at } : null, stages: mem.stages || null, note: st.note, rate: FL.rateOf(st, now), at: now,
+    pace: { id: FL.getPace().id, preset: mem.pace?.preset || null, scope: mem.pace?.scope || null, list_gap: FL.getPace().values.list_gap },
     buckets: { list: bucket('list'), profile: { ...bucket('profile'), infoOff: st.infoOffUntil > now } },
     box: ((await get('box')) || []).length, tab: mem.noTab || 'ok' } });
   return s;
@@ -876,11 +907,24 @@ async function step(gen) {
   if (mem.laneWait) return lane.until - now;
   const benchmarkWaitMs = await benchmarkStep(gen);
   if (benchmarkWaitMs !== null) return benchmarkWaitMs;
-  const pl = FL.plan(st, FL.budgetLeft(st, await get('budget'), now), now);
-  if (!pl.kinds.length) { mem.budgetDone = pl.why === 'budget'; return pl.wait; }
+  // The heartbeat above may have delivered a new pace: plan on the state after it.
+  const fresh = await loadSt();
+  if (fresh.hold || (await get('localPaused'))) return 15e3;
+  const pl = FL.plan(fresh, FL.budgetLeft(fresh, await get('budget'), Date.now()), Date.now());
+  if (!pl.kinds.length) {
+    // "Daily budget reached" whenever every kind the workspace lets this account run is spent, not only when both are:
+    // a spent list budget with bios paused used to show as "No other work ready" (a silent-looking stall).
+    const open = FL.KINDS.filter((kind) => FL.controlAllows(mem, kind));
+    const left = FL.budgetLeft(fresh, await get('budget'), Date.now());
+    mem.budgetDone = pl.why === 'budget' || (pl.why !== 'cooldown' && open.length > 0 && open.every((kind) => left[kind] <= 0));
+    return pl.wait;
+  }
   const { job, wait } = await nextJob(pl.kinds);
   mem.job = job || null;
   if (!job) { mem.noTab = null; return wait; }
+  // A pace change can land between the plan and the lease; the new gap decides. The leased job stays in `cur`.
+  const late = FL.readyAt(await loadSt(), job.kind) - Date.now();
+  if (late > 250) { mem.job = null; return late; }
   const t = await pickTab(job.kind); // after leasing: never opens or wakes a tab while the queue is empty
   if (!t.tab) { mem.job = null; return t.wait; }
   if (st.lastError && /^Open instagram/i.test(st.lastError)) await editSt((s) => { s.lastError = null; });
@@ -1086,6 +1130,7 @@ async function wake(reason) {
   // A lookup tab left behind by a stopped worker.
   const stale = await get('lookupTab');
   if (stale != null && !mem.lookups.size) { chrome.tabs.remove(stale).catch(() => {}); await set({ lookupTab: null }); }
+  await loadPace().catch(() => FL.resetPace());
   await ensureAlarm();
   await startOffset(reason).catch(() => {});
 }

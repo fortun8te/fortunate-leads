@@ -1,17 +1,93 @@
 // Pure logic shared by the service worker (importScripts) and node tests (import).
 (function (root) {
   const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
-  // Lists and bios keep their own clocks (listNextAt, profileNextAt), so bios fill the list gaps and breaks; nextAt is the
-  // floor for any request (a short spacing after each one, hit pauses, backoffs, start offset). A sliding window caps the
-  // combined rate per account.
+  // Pace: defaults, bounds and presets come from lib/pace-limits.js, the one place they live. Lists and bios keep
+  // their own clocks (listNextAt, profileNextAt), so bios fill the list gaps and breaks; nextAt is the floor for any
+  // request (a short spacing after each one, hit pauses, backoffs, start offset). A sliding window caps the combined
+  // rate per account. Only the six PACE_KEYS below can be changed at run time (setPace, always clamped to the bounds);
+  // everything else in PACE is a fixed protection that no pace value can touch.
+  const LIM = (typeof module !== 'undefined' && module.exports && typeof require === 'function') ? require('./pace-limits.js') : root.FLPaceLimits;
+  if (!LIM || !LIM.fields) throw new Error('lib/pace-limits.js must load before lib/core.js');
   const PACE = {
-    listGap: [7e3, 12e3], breakEvery: [40, 60], breakLen: [90e3, 180e3],
-    profileGap: [35e3, 70e3], spacing: [2e3, 5e3], window: 11 * MIN, windowMax: 72,
+    window: 11 * MIN,
     cooldownBase: 10 * MIN, cooldownCap: 6 * HOUR, strikes: 3, strikePause: 2 * HOUR,
     netBase: 30e3, netCap: 10 * MIN,   // tab / network trouble: local backoff, never counted as an Instagram limit
     otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
+  const PACE_KEYS = { list_gap: 'listGap', profile_gap: 'profileGap', spacing: 'spacing', break_every: 'breakEvery', break_len: 'breakLen', window_max: 'windowMax' };
+  const PACE_ORDER = ['list_gap', 'profile_gap', 'spacing', 'break_every', 'break_len', 'window_max'];
+  const PACE_TAGS = { list_gap: 'lg', profile_gap: 'pg', spacing: 'sp', break_every: 'be', break_len: 'bl', window_max: 'wm' };
+  const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+  const clip = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+  const roundTo = (x, step) => +(Math.floor(x / step + 0.5) * step).toFixed(3);
+  const ceilTo = (x, step) => +(Math.ceil(x / step - 1e-9) * step).toFixed(3);
+  const floorTo = (x, step) => +(Math.floor(x / step + 1e-9) * step).toFixed(3);
+  const pair = (v, i) => (Array.isArray(v) ? v[i] : v);
+  for (const f of PACE_ORDER) {
+    const s = LIM.fields[f];
+    const ok = s && (s.kind === 'range'
+      ? s.floor[0] <= s.ceiling[0] && s.floor[1] <= s.ceiling[1] && Math.max(s.floor[1], s.floor[0] * s.min_spread) <= s.ceiling[1]
+        && s.floor[0] <= s.default[0] && s.default[0] <= s.ceiling[0] && s.floor[1] <= s.default[1] && s.default[1] <= s.ceiling[1]
+      : s.floor <= s.ceiling && s.floor <= s.default && s.default <= s.ceiling);
+    if (!ok) throw new Error('pace-limits.js: inconsistent bounds for ' + f);
+  }
+  function clampRange(spec, want) {
+    const fit = (x, i) => clip(roundTo(clip(x, spec.floor[i], spec.ceiling[i]), spec.step), spec.floor[i], spec.ceiling[i]);
+    const [lo, hi] = want[0] <= want[1] ? want : [want[1], want[0]];
+    let a = fit(lo, 0), b = fit(hi, 1);
+    const need = a * spec.min_spread;
+    if (b < need) {
+      b = Math.min(spec.ceiling[1], ceilTo(need, spec.step));
+      if (b < need) a = Math.max(spec.floor[0], floorTo(b / spec.min_spread, spec.step));
+    }
+    return [a, b];
+  }
+  const paceDefaults = () => Object.fromEntries(PACE_ORDER.map((f) => [f, JSON.parse(JSON.stringify(LIM.fields[f].default))]));
+  // Any input becomes a full set of values inside the bounds. Missing or unusable fields take `base` (default: the
+  // shipped defaults). notes lists what had to change.
+  function clampPace(input, base) {
+    const out = {}, notes = [], from = base || paceDefaults();
+    for (const f of PACE_ORDER) {
+      const spec = LIM.fields[f], want = input && input[f] !== undefined ? input[f] : from[f];
+      let got, usable;
+      if (spec.kind === 'int') {
+        usable = isNum(want);
+        got = usable ? clip(roundTo(clip(want, spec.floor, spec.ceiling), spec.step), spec.floor, spec.ceiling) : from[f];
+      } else {
+        usable = Array.isArray(want) && want.length === 2 && want.every(isNum);
+        got = usable ? clampRange(spec, want) : clampRange(spec, from[f]);
+      }
+      if (!usable) notes.push({ field: f, requested: want, applied: got, why: 'unusable' });
+      else if (JSON.stringify(got) !== JSON.stringify(want)) notes.push({ field: f, requested: want, applied: got, why: 'clamped' });
+      out[f] = got;
+    }
+    return { values: out, notes };
+  }
+  const fmtNum = (x) => String(+Number(x).toFixed(3));
+  // Same text as server/pace_limits.py ident(): how the server and the extension tell whether they agree.
+  const paceId = (v) => PACE_ORDER.map((f) => PACE_TAGS[f] + (Array.isArray(v[f]) ? v[f].map(fmtNum).join('-') : fmtNum(v[f]))).join('|');
+  let paceNow = null;
+  function setPace(values) {
+    const v = clampPace(values).values;
+    for (const f of PACE_ORDER) {
+      const key = PACE_KEYS[f], spec = LIM.fields[f];
+      PACE[key] = spec.kind === 'int' ? v[f] : spec.unit === 's' ? v[f].map((x) => Math.round(x * 1000)) : v[f].slice();
+    }
+    paceNow = { values: v, id: paceId(v) };
+    return paceNow.id;
+  }
+  const getPace = () => ({ values: JSON.parse(JSON.stringify(paceNow.values)), id: paceNow.id });
+  const resetPace = () => setPace(paceDefaults());
+  // What the server sends: {v: 1, values: {...}, preset, scope}. Anything else is rejected (null) and the caller keeps what runs.
+  function paceFromWire(w) {
+    if (!w || typeof w !== 'object' || w.v !== 1 || !w.values || typeof w.values !== 'object' || Array.isArray(w.values)) return null;
+    const { values, notes } = clampPace(w.values);
+    return { values, id: paceId(values), notes, preset: typeof w.preset === 'string' ? w.preset.slice(0, 20) : null,
+      scope: w.scope === 'account' ? 'account' : 'global' };
+  }
+  setPace(paceDefaults());
   const KINDS = ['list', 'profile'];
+  const BUDGET_MAX = LIM.budget_max;
   // This controls idle checks only. Request clocks, breaks and limits are independent.
   const COLLECTION_SPEED = Object.freeze({ igId: '64189916997', laneId: 'ln_sqrscja8tx6z',
     min: 8000, max: 30000, default: 11650, standard: 15000 });
@@ -285,7 +361,7 @@
   }
 
   function fresh() {
-    return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, listNextAt: 0, profileNextAt: 0, pages: 0, breakEvery: 25,
+    return { day: '', today: { list: 0, profile: 0, people: 0, bios: 0 }, nextAt: 0, listNextAt: 0, profileNextAt: 0, listBreakUntil: 0, pages: 0, breakEvery: 25,
       cool: { list: bucket(), profile: bucket() }, hold: null, lastError: null, note: null,
       log: [], plog: [], rlog: [], streak: { other: 0, net: 0 }, infoOffUntil: 0,
       listRedirects: [], listEndpointUntil: 0, listEndpointStrikes: 0 };
@@ -351,10 +427,25 @@
       return st;
     }
     st.listNextAt = now + rand(...PACE.listGap, r);
+    st.listBreakUntil = 0;
     if (++st.pages >= st.breakEvery) {
       st.listNextAt += rand(...PACE.breakLen, r);
+      st.listBreakUntil = st.listNextAt;
       st.pages = 0; st.breakEvery = rand(...PACE.breakEvery, r);
     }
+    return st;
+  }
+  // A pace change applies to the wait already running, not only to the next one: each pending gap is redrawn from the
+  // time of the last request of its kind, so a faster pace shortens it and a slower pace lengthens it at once. A break in
+  // progress is never cut short, and spacing/backoff (nextAt) only ever moves later here, so hit pauses and backoffs stay.
+  // Cooldowns, holds, budgets and the window are not touched.
+  function repace(st, now, r = Math.random) {
+    const lastOf = (kind) => (st.rlog || []).reduce((t, e) => (e[1] === kind && e[0] > t ? e[0] : t), 0);
+    const list = lastOf('list'), profile = lastOf('profile');
+    if (list) st.listNextAt = Math.max(list + rand(...PACE.listGap, r), st.listBreakUntil || 0);
+    if (profile) st.profileNextAt = profile + rand(...PACE.profileGap, r);
+    if (list || profile) st.nextAt = Math.max(st.nextAt || 0, Math.max(list, profile) + rand(...PACE.spacing, r));
+    if (!(st.breakEvery >= PACE.breakEvery[0] && st.breakEvery <= PACE.breakEvery[1])) st.breakEvery = rand(...PACE.breakEvery, r);
     return st;
   }
   // When a request of `kind` may go, pacing only (cooldowns and the window are checked in plan).
@@ -416,7 +507,8 @@
 
   function budgetOf(budget) {
     const b = { ...BUDGET, ...(budget || {}) };
-    return { list: Math.max(0, Number(b.list) || 0), profile: Math.max(0, Number(b.profile) || 0) };
+    // 0 stays "no daily limit" (existing behaviour); a number can never exceed the bound in pace-limits.js.
+    return { list: Math.min(BUDGET_MAX.list, Math.max(0, Number(b.list) || 0)), profile: Math.min(BUDGET_MAX.profile, Math.max(0, Number(b.profile) || 0)) };
   }
   // Rows gained today, for the popup ("N people · M bios").
   function tally(st, now, people, bios) {
@@ -594,7 +686,7 @@
     if (job.page_size != null && ![25, 50].includes(job.page_size)) throw new Error('invalid follower page size');
     return job.page_size === 50 ? 50 : 25;
   }
-  const api = { COLLECTION_SPEED, speedEligible, collectionSpeedSetting, pollWaitFor, controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
+  const api = { COLLECTION_SPEED, speedEligible, collectionSpeedSetting, pollWaitFor, PACE_LIMITS: LIM, paceDefaults, clampPace, paceId, setPace, getPace, resetPace, paceFromWire, repace, controlAllows, listProgress, listContext, count, PACE, BUDGET, newLaneId, startOffset, START_OFFSET, handleFrom, accountFrom, BOX_MAX, KINDS, budgetOf, tally, MIN, HOUR, DAY, classify, parseBody, usersOf, cursorOf, pageTotal, sampleOf,
     pageKind, pageVerdict, logPage, rateOf, mapUser, parsePage, mapProfile, userOf, dayKey, nextMidnight, fresh, rollDay, normalize,
     afterRequest, readyAt, windowOf, applyHit, cooldownUntil, backoff, succeeded, recordListRedirect, listPageSucceeded,
     plan, laneBusy, budgetLeft, chooseTab, rememberId, enqueue, park, flush, statusOf, privateWall };
