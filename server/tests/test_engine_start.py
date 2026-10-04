@@ -11,28 +11,37 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import engine_start
 import server
-
-
-class FakeConn:
-    @staticmethod
-    def execute(_query, *_args):
-        return SimpleNamespace(fetchone=lambda: None) if 'settings' in _query else FakeConn()
-
-    @staticmethod
-    def fetchone():
-        return (3,)
+from backend.app import Application
+from backend.common import AppConfig
 
 
 class EngineStartTest(unittest.TestCase):
+    def primary_workspace(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / 'data').mkdir()
+        path = root / 'data' / 'leads.sqlite'
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        conn.executescript('CREATE TABLE accounts(id INTEGER PRIMARY KEY); '
+                           'INSERT INTO accounts VALUES(1),(2),(3);')
+        application = Application(AppConfig(db=str(path), root=root))
+        self.addCleanup(application.close)
+        return application, conn
+
     def test_ui_endpoint_uses_the_local_engine_launcher(self):
+        application, conn = self.primary_workspace()
         with patch.object(engine_start, 'start', return_value={'ok': True, 'local_services_started': True, 'profiles_opened': 0}) as start:
-            self.assertEqual(server.api_engine_start(FakeConn(), {}, {}), {'ok': True, 'local_services_started': True, 'profiles_opened': 0})
-            start.assert_called_once_with(server.ROOT, 3)
+            self.assertEqual(application.collection.api_engine_start(conn, {}, {}),
+                             {'ok': True, 'local_services_started': True, 'profiles_opened': 0})
+            start.assert_called_once_with(application.config.root, 3)
 
     def test_ui_endpoint_returns_a_clear_startup_error(self):
+        application, conn = self.primary_workspace()
         with patch.object(engine_start, 'start', side_effect=engine_start.EngineStartError('Chrome profile missing')):
             with self.assertRaisesRegex(server.Bad, 'Chrome profile missing'):
-                server.api_engine_start(FakeConn(), {}, {})
+                application.collection.api_engine_start(conn, {}, {})
 
     def test_start_runs_only_the_owned_checkout_script_in_app_mode(self):
         with tempfile.TemporaryDirectory() as directory:

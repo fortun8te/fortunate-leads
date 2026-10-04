@@ -34,6 +34,7 @@ stub._tier = lambda score, has_bio: 'unread' if not has_bio else 'hot' if score 
 import db  # noqa: E402
 import migrate  # noqa: E402
 import server  # noqa: E402
+from backend import maps as map_backend, queries as query_backend  # noqa: E402
 
 EXT = server.EXT_ORIGIN
 
@@ -58,6 +59,9 @@ def external_ready(conn, pids):
 class Base(unittest.TestCase):
     def setUp(self):
         self.tokens = {}
+        configuration = mock.patch.dict(server.CFG)
+        configuration.start()
+        self.addCleanup(configuration.stop)
         self.external_mock = mock.patch.object(server.external_harness, 'broad', return_value=None)
         self.external_mock.start()
         self.addCleanup(self.external_mock.stop)
@@ -76,6 +80,15 @@ class Base(unittest.TestCase):
         c.close()
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         server.CFG['port'] = self.httpd.server_address[1]
+        self.app = server.get_application()
+        self.addCleanup(self.app.close)
+        for target, name in ((self.app.qualification, 'algorithms'),
+                             (query_backend, 'qualify'), (map_backend, 'qualify')):
+            qualifier = mock.patch.object(target, name, stub)
+            qualifier.start()
+            self.addCleanup(qualifier.stop)
+        self.http_app = self.app.http_application()
+        self.httpd.RequestHandlerClass = server.bind_handler(lambda: self.http_app)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.conn = db.connect(server.CFG['db'])
 
@@ -643,7 +656,7 @@ class TagsMapTest(Base):
         pid = self.people({'ann': ('founder', 500, ['s1'])})['ann']
         url = '/api/map?today=2026-09-27&scope=leads&limit=3000'
         server.clear_caches()
-        with mock.patch.object(server, 'map_graph', wraps=server.map_graph) as build:
+        with mock.patch.object(self.app.maps, 'map_graph', wraps=self.app.maps.map_graph) as build:
             first = self.call(url)[1]
             self.assertEqual(self.call(url)[1], first)
             self.assertEqual(build.call_count, 1)
@@ -869,7 +882,7 @@ class AuditTest(Base):
         Redirector.hits = []
         try:
             with self.assertRaises(urllib.error.HTTPError) as cm:
-                server.PIC_OPENER.open(f'http://127.0.0.1:{httpd.server_address[1]}/pic.jpg', timeout=5)
+                self.app.photos.pic_opener.open(f'http://127.0.0.1:{httpd.server_address[1]}/pic.jpg', timeout=5)
             cm.exception.close()
             self.assertEqual(cm.exception.code, 302)
             self.assertEqual(Redirector.hits, ['/pic.jpg'])  # the redirect target was never requested
@@ -891,7 +904,7 @@ class AuditTest(Base):
                 c = db.connect(server.CFG['db'])
                 try:
                     if i % 2:
-                        server.SEED_LINKS[0] = None  # force recomputes to interleave
+                        self.app.cache.seed_links[0] = None  # force recomputes to interleave
                     results.append(server.seed_links(c))
                 finally:
                     c.close()

@@ -143,6 +143,35 @@ def default(conn):
     return sorted(out.values(), key=lambda item: (-item['count'], -item['total'], item['tag'], item['source']))
 
 
+def filtered(conn, selected_sql, args=()):
+    """Count exact projected facets for an already validated person selection.
+
+    The caller supplies the same owner/status/filter predicate used by leads.
+    Materialize it once, then use the person index across every projection
+    branch. Overall totals include the same dangling and excluded rows as the
+    original relation, while selected counts retain the caller's exclusions.
+    """
+    if not ready(conn):
+        return None
+    counts = {}
+    for branch, tag, source, count in conn.execute(
+            f'WITH selected AS MATERIALIZED ({selected_sql}) '
+            'SELECT t.branch,t.tag,t.source,count(*) FROM selected f '
+            'JOIN tag_facet_rows t ON t.person_id=f.id '
+            'GROUP BY t.branch,t.tag,t.source', args):
+        counts[tag, source] = counts.get((tag, source), 0) + count
+    out = {}
+    for branch, tag, source, group, total in conn.execute(
+            'SELECT branch,tag,source,min(grp),sum(n) FROM tag_facet_totals '
+            'GROUP BY branch,tag,source ORDER BY branch'):
+        item = out.setdefault((tag, source), {
+            'tag': tag, 'source': source, 'grp': group,
+            'count': counts.get((tag, source), 0), 'total': 0})
+        item['grp'] = group
+        item['total'] += total
+    return sorted(out.values(), key=lambda item: (-item['count'], -item['total'], item['tag'], item['source']))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Prepare exact default tag facets on a stopped database copy.')
     parser.add_argument('--db', required=True)

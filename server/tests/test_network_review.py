@@ -133,12 +133,12 @@ class NetworkReview(unittest.TestCase):
         c = self.conn
         pid = self.person('lead')
         db.mark_network_dirty(c, [pid])
-        refresh = server.refresh_network
+        refresh = server.get_application().qualification.refresh_network
         def update_during_refresh(conn, ids):
             result = refresh(conn, ids)
             db.mark_network_dirty(conn, [pid])
             return result
-        with patch.object(server, 'refresh_network', side_effect=update_during_refresh):
+        with patch.object(server.get_application().qualification, 'refresh_network', side_effect=update_during_refresh):
             self.assertEqual(server.drain_network_dirty(c), 1)
         self.assertEqual(c.execute('SELECT count(*) FROM network_dirty').fetchone()[0], 1)
         server.drain_network_dirty(c)

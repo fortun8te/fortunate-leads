@@ -137,7 +137,7 @@ class QualificationRuntimeState(unittest.TestCase):
             return dict(engine_controls.snapshot(processing_modes.snapshot(conn),
                         {'k2': dict(model, managed_local=False)}), external_active=False)
 
-        with patch.object(server.local_model, 'status', return_value=runtime), patch.object(server, 'engine_snapshot', side_effect=engines):
+        with patch.object(server.local_model, 'status', return_value=runtime), patch.object(server.get_application().processing, 'engine_snapshot', side_effect=engines):
             return server.api_local_processing(self.conn, {}, {})
 
     def test_waiting_work_and_stop_ack_follow_actual_engine_activity(self):

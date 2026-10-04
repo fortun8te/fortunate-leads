@@ -25,7 +25,7 @@ class IntegrityTest(unittest.TestCase):
         self.config = patch.dict(server.CFG, {'db': self.path})
         self.config.start()
         self.addCleanup(self.config.stop)
-        server._pfp_check_id = 0
+        server.get_application().photos.check_id = 0
 
     def person(self, **fields):
         pid = db.upsert_person(self.conn, dict(handle='alice', **fields))
@@ -93,7 +93,7 @@ class IntegrityTest(unittest.TestCase):
             self.other.commit()
             self.assertGreater(replacement, pid)
             return JPEG
-        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server, 'fetch_pic', side_effect=fetch):
+        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server.get_application().photos, 'fetch_pic', side_effect=fetch):
             self.assertTrue(server.pfp_step(self.conn))
         self.assertFalse((server.pfp_dir() / f'{pid}.jpg').exists())
         self.assertIsNone(self.conn.execute('SELECT pic_file FROM people').fetchone()[0])
@@ -101,14 +101,14 @@ class IntegrityTest(unittest.TestCase):
     def test_photo_retry_waits_then_succeeds(self):
         self.person(pic_url='https://a.cdninstagram.com/a.jpg')
         instant = db.utc_now()
-        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server, 'fetch_pic', return_value=None) as fetch, patch.object(db, 'utc_now', return_value=instant):
+        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server.get_application().photos, 'fetch_pic', return_value=None) as fetch, patch.object(db, 'utc_now', return_value=instant):
             self.assertTrue(server.pfp_step(self.conn))
             self.assertFalse(server.pfp_step(self.conn))
             fetch.assert_called_once()
         row = self.conn.execute('SELECT pic_attempts,pic_retry_at FROM people').fetchone()
         self.assertEqual(row['pic_attempts'], 1)
         self.assertEqual(row['pic_retry_at'], server.iso(instant + timedelta(seconds=60)))
-        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server, 'fetch_pic', return_value=JPEG), patch.object(db, 'now', return_value=server.iso(instant + timedelta(seconds=61))):
+        with patch.object(server.meta_network, 'blocked', return_value=False), patch.object(server.get_application().photos, 'fetch_pic', return_value=JPEG), patch.object(db, 'now', return_value=server.iso(instant + timedelta(seconds=61))):
             self.assertTrue(server.pfp_step(self.conn))
         self.assertEqual(tuple(self.conn.execute('SELECT pic_attempts,pic_retry_at,pic_refresh FROM people').fetchone()), (0, None, 0))
 
@@ -127,7 +127,7 @@ class IntegrityTest(unittest.TestCase):
                     owner.other.execute("UPDATE people SET bio='new' WHERE id=?", (pid,))
                     owner.other.commit()
                 return owner.conn.executemany(query, args)
-        with patch.object(server, 'laya_allowed', return_value=True), patch.object(server.laya, 'available', return_value=True), patch.object(server.laya, 'decide') as decide:
+        with patch.object(server.get_application().qualification, 'laya_allowed', return_value=True), patch.object(server.laya, 'available', return_value=True), patch.object(server.laya, 'decide') as decide:
             self.assertFalse(server.laya_step(RaceConnection()))
             decide.assert_not_called()
         self.assertIsNotNone(self.conn.execute('SELECT 1 FROM laya_queue WHERE person_id=?', (pid,)).fetchone())

@@ -14,7 +14,7 @@ CHUNK = 800
 def _condition(where):
     # lead_filter's list-count expression is exact but repeats an edge query for
     # every candidate. The maintained degree is the same distinct current count.
-    from server import LISTS
+    from backend.common import LISTS
     parts = [part.replace(LISTS, 'd.degree').replace("coalesce(m.status,'')!='no'", 'd.hidden=0')
              for part in where]
     parts.append('NOT EXISTS (SELECT 1 FROM map_source_handles h WHERE h.handle=p.handle)')

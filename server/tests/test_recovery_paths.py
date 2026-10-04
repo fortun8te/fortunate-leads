@@ -27,7 +27,7 @@ class RecoveryPathsTest(unittest.TestCase):
         bad = db.upsert_person(self.conn, {'handle': 'bad', 'bio': 'Shop'})
         good = db.upsert_person(self.conn, {'handle': 'good', 'bio': 'Founder of a shop'})
         self.conn.commit()
-        original = server.requalify
+        original = server.get_application().qualification.requalify
 
         def broken(conn, person, me, net):
             if person['id'] == bad:
@@ -35,7 +35,7 @@ class RecoveryPathsTest(unittest.TestCase):
                 raise RuntimeError('temporary rule failure')
             return original(conn, person, me, net)
 
-        with patch.object(server, 'requalify', side_effect=broken), patch.object(server.traceback, 'print_exc'):
+        with patch.object(server.get_application().qualification, 'requalify', side_effect=broken), patch.object(server.traceback, 'print_exc'):
             self.assertEqual(server.qualify_batch(self.conn), 2)
             self.assertIsNone(self.conn.execute("SELECT 1 FROM tags WHERE person_id=? AND tag='half-written'", (bad,)).fetchone())
             self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (good,)).fetchone()[0], 'rules')
@@ -89,7 +89,7 @@ class RecoveryPathsTest(unittest.TestCase):
         self.conn.commit()
         other = db.connect(str(Path(self.tmp.name) / 'leads.sqlite'))
         other.execute('PRAGMA busy_timeout=0')
-        original = server.requalify
+        original = server.get_application().qualification.requalify
         blocked = []
 
         def racing(conn, person, me, net):
@@ -103,7 +103,7 @@ class RecoveryPathsTest(unittest.TestCase):
             return original(conn, person, me, net)
 
         try:
-            with patch.object(server, 'requalify', side_effect=racing):
+            with patch.object(server.get_application().qualification, 'requalify', side_effect=racing):
                 self.assertEqual(server.qualify_batch(self.conn), 1)
             self.assertEqual(blocked, ['database is locked'])
             self.assertEqual(self.conn.execute('SELECT model FROM verdicts WHERE person_id=?', (pid,)).fetchone()[0], 'rules')

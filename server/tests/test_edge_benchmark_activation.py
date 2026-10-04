@@ -26,7 +26,7 @@ class ActivationTests(Base):
     def test_normal_next_and_acquire_park_before_side_effects(self):
         db.set_setting(self.conn,'raw_edge_benchmark',{'enabled':True})
         self.conn.commit()
-        with mock.patch.object(server,'collector_request',side_effect=AssertionError('must not touch collector')):
+        with mock.patch.object(server.get_application().collection,'collector_request',side_effect=AssertionError('must not touch collector')):
             next_result=server.ext_next(self.conn,{}, {})
             permit=server.ext_request(self.conn,{}, {'action':'acquire','kind':'list'})
         self.assertIsNone(next_result['job'])
@@ -35,7 +35,7 @@ class ActivationTests(Base):
     def test_existing_normal_release_allowed(self):
         db.set_setting(self.conn,'raw_edge_benchmark',{'enabled':True})
         self.conn.commit()
-        with mock.patch.object(server,'collector_request'),mock.patch.object(server.accounts,'request_permit',return_value={'released':True}) as release:
+        with mock.patch.object(server.get_application().collection,'collector_request'),mock.patch.object(server.accounts,'request_permit',return_value={'released':True}) as release:
             result=server.ext_request(self.conn,{}, {'action':'release','token':'old-token'})
         self.assertTrue(result['released'])
         release.assert_called_once()

@@ -157,27 +157,32 @@ class UniverseTests(unittest.TestCase):
         self.assertGreater(U._portrait_radius(2, 20000, 0, log_max), .15)
 
     def test_http_binary_mime_and_conditional_read(self):
-        import server
+        from backend.app import Application
+        from backend.common import AppConfig
+        from backend_http import Handler, Server
+
         result=U.build(self.path,'me')
         tile=U.manifest(self.path)['tiles'][0]
-        http=server.Server(('127.0.0.1',0),server.Handler)
+        application = Application(AppConfig(db=str(self.path), port=0, saved_data_only=True))
+        self.addCleanup(application.close)
+        http=Server(('127.0.0.1',0), Handler, application=application.http)
         port=http.server_address[1]
-        with mock.patch.dict(server.CFG,{'db':str(self.path),'port':port}):
-            thread=threading.Thread(target=http.serve_forever,daemon=True)
-            thread.start()
-            try:
-                url='http://127.0.0.1:'+str(port)+tile['url']
-                with urllib.request.urlopen(url,timeout=5) as response:
-                    self.assertEqual(response.headers.get_content_type(),'application/octet-stream')
-                    self.assertEqual(response.read()[:4],b'MUV1')
-                    etag=response.headers['ETag']
-                request=urllib.request.Request(url,headers={'If-None-Match':etag})
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(request,timeout=5)
-                self.assertEqual(caught.exception.code,304)
-                caught.exception.close()
-            finally:
-                http.shutdown();http.server_close();thread.join(timeout=5)
+        application.bind_port(port)
+        thread=threading.Thread(target=http.serve_forever,daemon=True)
+        thread.start()
+        try:
+            url='http://127.0.0.1:'+str(port)+tile['url']
+            with urllib.request.urlopen(url,timeout=5) as response:
+                self.assertEqual(response.headers.get_content_type(),'application/octet-stream')
+                self.assertEqual(response.read()[:4],b'MUV1')
+                etag=response.headers['ETag']
+            request=urllib.request.Request(url,headers={'If-None-Match':etag})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request,timeout=5)
+            self.assertEqual(caught.exception.code,304)
+            caught.exception.close()
+        finally:
+            http.shutdown();http.server_close();thread.join(timeout=5)
 
     def test_abutting_hop_bands_and_source_change_hint(self):
         U.build(self.path,'me')

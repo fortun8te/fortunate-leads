@@ -165,7 +165,7 @@ class LayaQueueTest(unittest.TestCase):
                 with patch.object(server.control, 'stage_paused', return_value=False), \
                         patch.object(laya, 'available', return_value=True), \
                         patch.object(laya, 'decide', return_value={}) as decide, \
-                        patch.object(server, 'LAYA_REBUILD_BATCH', 2):
+                        patch('backend.qualification.LAYA_REBUILD_BATCH', 2):
                     self.assertTrue(server.laya_step(conn))
                     self.assertFalse(conn.in_transaction)
                     self.assertIsNone(db.get_setting(conn, 'laya_queue_signature'))
@@ -232,7 +232,7 @@ class LayaQueueTest(unittest.TestCase):
                 with patch.object(server.control, 'stage_paused', return_value=False), \
                         patch.object(laya, 'available', return_value=True), \
                         patch.object(laya, 'decide', side_effect=decide), \
-                        patch.object(server, 'LAYA_BATCH', 2):
+                        patch('backend.qualification.LAYA_BATCH', 2):
                     self.assertTrue(server.laya_step(conn))
                     self.assertEqual(batches.pop(), [ids[1], ids[2]])
                     self.assertTrue(server.laya_step(conn))
@@ -336,13 +336,13 @@ class LayaQueueTest(unittest.TestCase):
             try:
                 db.upsert_person(conn, {'handle': 'sample', 'bio': 'A brand'})
                 conn.commit()
-                original = server.rebuild_laya_queue
+                original = server.get_application().qualification.rebuild_laya_queue
                 def pause_after_rebuild(dbconn, signature):
                     completed = original(dbconn, signature)
                     processing_modes.set_paused(dbconn, True)
                     dbconn.commit()
                     return completed
-                with patch.object(server, 'rebuild_laya_queue', side_effect=pause_after_rebuild), \
+                with patch.object(server.get_application().qualification, 'rebuild_laya_queue', side_effect=pause_after_rebuild), \
                         patch.object(laya, 'available', return_value=True), \
                         patch.object(laya, 'decide') as decide:
                     self.assertFalse(server.laya_step(conn))

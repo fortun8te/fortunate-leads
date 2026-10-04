@@ -4,7 +4,8 @@ import re
 from datetime import date, datetime, timezone
 import db
 
-S = None
+from backend.common import qint, KEEP, STATUSES, status_in
+
 
 
 def calendar_date(value):
@@ -28,7 +29,7 @@ def event(conn, pid, kind, body='', before=None, after=None, happened_at=None):
 
 def history(conn, pid, q=None):
     q = q or {}
-    limit = S.qint(q, 'limit')
+    limit = qint(q, 'limit')
     limit = 50 if limit is None else limit
     if not 1 <= limit <= 100:
         raise ValueError('limit must be 1-100')
@@ -54,11 +55,15 @@ def history(conn, pid, q=None):
 
 
 def api_history(conn, q, b, pid):
-    S.person_row(conn, pid)
+    from backend.queries import person_row
+    from backend.owner_edits import set_status
+    person_row(conn, pid)
     return history(conn, pid, q)
 
 
 def api_interaction(conn, q, b, pid):
+    from backend.queries import person_row
+    from backend.owner_edits import set_status
     kind, body = b.get('kind'), b.get('body')
     if kind not in ('dm', 'reply', 'call', 'meeting', 'note'):
         raise ValueError('invalid interaction kind')
@@ -74,9 +79,9 @@ def api_interaction(conn, q, b, pid):
         stamp = parsed.astimezone(timezone.utc).isoformat(timespec='microseconds')
     except OverflowError:
         raise ValueError('happened_at is outside the supported date range') from None
-    status = b.get('status', S.KEEP)
-    status = S.status_in(status) if isinstance(status, str) else status
-    if status is not S.KEEP and status is not None and status not in S.STATUSES:
+    status = b.get('status', KEEP)
+    status = status_in(status) if isinstance(status, str) else status
+    if status is not KEEP and status is not None and status not in STATUSES:
         raise ValueError('bad status')
     reminder = validate_follow_up(b['follow_up']) if 'follow_up' in b else None
 
@@ -84,13 +89,13 @@ def api_interaction(conn, q, b, pid):
     # The response is built before commit so a failed read also rolls back the save.
     with conn:
         conn.execute('BEGIN IMMEDIATE')
-        person = S.person_row(conn, pid)
+        person = person_row(conn, pid)
         event(conn, pid, kind, body.strip(), happened_at=stamp)
-        if status is not S.KEEP:
-            S.set_status(conn, [pid], status=status)
+        if status is not KEEP:
+            set_status(conn, [pid], status=status)
         if reminder is not None:
             apply_follow_up(conn, pid, reminder)
-        result = dict(history(conn, pid), status=person['status'] if status is S.KEEP else status,
+        result = dict(history(conn, pid), status=person['status'] if status is KEEP else status,
                       follow_up=follow_up(conn, pid))
     return result
 
@@ -138,11 +143,13 @@ def apply_follow_up(conn, pid, instruction):
 
 
 def api_follow_up(conn, q, b, pid):
+    from backend.queries import person_row
+    from backend.owner_edits import set_status
     reminder = validate_follow_up(b)
     with conn:
         # Reserve the write lock before reading: repeated completion stays a no-op.
         conn.execute('BEGIN IMMEDIATE')
-        S.person_row(conn, pid)
+        person_row(conn, pid)
         apply_follow_up(conn, pid, reminder)
         result = {'follow_up': follow_up(conn, pid)}
     return result
@@ -168,9 +175,7 @@ def filters(q, where, args):
         where.append(prefix + suffix + ')')
 
 
-def routes(server):
-    global S
-    S = server
+def routes():
     return [('POST', r'/api/person/(\d+)/follow-up', api_follow_up),
             ('GET', r'/api/person/(\d+)/activity', api_history),
             ('POST', r'/api/person/(\d+)/activity', api_interaction)]

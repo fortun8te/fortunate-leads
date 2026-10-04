@@ -155,14 +155,15 @@ def _pace(cfg, now):
     return None, 0
 
 
-def _background_wait(conn, now):
+def _background_wait(conn, now, background_probe=None):
     if conn.execute("SELECT 1 FROM jobs WHERE kind='profile' AND state='leased' AND leased_until>? LIMIT 1",
                     (accounts.iso(now),)).fetchone():
         return 'local_profile_drain', 1000
-    if not callable(BACKGROUND_PROBE):
+    probe = BACKGROUND_PROBE if background_probe is None else background_probe
+    if not callable(probe):
         return 'local_background_unverified', 1000
     try:
-        busy = BACKGROUND_PROBE()
+        busy = probe()
     except Exception:
         return 'local_background_unverified', 1000
     if not isinstance(busy, (list, tuple, set)):
@@ -172,7 +173,7 @@ def _background_wait(conn, now):
     return None, 0
 
 
-def next_task(conn, q, body):
+def next_task(conn, q, body, *, background_probe=None):
     with LOCK:
         cfg = config(conn)
         if not cfg:
@@ -207,7 +208,7 @@ def next_task(conn, q, body):
         if not reason:
             reason, wait = _pace(cfg, now.timestamp())
         if not reason:
-            reason, wait = _background_wait(conn, now)
+            reason, wait = _background_wait(conn, now, background_probe)
         if reason:
             _wait(cfg, reason, time.time())
             _save(conn, cfg)
@@ -215,7 +216,7 @@ def next_task(conn, q, body):
         return {'enabled': True, 'task': task, 'wait_ms': 0}
 
 
-def permit(conn, q, body):
+def permit(conn, q, body, *, background_probe=None):
     with LOCK:
         cfg = config(conn)
         if not cfg:
@@ -253,7 +254,7 @@ def permit(conn, q, body):
         if not reason:
             reason, wait = _pace(cfg, now.timestamp())
         if not reason:
-            reason, wait = _background_wait(conn, now)
+            reason, wait = _background_wait(conn, now, background_probe)
         if reason:
             _wait(cfg, reason, now.timestamp())
             _save(conn, cfg)

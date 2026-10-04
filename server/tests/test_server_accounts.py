@@ -302,7 +302,8 @@ class LaneTest(Base):
             self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
             self.assertIsNone(self.nxt('b')['job'])
             self.assertEqual(self.nxt('c')['stages'], {'list': False, 'profile': False})
-            with patch.object(server.engine_start, 'start', return_value={'ok': True, 'local_services_started': True, 'profiles_opened': 0}) as launch:
+            with patch.object(server.get_application().collection, 'host_operations_allowed', True), \
+                    patch.object(server.engine_start, 'start', return_value={'ok': True, 'local_services_started': True, 'profiles_opened': 0}) as launch:
                 self.assertEqual(self.call('/api/engine/start', {})[0], 200)
                 launch.assert_called_once()
                 self.assertTrue(db.get_setting(self.conn, 'paused_lists'))

@@ -18,8 +18,13 @@ class MapSummaryTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name) / 'synthetic.sqlite')
+        configuration = mock.patch.dict(server.CFG, {'db': self.path})
+        configuration.start()
+        self.addCleanup(configuration.stop)
         self.conn = db.init(self.path)
         self.addCleanup(self.conn.close)
+        self.app = server.get_application()
+        self.addCleanup(self.app.close)
         server.clear_caches()
         self.ts = '2026-01-01T00:00:00+00:00'
         self.conn.executemany('INSERT INTO people(id,handle,first_seen,updated_at) VALUES(?,?,?,?)',
@@ -224,7 +229,7 @@ class MapSummaryTest(unittest.TestCase):
         query = {'today': ['2026-09-27'], 'scope': ['leads'], 'limit': ['3000']}
         statements = []
         self.conn.set_trace_callback(statements.append)
-        with mock.patch.object(server, 'map_graph', wraps=server.map_graph) as build:
+        with mock.patch.object(self.app.maps, 'map_graph', wraps=self.app.maps.map_graph) as build:
             first = server.api_map(self.conn, query, None)
             second = server.api_map(self.conn, query, None)
             self.assertEqual(build.call_count, 1)

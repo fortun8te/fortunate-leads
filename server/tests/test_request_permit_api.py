@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from test_server import Base, db, server
+import backend.collection as collection_backend
 import accounts
 
 
@@ -57,7 +58,7 @@ class PermitApiTest(Base):
             now = start + timedelta(minutes=minute)
             self.conn.execute('UPDATE accounts SET last_seen=? WHERE lane_id=?', (accounts.iso(now), 'lane1'))
             self.conn.commit()
-            with patch.object(server, 'datetime', wraps=datetime) as clock:
+            with patch.object(collection_backend, 'datetime', wraps=datetime) as clock:
                 clock.now.return_value = now
                 result = server.ext_request(self.conn, {}, dict(action='acquire', kind='list',
                     lane_id='lane1', job_id=job['id'], lease_token=job['lease_token']))
@@ -110,3 +111,17 @@ class PermitApiTest(Base):
         self.assertTrue(self.call('/api/ext/request', {**body, 'account': {'ig_id': '777'}})[1]['released'])
         self.assertFalse(self.call('/api/ext/request', body)[1]['released'])
         self.assertTrue(self.call('/api/ext/request', {**body, 'account': {'ig_id': '777'}})[1]['replayed'])
+
+    def test_pipeline_summary_route_reports_acquired_and_released_requests(self):
+        accounts.touch(self.conn, 'lane1', {'ig_id': '777', 'handle': 'viewer'}, version='3.9.30')
+        self.conn.commit()
+        permit = accounts.request_permit(self.conn, 'lane1', kind='list')
+        self.assertTrue(self.call('/api/ext/request', {'action': 'release', 'lane_id': 'lane1', 'token': permit['token'],
+                                                       'account': {'ig_id': '777'}})[1]['released'])
+        code, report = self.call('/api/pipeline/summary?lane=lane1')
+        self.assertEqual(code, 200)
+        self.assertIn('blockers', report)
+        self.assertIn('collection', report)
+        codes = [row[0] for row in self.conn.execute('SELECT code FROM pipeline_events ORDER BY id')]
+        self.assertEqual(codes, ['request_acquired', 'request_released'])
+        self.assertEqual(self.call('/api/pipeline/summary?since=not-a-time')[0], 400)

@@ -205,7 +205,7 @@ def confirm(conn, q, body):
         chosen.append((thread, handle.lstrip('@').lower()))
     if not chosen:
         raise ValueError('Map at least one outbound conversation to an Instagram username')
-    import server  # late import: server loads this module for route registration
+    from backend.owner_edits import set_status
     created = updated = unchanged = 0
     contacts = []
     with conn:
@@ -228,7 +228,7 @@ def confirm(conn, q, body):
                             happened_at=thread['last_outbound_at'])
             status = conn.execute('SELECT status FROM marks WHERE person_id=?', (pid,)).fetchone()
             if not status or status['status'] in (None, 'interested'):
-                server.set_status(conn, [pid], status='contacted')
+                set_status(conn, [pid], status='contacted')
                 updated += 1
             else:
                 unchanged += 1
@@ -237,6 +237,6 @@ def confirm(conn, q, body):
             'contacts': list({c['id']: c for c in contacts}.values())}
 
 
-def routes(_server):
+def routes():
     return [('POST', r'/api/dm-import/preview', preview),
             ('POST', r'/api/dm-import/confirm', confirm)]
