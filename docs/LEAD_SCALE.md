@@ -88,3 +88,7 @@ seconds in an earlier process. Peak benchmark RSS was 90.8 MiB. This fixture
 measures qualified fit tags; it does not establish limits for arbitrary dense
 tag inventories. The 100-profile maintenance sample was 70.0 ms prepared
 versus 45.2 ms unprepared. [Ten-million facet evidence](benchmarks/tag-facets-10m-prepared.json).
+
+## Requests from the web app
+
+The web app adds its local date as `today` to every list, count and facet request. Only the follow-up filter reads it, so the prepared ordering and counts ignore it; any other unrecognised key still takes the original exact query. Until 4 October 2026 this key sent every web app request down the original query. On the 172,301-person real-data copy (CPU time, one cold request): Best fit 451 ms to 30 ms, Priority 647 ms to 36 ms, counts 618 ms to 18 ms.
