@@ -1,7 +1,9 @@
 """Profile picture cache behavior, with no Instagram or CDN requests."""
 import os
+import struct
 import urllib.error
 import urllib.request
+from pathlib import Path
 from unittest import mock
 
 from test_server import Base, db, server
@@ -165,8 +167,37 @@ class PictureTest(Base):
         (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG)
         with urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/img/{pid}") as response:
             self.assertEqual(response.read(), JPEG)
-            self.assertEqual(response.headers['Cache-Control'], 'no-cache')
+            self.assertEqual(response.headers['Cache-Control'], 'private, max-age=600, stale-while-revalidate=86400')
             self.assertEqual(response.headers['Content-Type'], 'image/jpeg')
+            self.assertTrue(response.headers['ETag'])
+
+        self.conn.execute('UPDATE people SET pic_file=NULL WHERE id=?', (pid,))
+        self.conn.commit()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/img/{pid}")
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
+    def test_ownership_connection_tracks_database_replacement(self):
+        import sqlite3
+        from backend.photos import PictureOwnership
+        cache = PictureOwnership()
+        path = Path(server.CFG['db']).parent / 'ownership.sqlite'
+        replacement = path.with_name('replacement.sqlite')
+        try:
+            for target, filename in ((path, '1.jpg'), (replacement, None)):
+                conn = sqlite3.connect(target)
+                try:
+                    conn.execute('CREATE TABLE people(id INTEGER PRIMARY KEY, pic_file TEXT)')
+                    conn.execute('INSERT INTO people VALUES(1, ?)', (filename,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            self.assertTrue(cache.owns(path, '1'))
+            os.replace(replacement, path)
+            self.assertFalse(cache.owns(path, '1'))
+        finally:
+            cache.close()
 
     def test_corrupt_cached_file_is_replaced(self):
         pid = db.upsert_person(self.conn, {'handle': 'alice', 'pic_url': 'https://a.cdninstagram.com/photo.jpg'})
@@ -186,3 +217,101 @@ class PictureTest(Base):
             with self.subTest(url=url), mock.patch.object(server.get_application().photos.pic_opener, 'open') as open_:
                 self.assertIsNone(server.fetch_pic(url))
                 open_.assert_not_called()
+
+
+class PhotoBatchTest(Base):
+    """GET /api/map/photos: many saved photos in one response."""
+
+    def setUp(self):
+        super().setUp()
+        server.pfp_dir().mkdir()
+
+    def photo(self, handle, body=b'-photo-', saved=True):
+        pid = db.upsert_person(self.conn, {'handle': handle})
+        data = JPEG[:4] + body + JPEG[4:]
+        if saved:
+            (server.pfp_dir() / f'{pid}.jpg').write_bytes(data)
+            self.conn.execute('UPDATE people SET pic_file=? WHERE id=?', (f'{pid}.jpg', pid))
+        self.conn.commit()
+        return pid, data
+
+    def fetch(self, ids, headers=None):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.CFG['port']}/api/map/photos?ids={','.join(map(str, ids))}", headers=headers or {})
+        with urllib.request.urlopen(request) as response:
+            return response.status, response.headers, response.read()
+
+    @staticmethod
+    def parse(body):
+        magic, count = struct.unpack_from('<4sI', body)
+        table = [struct.unpack_from('<II', body, 8 + 8 * i) for i in range(count)]
+        offset, photos = 8 + 8 * count, {}
+        for pid, length in table:
+            if length not in (0, 0xFFFFFFFF):
+                photos[pid] = body[offset:offset + length]
+                offset += length
+        assert offset == len(body), 'the table accounts for every byte'
+        return magic, table, photos
+
+    def test_photos_arrive_in_request_order_with_a_table(self):
+        (a, da), (b, db_), (c, dc) = self.photo('a', b'1'), self.photo('b', b'22'), self.photo('c', b'333')
+        status, headers, body = self.fetch([c, a, b])
+        magic, table, photos = self.parse(body)
+        self.assertEqual((status, magic), (200, b'MPH1'))
+        self.assertEqual(table, [(c, len(dc)), (a, len(da)), (b, len(db_))])
+        self.assertEqual(photos, {a: da, b: db_, c: dc})
+        self.assertEqual(headers['Content-Type'], 'application/octet-stream')
+        self.assertEqual(headers['Cache-Control'], 'private, max-age=600, stale-while-revalidate=86400')
+
+    def test_missing_unowned_and_corrupt_photos_are_empty_not_errors(self):
+        good, data = self.photo('good')
+        no_file, _ = self.photo('nofile', saved=False)
+        stranger, _ = self.photo('stranger')
+        self.conn.execute('UPDATE people SET pic_file=NULL WHERE id=?', (stranger,))
+        corrupt, _ = self.photo('corrupt')
+        (server.pfp_dir() / f'{corrupt}.jpg').write_bytes(b'broken')
+        self.conn.commit()
+        _, table, photos = self.parse(self.fetch([good, no_file, stranger, corrupt, 9999])[2])
+        self.assertEqual(table, [(good, len(data)), (no_file, 0), (stranger, 0), (corrupt, 0), (9999, 0)])
+        self.assertEqual(photos, {good: data})
+
+    def test_repeated_ids_count_once_and_validator_follows_the_files(self):
+        pid, data = self.photo('a')
+        _, headers, body = self.fetch([pid, pid, pid])
+        self.assertEqual(self.parse(body)[1], [(pid, len(data))])
+        etag = headers['ETag']
+        self.assertEqual(self.fetch([pid])[1]['ETag'], etag)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.fetch([pid], headers={'If-None-Match': etag})
+        self.assertEqual(error.exception.code, 304)
+        error.exception.close()
+        (server.pfp_dir() / f'{pid}.jpg').write_bytes(JPEG[:4] + b'replacement' + JPEG[4:])
+        self.assertNotEqual(self.fetch([pid])[1]['ETag'], etag)
+
+    def test_response_size_is_bounded_and_deferred_photos_can_be_asked_again(self):
+        ids = [self.photo(name, b'x' * 100)[0] for name in 'abcd']
+        one = len(JPEG) + 100
+        with mock.patch('backend.photos.PHOTO_BATCH_BYTES', one * 2 + 1):
+            _, table, photos = self.parse(self.fetch(ids)[2])
+        self.assertEqual([length for _, length in table], [one, one, 0xFFFFFFFF, 0xFFFFFFFF])
+        self.assertEqual(sorted(photos), ids[:2])
+        with mock.patch('backend.photos.PHOTO_BATCH_BYTES', 1):
+            _, table, photos = self.parse(self.fetch(ids[:2])[2])
+        self.assertEqual([length for _, length in table], [one, 0xFFFFFFFF], 'the first photo is always served')
+
+    def test_bad_requests_are_rejected(self):
+        for ids in ('', 'x', '1,,x', '-1', '4294967296', ','.join(str(i) for i in range(1, 258))):
+            with self.subTest(ids=ids[:20]), self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/api/map/photos?ids={ids}")
+            self.assertEqual(error.exception.code, 400)
+            error.exception.close()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.CFG['port']}/api/map/photos")
+        self.assertEqual(error.exception.code, 400)
+        error.exception.close()
+
+
+class MapWarmTest(Base):
+    def test_warm_without_a_layout_prepares_nothing(self):
+        import map_view
+        self.assertEqual(map_view.warm(self.conn, server.CFG['db']), {'pages': [], 'search_index': 0})

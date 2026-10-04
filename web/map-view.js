@@ -105,7 +105,9 @@
       this.model.cam.set(.5,.5,1.55);
       this.shown = false; this.raf = 0; this.last = 0; this.dpr = 1; this.hover = null; this.textW = new Map(); this.labelA = new Map();
       this.hud = null; this.busyTimer = 0; this.edgeAt = 0; this.stats = { frames: 0, paintMs: 0, maxMs: 0 };
-      this.portraits = new PortraitCache({ max:4096, concurrency:12, createImage: () => new root.Image(), normalize: root.createImageBitmap ? image => { const side = Math.min(image.naturalWidth, image.naturalHeight), pixels = image.src.endsWith(this.model.world.me?.pic || '#owner') ? 128 : 64; return root.createImageBitmap(image, (image.naturalWidth-side)/2, (image.naturalHeight-side)/2, side, side, { resizeWidth: pixels, resizeHeight: pixels }); } : null, changed: entry => { this.captureOverviewPortrait(entry); this.invalidate(); } });
+      // Photos arrive many to a request (map-photos.js); PortraitCache keeps its queue, bound and reveal.
+      this.photoTransport = new root.MapPhotos.PhotoTransport({ pixelsFor: url => url === this.model.world.me?.pic ? 128 : 64 });
+      this.portraits = new PortraitCache({ max:4096, concurrency:root.MapPhotos.CACHE_CONCURRENCY, createImage: () => this.photoTransport.createImage(), normalize: image => image.bitmap, changed: entry => { this.captureOverviewPortrait(entry); this.invalidate(); } });
       this.palette = null; this.results = []; this.active = -1; this.note = null;
       this.model.on((what) => this.onModel(what));
       this.buildStatic();

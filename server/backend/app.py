@@ -24,7 +24,7 @@ from backend_cache import CacheBusy, CacheStore
 from backend_http import HttpApplication, Handler, Server
 from storage.connection import ConnectionFactory
 
-from .common import Bad, Conflict, EXT_ORIGIN, NotFound
+from .common import Bad, Conflict, EXT_ORIGIN, NotFound, PIC_MAX
 from .collection import CollectionService
 from .leads import LeadService
 from .maps import MapService
@@ -119,6 +119,7 @@ class Application:
             ('GET', '/api/map/view', self.maps.api_map_view),
             ('GET', '/api/map/search', self.maps.api_map_search),
             ('GET', '/api/map/edges', self.maps.api_map_edges),
+            ('GET', '/api/map/photos', self.photos.api_batch),
             ('GET', '/api/map', self.maps.api_map),
             ('GET', '/api/connections', self.maps.api_connections),
             ('GET', '/api/map-overview', self.maps.api_map_overview),
@@ -157,7 +158,7 @@ class Application:
             bad=Bad, not_found=NotFound, conflict=Conflict, raw_type=map_view.Raw,
             web_root=self.config.web, pictures_dir=self.photos.pfp_dir,
             valid_picture=self.photos.valid_pic, extension_origin=EXT_ORIGIN,
-            retryable_errors=(CacheBusy,),
+            retryable_errors=(CacheBusy,), picture_owner=self.photos.owns, max_picture_bytes=PIC_MAX,
         )
 
     def bind_port(self, port):
@@ -245,6 +246,22 @@ class Application:
             self.started = True
             return self.supervisor
 
+    def warm_map(self):
+        """Build the first map page and the search index in the background, once per start."""
+        def run():
+            time.sleep(0.5)      # let the first requests through before taking CPU for this
+            try:
+                conn = self.request_connections()
+                try:
+                    map_view.warm(conn, self.maps._map_database(conn))
+                finally:
+                    conn.close()
+            except Exception:
+                pass             # a cold first visit is the only cost of a failed warm-up
+        thread = threading.Thread(target=run, name='fortunate-map-warm', daemon=True)
+        thread.start()
+        return thread
+
     def serve(self, workers=True):
         try:
             self.initialize()
@@ -257,6 +274,7 @@ class Application:
                 self.serving.set()
             if workers:
                 self.start_workers()
+            self.warm_map()
             print(f'Fortunate Leads on http://127.0.0.1:{self.server.server_address[1]}  '
                   f'db={self.config.db}', flush=True)
             self.server.serve_forever()
@@ -286,5 +304,6 @@ class Application:
         # their owning connections; shutdown does not wait indefinitely here.
         self.qualification.shutdown(wait=False)
         self.scouts.shutdown(wait=False)
+        self.photos.close()
         self.cache.clear()
         return pending

@@ -784,8 +784,20 @@ def _prefix_upper(text):
     return text[:-1] + chr(ord(text[-1]) + 1)
 
 
+_INDEX_BUILD = threading.Lock()
+
+
 def _index_for(conn, db_path):
-    """Handles and names of the engaged people and the top of the closeness layout (cached)."""
+    """Handles and names of the engaged people and the top of the closeness layout (cached).
+
+    One build at a time: a search arriving while another builds waits and reuses its result
+    instead of repeating a build that costs about a second.
+    """
+    with _INDEX_BUILD:
+        return _build_index(conn, db_path)
+
+
+def _build_index(conn, db_path):
     path = _current(db_path, 'closeness')
     with reader(db_path, 'closeness') as active:
         revision = (active.build_id, active.rev) if active else None
@@ -814,6 +826,24 @@ def _index_for(conn, db_path):
         _SEARCH_INDEX.clear()
         _SEARCH_INDEX[key] = (time.time(), entries)
     return entries
+
+
+def warm(conn, db_path, budgets=(500, 1000)):
+    """Prepare what the first visit to the map and its search would otherwise build while waiting.
+
+    Reads only, and may run on a background thread at any time. The page requests use the same
+    parameters the map sends, so their responses are found in the response cache; the search
+    index is the name pool the first search builds. Returns what it prepared.
+    """
+    done = {'pages': [], 'search_index': 0}
+    for budget in budgets:
+        raw = view(conn, db_path, {'mode': ['closeness'], 'x0': ['0'], 'y0': ['0'], 'x1': ['1'], 'y1': ['1'],
+                                   'budget': [str(budget)], 'scope': ['all'], 'cohort': ['1']})
+        if not json.loads(raw.body).get('ready'):
+            return done      # no layout yet: nothing to prepare, and a build is not ours to start
+        done['pages'].append(budget)
+    done['search_index'] = len(_index_for(conn, db_path))
+    return done
 
 
 def _present_ids(conn, ids, db_path=None):

@@ -227,12 +227,48 @@ class HttpTransportTest(unittest.TestCase):
         status, headers, data = self.request(server, '/img/1')
         self.assertEqual((status, data), (200, image))
         self.assertEqual(headers['Content-Type'], 'image/jpeg')
-        self.assertEqual(headers['Cache-Control'], 'no-cache')
+        self.assertEqual(headers['Cache-Control'], 'private, max-age=600, stale-while-revalidate=86400')
+        self.assertNotIn('immutable', headers['Cache-Control'], 'the url stays the same when the photo changes')
+        self.assertRegex(headers['ETag'], r'^"[0-9a-f]+-[0-9a-f]+"$')
         for path in ('/img/2', '/img/../private', '/../private/index.html', '/escape', '/api/local-font/areal'):
             with self.subTest(path=path):
                 self.assertEqual(self.request(server, path)[0], 404)
         (self.pictures / '1.jpg').write_bytes(b'not a picture')
         self.assertEqual(self.request(server, '/img/1')[0], 404)
+
+    def test_photo_revalidates_with_its_etag_and_follows_replacement(self):
+        image = b'\xff\xd8\xffone'
+        path = self.pictures / '1.jpg'
+        path.write_bytes(image)
+        server = self.start()
+        status, headers, data = self.request(server, '/img/1')
+        etag = headers['ETag']
+        self.assertEqual((status, data), (200, image))
+        status, headers, data = self.request(server, '/img/1', headers={'If-None-Match': etag})
+        self.assertEqual((status, data), (304, b''))
+        self.assertEqual(headers['ETag'], etag)
+        self.assertEqual(headers['Cache-Control'], 'private, max-age=600, stale-while-revalidate=86400')
+        status, _, data = self.request(server, '/img/1', headers={'If-None-Match': '"other", ' + etag})
+        self.assertEqual((status, data), (304, b''))
+        replacement = b'\xff\xd8\xfftwo, longer'
+        path.write_bytes(replacement)
+        status, headers, data = self.request(server, '/img/1', headers={'If-None-Match': etag})
+        self.assertEqual((status, data), (200, replacement))
+        self.assertNotEqual(headers['ETag'], etag)
+        # A photo that stops being valid or owned is gone even for a browser holding its validator.
+        path.write_bytes(b'not a picture')
+        self.assertEqual(self.request(server, '/img/1', headers={'If-None-Match': headers['ETag']})[0], 404)
+
+    def test_photo_ownership_hook_replaces_a_connection_per_image(self):
+        (self.pictures / '1.jpg').write_bytes(b'\xff\xd8\xffjpeg')
+        asked = []
+        server = self.start(picture_owner=lambda person_id: asked.append(person_id) or person_id == '1')
+        TrackedConnection.closed = 0
+        for _ in range(3):
+            self.assertEqual(self.request(server, '/img/1')[0], 200)
+        self.assertEqual(self.request(server, '/img/2')[0], 404)
+        self.assertEqual(asked, ['1', '1', '1', '2'])
+        self.assertEqual(TrackedConnection.closed, 0, 'no request connection is opened to serve a photo')
 
     def test_client_errors_conflict_and_unexpected_errors_are_distinct(self):
         errors = [(Bad('bad input'), 400), (ValueError('value'), 400), (OverflowError('overflow'), 400),

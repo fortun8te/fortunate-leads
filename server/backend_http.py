@@ -7,6 +7,7 @@ the compatibility entry point may bind an application factory for older callers.
 import io
 import json
 import mimetypes
+import os
 import re
 import selectors
 import socket
@@ -25,6 +26,12 @@ SECURITY_HEADERS = {
     'Content-Security-Policy': "frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
 }
+
+
+# Saved profile photos keep one URL for life, so they are reused for ten minutes and then
+# served stale while the browser revalidates them in the background by ETag.
+IMAGE_FRESH_SECONDS = 600
+IMAGE_CACHE_CONTROL = f'private, max-age={IMAGE_FRESH_SECONDS}, stale-while-revalidate=86400'
 
 
 class _RequestBusy(Exception):
@@ -65,7 +72,8 @@ class HttpApplication:
                  extension_origin, font_path=None, log_error=None,
                  read_timeout=5.0, body_timeout=10.0, write_timeout=5.0,
                  sqlite_busy_seconds=0.25, max_body_bytes=64 * 1024 * 1024,
-                 retryable_errors=(), body_budget_bytes=128 * 1024 * 1024):
+                 retryable_errors=(), body_budget_bytes=128 * 1024 * 1024,
+                 picture_owner=None, max_picture_bytes=2 * 1024 * 1024):
         if min(read_timeout, body_timeout, write_timeout) <= 0:
             raise ValueError('HTTP timeouts must be positive')
         if sqlite_busy_seconds < 0 or max_body_bytes < 0 or body_budget_bytes < 0:
@@ -80,6 +88,10 @@ class HttpApplication:
         self.web_root = Path(web_root).resolve()
         self.pictures_dir = pictures_dir
         self.valid_picture = valid_picture
+        # picture_owner(person_id) says whether the database still associates that photo with the
+        # person. Without one, each photo opens a request connection (about 6 ms of setup).
+        self.picture_owner = picture_owner
+        self.max_picture_bytes = int(max_picture_bytes)
         self.extension_origin = extension_origin
         self.font_path = Path(font_path) if font_path is not None else (
             Path.home() / 'Library' / 'Fonts' / 'ABCArealSuperfamilyVariable.ttf')
@@ -105,6 +117,13 @@ class HttpApplication:
         finally:
             with self._body_lock:
                 self._body_bytes -= length
+
+    def owns_picture(self, person_id):
+        if self.picture_owner is not None:
+            return bool(self.picture_owner(person_id))
+        with self.connection() as connection:
+            return connection.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?',
+                                      (person_id, f'{person_id}.jpg')).fetchone() is not None
 
     @contextmanager
     def connection(self):
@@ -333,23 +352,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, dict(output, ok=True) if with_ok else output)
 
     def image(self, person_id):
+        """Serve one saved profile photo with a validator, so a repeat visit costs no body.
+
+        The photo keeps its URL when Instagram's picture changes, so it is never marked
+        immutable: the browser reuses it for IMAGE_FRESH_SECONDS, then shows the old copy
+        while it revalidates with the ETag (a 304 carries no body).
+        """
         app = self.application
         if not re.fullmatch(r'[0-9]+', person_id):
             return self.send(404, {'ok': False, 'error': 'no image'})
-        with app.connection() as connection:
-            owned = connection.execute('SELECT 1 FROM people WHERE id=? AND pic_file=?',
-                                       (person_id, f'{person_id}.jpg')).fetchone()
-        if not owned:
+        if not app.owns_picture(person_id):
             return self.send(404, {'ok': False, 'error': 'no image'})
         directory = app.pictures_dir() if callable(app.pictures_dir) else app.pictures_dir
         picture = Path(directory) / f'{person_id}.jpg'
-        if not picture.is_file():
+        try:
+            with picture.open('rb') as handle:
+                info = os.fstat(handle.fileno())
+                # The file's own stat is the validator; it cannot disagree with the bytes read below.
+                etag = f'"{info.st_mtime_ns:x}-{info.st_size:x}"'
+                headers = {'ETag': etag, 'Cache-Control': IMAGE_CACHE_CONTROL}
+                if etag in [value.strip().removeprefix('W/') for value in self.headers.get('If-None-Match', '').split(',')]:
+                    return self.send(304, b'', headers=headers)
+                data = handle.read(app.max_picture_bytes + 1)
+        except OSError:
             return self.send(404, {'ok': False, 'error': 'no image'})
-        data = picture.read_bytes()
         if not app.valid_picture(data):
             return self.send(404, {'ok': False, 'error': 'no image'})
         content_type = 'image/png' if data[:4] == b'\x89PNG' else 'image/webp' if data[8:12] == b'WEBP' else 'image/jpeg'
-        self.send(200, data, content_type, {'Cache-Control': 'no-cache'})
+        self.send(200, data, content_type, headers)
 
     def local_font(self):
         font = self.application.font_path
