@@ -226,6 +226,14 @@
   const RADIUS = { strong: 19, good: 16, weak: 12.5, unread: 10 };
   const followRing = n => n.followed && n.follows_me ? 'mutual' : n.followed ? 'outgoing' : n.follows_me ? 'incoming' : 'unknown';
   const hasRing = n => followRing(n) !== 'unknown';
+  // Owner evidence must outrank any lead score, status or audience overlap.
+  // "Known" is explicit local owner context, never inferred from a lead status.
+  function networkEvidenceTier(n) {
+    if (n.followed && n.follows_me) return 0;
+    if (n.follows_me) return 1;
+    if (n.followed) return 2;
+    return n.connection_kind === 'known' ? 3 : 4;
+  }
   // Which palette slot a person takes in a mode. 'a' is the one accent. Slots 0-5 are neutral tones.
   function toneFor(mode, n) {
     if (mode === 'seeds') return n.status && n.status !== 'no' ? 'a' : 't' + ((n.cluster | 0) % 6);
@@ -277,7 +285,8 @@
   }
   function cohortLayout(people, owner, size = 'followers', distance = 'network') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
-    members.sort((a,b) => distanceValue(b,distance)-distanceValue(a,distance)
+    members.sort((a,b) => (distance==='network'?networkEvidenceTier(a)-networkEvidenceTier(b):0)
+      || distanceValue(b,distance)-distanceValue(a,distance)
       || (b.closeness||0)-(a.closeness||0) || (b.rank||0)-(a.rank||0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{...owner,x:.5,y:.5,cohort:true,spacing:.075}] : [];
     // Distance is a continuous ordering of the loaded people. Ties occupy the
@@ -519,7 +528,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, networkEvidenceTier, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

@@ -8,7 +8,7 @@
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
   const VIEW_MODES = [
-    { id: 'network', label: 'Closest to me', size: 'followers', distance: 'Recorded connection evidence', description: 'Distance orders this page by saved connection evidence. Similar evidence spreads continuously. Recorded follows do not establish friendship.' },
+    { id: 'network', label: 'Recorded follows', size: 'followers', distance: 'Recorded follows with me', description: 'Mutual follows first, then accounts following me, then accounts I follow. Recorded follows do not establish a personal relationship. Larger means more saved followers.' },
     { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Closer means more collected source audiences. Shared audiences are not mutual friends.' },
     { id: 'fit', label: 'Best fit', size: 'fit', distance: 'Saved fit assessment', description: 'Closer means a stronger saved fit assessment. This view does not indicate a connection.' }
   ];
@@ -126,10 +126,12 @@
         if (envelope && (String(response.rev)!==String(envelope.rev) || response.cohort_reset)) throw new Error('The saved network changed. Refresh the map to continue.');
         envelope = response;
         for (const row of response.rows) {
-          const [id,x,y,rank,fit,closeness,followers,status,flags,source_count,hasPhoto,source] = row;
+          const [id,x,y,rank,fit,closeness,followers,status,flags,source_count,hasPhoto,source,connection_tier] = row;
           if (seen.has(id)) throw new Error('The map returned duplicate people. Refresh to continue.');
           seen.add(id); collected.push({id,x,y,rank,fit,closeness,followers,status:statuses[status]||null,
-            followed:!!(flags&1),follows_me:!!(flags&2),not_following:!!(flags&4),source_count,pic:hasPhoto?'/img/'+id:null,source,compact:true,handle:String(id)});
+            followed:!!(flags&1),follows_me:!!(flags&2),not_following:!!(flags&4),
+            connection_tier,connection_kind:['mutual','follows_me','followed','known','source'][connection_tier] || null,
+            source_count,pic:hasPhoto?'/img/'+id:null,source,compact:true,handle:String(id)});
         }
         this.loadingCount=collected.length; this.loadingTotal=Math.min(this.density,response.total||this.density); this.emit('busy');
         const next=response.next_cursor;
