@@ -168,6 +168,7 @@ const holds = [];
 const boxSeen = new Map(); // outbox item key → {first, acked}
 const restarts = [];
 const counters = { listPagePosts: 0, listReq: 0, profilePosts: 0, swBoots: 0, unreachedMsgs: 0, ticks: 0, dupResponses: 0 };
+const reqMarks = [];       // per Instagram request: when pacing first allowed it (idle audit)
 const expectations = [];   // cursor-resume checks set up by restarts
 let lastIg = null;         // last Instagram API response seen by a tab
 const viol = (what, extra) => { violations.push({ t: V.now, what, ...(extra || {}) }); if (VERBOSE) console.log('VIOLATION', dhm(V.now), what, extra || ''); };
@@ -465,6 +466,12 @@ function checkRequest(e) {
   }
   // The lane marker must be this request's own (set just before it), never an earlier request still in flight.
   if (store.lane && store.lane.until > e.t && store.lane.url && !String(store.lane.url).includes(e.path)) viol('request while another holds the lane', { path: e.path, lane: store.lane.url });
+  if (e.kind === 'list' || e.kind === 'profile' || e.kind === 'page') {
+    // Idle audit: when did pacing, cooldowns and the window first allow THIS request, versus when it really went?
+    const ready = Math.max(st.nextAt || 0, (e.bucket === 'profile' ? st.profileNextAt : st.listNextAt) || 0);
+    const floor = Math.max(ready, cool[e.bucket] ? cool[e.bucket].until : 0, FL.windowOf(st, e.t).until || 0);
+    reqMarks.push({ t: e.t, lane: P.name, bucket: e.bucket, kind: e.kind, floor, path: e.path });
+  }
   if (P.onRequest) P.onRequest(e, st);
 }
 
@@ -594,6 +601,27 @@ async function main() {
   for (const t of browser.tabs.values()) t.alive = false;
   if (!serverUp) await startServer();
   await report(seeds);
+}
+
+
+// Idle audit. For every pair of consecutive requests of one lane with no disturbance between them (hold, rate limit,
+// worker or server restart, pause), the request should go out when pacing first allows it. The excess is idle time.
+function idleAudit(opts = {}) {
+  const disturb = events.filter((x) => /^(hold|hit |worker stopped|server offline|server back|server paused|operator:)/.test(x.what)).map((x) => x.t);
+  const byLane = new Map();
+  for (const m of reqMarks) { if (!byLane.has(m.lane)) byLane.set(m.lane, []); byLane.get(m.lane).push(m); }
+  const idle = [];
+  for (const marks of byLane.values()) {
+    for (let i = 1; i < marks.length; i++) {
+      const a = marks[i - 1], b = marks[i];
+      if (disturb.some((t) => t > a.t - 1 && t <= b.t)) continue;
+      idle.push({ t: b.t, lane: b.lane, bucket: b.bucket, path: b.path, idle: Math.max(0, b.t - Math.max(b.floor, a.t)) });
+    }
+  }
+  const sorted = idle.map((x) => x.idle).sort((x, y) => x - y);
+  const q = (p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
+  return { n: idle.length, p50: q(0.5), p95: q(0.95), max: sorted.at(-1) || 0, over5s: idle.filter((x) => x.idle > 5e3).length,
+    over20s: idle.filter((x) => x.idle > 20e3).length, total: sorted.reduce((x, y) => x + y, 0), worst: idle.sort((x, y) => y.idle - x.idle).slice(0, 5) };
 }
 
 // ---------------------------------------------------------------- checks and report
@@ -760,6 +788,8 @@ async function report(seeds) {
   console.log('server         ' + `${serverLog.length} extension calls, ${serverLog.filter((e) => e.error).length} failed while offline, outage ${outage ? dhm(outage.t) + '–' + dhm(back && back.t) : 'none'}, ${counters.ticks} background ticks`);
   console.log('end state      ' + `popup "${store.view && store.view.text}", list cooldown until ${cool.list.until > END ? dhm(cool.list.until) : '-'}, bio cooldown until ${cool.profile.until > END ? dhm(cool.profile.until) : '-'}, server ext.state=${scraper.ext && scraper.ext.state}`);
   console.log('simulated      ' + `${HOURS} h in ${((RealDate.now() - REAL_T0) / 1e3).toFixed(1)} s real (min request gap ${(all.min / 1e3).toFixed(1)} s)`);
+  const ia = idleAudit();
+  console.log('idle audit     ' + `${ia.n} undisturbed request gaps: idle beyond pacing p50 ${(ia.p50 / 1e3).toFixed(1)} s, p95 ${(ia.p95 / 1e3).toFixed(1)} s, max ${(ia.max / 1e3).toFixed(1)} s; ${ia.over5s} over 5 s, ${ia.over20s} over 20 s`);
   console.log('\nhourly         ' + hourly.map((h) => `${hm(h.t)} ${h.pages}p/${h.profile}b`).join('  '));
   console.log(`\nchecks: ${pass.length} passed, ${fail.length} failed`);
   for (const f of fail) console.log('  FAIL ' + f);

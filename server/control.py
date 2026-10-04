@@ -408,8 +408,6 @@ def apply(conn, b):
                 (row['ig_id'], row['ig_id'])).fetchall()
             if any(accounts.later(value, now) for wait in waits for value in wait):
                 raise ValueError('A selected Instagram identity still has a protective pause.')
-            if any(accounts.budget_of(conn, row).get(kind, 0) <= 0 for kind in ('list', 'profile')):
-                raise ValueError('Set finite daily limits before continuing selected accounts.')
             allowed[row['lane_id']] = row['ig_id']
         if isolation and not set(allowed.items()).issubset((isolation.get('accounts') or {}).items()):
             raise ValueError('Continue only previously selected Instagram accounts.')

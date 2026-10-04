@@ -742,6 +742,19 @@ async function benchmarkStep(gen) {
 }
 
 // ---- the loop ----------------------------------------------------------------
+// "The server has no job for this kind" is remembered for NO_WORK_FOR. Without it a ready kind that has nothing to do
+// (an empty or paused bio queue) made every idle step sleep the full poll, and the list slept through its own due time:
+// measured 19 s between list pages in an undisturbed run against a designed 7 to 12 s.
+const NO_WORK_FOR = 15e3;
+function quiet(kinds, until) { mem.noWork = { ...(mem.noWork || {}), ...Object.fromEntries(kinds.map((kind) => [kind, until])) }; }
+// The kinds the plan should wait for: allowed by the workspace, not just answered "no job", and, while a leased job is
+// held, only the kind of that job (nothing else may be leased, so its due time is the only one that matters).
+async function allowedKinds(now) {
+  const kinds = FL.KINDS.filter((kind) => FL.controlAllows(mem, kind));
+  const cur = await get('cur');
+  if (cur && cur.job && now - cur.at < CUR_TTL) return kinds.filter((kind) => kind === cur.job.kind);
+  return kinds.filter((kind) => !((mem.noWork || {})[kind] > now));
+}
 async function nextJob(kinds) {
   await heartbeat(true);
   if (mem.offline || mem.serverPaused) return { job: null, wait: 15e3 };
@@ -763,7 +776,7 @@ async function nextJob(kinds) {
   } catch { mem.offline = true; return { job: null, wait: (mem.backoff = Math.min(mem.backoff * 2, 60e3)) }; }
   await applyServer(next);
   if (next.paused) return { job: null, wait: 15e3 };
-  if (!next.job) return { job: null, wait: 30e3 };
+  if (!next.job) { quiet(kinds, now + NO_WORK_FOR); return { job: null, wait: 30e3, answered: true }; }
   await set({ cur: { job: next.job, at: now } });
   return { job: next.job };
 }
@@ -780,11 +793,18 @@ async function step(gen) {
   if (mem.laneWait) return lane.until - now;
   const benchmarkWaitMs = await benchmarkStep(gen);
   if (benchmarkWaitMs !== null) return benchmarkWaitMs;
-  const pl = FL.plan(st, FL.budgetLeft(st, await get('budget'), now), now);
+  const pl = FL.plan(st, FL.budgetLeft(st, await get('budget'), now), now, await allowedKinds(now));
   if (!pl.kinds.length) { mem.budgetDone = pl.why === 'budget'; return pl.wait; }
-  const { job, wait } = await nextJob(pl.kinds);
+  const { job, wait, answered } = await nextJob(pl.kinds);
   mem.job = job || null;
-  if (!job) { mem.noTab = null; return wait; }
+  if (!job) {
+    mem.noTab = null;
+    // The server answered "no job" for the kinds just asked. Wait for the next kind that is really due (the list's own
+    // clock), not for a fixed poll; the answered kinds are asked again after NO_WORK_FOR.
+    if (!answered) return wait;
+    const again = FL.plan(await loadSt(), FL.budgetLeft(await loadSt(), await get('budget'), Date.now()), Date.now(), await allowedKinds(Date.now()));
+    return again.kinds.length ? 1e3 : Math.min(wait, again.wait);
+  }
   const t = await pickTab(job.kind); // after leasing: never opens or wakes a tab while the queue is empty
   if (!t.tab) { mem.job = null; return t.wait; }
   if (st.lastError && /^Open instagram/i.test(st.lastError)) await editSt((s) => { s.lastError = null; });

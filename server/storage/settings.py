@@ -5,7 +5,7 @@ import json
 
 # budget: per account per day (list pages, profile reads; profile 0 = no daily number). bio_min: prefilter floor for planned
 # bio reads (an explicit read ignores it).
-DEFAULTS = {'paused': False, 'budget': {'list': 3000, 'profile': 300}, 'qualify': False, 'qualify_auto': False, 'llm_workers': 8,
+DEFAULTS = {'paused': False, 'budget': {'list': 0, 'profile': 0}, 'qualify': False, 'qualify_auto': False, 'llm_workers': 8,
             'llm_min': 40, 'bio_min': 25, 'main_list_share': 0}
 
 

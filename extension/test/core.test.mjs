@@ -210,12 +210,12 @@ test('legacy follower-only circuit clears without clearing a real 429', () => {
 test('budget: defaults, server override, reset at local midnight', () => {
   const st = FL.fresh();
   for (let i = 0; i < 150; i++) FL.afterRequest(st, 'profile', T0);
-  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: 3000, profile: 150 }); // default 300 bios a day per account
-  assert.deepEqual(FL.budgetLeft(st, { profile: 0 }, T0), { list: 3000, profile: Infinity }); // 0 = no daily number
-  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: 3000, profile: 50 });
-  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, T0), { list: 3000, profile: 0 });
+  assert.deepEqual(FL.budgetLeft(st, null, T0), { list: Infinity, profile: Infinity }); // default: no daily number
+  assert.deepEqual(FL.budgetLeft(st, { profile: 0 }, T0), { list: Infinity, profile: Infinity }); // 0 = no daily number
+  assert.deepEqual(FL.budgetLeft(st, { profile: 200 }, T0), { list: Infinity, profile: 50 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, T0), { list: Infinity, profile: 0 });
   assert.deepEqual(FL.budgetOf({ list: 600, profile: 5000 }), { list: 600, profile: 5000 });
-  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, FL.nextMidnight(T0) + 1), { list: 3000, profile: 150 });
+  assert.deepEqual(FL.budgetLeft(st, { profile: 150 }, FL.nextMidnight(T0) + 1), { list: Infinity, profile: 150 });
   // unlimited still paces: the next bio waits the 35-70 s gap
   st.rlog = []; // (150 reads at one instant would trip the window first)
   const p = FL.plan(st, { list: 0, profile: Infinity }, T0);

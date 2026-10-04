@@ -12,8 +12,9 @@
     otherBase: 2 * MIN, otherCap: 5 * MIN, // target retries are delayed on the server; keep unrelated work moving
   };
   const KINDS = ['list', 'profile'];
-  // Per account per day: list pages, profile reads. profile 0 = no daily number (paced only by the gaps and the window).
-  const BUDGET = { list: 3000, profile: 300 };
+  // Per account per day: list pages, profile reads. 0 = no daily number, the default: paced only by the gaps, the window,
+  // cooldowns and holds. Counters are still kept for display; a number set on purpose still applies.
+  const BUDGET = { list: 0, profile: 0 };
   const BOX_MAX = 3000;
   const rand = (lo, hi, r = Math.random) => Math.round(lo + (hi - lo) * r());
 
@@ -379,12 +380,16 @@
   function succeeded(st) { st.streak = { other: 0, net: 0 }; return st; }
 
   // Which job kinds may be asked for right now. Returns {kinds, wait, why}: kinds empty → sleep `wait` ms.
-  function plan(st, left, now) {
+  // `allowed` is what the workspace lets this account do (stages not paused, online): the wait is then the next time an
+  // ALLOWED kind is ready, so a paused stage with an old clock can never hide the other stage's real due time.
+  function plan(st, left, now, allowed = KINDS) {
+    const may = KINDS.filter((k) => allowed.includes(k));
+    if (!may.length) return { kinds: [], wait: 15e3, why: 'control' };
     const unavailableUntil = (k) => st.cool[k].until || 0;
-    const eligible = KINDS.filter((k) => left[k] > 0 && !(unavailableUntil(k) > now));
+    const eligible = may.filter((k) => left[k] > 0 && !(unavailableUntil(k) > now));
     if (!eligible.length) {
-      const cooling = KINDS.filter((k) => left[k] > 0);
-      if (!cooling.length) return { kinds: [], wait: 10 * MIN, why: 'budget' };
+      const cooling = may.filter((k) => left[k] > 0);
+      if (!cooling.length) return KINDS.some((k) => left[k] > 0) ? { kinds: [], wait: 15e3, why: 'control' } : { kinds: [], wait: 10 * MIN, why: 'budget' };
       return { kinds: [], wait: Math.max(1e3, Math.min(...cooling.map(unavailableUntil)) - now),
         why: 'cooldown' };
     }

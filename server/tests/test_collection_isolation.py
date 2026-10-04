@@ -49,13 +49,17 @@ class CollectionIsolationTests(Base):
         accounts.request_permit(self.conn,'one',token=permit['token'])
         self.assertEqual(self.call('/api/control',{'action':'start_all'})[0],400)
 
-    def test_warned_wrong_identity_and_unlimited_selection_are_rejected(self):
+    def test_warned_and_wrong_identity_selection_are_rejected_but_no_daily_cap_is_needed(self):
         self.prepare()
         for selected in ([{'lane_id':'warned','ig_id':'100'},{'lane_id':'two','ig_id':'102'}],
                          [{'lane_id':'one','ig_id':'999'},{'lane_id':'two','ig_id':'102'}]):
             self.assertEqual(self.resume(accounts=selected)[0],400)
-        db.set_setting(self.conn,'budget',{'list':0,'profile':100});self.conn.commit()
-        self.assertEqual(self.resume()[0],400)
+        # Michael removed the daily request budget: 0 (no cap) must not block continuing healthy accounts.
+        db.set_setting(self.conn,'budget',{'list':0,'profile':0});self.conn.commit()
+        self.assertEqual(self.resume()[0],200)
+        self.assertIsNotNone(db.get_setting(self.conn,'instagram_collection_isolation'))
+        # ...and the warning on the warned account still stands.
+        self.assertTrue(db.get_setting(self.conn,'instagram_scraping_warning'))
 
     def test_any_new_warning_stops_selected_collection(self):
         for code in ('rate_limit','soft_block','login','challenge'):
