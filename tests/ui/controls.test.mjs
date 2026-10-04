@@ -38,8 +38,8 @@ async function ready() {const h=harness();h.respond(0,collection());h.respond(1,
 test('initial control state keeps scraping action and per-engine statuses visible', async () => {
   const h=await ready();
   assert.match(h.el.innerHTML,/fl-ctl-word">Stopped/);
-  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
-  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Off in R mode<\/span>/);
+  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off with rules only<\/span>/);
+  assert.match(h.el.innerHTML,/Bio checks <span class="fl-engine-state">Off with rules only<\/span>/);
   assert.match(h.el.innerHTML,/Start collection/);
   assert.match(h.el.innerHTML,/aria-expanded="false"/);
 });
@@ -49,7 +49,7 @@ test('panel opens without changing mode and offers independent engine actions', 
   assert.match(h.el.innerHTML,/aria-expanded="true"/);
   assert.match(h.el.innerHTML,/data-engine="laya"/);
   assert.match(h.el.innerHTML,/data-engine="k2"/);
-  assert.match(h.el.innerHTML,/Checks use saved profiles/);
+  assert.match(h.el.innerHTML,/AI settings/);
   h.respond(2,collection());h.respond(3,engines({processing:{mode:'RLAI'},engines:{...engines().engines,k2:{enabled:true,allowed:true,state:'waiting',active:false,ready:true,reason:'Waiting for work.',stop_acknowledged:false}}}));h.respond(4,{reviewed:4,queue:2,notes_pending:1,progress:{active:{handle:'someone'}}});await settle();
   assert.match(h.el.innerHTML,/Checking @someone/);
   assert.match(h.el.innerHTML,/4 bios reviewed, 2 waiting, 1 note waiting/);
@@ -63,8 +63,8 @@ test('K2 action waits for backend confirmation and leaves mode unchanged', async
   assert.match(h.el.innerHTML,/Saving…/);
   const reply=engines({engines:{...engines().engines,k2:{enabled:true,allowed:false,state:'off',active:false,ready:false,reason:'Choose RLAI or RLEAI',stop_acknowledged:true}}});
   post.resolve({ok:true,status:200,json:async()=>reply});await settle();
-  assert.match(h.el.innerHTML,/Off in R mode/);
-  assert.match(h.el.innerHTML,/Excluded from AI modes|Included when a local or external AI/);
+  assert.match(h.el.innerHTML,/Off with rules only/);
+  assert.match(h.el.innerHTML,/Won't run until you include it|Runs when Local AI or External AI is on/);
   assert.match(h.el.innerHTML,/Rules/);
   assert.equal(button.dataset.engine,'k2');
 });
@@ -117,7 +117,7 @@ test('a failed engine change reports the error and keeps the last confirmed stat
   const post=h.requests.find(request=>request.url==='/api/engines' && request.options?.method==='POST');
   post.reject(new Error('offline'));await settle();
   assert.match(h.el.innerHTML,/Couldn&#39;t confirm ranking hints change/);
-  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off in R mode<\/span>/);
+  assert.match(h.el.innerHTML,/Ranking hints <span class="fl-engine-state">Off with rules only<\/span>/);
 });
 
 test('idle and waiting collection never claim to be collecting', async () => {
@@ -172,7 +172,7 @@ test('a partial stop reply cannot pretend that collection stopped', async () => 
 test('qualification lives in details and pauses independently of collection', async () => {
   const h=harness();h.respond(0,collection(false));h.respond(1,engines({processing:{mode:'RLAI'},paused:false,stop_acknowledged:false}));await settle();
   h.click(b=>b.dataset.focus==='panel');h.respond(2,collection(false));h.respond(3,engines({processing:{mode:'RLAI'},paused:false,stop_acknowledged:false}));h.respond(4,{paused:false,state:'working',queue:12,reviewed:4,stop_acknowledged:false,progress:{active:{handle:'owner'}}});await settle();
-  assert.match(h.el.innerHTML,/Qualification <span class="fl-engine-state">Checking/);
+  assert.match(h.el.innerHTML,/Profile checks <span class="fl-engine-state">Checking/);
   assert.match(h.el.innerHTML,/4 bios reviewed · 12 remaining/);
   h.click(b=>b.dataset.focus==='qualification');
   const post=h.requests.find(r=>r.options?.method==='POST');
@@ -194,8 +194,8 @@ test('the main header has one collection control and keeps AI choices in details
   const h=await ready();const top=h.el.innerHTML.split('<div class="fl-ctl-panel"')[0];
   assert.match(top,/fl-ctl-name">Collection/);
   assert.match(top,/>Start collection<\/button>/);
-  assert.doesNotMatch(top,/Qualification|Choose AI mode|Stop checks|Rules only/);
-  assert.match(h.el.innerHTML,/Qualification <span class="fl-engine-state">Rules only/);
+  assert.doesNotMatch(top,/Profile checks|Choose AI mode|Stop checks|Rules only/);
+  assert.match(h.el.innerHTML,/Profile checks <span class="fl-engine-state">Rules only/);
 });
 
 

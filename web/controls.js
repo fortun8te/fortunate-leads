@@ -24,7 +24,7 @@
     const deadline = setTimeout(() => controller.abort(), DEADLINE_MS);
     try {
       const response = await fetch(url, {cache:'no-store', ...options, signal:controller.signal});
-      if (!response.ok) throw new Error(response.status >= 500 ? 'The server hit a problem.' : 'The server did not accept the request.');
+      if (!response.ok) throw new Error(response.status >= 500 ? 'The server hit a problem.' : "The server didn't accept the request.");
       return await response.json();
     } finally { clearTimeout(deadline); }
   }
@@ -34,9 +34,9 @@
     const modeOff = engines.processing?.mode === 'R';
     let label = ({off:'Off',starting:'Starting',running:'Running',stopping:'Stopping',waiting:'Waiting'})[item.state] || 'Unknown';
     if (engines.paused && item.enabled) label = item.stop_acknowledged ? 'Paused' : 'Stopping';
-    if (modeOff && item.state === 'off') label = 'Off in R mode';
+    if (modeOff && item.state === 'off') label = 'Off with rules only';
     let detail = item.reason || (item.active ? 'Working now' : item.ready ? 'Ready for saved work' : '');
-    if (modeOff) detail = item.enabled ? 'Included when a local or external AI mode is selected.' : 'Excluded from AI modes until you include it.';
+    if (modeOff) detail = item.enabled ? 'Runs when Local AI or External AI is on.' : "Won't run until you include it.";
     if (id === 'k2' && local && !engineError && !modeOff) {
       const active = local.progress?.active?.handle;
       const queue = Number(local.queue || 0), notes = Number(local.notes_pending || 0), reviewed = Number(local.reviewed || 0);
@@ -46,13 +46,13 @@
   }
   function qualification() {
     const mode = engines?.processing?.mode || control?.processing?.mode;
-    if (engineError || !mode) return {label:'Status unavailable', disabled:true, detail:'Checking status…'};
+    if (engineError || !mode) return {label:'Status unavailable', disabled:true, detail:'Loading…'};
     if (mode === 'R') return {label:'Rules only', disabled:true, detail:'Saved profiles are ranked with rules.'};
     const paused = local?.paused ?? engines?.paused;
     const acknowledged = local?.stop_acknowledged ?? engines?.stop_acknowledged;
     const stopping = paused && acknowledged !== true;
-    const label = localError ? 'Status unavailable' : stopping ? 'Stopping…' : paused ? 'Stopped' : local?.state === 'working' ? 'Checking' : local?.state === 'ready' ? 'Ready' : local?.state === 'waiting' ? 'Waiting' : local?.state === 'off' ? (engines.external_active || engines.engines?.laya?.active ? 'Checking' : 'Off') : local?.state === 'starting' ? 'Starting…' : local?.state === 'waiting_for_mac' ? 'Waiting for your Mac' : local?.state === 'unavailable' ? 'Needs setup' : 'Checking status…';
-    const detail = localError ? 'The checking status could not be refreshed.' : local ? `${Number(local.reviewed || 0).toLocaleString()} bios reviewed · ${Number(local.queue || 0).toLocaleString()} remaining${local.progress?.active?.handle ? ` · Checking @${local.progress.active.handle}` : ''}` : 'Checking saved-work progress…';
+    const label = localError ? 'Status unavailable' : stopping ? 'Stopping…' : paused ? 'Stopped' : local?.state === 'working' ? 'Checking' : local?.state === 'ready' ? 'Ready' : local?.state === 'waiting' ? 'Waiting' : local?.state === 'off' ? (engines.external_active || engines.engines?.laya?.active ? 'Checking' : 'Off') : local?.state === 'starting' ? 'Starting…' : local?.state === 'waiting_for_mac' ? 'Waiting for your Mac' : local?.state === 'unavailable' ? 'Needs setup' : 'Loading…';
+    const detail = localError ? "Couldn't refresh the status." : local ? `${Number(local.reviewed || 0).toLocaleString()} bios reviewed · ${Number(local.queue || 0).toLocaleString()} remaining${local.progress?.active?.handle ? ` · Checking @${local.progress.active.handle}` : ''}` : 'Loading…';
     return {label, paused, stopping, detail, disabled:localError || paused === undefined || stopping};
   }
   function scraping() {
@@ -68,11 +68,11 @@
     const connecting = ['opening','waiting'].includes(startup?.state);
     const state = controlError || collection.length !== 2 ? 'Unknown' : connecting ? 'Connecting' : attention ? 'Needs attention' : paused ? collection.some(stage => stage.active || stage.state === 'stopping') ? 'Stopping' : 'Off' : wait ? `Waiting${until}` : collection.some(stage => stage.state === 'running') ? 'Running' : collection.some(stage => stage.state === 'waiting') ? 'Waiting' : 'On';
     const progress = control?.collection?.progress || collection.find(stage => stage.progress)?.progress;
-    const detail = (connecting || startup?.state === 'failed' ? startup.message : '') || attention || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'Reads follower lists and bios at a safe pace.');
+    const detail = (connecting || startup?.state === 'failed' ? startup.message : '') || attention || (progress?.description || progress?.summary || collection.find(stage => stage.state === 'running')?.now || collection.find(stage => stage.state === 'waiting')?.now || collection.find(stage => stage.activity || stage.now)?.activity || collection.find(stage => stage.now)?.now || 'No collection activity yet.');
     return {state, detail, paused, connecting, reconnect:!connecting && !paused && control?.accounts?.some(a => !a.paused && !a.hold && !a.online), available:!controlError && collection.length === 2};
   }
   // One calm word for the whole strip. Details live in the popover.
-  const OVERALL = {connecting:'Connecting…', collecting:'Collecting', paused:'Stopped', stopping:'Stopping…', ready:'Ready', needs:'Needs you', waiting:'Waiting', checking:'Checking', unavailable:'Status unavailable'};
+  const OVERALL = {connecting:'Connecting…', collecting:'Collecting', paused:'Stopped', stopping:'Stopping…', ready:'Ready', needs:'Needs attention', waiting:'Waiting', checking:'Loading…', unavailable:'Status unavailable'};
   function overallState(scrape) {
     if (!control && !controlError) return 'checking';
     if (!scrape.available) return 'unavailable';
@@ -112,7 +112,7 @@
     const reviewAccount = unfinished && control.accounts?.find(account => account.lane_id === unfinished.lane);
     const reviewName = String(reviewAccount?.name || reviewAccount?.handle || 'this account').replace(/^@/, '');
     const requestReviewReady = !!(unfinished?.lane && requestIgId && unfinished.at && reviewAccount?.online && !reviewAccount.collection_protected && !reviewAccount.hold && !reviewAccount.is_main && !reviewAccount.personal);
-    const requestReview = unfinished ? `<div class="fl-request-review"><strong>Check the unfinished request</strong><p>Open ${reviewAccount ? '@' : ''}${esc(reviewName)} in its collection Chrome profile. Check that the list request has finished, or close that account’s collection tab.</p>${requestReviewReady ? `<label><input type="checkbox" data-request-checked data-focus="request-checked" ${requestReviewed ? 'checked' : ''} ${busy ? 'disabled' : ''}> I checked the account. Its collection tab has finished or is closed.</label><button type="button" class="btn" data-request-review data-focus="request-review" ${!requestReviewed || busy ? 'disabled' : ''}>${busy === 'request-review' ? 'Saving…' : 'Confirm review'}</button><small>Collection stays stopped. If the extension still shows an unfinished request, confirm the review in this account’s extension too. No Instagram warning is cleared.</small>` : '<small>Reconnect this account and check its collection tab before reviewing this request.</small>'}</div>` : '';
+    const requestReview = unfinished ? `<div class="fl-request-review"><strong>Check the unfinished request</strong><p>Open ${reviewAccount ? '@' : ''}${esc(reviewName)} in its collection Chrome profile. Check that the list request has finished, or close its collection tab.</p>${requestReviewReady ? `<label><input type="checkbox" data-request-checked data-focus="request-checked" ${requestReviewed ? 'checked' : ''} ${busy ? 'disabled' : ''}> I checked the account. Its collection tab has finished or is closed.</label><button type="button" class="btn" data-request-review data-focus="request-review" ${!requestReviewed || busy ? 'disabled' : ''}>${busy === 'request-review' ? 'Saving…' : 'Confirm review'}</button><small>Collection stays stopped. If the extension popup still shows the request, finish the review there too.</small>` : '<small>Reconnect this account and check its collection tab before reviewing this request.</small>'}</div>` : '';
 
     const newProfiles = control?.progress?.unique_new_profiles?.today;
     const savedToday = newProfiles == null ? '' : `<div class="fl-engine-row" title="Counts since midnight UTC"><strong>${Number(newProfiles).toLocaleString()} new profiles today</strong></div>`;
@@ -128,7 +128,7 @@
     const wait = stopped ? 'Start collection' : 'Stop collection';
     const scope = control?.collection_scope;
     const scopeReady = scrape.available && stopped && control?.stop_acknowledged !== false && scrape.state !== 'Stopping' && ['following', 'both'].includes(scope);
-    const scopeNote = !scrape.available || !scope ? 'Checking list selection…' : 'Applies to queued lists.';
+    const scopeNote = !scrape.available || !scope ? 'Loading…' : 'Applies to queued lists.';
     const scopeControls = `<div class="fl-ctl-scope"><span>Lists</span><div class="seg" role="group" aria-label="Lists to collect">${[['following','Following only'],['both','Followers + following']].map(([value,label]) => `<button type="button" data-list-scope="${value}" data-focus="scope-${value}" aria-pressed="${scope === value}" ${busy || !scopeReady ? 'disabled' : ''}>${label}</button>`).join('')}</div><span class="fl-ctl-scope-note">${esc(scopeNote)}${!stopped && scrape.available ? ' Stop collection to change.' : ''}</span></div>`;
     const selectedLanes = Object.keys(control?.collection_isolation?.accounts || {});
     const selectedAccounts = (control?.accounts || []).filter(account => selectedLanes.length ? selectedLanes.includes(account.lane_id) : !account.paused && !account.is_main && !account.personal);
@@ -138,7 +138,7 @@
     const html = `<div class="fl-ctl-top"><button type="button" class="fl-ctl-summary" data-focus="panel" aria-expanded="${open}" aria-controls="fl-engine-panel" aria-label="${esc(OVERALL[overall])}. Show details">${dot(overall)}<span class="fl-ctl-name">Collection</span><span class="fl-ctl-word">${esc(OVERALL[overall])}</span>${SUMMARY_ICON}</button>${selection}${listSummary}<span class="fl-ctl-current">${esc(scrape.state === 'Off' && control?.collection_startup?.state !== 'failed' && !control?.instagram_request_attention && !(control?.collection_blockers || []).some(item => item.blocking) ? 'Progress is saved.' : scrape.detail)}</span><span class="grow"></span>${scrape.reconnect ? `<button type="button" class="btn fl-ctl-direct" data-connect="true" data-focus="connect" ${busy ? 'disabled' : ''}>Connect accounts</button>` : ''}${warningBlocks ? `<button type="button" class="btn fl-ctl-direct" data-warning-review data-focus="warning-review">Review Instagram warning</button>` : `<button type="button" class="btn fl-ctl-direct" data-stage="collection" data-focus="collection" data-action="${stopped ? 'resume' : 'pause'}" aria-label="${wait}" ${busy || !scrape.available || scrape.state === 'Stopping' || stopped && unresolvedRequest ? 'disabled' : ''} ${stopped && unresolvedRequest ? 'title="Review the unfinished request in Accounts before starting"' : ''}>${action}</button>`}</div>`
       + `<div class="fl-ctl-panel" id="fl-engine-panel" role="group" aria-label="What is running" ${open ? '' : 'hidden'}><div class="fl-ctl-panel-head"><b>Activity</b><a href="#/accounts">View progress</a></div>`
 
-      + requestReview + scopeControls + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Qualification <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? scope === 'following' ? 'Following lists' : 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'list jobs' : 'bio jobs'} remaining</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><span>Checks use saved profiles.</span><a href="#/settings">AI settings</a></div></details>`
+      + requestReview + scopeControls + review + savedToday + `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>Profile checks <span class="fl-engine-state">${esc(qualify.label)}</span></strong><small>${esc(qualify.detail)}</small></div>${qualify.label === 'Rules only' ? '<a href="#/settings">AI settings</a>' : `<button type="button" class="btn fl-engine-action" data-qualification data-focus="qualification" ${busy || qualify.disabled ? 'disabled' : ''}>${busy === 'qualification' ? 'Saving…' : qualify.stopping ? 'Stopping…' : qualify.paused ? 'Continue checks' : 'Stop checks'}</button>`}</div>${(control?.stages || []).filter(s => ['lists','bios'].includes(s.id)).map(s => `<div class="fl-engine-row"><div class="fl-engine-copy"><strong>${s.id === 'lists' ? scope === 'following' ? 'Following lists' : 'Follower and following lists' : 'Instagram bios'} <span class="fl-engine-state">${esc(({idle:'Ready',paused:'Stopped',running:'Collecting',waiting:'Waiting',stopping:'Stopping…'})[s.state] || 'Unknown')}</span></strong>${warning && !control?.collection_isolation ? '' : `<small>${esc(s.now || '')}</small>`}<small>${Number(s.today || 0).toLocaleString()} ${s.id === 'lists' ? 'list entries saved today' : 'bios read today'} · ${Number(s.queue || 0).toLocaleString()} ${s.id === 'lists' ? 'lists' : 'bios'} left</small></div></div>`).join('')}<details class="fl-models" ${modelsOpen ? 'open' : ''}><summary>Model controls</summary>${engineRow('laya', laya)}${engineRow('k2', k2)}<div class="fl-ctl-panel-foot"><a href="#/settings">AI settings</a></div></details>`
       + `${error || controlError || engineError ? `<p class="fl-ctl-error" role="alert">${esc(error || "Some statuses couldn't be confirmed. Retrying…")}</p>` : ''}</div>`;
     if (el.innerHTML === html) return;
     el.innerHTML = html;
