@@ -35,7 +35,6 @@ BACKOFF_BASE, BACKOFF_CAP = 30, 3600       # s, per (provider, model) after 429 
 DOWN_BASE, DOWN_CAP = 10, 300              # s, whole provider after a transport error (proxy not running)
 FREE_DAILY = 1000                          # conservative local ceiling per key across all free models, per UTC day
 MODELS_URL = 'https://openrouter.ai/api/v1/models'
-KEY_URL = 'https://openrouter.ai/api/v1/key'
 MODELS_EVERY = 6 * 3600                   # s between refreshes of the free / stealth model list
 
 

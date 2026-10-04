@@ -47,11 +47,6 @@ def has_connection(person):
     return bool(relationships(person)) or person.get('status') in ('talking', 'spoke_before')
 
 
-def client_sql(alias='m'):
-    return (f"({alias}.status='client' OR EXISTS (SELECT 1 FROM owner_context oc "
-            f"WHERE oc.person_id={alias}.person_id AND instr(oc.relationships,'\"client\"')>0))")
-
-
 def owner_status(person):
     """Explicit pipeline stage wins; legacy manual Client remains an owner fact."""
     status = person.get('status')

@@ -35,9 +35,6 @@ QUESTIONS = (
     {'key': 'service_provider', 'q': 'Is this an agency, freelancer, consultant or other service provider selling services rather than products?'},
     {'key': 'netherlands', 'q': 'Is this person or business based in the Netherlands?'},
 )
-# answer key -> tag it may confirm (the rule/LLM tag must agree) ; sure = p at which Laya alone may tag
-TAG_OF = {'dtc_founder': 'Founder', 'brand_account': 'Brand', 'creator': 'Creator', 'service_provider': 'Agency', 'netherlands': 'NL'}
-SURE = {'creator': 0.9, 'brand_account': 0.9, 'netherlands': 0.9}
 FIT_W = {'dtc_founder': 45, 'brand_account': 25, 'netherlands': 10, 'creator': -30, 'service_provider': -25}
 
 _health = {'at': None, 'ok': False, 'model': None, 'deployment_version': None}

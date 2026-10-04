@@ -635,14 +635,6 @@ Your fit judges the profile itself. The network lines (lists, who follows them, 
 the final ranking separately and weigh more than the bio, so do not push a fit to 0 just because the bio is sparse."""
 
 
-def _call(model, messages, timeout):
-    """One model through the provider layer. -> (content, model used). Raises ValueError / OSError when unusable."""
-    try:
-        return _providers().chat(messages, models=(model,), timeout=timeout, budget=timeout + 1)
-    except llm.Unavailable as e:
-        raise ValueError(str(e)) from None
-
-
 def _providers():
     """Use the exact shared pool so every caller observes the same quotas."""
     return llm.get()

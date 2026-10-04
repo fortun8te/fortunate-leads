@@ -48,15 +48,6 @@ def _site_pool():
         return _sites
 
 
-def close_sites(wait=False):
-    """Explicit client teardown. Application close must not stop other workspaces' shared reads."""
-    global _sites
-    with _lock:
-        pool, _sites = _sites, None
-    if pool is not None:
-        pool.shutdown(wait=wait, cancel_futures=True)
-
-
 def ensure(conn):
     conn.execute(SCHEMA)
 

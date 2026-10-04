@@ -169,11 +169,6 @@ def write_rule_tags(conn, rule, pids):
     return conn.total_changes - before
 
 
-def apply_rule(conn, rule):
-    """Tag everyone the rule matches: scan first, then one short write. Returns the number of tags added."""
-    return write_rule_tags(conn, rule, matching_ids(conn, rule))
-
-
 def sync(conn, pids, rules=None):
     """Make the rule tags of these people exactly what the current rules say (manual/auto tags are never touched)."""
     rules = load(conn) if rules is None else rules

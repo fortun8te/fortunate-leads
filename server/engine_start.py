@@ -1,25 +1,11 @@
 """Run the existing, ownership-checked one-click service launcher from the UI."""
 import re
-import json
 import subprocess
 from pathlib import Path
 
 
 class EngineStartError(RuntimeError):
     pass
-
-
-def configured_profile_count(repo):
-    config_path = Path(repo) / 'ops' / 'startup_profiles.json'
-    try:
-        names = json.loads(config_path.read_text(encoding='utf-8')).get('chrome_profiles')
-    except (OSError, ValueError, AttributeError) as exc:
-        raise EngineStartError('The configured Chrome profiles could not be read.') from exc
-    if (not isinstance(names, list) or not names or
-            any(not isinstance(name, str) or not name.strip() for name in names) or
-            len(set(names)) != len(names)):
-        raise EngineStartError('Chrome startup profiles must be a non-empty list of unique names.')
-    return len(names)
 
 
 def start(repo, account_count, run=subprocess.run):
