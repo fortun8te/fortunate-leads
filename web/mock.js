@@ -576,6 +576,63 @@
     return client ? {converted_to_status:'client', status:'client', mark_rev:markRevs.get(id)} : {};
   }
 
+  const seedBatches = new Map(), removedSeeds = new Set();
+  const handleOf = (t) => { const x = String(t).trim().replace(/^@/, '').replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').split(/[/?#]/)[0].toLowerCase(); return /^[a-z0-9._]{1,30}$/.test(x) ? x : null; };
+  function seedItems(text, dirs) {
+    const seen = new Set();
+    return String(text || '').split(/[\s,;]+/).filter(Boolean).map((raw) => {
+      const handle = handleOf(raw);
+      if (!handle) return { input: raw, handle: null, state: 'invalid', reason: 'not_valid', message: 'This is not an Instagram name.', add: [], warn: [] };
+      if (seen.has(handle)) return { input: raw, handle, state: 'duplicate', reason: 'duplicate', message: 'Already in this paste.', add: [], warn: [] };
+      seen.add(handle);
+      const have = scraper.lists.filter((l) => l.seed === handle).map((l) => l.direction);
+      const add = dirs.filter((d) => !have.includes(d));
+      return { input: raw, handle, state: !have.length ? 'new' : add.length ? 'extend' : 'exists', reason: null, message: !have.length || add.length ? null : 'Already added.', add, warn: [] };
+    });
+  }
+  const LIST_WORDS = { queued: ['waiting', 'Waiting'], running: ['collecting', 'Collecting'], paused: ['paused', 'Paused'], done: ['done', 'Done'], private: ['private', 'Private'], error: ['error', "Couldn't read"] };
+  function seedsView(q) {
+    const all = [...new Set(scraper.lists.map((l) => l.seed))].map((h) => {
+      const lists = {};
+      ['followers', 'following'].forEach((d) => {
+        const l = scraper.lists.find((x) => x.seed === h && x.direction === d);
+        const [status, label] = l ? LIST_WORDS[l.state] || ['waiting', 'Waiting'] : ['off', 'Off'];
+        lists[d] = { direction: d, wanted: !!l, status, label, saved: l ? l.received : 0, expected: l ? l.total : null, estimate: false, note: '' };
+      });
+      const sts = Object.values(lists).filter((l) => l.wanted).map((l) => l.status);
+      const status = removedSeeds.has(h) ? 'removed' : ['collecting', 'waiting', 'error', 'private', 'paused', 'done'].find((x) => sts.includes(x)) || 'done';
+      const person = people.find((p) => p.handle === h);
+      return { handle: h, name: person ? person.name : null, pic: null, followers: null, following: null, private: false, identity: 'known', added_at: now(), yours: false, source: 'you',
+        status, label: status === 'removed' ? 'Removed' : (LIST_WORDS[Object.keys(LIST_WORDS).find((k) => LIST_WORDS[k][0] === status)] || [0, 'Done'])[1], attention: ['error', 'private'].includes(status),
+        lists, saved: 0, expected: null, pct: null, renamed_from: [] };
+    });
+    const status = q.get('status') || 'all', needle = (q.get('q') || '').replace(/^@/, '').toLowerCase();
+    const match = (s, n) => (n === 'all' ? s.status !== 'removed' : n === 'removed' ? s.status === 'removed' : n === 'attention' ? s.attention && s.status !== 'removed' : n === 'done' ? s.status === 'done' : s.status === n);
+    const counts = Object.fromEntries(['all', 'collecting', 'waiting', 'paused', 'attention', 'done', 'removed'].map((n) => [n, all.filter((s) => match(s, n)).length]));
+    const items = all.filter((s) => match(s, status) && (!needle || s.handle.includes(needle)));
+    return { scope: 'both', counts, total: items.length, offset: 0, queue: null, items: items.slice(0, Number(q.get('limit')) || 200), revision: 'mock' };
+  }
+  function liveView(setup) {
+    const cards = accounts.map((a) => {
+      const state = a.disconnected ? 'disconnected' : a.is_main ? 'personal' : a.hold === 'login' ? 'needs_login' : a.paused ? 'paused' : a.cooldown_until ? 'waiting' : a.job ? 'collecting' : 'ready';
+      const head = { disconnected: 'Disconnected', personal: 'Personal account', needs_login: 'Needs login', paused: 'Paused', waiting: 'Waiting {t}', collecting: 'Collecting', ready: 'Ready' }[state];
+      const detail = { disconnected: 'Not used for collecting. Its Chrome profile can stay open.', personal: 'Never used for collecting.', needs_login: 'Sign in to Instagram in this Chrome profile.', paused: 'Resume when you want it to collect again.',
+        waiting: 'Instagram asked this account to slow down.', collecting: a.job && a.job.seed ? `Reading @${a.job.seed}'s ${a.job.direction} list.` : 'Reading Instagram.', ready: 'Waiting for work.' }[state];
+      const action = { disconnected: { id: 'reconnect', label: 'Reconnect' }, personal: { id: 'inbox', label: 'Open Instagram' }, needs_login: null, paused: { id: 'resume', label: 'Resume' } }[state] || { id: 'pause', label: 'Pause' };
+      return { lane_id: a.lane_id, ig_id: a.ig_id, handle: a.handle, label: a.label || null, name: a.name, avatar: { pic: null, initial: (a.handle || '?')[0].toUpperCase() }, kind: a.is_main ? 'main' : 'collector',
+        state, tone: { needs_login: 'attention', collecting: 'ok', waiting: 'wait' }[state] || 'quiet', headline: head, detail, until: state === 'waiting' ? a.cooldown_until : null, action, online: true, paused: !!a.paused, disconnected: !!a.disconnected,
+        first_seen: a.first_seen || now(), last_seen: a.last_seen || now(), version: '3.9.0',
+        allowance: a.is_main ? null : { reads: a.role || 'both', list: a.role === 'bios' ? null : { used: a.today.list, limit: a.budget.list || null }, profile: a.role === 'lists' ? null : { used: a.today.profile, limit: a.budget.profile || null }, resets_at: now() },
+        details: { reads: a.role || 'both', reads_label: 'Lists and bios', budgets: { list: { limit: a.budget.list || null, default: 3000, custom: !!a.budget_custom }, profile: { limit: a.budget.profile || null, default: 300, custom: !!a.budget_custom } },
+          last_slowed: a.last_limit || null, hour: a.hour, events: [{ at: now(), text: 'Read a bio' }], can_forget: !!a.disconnected, saved_profile: false, pace: null } };
+    });
+    const shown = cards.filter((c) => !c.disconnected);
+    const out = { cards, summary: { total: shown.length, collecting: shown.filter((c) => c.state === 'collecting').length, attention: shown.filter((c) => c.tone === 'attention').length, online: shown.filter((c) => c.kind === 'collector').length, collectors: shown.filter((c) => c.kind === 'collector').length },
+      workspace: { stopped: scraper.paused, stopping: false, shared_wait: null, warning: null, isolation: null, scope: collectionScope, startup: null }, main: (() => { const m = accounts.find((a) => a.is_main); return m ? { handle: m.handle } : null; })(), revision: 'mock' };
+    if (setup) out.setup = { extension_path: '/Users/michael/fortunate-leads/extension', extension_id: 'fgdbghllamedgihmdcolaggnbhnakjnf', extension_version: '3.9.0', server: 'http://127.0.0.1:8777' };
+    return out;
+  }
+
   let mockSkipped = null;
   function route(method, url, body) {
     const u = new URL(url, location.origin);
@@ -904,6 +961,51 @@
       const flow = { state: !lists.length ? 'idle' : scraper.paused ? 'paused' : act ? 'running' : 'done', people: fresh ? 0 : people.length, bios: fresh ? 0 : Math.round(people.length * 0.4), ranked: fresh ? 0 : people.length, jobs_left: 0, lists,
         headline: !lists.length ? 'Paste an Instagram account to begin.' : scraper.paused ? 'Collection is paused. Press Start to continue.' : act ? `Collecting @${act.seed}'s ${act.direction}: ${act.received.toLocaleString('en-US')}${act.total ? ' of about ' + act.total.toLocaleString('en-US') : ''} people so far.` : 'All lists collected.' };
       return { ready: !blocking, healthy: !open, blocking, open, steps, flow };
+    }
+    // ----- Accounts page: profiles and account cards (shapes follow docs/ACCOUNTS_UX.md) -----
+    if (path === '/api/seeds' && method === 'GET') return seedsView(q);
+    if (path === '/api/seeds/check') return { items: seedItems(body.text, body.directions || ['followers', 'following']), summary: {} };
+    if (path === '/api/seeds/batch') {
+      const dirs = (body.directions || []).filter((d) => ['followers', 'following'].includes(d));
+      if (!dirs.length) fail('Choose followers, following or both.');
+      if (body.request_id && seedBatches.has(body.request_id)) return { ...seedBatches.get(body.request_id), replayed: true };
+      const items = seedItems(body.text, dirs), created = [];
+      items.forEach((i) => {
+        if (i.state !== 'new' && i.state !== 'extend') { i.result = i.state; return; }
+        i.add.forEach((d) => { scraper.lists.push({ seed: i.handle, direction: d, state: 'queued', received: 0, total: null, updated_at: now(), error: null }); });
+        created.push({ handle: i.handle, directions: i.add }); i.result = i.state === 'new' ? 'added' : 'extended';
+      });
+      const out = { request_id: body.request_id, items, summary: {}, added: created.length, created };
+      if (body.request_id) seedBatches.set(body.request_id, out);
+      return out;
+    }
+    if (path === '/api/seeds/undo') {
+      const rec = seedBatches.get(body.request_id);
+      if (!rec) fail('That add can no longer be undone.', 404);
+      rec.created.forEach((c) => c.directions.forEach((d) => { const i = scraper.lists.findIndex((l) => l.seed === c.handle && l.direction === d); if (i >= 0) scraper.lists.splice(i, 1); }));
+      return { request_id: body.request_id, items: rec.created.map((c) => ({ handle: c.handle, result: 'removed' })) };
+    }
+    if (path === '/api/seeds/act') {
+      const hs = Array.isArray(body.handles) ? body.handles : [];
+      if (!hs.length) fail('Choose 1 to 500 profiles.');
+      return { items: hs.map((h) => {
+        const rows = scraper.lists.filter((l) => l.seed === h);
+        if (!rows.length) return { handle: h, result: 'missing' };
+        if (body.action === 'pause') rows.forEach((l) => { if (['queued', 'running'].includes(l.state)) l.state = 'paused'; });
+        else if (body.action === 'resume') rows.forEach((l) => { if (l.state === 'paused') l.state = 'queued'; });
+        else if (body.action === 'remove') { removedSeeds.add(h); }
+        else if (body.action === 'restore') { removedSeeds.delete(h); }
+        return { handle: h, result: 'ok' };
+      }) };
+    }
+    if (path === '/api/accounts/live') return liveView(q.get('setup') === '1');
+    if ((m = path.match(/^\/api\/accounts\/([\w-]+)\/(connect|disconnect|reconnect|forget)$/))) {
+      const a = accounts.find((x) => x.lane_id === m[1]);
+      if (!a) fail('That account no longer exists.', 404);
+      if (m[2] === 'disconnect') { a.disconnected = true; a.paused = true; }
+      if (m[2] === 'reconnect') { a.disconnected = false; a.paused = false; }
+      if (m[2] === 'forget') accounts.splice(accounts.indexOf(a), 1);
+      return liveView(false);
     }
     if (path === '/api/scraper/seeds') {
       let queued = 0;
