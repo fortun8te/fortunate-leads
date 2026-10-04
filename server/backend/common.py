@@ -178,7 +178,7 @@ def qint(q, key):
         raise Bad(f'{key} is too large')
     return n
 
-SORTS = {'follow_up': '(SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL) IS NULL, (SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL)', 'recent': 'p.updated_at DESC', 'followers': 'p.followers IS NULL, p.followers DESC', 'connected': 'lists DESC, p.followers IS NULL, p.followers DESC', 'fit': "CASE WHEN v.tier='unread' THEN 1 ELSE 0 END, v.content_fit IS NULL, v.content_fit DESC, lists DESC, v.score IS NULL, v.score DESC", 'score': 'v.score IS NULL, v.score DESC, p.followers DESC'}
+SORTS = {'follow_up': '(SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL) IS NULL, (SELECT f.due_on FROM followups f WHERE f.person_id=p.id AND f.completed_at IS NULL)', 'recent': 'p.updated_at DESC', 'followers': 'p.followers DESC', 'connected': 'lists DESC, p.followers IS NULL, p.followers DESC', 'fit': "CASE WHEN v.tier='unread' THEN 1 ELSE 0 END, v.content_fit IS NULL, v.content_fit DESC, lists DESC, v.score IS NULL, v.score DESC", 'score': 'v.score IS NULL, v.score DESC, p.followers DESC'}
 
 @contextmanager
 def read_snapshot(conn):
