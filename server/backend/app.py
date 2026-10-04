@@ -7,6 +7,7 @@ from pathlib import Path
 import accounts
 import biofetch
 import browser_startup
+import collection_audit
 import control
 import db
 import deepscout
@@ -198,6 +199,7 @@ class Application:
     def repair_step(self, conn):
         out = db.repair_lists(conn)
         out['parked_denied'] = accounts.park_denied_lists(conn)
+        out['expired_leases'] = len(collection_audit.release_expired_leases(conn, apply=True))
         conn.commit()
         if any(out.values()):
             print('repair_lists', out, flush=True)
