@@ -117,6 +117,8 @@ const LIST_OPTS = [[2, '2+'], [3, '3+'], [4, '4+'], [5, '5+']];
 const BIO_OPTS = [['1', 'Yes'], ['0', 'No']];
 const FOL_OPTS = [['lt1k', '<1k', null, 999], ['1k', '1k+', 1000, null], ['10k', '10k+', 10000, null], ['100k', '100k+', 100000, null]];
 const PAGE = 100;
+const PREFETCH_ROWS = 40;     // start the next page this many rows before the end
+const MORE_SKELETONS = 3;     // placeholder rows shown below the list while a page loads
 const isViaTag = (t) => t.startsWith('via @');
 const isListTag = (t) => /^in \d+ lists$/.test(t);
 const KIND = { manual: 'man', rule: 'rule', auto: '' };
@@ -177,7 +179,7 @@ const seedList = (seeds, n) => seeds.slice(0, n).map((s) => '@' + esc(s)).join('
 const emptyFilter = () => ({ tags: [], any: [], not: [], status: '', relationship: '', tier: '', fit: '', q: '', min: 0, bio: '', seed: '', follow_up: '', fmin: null, fmax: null });
 const S = {
   view: 'leads',
-  f: emptyFilter(), sort: store.get('sort', 'fit'),
+  f: emptyFilter(), sort: validSort(store.get('sort', 'fit')),
   tagList: [], tagBy: new Map(), tagLower: new Map(), counts: null, sc: null,
   rows: [], total: null, done: false, loading: false, error: false, gen: 0, nextOffset: 0, rev: null, stale: false,
   cur: -1, open: null, person: null,
@@ -205,6 +207,8 @@ function toQuery(f = S.f, sort = S.sort, withSort = true) {
   if (withSort && sort && sort !== 'fit') p.set('sort', sort);
   return p;
 }
+// An unknown sort (an old link, a stale saved choice) falls back to the default instead of failing the list.
+function validSort(sort) { return ['fit', 'closeness', 'followers', 'recent', 'connected', 'score', 'follow_up'].includes(sort) ? sort : 'fit'; }
 function fromQuery(qs) {
   const p = new URLSearchParams(qs || '');
   const list = (k) => (p.get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -214,7 +218,7 @@ function fromQuery(qs) {
       relationship: ['follows', 'followed', 'mutual'].includes(p.get('relationship')) ? p.get('relationship') : '',
       follow_up: ['due', 'overdue', 'scheduled', 'completed', 'none'].includes(p.get('follow_up')) ? p.get('follow_up') : '',
       bio: ['0', '1'].includes(p.get('has_bio')) ? p.get('has_bio') : '', seed: (p.get('seed') || '').replace(/^@/, ''), fmin: numOr('followers_min'), fmax: numOr('followers_max') },
-    sort: p.get('sort') || 'fit',
+    sort: validSort(p.get('sort')),
   };
 }
 const filterCount = (f = S.f) => f.tags.length + f.any.length + f.not.length + !!f.status + !!f.relationship + !!f.follow_up + !!f.tier + !!f.fit + !!f.min + !!f.bio + !!f.seed + (f.fmin != null || f.fmax != null) + !!f.q;
@@ -1040,9 +1044,10 @@ function renderRows() {
   if ($('#work-count')) $('#work-count').textContent = S.total == null ? '' : int(S.total);
   if (!S.rows.length) {
     box.style.height = '100%';
+    rowEls.clear(); rowsStamp = '';
     if (S.loading || (S.total == null && !S.error)) {
       // Same grid as a real row, so nothing moves when the data arrives.
-      box.innerHTML = `<span class="sr-only" role="status">Loading leads</span>` + Array.from({ length: Math.max(8, Math.ceil(sc.clientHeight / h) + 1) }, (_, i) => `<div class="row skel" aria-hidden="true" style="top:${i * h}px"><div class="c-sel"><span class="av"></span></div><div class="who"><i style="width:${34 + (i * 7) % 18}%"></i><i style="width:${52 + (i * 11) % 30}%"></i></div><div class="tags c-tags"><i class="chip"></i><i class="chip"></i></div><span class="c-fol"><i></i></span><div class="c-fit"><i class="rg"></i></div><span class="c-st"><i></i></span></div>`).join('');
+      box.innerHTML = `<span class="sr-only" role="status">Loading leads</span>` + skeletonRows(0, Math.max(8, Math.ceil(sc.clientHeight / h) + 1), h);
     } else if (S.error) {
       box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
@@ -1055,22 +1060,64 @@ function renderRows() {
     }
     return;
   }
-  box.style.height = (S.rows.length * h + (S.error || S.stale ? Math.max(h, 64) : 0)) + 'px';
   const from = Math.max(0, Math.floor(sc.scrollTop / h) - 8);
   const to = Math.min(S.rows.length, Math.ceil((sc.scrollTop + sc.clientHeight) / h) + 8);
-  let out = '';
-  for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i, h);
-  if (S.error) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Could not load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`;
-  else if (S.stale) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Results changed while you browsed.</span><button class="btn" id="refresh-leads">Refresh</button></div>`;
-  box.innerHTML = out;
-  if (focusId && focusKey) {
+  if (!S.error && !S.done && to >= S.rows.length - PREFETCH_ROWS) loadMore();
+  // Room below the last row for the retry notice, or for placeholders while the next page loads.
+  const more = !S.error && !S.stale && !S.done && S.loading ? MORE_SKELETONS : 0;
+  box.style.height = (S.rows.length * h + (S.error || S.stale ? Math.max(h, 64) : more * h)) + 'px';
+  // Rows keep their elements between frames. Only rows that enter the window are built, only rows
+  // whose markup changed are replaced, and the rest (photos, focus, text selection) are left alone.
+  // A scroll frame cannot change any row's data, so it does not rebuild rows that are already drawn.
+  const stamp = h + ':' + S.rowTagLimit;
+  if (rowsStamp !== stamp) { box.textContent = ''; rowEls.clear(); rowsStamp = stamp; }
+  box.querySelectorAll('.page-retry, .more-skel').forEach((el) => el.remove());
+  for (const [i, entry] of rowEls) if (i < from || i >= to) { entry.el.remove(); rowEls.delete(i); }
+  const built = [];
+  for (let i = from; i < to; i++) {
+    const have = rowEls.get(i);
+    if (have && rowsScrolled) continue;
+    const html = rowHTML(S.rows[i], i, h);
+    if (!have || have.html !== html) built.push({ i, html, have });
+  }
+  if (built.length) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = built.map((b) => b.html).join('');
+    const fresh = [...tpl.content.children];
+    built.forEach(({ i, html, have }, n) => {
+      const el = fresh[n];
+      if (have) have.el.replaceWith(el);
+      else {
+        // Keep the rows in reading order: before the nearest drawn row below this one.
+        let next = null;
+        for (const [j, entry] of rowEls) if (j > i && (next === null || j < next.j)) next = { j, el: entry.el };
+        box.insertBefore(el, next && next.el);
+      }
+      rowEls.set(i, { html, el });
+    });
+  }
+  if (S.error) box.insertAdjacentHTML('beforeend', `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Couldn't load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`);
+  else if (S.stale) box.insertAdjacentHTML('beforeend', `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Results changed while you browsed.</span><button class="btn" id="refresh-leads">Refresh</button></div>`);
+  else if (more && to >= S.rows.length) box.insertAdjacentHTML('beforeend', skeletonRows(S.rows.length, more, h, 'more-skel'));
+  if (focusId && focusKey && !active.isConnected) {
     const target = box.querySelector(`[data-person-id="${CSS.escape(focusId)}"] ${focusKey}`);
     if (target) target.focus({ preventScroll: true });
     else { sc.tabIndex = -1; sc.focus({ preventScroll: true }); }
   }
-  if (!S.error && !S.done && to >= S.rows.length - 20) loadMore();
 }
-$('#scroll').addEventListener('scroll', () => requestAnimationFrame(renderRows), { passive: true });
+// The row elements on screen, by position, with the markup each was built from.
+const rowEls = new Map();
+let rowsStamp = '', rowsScrolled = false;
+// Placeholder rows on the same grid as real ones, so nothing moves when the data arrives.
+function skeletonRows(first, count, h, cls = '') {
+  return Array.from({ length: count }, (_, n) => `<div class="row skel ${cls}" aria-hidden="true" style="top:${(first + n) * h}px"><div class="c-sel"><span class="av"></span></div><div class="who"><i style="width:${34 + (n * 7) % 18}%"></i><i style="width:${52 + (n * 11) % 30}%"></i></div><div class="tags c-tags"><i class="chip"></i><i class="chip"></i></div><span class="c-fol"><i></i></span><div class="c-fit"><i class="rg"></i></div><span class="c-st"><i></i></span></div>`).join('');
+}
+// One draw per frame, however many scroll events arrive.
+let scrollFrame = 0;
+$('#scroll').addEventListener('scroll', () => {
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; rowsScrolled = true; try { renderRows(); } finally { rowsScrolled = false; } });
+}, { passive: true });
 window.addEventListener('resize', debounce(() => { syncFilterToggle(); renderRows(); M.resize(); }, 60));
 $('#rows').addEventListener('click', (e) => {
   if (e.target.id === 'retry') return resetLeads();
@@ -1079,7 +1126,7 @@ $('#rows').addEventListener('click', (e) => {
   if (e.target.closest('#clear-all')) return clearFilters();
   if (e.target.closest('[data-ig]')) { e.stopPropagation(); return; }
   const row = e.target.closest('.row');
-  if (!row) return;
+  if (!row || row.classList.contains('skel')) return;
   const i = +row.dataset.i;
   const tag = e.target.closest('[data-tag]');
   if (tag) { e.preventDefault(); return clickTag(tag.dataset.tag, e); }

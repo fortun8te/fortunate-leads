@@ -405,15 +405,17 @@
   const TIER_RANK = { hot: 0, warm: 1, cold: 2, unread: 3 };
   const FIT = { hot: 'strong', warm: 'good', cold: 'weak', unread: 'unread' };
   function sorted(list, sort) {
-    if (!['follow_up', 'connected', 'followers', 'recent', 'score', 'fit'].includes(sort)) invalid('invalid sort');
+    if (!['follow_up', 'connected', 'followers', 'recent', 'score', 'fit', 'closeness'].includes(sort)) invalid('invalid sort');
+    const tier = (p) => ({ mutual: 4, follows: 3, followed: 2 }[verdictFields(p.id).owner_relationship] || (humanContext(p.id).relationships.length || humanContext(p.id).familiarity ? 1 : 0));
     const cmp = {
       follow_up: (a, b) => {
         const day = (p) => { const f = followups.get(p.id); return f && !f.completed_at ? f.due_on : '9999-12-31'; };
         return day(a).localeCompare(day(b));
       },
       connected: (a, b) => lists(b.id) - lists(a.id) || b.followers - a.followers,
+      closeness: (a, b) => tier(b) - tier(a) || lists(b.id) - lists(a.id) || b.followers - a.followers,
       followers: (a, b) => b.followers - a.followers,
-      recent: (a, b) => b.first_seen.localeCompare(a.first_seen),
+      recent: (a, b) => b.first_seen.localeCompare(a.first_seen) || b.id - a.id,
       score: (a, b) => verdicts.get(b.id).score - verdicts.get(a.id).score || b.followers - a.followers,
       fit: (a, b) => TIER_RANK[verdicts.get(a.id).tier] - TIER_RANK[verdicts.get(b.id).tier] || lists(b.id) - lists(a.id)
         || verdicts.get(b.id).score - verdicts.get(a.id).score,

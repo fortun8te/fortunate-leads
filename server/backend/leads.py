@@ -28,6 +28,7 @@ from .common import (
     SORTS,
     KEEP,
 )
+from . import closeness
 from .evidence import edges_of, edge_history_of, with_owner
 from .queries import lead_rows, lead_filter, tag_facets, counts, person_row
 from .owner_edits import (
@@ -68,10 +69,16 @@ class LeadService:
             if indexed is not None:
                 total, ids = indexed
             else:
-                total = conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
-                picked = conn.execute(f'SELECT p.id, {LISTS} AS lists {PEOPLE_FROM}{sql_where} '
-                                      f'ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
-                ids = [row['id'] for row in picked]
+                if sort == 'closeness':
+                    # The maintained totals answer the plain list without counting every person.
+                    quick = lead_rank.page_for_query(conn, 'fit', 1, 0, q)
+                    total = quick[0] if quick is not None else conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
+                    ids = closeness.page(conn, PEOPLE_FROM, sql_where, args, LISTS, limit, offset)
+                else:
+                    total = conn.execute(f'SELECT count(*) {count_from}{sql_where}', args).fetchone()[0]
+                    picked = conn.execute(f'SELECT p.id, {LISTS} AS lists {PEOPLE_FROM}{sql_where} '
+                                          f'ORDER BY {order}, p.id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+                    ids = [row['id'] for row in picked]
             if ids:
                 placeholders = ','.join('?' for _ in ids)
                 by_id = {row['id']: row for row in conn.execute(f'{LEAD_SQL} WHERE p.id IN ({placeholders})', ids)}
