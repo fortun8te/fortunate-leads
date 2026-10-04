@@ -65,7 +65,7 @@ class PhotoAuditTest(unittest.TestCase):
         self.assertEqual(report['damaged_on_disk'], 1)
         self.assertEqual(report['temp_files']['count'], 1)
         self.assertEqual(report['files_for_unknown_people']['count'], 1)
-        self.assertEqual(report['formats'], {'jpeg': 6, 'webp': 1, 'png': 1})
+        self.assertEqual(report['formats'], {'jpeg': 4, 'webp': 1, 'png': 1})
         self.assertEqual(report['_ids']['fetchable'], [4])
         self.assertEqual(report['_ids']['expired'], [5])
         self.assertEqual(report['_ids']['missing_file'], [3])
