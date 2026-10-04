@@ -51,11 +51,11 @@
   --shadow-2: 0 12px 32px rgba(20, 22, 30, 0.12), 0 0 0 1px rgba(20, 22, 30, 0.05);
   --scrim: rgba(20, 22, 30, 0.3);
   --fit-strong: #a8661c; --fit-good: #6e6e6e; --fit-weak: #b0b0b0; --fit-unread: #dedede;
-  --role-fg: #995b2e;   --role-bg: #f8e6d5;
+  --role-fg: #8f5429;   --role-bg: #f8e6d5;
   --niche-fg: #626262;  --niche-bg: #f0f0f0;
   --signal-fg: #377451; --signal-bg: #e4f2e8;
-  --size-fg: #707070;   --size-bg: #f1f1f1;
-  --source-fg: #767676; --source-bg: #f4f4f4;
+  --size-fg: #666666;   --size-bg: #f1f1f1;
+  --source-fg: #666666; --source-bg: #f4f4f4;
   --custom-fg: #4c4c4c; --custom-bg: #ededed;
   color-scheme: light;
 }

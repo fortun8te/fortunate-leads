@@ -278,7 +278,7 @@ button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
 .d-summary { padding-top: var(--s5); }
 .d-why { font-size: 16px; line-height: 24px; letter-spacing: -.005em; color: var(--fg); overflow-wrap: anywhere; }
 .d-why .sk-line { width: 72%; height: 14px; margin: 5px 0; }
-.d-facts { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); margin-top: var(--s3); color: var(--fg3); font-size: 13px; }
+.d-facts { min-height: 32px; display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); margin-top: var(--s3); color: var(--fg3); font-size: 13px; }
 .d-fit { display: inline-flex; align-items: center; gap: var(--s2); color: var(--fg); font-weight: 500; }
 .d-follower-count { white-space: nowrap; }
 .d-follower-count b { color: var(--fg); font-weight: 500; }
@@ -435,3 +435,7 @@ details:is(.workflow-editor, .workflow-optional) > summary:hover { color: var(--
 
 #pane-leads .row-connection { color: var(--fg2); }
 #pane-leads .row-connection-separator { color: var(--fg4); }
+
+/* Follow-up placeholder: the height of the closed follow-up control, so the card does not shift on load. */
+.workflow-ph { height: 32px; display: flex; align-items: center; }
+.workflow-ph .sk { width: 112px; height: 12px; }

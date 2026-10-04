@@ -1651,7 +1651,9 @@ function workflowShortcuts(target) {
   return `<div class="workflow-shortcuts" role="group" aria-label="Choose follow-up date">${[[0, 'Today'], [1, 'Tomorrow'], [7, 'In a week']].map(([days, label]) => `<button type="button" class="btn" data-workflow-days="${days}" data-workflow-date="${target}">${label}</button>`).join('')}</div>`;
 }
 function workflowSummaryHTML(p) {
-  if (p.loading || p.failed) return '';
+  // Hold the section's place while the lead loads, so nothing below it moves when it arrives.
+  if (p.loading) return '<section class="d-sec workflow" aria-hidden="true"><h3 class="d-h">Follow-up</h3><div class="workflow-ph"><i class="sk"></i></div></section>';
+  if (p.failed) return '';
   const f = p.follow_up, open = f && !f.completed_at, d = workflowDrafts.get(p.id) || {};
   const today = LeadWorkflow.localToday(), overdue = open && f.due_on < today;
   const status = !f ? 'No follow-up scheduled' : f.completed_at ? 'Follow-up completed' : overdue ? 'Overdue, was due ' + shortDate(f.due_on) : f.due_on === today ? 'Due today' : 'Due ' + shortDate(f.due_on);
@@ -3390,7 +3392,9 @@ syncFilterToggle();
   history.replaceState(null, '', hashFor(view));
   renderFilters(); renderTokens();
   resetLeads();
-  loadFacets(); loadCounts(); loadScraper();
+  loadFacets(); loadCounts();
+  // The full report is heavy (about 300 ms of server time); only its own pages need it at start.
+  if (SCRAPER_FULL_VIEWS.has(view)) loadScraper(); else loadScraperStatus();
   noteQueue.flushAll().catch(() => toast('Some notes are not saved. Your drafts are kept.'));
   setView(view);
 })();
