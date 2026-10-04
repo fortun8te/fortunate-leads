@@ -277,6 +277,7 @@ def init(path):
                              ('accounts', 'collection_backend', "TEXT NOT NULL DEFAULT 'chrome'"),
                              ('collector_events', 'route', 'TEXT'),
                              ('collector_events', 'saved_entries', 'INT'),
+                             ('collector_events', 'viewer_ig_id', 'TEXT'),
                              ('accounts', 'profile_cool_until', 'TEXT'),
                              ('accounts', 'list_endpoint_until', 'TEXT'),
                              ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),

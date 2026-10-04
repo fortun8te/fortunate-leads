@@ -457,6 +457,11 @@ def _ext_list_page(conn, q, b):
         seed_ig_id = str(seed_ig_id)
     conn.execute('BEGIN IMMEDIATE')
     job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+    # Immutable page viewer evidence is captured before account registration can change.
+    event_viewer = (job['viewer_ig_id'] if job and job['viewer_ig_id']
+                    and job['state'] == 'leased' and job['lane'] == accounts.lane_of(q, b)
+                    and trial_event_identity_matches(conn, job, q, b)
+                    and not stale_lease(conn, job, q, b) else None)
     backend = collector_request(conn, q, b, job=job, allow_disabled=True)
     if backend == 'mobile' and job is None:
         raise Bad('mobile list result requires a bound job')
@@ -649,10 +654,10 @@ def _ext_list_page(conn, q, b):
         clear_caches()
     if job:
         conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,'
-                     'http_status,requested_count,returned_count,new_links,saved_entries) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?)',
+                     'http_status,requested_count,returned_count,new_links,saved_entries,viewer_ig_id) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?,?)',
                      (ts, lane, job['id'], 'list', direction, 'page',
                       metric_int(b.get('http_status'), 100, 599), metric_int(b.get('requested_count'), 1, 200),
-                      len(users), new_links, max(0, received - previous_members)))
+                      len(users), new_links, max(0, received - previous_members), event_viewer))
     trial_stopped = False
     if job and error and trial_event_identity_matches(conn, job, q, b):
         trial_stopped = bool(stop_following_trial(conn, error, ts))
@@ -787,12 +792,51 @@ def scoped_follower_redirect(conn, job, b, now):
     try:
         if not job['leased_until'] or utc(job['leased_until']) <= now:
             return False
+        isolation = db.get_setting(conn, 'instagram_collection_isolation')
+        viewer = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (job['lane'],)).fetchone()
+        if (not viewer or viewer['ig_id'] != job['viewer_ig_id']
+                or accounts.collection_protected(conn, viewer) or accounts.warning_for(conn, viewer)
+                or not accounts.healthy(viewer, now) or not accounts.isolation_allows(conn, viewer)
+                or viewer['state'] == 'network_wait' or viewer['collection_backend'] != 'chrome'):
+            return False
+        # A typed home page is still ambiguous. Independent, actually persisted
+        # following rows must establish the other route recently worked for this
+        # exact viewer; online/enabled state alone is not evidence.
+        since = iso(now - timedelta(minutes=30))
+        if isolation:
+            if not isolation.get('at') or clean_iso(isolation['at']) is None:
+                return False
+            since = max(since, isolation['at'], key=utc)
+        evidence = conn.execute(
+            "SELECT 1 FROM collector_events e "
+            "WHERE e.lane=? AND e.viewer_ig_id=? AND e.at>=? AND e.at<=? "
+            "AND e.kind='list' AND e.direction='following' AND e.outcome='page' "
+            "AND e.saved_entries>0 AND e.http_status=200 LIMIT 1",
+            (viewer['lane_id'], viewer['ig_id'], since, iso(now))).fetchone()
+        if not evidence:
+            return False
         raw_hold = db.get_setting(conn, 'cooldown')
         if raw_hold and clean_iso(raw_hold) is None:
             return False
-        for row in conn.execute('SELECT hold,cooldown_until,list_cool_until,profile_cool_until FROM accounts'):
-            if row['hold'] or any(accounts.later(row[field], now) for field in
-                                  ('cooldown_until', 'list_cool_until', 'profile_cool_until')):
+        for row in conn.execute('SELECT * FROM accounts'):
+            warning = accounts.warning_for(conn, row)
+            # Only the already warned, paused identity excluded by an existing
+            # operator selection may retain its baseline security hold. Never
+            # ignore a new warning or a cooling alternate.
+            excluded_baseline = bool(isolation and warning and row['paused']
+                and row['lane_id'] not in isolation.get('accounts', {})
+                and row['ig_id'] not in isolation.get('accounts', {}).values()
+                and clean_iso(warning.get('at')) and utc(warning['at']) <= utc(isolation['at']))
+            if row['hold'] and not excluded_baseline:
+                return False
+            for field in ('cooldown_until', 'list_cool_until', 'profile_cool_until'):
+                value = row[field]
+                if value and (clean_iso(value) is None or accounts.later(value, now)):
+                    return False
+        # Identity history survives browser-lane replacement. It cannot be
+        # bypassed by a fresh lane or stale heartbeat omitting the old wait.
+        for row in conn.execute('SELECT cooldown_until,list_cool_until,profile_cool_until FROM account_identity_state'):
+            if any(value and (clean_iso(value) is None or accounts.later(value, now)) for value in row):
                 return False
     except (TypeError, ValueError, AttributeError):
         return False
@@ -858,10 +902,11 @@ def ext_error(conn, q, b):
         kind = None
     direction = job['direction'] if was_list else (b.get('direction') if kind == 'list' else None)
     route = b.get('route') if b.get('route') in ('profile_page', 'info', 'passive') else None
-    conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,reason,http_status,route) '
-                 'VALUES(?,?,?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO collector_events(event_id,at,lane,job_id,kind,direction,outcome,reason,http_status,route,viewer_ig_id) '
+                 'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                  (event_id, ts, lane, job['id'] if job else None, kind, direction, str(code or 'other')[:40],
-                  str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599), route))
+                  str(b.get('reason') or '')[:100] or None, metric_int(b.get('http_status'), 0, 599), route,
+                  job['viewer_ig_id'] if job and not stale and trial_warning else None))
     home_redirect = (code == 'other' and b.get('reason') == 'list_html_home_redirect'
                      and ((reported_job and reported_job['kind'] == 'list')
                           or (not b.get('job_id') and b.get('kind') == 'list')))
@@ -871,9 +916,9 @@ def ext_error(conn, q, b):
             conn.commit()
             return {'stale': True}
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
-    route_recovery = home_redirect and not stale and scoped_follower_redirect(
+    route_recovery = home_redirect and not stale and trial_warning and scoped_follower_redirect(
         conn, job, b, datetime.now(timezone.utc))
-    if (code in ('rate_limit', 'soft_block', 'login', 'challenge') or home_redirect) and db.get_setting(conn, 'instagram_collection_isolation'):
+    if (code in ('rate_limit', 'soft_block', 'login', 'challenge') or (home_redirect and not route_recovery)) and db.get_setting(conn, 'instagram_collection_isolation'):
         db.set_setting(conn, 'instagram_collection_isolation', None)
         db.set_setting(conn, 'paused_lists', True)
         db.set_setting(conn, 'paused_bios', True)

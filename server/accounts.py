@@ -315,21 +315,24 @@ def follower_route_wait(conn, row, now):
     """Keep failed follower routes out of the next recovery window.
 
     Recent recorded failures also cover jobs queued by versions that only saved
-    a shared wait. No current shared hold or saved cursor is modified.
+    a shared wait. Legacy unbound events remain conservative wait evidence,
+    never proof that the current identity was healthy. No current shared hold or saved cursor is modified.
     """
     deadlines = [row['list_endpoint_until']] if later(row['list_endpoint_until'], now) else []
     shared_route = db.get_setting(conn, 'followers_route_until')
     if later(shared_route, now):
         deadlines.append(shared_route)
     events = conn.execute(
-        "SELECT e.at FROM collector_events e JOIN jobs j ON j.id=e.job_id "
+        "SELECT e.at FROM collector_events e "
         "WHERE e.lane=? AND e.at>=? AND e.kind='list' AND e.direction='followers' "
-        "AND e.reason='list_html_home_redirect' AND j.viewer_ig_id IS ? "
+        "AND e.reason='list_html_home_redirect' AND (e.viewer_ig_id=? OR e.viewer_ig_id IS NULL) "
         "ORDER BY e.at DESC LIMIT 2",
         (row['lane_id'], iso(now - timedelta(hours=6)), row['ig_id'])).fetchall()
     if events:
         latest = utc(events[0]['at'])
-        repeated = len(events) > 1 and latest - utc(events[1]['at']) <= timedelta(hours=2)
+        # The first rest itself lasts two hours: its normal expiry plus polling
+        # overhead must still count as recurrence within the six-hour history.
+        repeated = len(events) > 1
         deadline = latest + timedelta(hours=4 if repeated else 2)
         if deadline > now:
             deadlines.append(iso(deadline))
