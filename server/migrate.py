@@ -204,12 +204,39 @@ def migrate(old_path, out_path, batch_path):
             Path(str(stage) + suffix).unlink(missing_ok=True)
 
 
+def dry_run(old_path, out_path, batch_path):
+    """What migrate() would add, built in a throwaway folder. The real destination is never opened for
+    writing: an existing one is read through the SQLite backup API into the folder first."""
+    import dbsafe
+    with tempfile.TemporaryDirectory(prefix='fl-migrate-dry-') as tmp:
+        target = Path(tmp) / Path(out_path).name
+        before = {}
+        if os.path.lexists(out_path):
+            dbsafe.backup_database(out_path, target)
+            with sqlite3.connect(target) as conn:
+                before = dbsafe.row_counts(conn, ('people', 'edges', 'seeds', 'lists', 'marks'))
+        summary = migrate(old_path, target, batch_path)
+        staged = summary.pop('staged_path', None)
+        if staged is None:
+            staged = str(target)
+        with sqlite3.connect(staged) as conn:
+            after = dbsafe.row_counts(conn, ('people', 'edges', 'seeds', 'lists', 'marks'))
+        summary['would_add'] = {t: after[t] - before.get(t, 0) for t in after}
+        return summary
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--old', default=str(OLD))
     ap.add_argument('--out', default=str(OUT))
     ap.add_argument('--batch', default=str(BATCH))
+    ap.add_argument('--dry-run', action='store_true', help='report what the import would add; write nothing')
     a = ap.parse_args()
+    if a.dry_run:
+        for k, v in dry_run(a.old, a.out, a.batch).items():
+            print(f'{k:>14}  {v}')
+        print('Dry run: nothing was written.')
+        sys.exit(0)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     result = migrate(a.old, a.out, a.batch)
     for k, v in result.items():
