@@ -48,7 +48,7 @@ const api = {
     try { r = await fetch(url, { cache: 'no-store', ...opts }); } catch (e) { setOnline(false); throw e; }
     setOnline(true);
     if (!r.ok) {
-      let msg = r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : r.status === 404 ? 'That item no longer exists. Refresh and try again.' : 'The request did not go through. Try again.';
+      let msg = r.status >= 500 ? 'The server hit a problem. Try again in a moment.' : r.status === 404 ? 'That item no longer exists. Refresh and try again.' : "The request didn't go through. Try again.";
       let detail = null;
       try { detail = await r.json(); if (detail && typeof detail.error === 'string') msg = detail.error; } catch (e) { /* not json */ }
       const err = new Error(msg); err.status = r.status; err.detail = detail; throw err;
@@ -107,8 +107,8 @@ document.addEventListener('error', (e) => {
 // The pipeline, in order. Keys 1-5 set it, 0 clears, m steps forward. 'no' hides the person from the default views.
 const STATUSES = ['interested', 'contacted', 'talking', 'spoke_before', 'no'];
 const SLABEL = { interested: 'Interested', contacted: 'Contacted', talking: 'Talking', spoke_before: 'Spoke before', client: 'Client', no: 'Not a fit' };
-const SDESC = { interested: 'Worth contacting', contacted: 'You sent the first message', talking: 'They replied, a conversation is going',
-  spoke_before: 'You talked before; no current conversation implied', client: 'A current or past client', no: 'Not for you: hidden from the list' };
+const SDESC = { interested: 'Worth contacting', contacted: 'You sent the first message', talking: 'They replied',
+  spoke_before: 'You spoke before, nothing active now', client: 'Current or past client', no: 'Hidden from open leads' };
 const LEGACY_STATUS = { good: 'interested' };
 const slabel = (s) => SLABEL[s] || ucf(s);
 const CYCLE = [null, 'interested', 'contacted', 'talking', 'spoke_before'];
@@ -140,7 +140,7 @@ function fitDescription(p) {
 function fitBadge(r, cls = '') {
   const f = fitOf(r);
   const score = r.business_fit != null ? `<b>${esc(r.business_fit)}</b>` : '';
-  return `<span class="fit f-${f} ${cls}" title="Business fit from profile evidence${r.business_fit != null ? ': ' + esc(r.business_fit) : ' unavailable'}"><i></i>Fit ${f === 'unread' ? '–' : FIT_LABEL[f]}${score}</span>`;
+  return `<span class="fit f-${f} ${cls}" title="${r.business_fit != null ? 'Fit from profile: ' + esc(r.business_fit) : 'Fit not scored yet'}"><i></i>Fit ${f === 'unread' ? '–' : FIT_LABEL[f]}${score}</span>`;
 }
 // Current list evidence comes from the API; source tags can lag until requalification.
 const viaSeeds = (r) => Array.isArray(r.via) ? r.via : (r.tags || []).map(tagName).filter(isViaTag).map((t) => t.slice(5));
@@ -506,17 +506,17 @@ function renderFilters() {
   let h = `<div class="fsec"><h4>Filters<span class="grow"></span>${active ? '<button id="f-reset" title="Clear filters (c)">Clear</button>' : ''}</h4>
     <button class="fi${qs === '' ? ' on' : ''}" data-view="" aria-pressed="${qs === ''}"><span>Open leads</span></button>
     <button class="fi${LeadDaily.isDueView(S.f, S.sort) ? ' on' : ''}" data-view="${esc(LeadDaily.dueQuery())}" aria-pressed="${LeadDaily.isDueView(S.f, S.sort)}"><span>Due follow-ups</span></button></div>
-    <div class="fsec"><h4>Relationship</h4>
+    <div class="fsec"><h4>Status</h4>
     <button class="fi${!S.f.status ? ' on' : ''}" data-status=""><span>Open</span><b>${fmt(c.open)}</b></button>
     ${STATUSES.map((s) => `<button class="fi${S.f.status === s ? ' on' : ''}${c[s] ? '' : ' zero'}" data-status="${s}" title="${esc(SDESC[s])}"><span>${slabel(s)}</span><b>${c[s] ? fmt(c[s]) : ''}</b></button>`).join('')}
     <button class="fi${S.f.status === 'none' ? ' on' : ''}" data-status="none" title="No status yet"><span>Unmarked</span><b>${fmt(c.none)}</b></button>
     <button class="fi${S.f.status === 'all' ? ' on' : ''}" data-status="all" title="Everyone, including Not a fit"><span>All</span><b>${c.open != null ? fmt(c.open + (c.no || 0)) : ''}</b></button></div>
     <div class="fsec"><h4>Follow-up</h4>${['due', 'overdue', 'scheduled', 'completed', 'none'].map((v) => `<button class="fi${S.f.follow_up === v ? ' on' : ''}" data-follow-up="${v}"><span>${v === 'due' ? 'Due today or earlier' : ucf(v)}</span></button>`).join('')}</div>
-    <div class="fsec"><h4>Priority tier</h4>
+    <div class="fsec"><h4>Priority</h4>
     ${FITS.map((f) => `<button class="fi${S.f.tier === FIT_TIER[f] ? ' on' : ''}" data-tier="${FIT_TIER[f]}"><i class="fdot f-${f}"></i><span>${PRIORITY_LABEL[f]}</span><b>${c[FIT_TIER[f]] != null ? fmt(c[FIT_TIER[f]]) : ''}</b></button>`).join('')}</div>
-    <div class="fsec"><h4>Business fit</h4>
+    <div class="fsec"><h4>Fit</h4>
     ${FITS.map((f) => `<button class="fi${S.f.fit === f ? ' on' : ''}" data-fit="${f}"><i class="fdot f-${f}"></i><span>${FIT_LABEL[f]}</span></button>`).join('')}</div>
-    <div class="fsec fsegs f-x"><h4>Shape</h4>
+    <div class="fsec fsegs f-x"><h4>Details</h4>
       <div class="fseg"><span>Lists</span><div class="seg">${LIST_OPTS.map(([n, l]) => `<button data-min="${n}" class="${S.f.min === n ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Bio</span><div class="seg">${BIO_OPTS.map(([v, l]) => `<button data-bio="${v}" class="${S.f.bio === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="fseg"><span>Followers</span><div class="seg">${FOL_OPTS.map(([k, l, a, b]) => `<button data-fol="${k}" class="${S.f.fmin === a && S.f.fmax === b ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -529,9 +529,9 @@ function renderFilters() {
   h += tagSection('own', 'Your tags', own);
   if (!own.length && !S.tagFind) h += `<div class="fsec f-x"><h4>Your tags</h4><span class="fnone">None yet</span></div>`;
   h += tagSection('rule', 'Rule tags', rule);
-  h += tagSection('via', 'Seeds', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
+  h += tagSection('via', 'Found via', auto.filter((t) => isViaTag(t.tag)), (t) => t.tag.slice(4));
   for (const [g, title] of GROUPS) h += tagSection(g, title, auto.filter((t) => t.grp === g));
-  h += tagSection('src', 'You', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
+  h += tagSection('src', 'Your connection', auto.filter((t) => t.grp === 'source' && !isViaTag(t.tag) && !isListTag(t.tag)));
   h += tagSection('other', 'Other', auto.filter((t) => !['source', ...GROUPS.map((g) => g[0])].includes(t.grp)));
   const hid = S.f.tags.length + S.f.any.length + S.f.not.length + !!S.f.min + !!S.f.bio + !!S.f.seed + (S.f.fmin != null || S.f.fmax != null);
   const open = S.fmore || !!S.tagFind;
@@ -1044,13 +1044,13 @@ function renderRows() {
       // Same grid as a real row, so nothing moves when the data arrives.
       box.innerHTML = `<span class="sr-only" role="status">Loading leads</span>` + Array.from({ length: Math.max(8, Math.ceil(sc.clientHeight / h) + 1) }, (_, i) => `<div class="row skel" aria-hidden="true" style="top:${i * h}px"><div class="c-sel"><span class="av"></span></div><div class="who"><i style="width:${34 + (i * 7) % 18}%"></i><i style="width:${52 + (i * 11) % 30}%"></i></div><div class="tags c-tags"><i class="chip"></i><i class="chip"></i></div><span class="c-fol"><i></i></span><div class="c-fit"><i class="rg"></i></div><span class="c-st"><i></i></span></div>`).join('');
     } else if (S.error) {
-      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : 'Could not load leads'}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
+      box.innerHTML = `<div class="empty"><b>${offlineSince ? 'Server offline' : "Couldn't load leads"}</b><p>Check your connection, then try again.</p><button class="btn" id="retry">Retry</button></div>`;
     } else {
       const filtered = filterCount();
       const st = S.f.status && STATUSES.includes(S.f.status) ? S.f.status : '';
       const only = filtered === 1 && S.f.status;
       const head = st ? `No leads marked ${esc(slabel(st))} yet` : S.f.status === 'none' && only ? 'Every lead has a status' : filtered ? 'No matches' : 'No leads yet';
-      const body = st && only ? 'Open all leads, pick one and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'You have gone through everyone. New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
+      const body = st && only ? 'Pick a lead and press <kbd>s</kbd> to set a status.' : S.f.status === 'none' && only ? 'New leads will appear here.' : filtered ? 'Try a different search or clear your filters.' : 'Add an Instagram account to start finding people.';
       box.innerHTML = `<div class="empty"><b>${head}</b><p>${body}</p>${filtered ? `<button class="btn" id="clear-all">${only ? 'Show all leads' : 'Clear filters'} <kbd>c</kbd></button>` : '<a class="btn" href="#/accounts">Add an account</a>'}</div>`;
     }
     return;
@@ -1060,7 +1060,7 @@ function renderRows() {
   const to = Math.min(S.rows.length, Math.ceil((sc.scrollTop + sc.clientHeight) / h) + 8);
   let out = '';
   for (let i = from; i < to; i++) out += rowHTML(S.rows[i], i, h);
-  if (S.error) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Could not load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`;
+  if (S.error) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Couldn't load more leads.</span><button class="btn" id="retry-more">Retry</button></div>`;
   else if (S.stale) out += `<div class="page-retry" style="top:${S.rows.length * h}px" role="status"><span>Results changed while you browsed.</span><button class="btn" id="refresh-leads">Refresh</button></div>`;
   box.innerHTML = out;
   if (focusId && focusKey) {
@@ -1195,7 +1195,7 @@ function connectionEvidenceHTML(current, historical) {
   const seen = (value, label) => { const day = edgeDay(value); return day ? `<time datetime="${esc(day)}">${label} ${esc(shortDate(day))}</time>` : `${label} date unavailable`; };
   const active = current.length ? current.map((e) => `<button data-seed="${esc(e.seed)}" title="Filter by @${esc(e.seed)}"><b>@${esc(e.seed)}</b><span>${esc(direction(e))}. ${seen(e.observed_at, 'Seen')}</span></button>`).join('') : '<span class="muted">No recent list evidence</span>';
   const earlier = historical.length ? `<h4 class="d-history-heading">Earlier observations</h4><div class="edges d-history-edges">${historical.map((e) => {
-    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? `. ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')}, not reverified`;
+    const timing = e.state === 'absent' ? `${seen(e.checked_at, 'Not found when checked')}${edgeDay(e.first_seen) ? `. ${seen(e.first_seen, 'First seen')}` : ''}` : `${seen(e.first_seen || e.observed_at, 'Previously seen')}, not seen since`;
     return `<div class="d-history-row"><b>@${esc(e.seed)}</b><span>${esc(direction(e))}. ${timing}</span></div>`;
   }).join('')}</div>` : '';
   return `<div class="edges">${active}</div>${earlier}`;
@@ -1209,7 +1209,7 @@ function scoutHTML(sc) {
   const label = historical ? 'Earlier research' : sc.stale ? 'Older read · unverified' : !verified ? 'Unverified candidate' : ({ strong: 'Strong lead', possible: 'Possible lead', no: 'Not a lead' }[sc.verdict] || sc.verdict);
   const cls = historical ? '' : sc.stale || !verified || sc.verdict === 'no' || !sc.reachable ? 't-flag' : sc.verdict === 'strong' ? 't-hero' : 't-plus';
   return `<div class="d-sec"><h4>Website research<span class="grow"></span><span class="tag ${cls}"><span>${esc(label)}${historical || sc.stale || sc.reachable ? '' : ' · not reachable'}</span></span></h4>
-    ${historical ? '<p class="muted">Your relationship update takes priority over this earlier check.</p>' : sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : !verified ? '<p class="muted">The cited evidence could not be checked. The earlier score remains in place; Research can be checked again later.</p>' : ''}
+    ${historical ? '<p class="muted">Your relationship update takes priority over this earlier check.</p>' : sc.stale ? '<p class="muted">This check is older than the current profile. Its verdict needs a new review.</p>' : !verified ? '<p class="muted">The sources it cited can\'t be checked. The earlier score stays. Research can run again later.</p>' : ''}
     <p class="d-reason">${esc(sc.summary || '')}</p>
     ${sc.sources?.length ? `<div class="d-links">${sc.sources.slice(0, 5).map((u) => { const h = (() => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } })(); return safeUrl(u) ? `<a class="btn" href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(h)}</a>` : ''; }).join('')}</div>` : ''}</div>`;
 }
@@ -1237,7 +1237,7 @@ function rememberDetailView() {
 function detailProfileState(p) {
   const state = p.profile_read?.state === 'reading' ? 'reading' : p.profile_read_pending ? 'queued' : p.profile_read?.state || '';
   const pending = state === 'queued' || state === 'reading';
-  const message = state === 'queued' ? 'Profile refresh queued' : state === 'reading' ? 'Reading profile' : state === 'failed' ? 'Could not refresh profile. Open Profile details to retry.' : '';
+  const message = state === 'queued' ? 'Profile refresh queued' : state === 'reading' ? 'Reading profile' : state === 'failed' ? "Couldn't refresh the profile. Open More details to retry." : '';
   const source = { extension: 'Instagram browser', tab: 'Instagram browser', meta_bd: 'Profile lookup' }[p.bio_src] || (p.bio_src ? 'Other profile source' : 'Source not recorded');
   return { pending, failed: state === 'failed', message, source, button: pending ? state === 'reading' ? 'Reading profile…' : 'Refresh queued' : state === 'failed' ? 'Retry profile read' : p.bio_at ? 'Refresh profile' : 'Read profile' };
 }
@@ -1284,7 +1284,7 @@ function renderDetail() {
   const you = observedRelationship(p) ? '' : youLink({...p, relationship: Object.hasOwn(p, 'owner_relationship') ? 'unknown' : p.relationship});
   const role = p.role || v.role;
   const profile = detailProfileState(p);
-  const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? 'Profile could not be loaded.' : p.bio_at ? 'No bio on this profile.' : 'Profile has not been read yet.';
+  const bio = p.bio ? esc(p.bio) : p.loading ? 'Loading profile…' : p.failed ? "Couldn't load the profile." : p.bio_at ? 'No bio on this profile.' : 'Profile not read yet.';
   panel.dataset.owner = String(p.id);
   const fitLabel = p.loading ? '' : fitDescription(p);
   const why = reason || (p.bio ? String(p.bio).split(/\n/)[0].trim() : '');
@@ -1295,7 +1295,7 @@ function renderDetail() {
     <header class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
       <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '')}</b><span>@${esc(p.handle)}${role ? `<i class="d-role">${esc(ucf(role))}</i>` : ''}</span></div>
       <div class="d-tools">${S.view === 'leads' && S.rows.length > 1 ? `<button type="button" id="d-prev" class="d-icon" aria-label="Previous lead" title="Previous (k)">${icon('arrowUp')}</button><button type="button" id="d-next" class="d-icon" aria-label="Next lead" title="Next (j)">${icon('arrowDown')}</button>` : ''}<button type="button" class="d-icon d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">${icon('close')}</button></div></header>
-    ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
+    ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Couldn\'t load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <section class="d-sec d-summary" aria-label="Summary">
       ${why ? `<p class="d-why">${esc(why)}</p>` : p.loading ? '<p class="d-why"><i class="sk sk-line"></i></p>' : ''}
       <div class="d-facts">${p.loading ? '' : `<span class="d-fit">${rowFitHTML(p, 32)}<b>${esc(fitLabel)}</b></span>`}<span class="d-follower-count"><b class="num">${fmt(p.followers)}</b> followers</span>${relationshipHTML(p)}</div>
@@ -1330,7 +1330,7 @@ function renderDetail() {
       <h4 class="d-h2">Connections${n ? `<span class="d-h2-n">${plural(n, 'list')}</span>` : ''}</h4>
       ${connectionEvidenceHTML(edges, oldEdges)}
       <h4 class="d-h2">History</h4><div id="activity-timeline">${activityHTML(p.activity, p.id)}</div>
-      ${p.review_history?.length ? `<h4 class="d-h2">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? `, ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
+      ${p.review_history?.length ? `<h4 class="d-h2">Review history</h4><ol class="activity-list">${p.review_history.map(r => `<li><div><strong>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:"Couldn't verify",archived:'Earlier result'})[r.status] || 'Earlier result')}${r.score != null ? `, ${esc(r.score)}` : ''}</strong><time datetime="${esc(r.created_at)}">${esc(new Date(r.created_at).toLocaleString())}</time></div>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</li>`).join('')}</ol>` : ''}
     </details>`;
   wireWorkflow(p);
   const mentionDrafts = store.get('note-mention-drafts', {});
@@ -1375,7 +1375,7 @@ $('#detail').addEventListener('click', async (e) => {
   if (sd) { const t = canonTag('via @' + sd.dataset.seed); if (t) clickTag(t, e); else { S.f.seed = sd.dataset.seed; filtersChanged(); } return; }
   if (e.target.id === 'd-read') {
     e.target.disabled = true;
-    try { await api.post(`/api/person/${p.id}/read`); if (S.person?.id === p.id) { S.person.profile_read_pending = true; renderDetail(); } toast('Profile refresh queued'); } catch (err) { e.target.disabled = false; toast('Could not queue: ' + err.message); }
+    try { await api.post(`/api/person/${p.id}/read`); if (S.person?.id === p.id) { S.person.profile_read_pending = true; renderDetail(); } toast('Profile refresh queued'); } catch (err) { e.target.disabled = false; toast("Couldn't queue the refresh: " + err.message); }
   }
 });
 $('#detail').addEventListener('submit', async (e) => {
@@ -1514,9 +1514,9 @@ function noteInsightsHTML(p) {
   const state = p.note_interpretation;
   const draft = noteQueue.peek(p.id);
   if (!p.note || !state || draft && (draft.pending || draft.draft !== p.note)) return '';
-  if (state.state === 'disabled') return '<span class="muted">Note saved. Local processing is off.</span>';
+  if (state.state === 'disabled') return '<span class="muted">Note saved. Local AI is off.</span>';
   if (state.state === 'pending') return '<span class="muted">Reading your note locally…</span>';
-  if (state.state === 'unavailable' || state.state === 'failed') return `<span class="muted">${esc(state.message || 'Note saved. Local understanding is unavailable.')}</span>${state.can_retry ? ` <button class="btn ghost" type="button" data-note-retry ${noteRetryBusy.has(p.id) ? 'disabled' : ''}>${noteRetryBusy.has(p.id) ? 'Retrying…' : 'Retry reading'}</button>` : ''}`;
+  if (state.state === 'unavailable' || state.state === 'failed') return `<span class="muted">${esc(state.message || 'Note saved. Local reading is unavailable.')}</span>${state.can_retry ? ` <button class="btn ghost" type="button" data-note-retry ${noteRetryBusy.has(p.id) ? 'disabled' : ''}>${noteRetryBusy.has(p.id) ? 'Retrying…' : 'Retry reading'}</button>` : ''}`;
   if (state.state !== 'ready') return '';
   const facts = (state.facts || []).map((fact, index) => {
     if (!fact.label || typeof fact.quote !== 'string' || !p.note.includes(fact.quote)) return '';
@@ -1614,7 +1614,7 @@ function workflowSummaryHTML(p) {
     ${open && f.note ? `<p class="workflow-next-action">${esc(f.note)}</p>` : ''}
     <details class="workflow-editor" id="followup-editor" data-owner="${p.id}" data-workflow-disclosure="followOpen" ${d.followOpen ? 'open' : ''}><summary id="followup-editor-summary">${open ? 'Change follow-up' : f ? 'Schedule next follow-up' : 'Add follow-up'}</summary>
       <form id="followup-form" data-owner="${p.id}" class="workflow-form" aria-describedby="followup-state" aria-busy="${workflowBusy(p.id)}"><label for="followup-date">Date</label><input class="input" id="followup-date" type="date" required value="${esc(d.due ?? (open ? f.due_on : ''))}">${workflowShortcuts('followup-date')}
-        <label for="followup-note">Next action (optional)</label><input class="input" id="followup-note" maxlength="500" value="${esc(d.action ?? (open ? f.note || '' : ''))}" placeholder="Send portfolio, check reply…"><div class="workflow-actions"><button class="btn solid" id="followup-save" type="submit" ${disabled}>${open ? 'Save follow-up' : 'Schedule follow-up'}</button>${f ? `<button type="button" class="btn" id="followup-clear" data-follow-action="clear" ${disabled}>Clear follow-up</button>` : ''}</div></form></details>
+        <label for="followup-note">Next action (optional)</label><input class="input" id="followup-note" maxlength="500" value="${esc(d.action ?? (open ? f.note || '' : ''))}" placeholder="Send portfolio"><div class="workflow-actions"><button class="btn solid" id="followup-save" type="submit" ${disabled}>${open ? 'Save follow-up' : 'Schedule follow-up'}</button>${f ? `<button type="button" class="btn" id="followup-clear" data-follow-action="clear" ${disabled}>Clear follow-up</button>` : ''}</div></form></details>
     <p id="followup-state" role="status" aria-live="polite">${esc(workflowMessages.get(p.id)?.followup || '')}</p></section>`;
 }
 function workflowHTML(p) {
@@ -1694,7 +1694,7 @@ async function refreshActivity(id) {
       S.person.activity = activity;
       const el = $('#activity-timeline'); if (el) el.innerHTML = activityHTML(activity, id);
     }
-  } catch (error) { if (S.person?.id === id && !S.person.activity) workflowMessage(id, 'activity', 'Could not load activity: ' + error.message); }
+  } catch (error) { if (S.person?.id === id && !S.person.activity) workflowMessage(id, 'activity', "Couldn't load activity: " + error.message); }
 }
 async function updateFollowUp(id, body, button) {
   if (workflowBusy(id)) return;
@@ -1713,7 +1713,7 @@ async function updateFollowUp(id, body, button) {
     if (S.open === id) await refreshPerson(id);
     refreshActivity(id); loadCounts(); loadFacetsSoon(); resetLeads(true);
   } catch (error) {
-    workflowMessage(id, 'followup', 'Could not save: ' + error.message + '. Your draft is kept.');
+    workflowMessage(id, 'followup', "Couldn't save: " + error.message + '. Your draft is kept.');
     if (S.person?.id === id) { const editor = $('#followup-editor'); if (editor) editor.open = true; }
   } finally { followUpBusy.delete(id); syncWorkflowControls(id); }
 }
@@ -1722,7 +1722,7 @@ async function saveInteraction(id, form) {
   rememberWorkflowForm();
   const submitted = snapshotWorkflowDraft(id, form, activityFields), date = new Date(submitted.when);
   if (!Number.isFinite(date.getTime())) { workflowMessage(id, 'activity', 'Choose a valid date and time.'); return; }
-  if (!submitted.body?.trim()) { workflowMessage(id, 'activity', 'Add a few details about the interaction.'); return; }
+  if (!submitted.body?.trim()) { workflowMessage(id, 'activity', 'Add some details.'); return; }
   const body = { kind: submitted.kind, body: submitted.body, happened_at: date.toISOString() };
   if (submitted.status) body.status = submitted.status;
   if (submitted.followChoice) {
@@ -1748,7 +1748,7 @@ async function saveInteraction(id, form) {
     if (!Array.isArray(response.rows)) refreshActivity(id);
     if (body.status || body.follow_up) { loadCounts(); loadFacetsSoon(); resetLeads(true); }
   } catch (error) {
-    workflowMessage(id, 'activity', 'Could not save: ' + error.message + '. Your draft is kept.');
+    workflowMessage(id, 'activity', "Couldn't save: " + error.message + '. Your draft is kept.');
     if (S.person?.id === id) { const editor = $('#activity-editor'); if (editor) editor.open = true; }
   } finally { activityBusy.delete(id); syncWorkflowControls(id); }
 }
@@ -1798,7 +1798,7 @@ $('#detail').addEventListener('click', async (e) => {
       activity.rows.push(...page.rows.filter((row) => !seen.has(row.id))); activity.next_cursor = page.next_cursor;
       $('#activity-timeline').innerHTML = activityHTML(activity, id); ($('#activity-more') || $('#activity-show-all'))?.focus();
     }
-  } catch (error) { workflowMessage(id, 'activity', 'Could not load older activity: ' + error.message); }
+  } catch (error) { workflowMessage(id, 'activity', "Couldn't load older activity: " + error.message); }
   finally { activityMoreBusy.delete(id); if (S.person?.id === id && $('#activity-more')) $('#activity-more').disabled = false; }
 });
 // ---------- keyboard ----------
@@ -1994,8 +1994,8 @@ const T = {
       return `<tr class="${t.total ? '' : 'dim'}">
         <td>${name}</td>
         <td class="r num">${int(t.total)}</td>
-        <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Confirm' : 'Delete'}</button></span>` : ''}</td></tr>`;
-    }).join('') : `<tr><td colspan="3" class="muted">${this.failed ? 'Could not load tags' : q ? 'No match' : 'None yet. Open a person and add a label.'}</td></tr>`;
+        <td class="r">${can && ed !== t.tag ? `<span class="acts"><button data-edit="${esc(t.tag)}">Rename</button><button data-del="${esc(t.tag)}" class="${this.confirm === t.tag ? 'warn' : ''}">${this.confirm === t.tag ? 'Delete?' : 'Delete'}</button></span>` : ''}</td></tr>`;
+    }).join('') : `<tr><td colspan="3" class="muted">${this.failed ? "Couldn't load tags" : q ? 'No match' : 'None yet. Add one from a lead.'}</td></tr>`;
     if (ed) { const i = $('#ren-in'); if (i && document.activeElement !== i) { i.focus(); i.select(); } this.syncRen(); }
   },
   renderGroups(q) {
@@ -2030,9 +2030,9 @@ const T = {
         ${note ? `<p class="tg-section-note">${esc(note)}</p>` : ''}</section>`;
     };
     const inGroup = key => rows.filter(t => category(t) === key);
-    const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Scraping'], ['other','Other']]
+    const context = [['products','Products'], ['clues','Other clues'], ['size','Audience size'], ['via','Found via'], ['collection','Collection'], ['other','Other']]
       .map(([key,title]) => sec(key,title,inGroup(key))).join('');
-    $('#tg-groups').innerHTML = sec('fit', 'Best prospects', fit, 'tg-top', 'Exceptional fit is added by you. Other fit tags come from saved checks.')
+    $('#tg-groups').innerHTML = sec('fit', 'Best fits', fit, 'tg-top', 'You add Exceptional fit. The other fit tags come from saved checks.')
       + `<div class="tg-main">${sec('business', 'Business signals', inGroup('business'))}${sec('review', 'Needs review', inGroup('review'))}</div>`
       + (context ? `<div class="tg-context"><div class="tg-context-heading"><h3>Other tags</h3></div><div class="tg-rest">${context}</div></div>` : '')
       + (!rows.length && !fit.length ? '<p class="muted tg-empty">No matching tags.</p>' : '');
@@ -2070,7 +2070,7 @@ const T = {
   renderRules() {
     const rs = this.rules;
     $('#rl-n').textContent = rs ? int(rs.length) : '';
-    $('#rl-body').innerHTML = this.rulesErr === 'failed' && !rs?.length ? `<tr><td colspan="5" class="muted">Could not load rules</td></tr>` : rs == null ? `<tr><td colspan="5" class="muted">Rules not available on this server</td></tr>`
+    $('#rl-body').innerHTML = this.rulesErr === 'failed' && !rs?.length ? `<tr><td colspan="5" class="muted">Couldn't load rules</td></tr>` : rs == null ? `<tr><td colspan="5" class="muted">Rules aren't available</td></tr>`
       : rs.length ? rs.map((r) => `<tr><td><button class="tag rule" ${tagStyleAttrs({tag:r.tag, source:"rule"})} data-go="${esc(r.tag)}">${tagContent({tag:r.tag, source:"rule"})}</button></td><td class="mono hide-sm">${esc(ucf(r.field))}</td>
         <td class="mono">"${esc(r.match)}"</td><td class="r num">${int(r.hits)}</td><td class="r"><button class="rl-del" data-rdel="${esc(r.id)}">Delete</button></td></tr>`).join('')
         : `<tr><td colspan="5" class="muted">No rules</td></tr>`;
@@ -2213,7 +2213,7 @@ function renderScraper() {
   const sc = S.sc;
   if (!sc || S.scError) {
     const message = S.scError
-      ? sc ? 'Could not refresh. Showing last loaded data.' : 'Could not load collection status.'
+      ? sc ? "Couldn't refresh. Showing the last data." : "Couldn't load collection status."
       : 'Loading collection status…';
     const html = `<div class="row-flex"><span class="muted" role="status">${message}</span>${S.scError ? `<button class="btn" type="button" id="scr-retry"${S.scLoading ? ' disabled' : ''}>${S.scLoading ? 'Retrying…' : 'Retry'}</button>` : ''}</div>`;
     if ($('#now').innerHTML !== html) $('#now').innerHTML = html;
@@ -2235,26 +2235,26 @@ function renderScraper() {
   const reading = listActive && run && `Reading @${run.seed}'s ${run.direction === 'followers' ? 'followers' : 'following list'}`;
   let now, sub = '';
   if (S.scStale && S.sc) { now = 'Connection lost'; sub = 'Showing the last update. Progress may have changed.'; }
-  else if (listPaused) { now = 'Paused'; sub = 'Use Start collection above to continue from saved progress.'; }
+  else if (listPaused) { now = 'Paused'; sub = 'Press Start collection to continue. Progress is saved.'; }
   else if (listHeld) { now = 'Collection waiting'; sub = listStage.now || collectionReason(listStage.reason_code || listStage.wait?.why || listStage.reason, 'Progress is saved. Waiting to continue.'); }
-  else if (!x.online) { now = 'Accounts disconnected'; sub = 'Use Connect accounts to reopen your saved Chrome profiles.'; }
-  else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break so Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (!x.online) { now = 'Accounts disconnected'; sub = 'Press Connect accounts to reopen your saved Chrome profiles.'; }
+  else if (cool && reading && x.state === 'running') { now = reading; sub = `Bio reads are on a short break. Back ${backIn(x.cooldown_until)}.`; }
   else if (cool && capped) { now = 'Daily limit reached'; sub = `Resumes ${backIn(x.cooldown_until)}. Progress is saved.`; }
-  else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Resting'; sub = `Instagram asked us to slow down. Back ${backIn(x.cooldown_until)}.`; }
-  else if (cool) { now = 'Short break'; sub = `So Instagram doesn't flag your account. Back ${backIn(x.cooldown_until)}.`; }
+  else if (cool && Date.parse(x.cooldown_until) - Date.now() > 3600e3) { now = 'Limited'; sub = `Instagram is slowing collection. Back ${backIn(x.cooldown_until)}.`; }
+  else if (cool) { now = 'Short break'; sub = `Back ${backIn(x.cooldown_until)}.`; }
   else if (reading) { now = reading; sub = `${int(run.received)}${run.total ? ' of ' + int(run.total) : ''} list entries saved so far.`; }
-  else { now = listStage?.now || 'Waiting for confirmed activity'; sub = ''; }
+  else { now = listStage?.now || 'Waiting for activity'; sub = ''; }
   const accs = sc.accounts || [];
   const conn = accs.length ? accs.map((a) => `<span class="cpill" title="${esc(ST_LABEL[a.status] || a.status)}"><i class="dot ${a.online ? 'live' : 'off'}"></i>${esc(a.name || a.handle || a.lane_id)}<span class="muted">${a.online ? `${int(a.hour?.people || 0)} list entries this hour` : 'offline'}</span></span>`).join('')
     : `<span class="cpill"><i class="dot ${x.online ? 'live' : 'off'}"></i>Extension ${x.online ? 'connected' : 'not connected'}</span>`;
   if (!S.scError) $('#now').innerHTML = `<div class="now-line"><i class="dot ${x.online && listActive ? 'live' : 'off'}"></i><div><b>${esc(now)}</b><span class="muted">${esc(sub)}</span></div></div><div class="conns">${conn}</div>`;
   const h1 = sc.soak?.['1h'] || {};
-  const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b><small>${small}</small></div>`;
-  $('#scr-counts').innerHTML = tile('New profiles this hour', (sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : 'new people')
-    + tile('New profiles today', (sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today), 'newly added profiles')
+  const tile = (label, v, small) => `<div class="tile"><span>${label}</span><b class="num">${v}</b>${small ? `<small>${small}</small>` : ''}</div>`;
+  $('#scr-counts').innerHTML = tile('New profiles this hour', (sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.hour ?? h1.new_people), sc.rate?.pages_hour ? `${int(Math.round(sc.rate.pages_hour))} list pages an hour` : '')
+    + tile('New profiles today', (sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today) == null ? '–' : int(sc.control?.progress?.unique_new_profiles?.today ?? sc.people_today), '')
     + tile('Profiles saved', S.counts?.total != null ? int(S.counts.total) : '–', 'people in Leads');
   const L = pr.lists || {}, B = pr.bios || {}, Q = pr.qualify || {};
-  const minuteRate = (value, noun) => value == null ? `measuring ${noun}` : `${int(value)} ${noun} in the last minute`;
+  const minuteRate = (value, noun) => value == null ? 'measuring pace' : `${int(value)} ${noun} in the last minute`;
   const recv = sc.coverage?.lists?.saved_entries ?? ls.reduce((a, l) => a + (l.saved_entries ?? l.received ?? 0), 0);
   const incompleteRows = ls.filter((l) => l.state === 'partial' || l.state === 'error');
   const incompleteLists = L.incomplete_lists ?? incompleteRows.length;
@@ -2270,14 +2270,14 @@ function renderScraper() {
     : !h1.pages ? 'No pages saved this hour' : L.per_minute === 0 ? 'No rows returned this minute'
     : sc.collection?.eta ? `${sc.collection.eta.scope === 'known_lists' ? 'Known lists' : 'Current queue'}: ${eta(sc.collection.eta.low_minutes / 60)}–${eta(sc.collection.eta.high_minutes / 60).replace('about ', '')}` : sc.collection?.message || (run ? 'Reading now' : offline || 'Waiting');
   const bioLine = `${int(B.left)} bios to read · ${minuteRate(B.per_minute, 'bios')}`
-    + (B.per_day ? ` · workspace cap ${int(B.per_day)} a day` : ' · no workspace cap');
+    + (B.per_day ? ` · daily cap ${int(B.per_day)}` : ' · no daily cap');
   const bioWhen = B.left === 0 ? 'Nothing waiting' : offline || (B.per_minute === 0
     ? 'No bios read this minute' : eta(B.eta_h) ? eta(B.eta_h) + ' left' : 'measuring speed…');
-  const listLine = `${int(recv)} list entries saved this attempt · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
+  const listLine = `${int(recv)} list entries saved this run · ${L.estimate ? 'about ' : ''}${int(L.left)} left in active lists`
     + (incompleteLists ? ` · ${int(incompleteLists)} incomplete ${incompleteLists === 1 ? 'list' : 'lists'}` : '')
     + (incompleteLeft ? ` (about ${int(incompleteLeft)} entries missing)` : '')
     + (cappedLists ? ` · ${int(cappedLists)} capped ${cappedLists === 1 ? 'list' : 'lists'}` : '')
-    + ` · ${minuteRate(L.per_minute, 'rows returned')}`;
+    + ` · ${minuteRate(L.per_minute, 'rows')}`;
   $('#stages').innerHTML = [
     stage('1. Collect lists', listLine,
       listsDone ? 100 : incompleteLists ? null : tot ? Math.min(99, (recv / tot) * 100) : 0, listWhen),
@@ -2299,13 +2299,13 @@ function renderScraper() {
   const order = { running: 0, queued: 1, partial: 2, paused: 2, error: 3, private: 4, done: 5 };
   const all = [...groups[listFilter]].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   const rows = all.slice(0, listsShown);
-  const empty = ls.length ? { active: 'No active lists.', done: 'No completed lists.', issues: 'No issues.' }[listFilter] : 'No lists yet. Add an account above.';
+  const empty = ls.length ? { active: 'No active lists.', done: 'No completed lists.', issues: 'No issues.' }[listFilter] : 'No lists yet. Add profiles above.';
   $('#lists-body').innerHTML = rows.length ? rows.map((l) => {
     const saved = l.saved_entries ?? l.received;
     const expected = l.expected ?? l.total;
     const complete = l.completion === 'complete';
     const label = complete ? 'Complete' : l.completion === 'unverified' ? 'Needs review' : l.state === 'running' && !listActive ? listPaused ? 'Paused' : 'Waiting' : l.state === 'queued' && saved > 0 ? 'Queued to continue' : l.state === 'queued' && (l.error || l.completion_reason || l.pages > 0) ? 'Waiting to retry' : l.state === 'queued' ? 'Not started' : LIST_STATE[l.state] || ucf(l.state);
-    const reason = l.completion_reason || l.error ? collectionReason(l.reason_code || l.error || l.completion_reason, 'Saved progress needs another attempt') : '';
+    const reason = l.completion_reason || l.error ? collectionReason(l.reason_code || l.error || l.completion_reason, 'Needs another try') : '';
     return `<tr><td><b>@${esc(l.seed)}</b><small class="list-direction-mobile">${l.direction === 'followers' ? 'Followers' : 'Following'}</small>${reason ? `<small class="list-reason">${esc(reason)}</small>` : ''}</td><td class="hide-sm muted">${l.direction === 'followers' ? 'Followers' : 'Following'}</td>
       <td class="r num"><b>${int(saved)}</b>${expected != null ? `<small class="list-expected">of ${l.expected_source === 'estimate' ? 'about ' : ''}${int(expected)} expected</small>` : '<small class="list-expected">Total unknown</small>'}</td>
       <td><span class="state ${esc(complete ? 'done' : l.state === 'done' ? 'partial' : l.state)}">${l.state === 'running' && listActive ? '<i class="dot run"></i>' : ''}${esc(label)}</span></td></tr>`;
@@ -2326,14 +2326,14 @@ $('#budget').addEventListener('submit', async (e) => {
   const val = (el) => { const v = el.value.trim(); return /^\d+$/.test(v) ? +v : null; };
   const list = val($('#b-list')), profile = val($('#b-profile'));
   if (list == null || profile == null) { toast('Enter whole numbers, 0 or more'); return; }
-  try { await api.post('/api/scraper/budget', { list, profile }); toast('Budget saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast("Couldn't save. Try again."); }
+  try { await api.post('/api/scraper/budget', { list, profile }); toast('Limits saved'); $('#b-save').blur(); loadScraper(); } catch (err) { toast("Couldn't save. Try again."); }
 });
 $('#snowball').onclick = async () => {
   try {
     const r = await api.post('/api/scraper/snowball', { min_status: 'interested' });
-    toast(r.queued ? `Queued the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new. Every Interested, Talking or Client lead is already queued, done or private.');
+    toast(r.queued ? `Queued the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new to queue.');
     loadScraper();
-  } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
+  } catch (e) { toast(e.status === 400 ? ucf(e.message) : "Couldn't queue"); }
 };
 function parseHandles(s) {
   const out = new Set();
@@ -2384,10 +2384,10 @@ async function submitSeed(start = true) {
   try {
     const r = await api.post(start ? '/api/start' : '/api/scraper/seeds', { handles, directions });
     if (start && r.started !== true && r.starting !== true) {
-      $('#seed-feedback').textContent = "Profiles are queued. Couldn't confirm collection started. Check status and try again.";
+      $('#seed-feedback').textContent = "Profiles queued. Couldn't confirm collection started. Check the status and try again.";
       loadScraper(); return;
     }
-    const message = start ? r.starting === true ? 'Profiles queued. Connecting your saved accounts…' : 'Collection is on. Check the status above for activity.'
+    const message = start ? r.starting === true ? 'Profiles queued. Connecting your saved accounts…' : 'Collection is on.'
       : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue.` : 'Those lists are already queued.';
     $('#seed-feedback').textContent = message;
     toast(message);
@@ -2422,15 +2422,15 @@ function jobText(a) {
   if (a.status === 'offline') return 'Last seen ' + ago(a.last_seen) + ' ago';
   return ucf(a.activity || a.text || 'Idle');
 }
-function collectionReason(value, fallback = 'Scraping paused') {
+function collectionReason(value, fallback = 'Collection paused') {
   const reason = String(value || '').toLowerCase();
   if (/login|logged.out|authentication|session.expired/.test(reason)) return 'Sign in to Instagram again';
   if (/challenge|checkpoint|security/.test(reason)) return 'Complete the Instagram security check';
-  if (/private|access.denied|forbidden/.test(reason)) return 'This account cannot access the list';
+  if (/private|access.denied|forbidden/.test(reason)) return "This account can't see the list";
   if (/429|rate.limit|slow.down|feedback|required.wait|cooldown|instagram.wait|instagram.requested.a.pause|instagram.warning|instagram.collection.is.resting/.test(reason)) return 'Waiting for Instagram to allow requests';
-  if (/html|redirect|unexpected.response|home.page|502|503|504/.test(reason)) return 'Instagram did not return the list. Progress is saved.';
+  if (/html|redirect|unexpected.response|home.page|502|503|504/.test(reason)) return "Instagram didn't return the list. Progress is saved.";
   if (/unconfirmed|permit|in.flight|shared|workspace/.test(reason)) return 'Waiting for the current request to finish';
-  if (/budget|daily|cap.reached/.test(reason)) return 'Daily allowance reached';
+  if (/budget|daily|cap.reached/.test(reason)) return 'Daily limit reached';
   if (/partial|incomplete|limited|short.list|missing/.test(reason)) return 'Part of this list is saved';
   if (/offline|extension/.test(reason)) return 'Open the connected Chrome profile';
   return fallback;
@@ -2901,18 +2901,18 @@ function localProcessingSummary() {
   const local = SET.localProcessing;
   if (!local) return 'Local AI status unavailable';
   if (!local.enabled) return 'Local AI off';
-  const counts = `${int(local.reviewed || 0)} bios reviewed · ${int(local.queue || 0)} waiting${local.seeding ? ' · finding more saved bios' : ''}`;
+  const counts = `${int(local.reviewed || 0)} bios reviewed · ${int(local.queue || 0)} waiting${local.seeding ? ' · queuing more bios' : ''}`;
   const notes = (local.notes_pending ? ` · ${int(local.notes_pending)} notes waiting` : '') + (local.notes_failed ? ` · ${int(local.notes_failed)} notes need review` : '');
   const unverified = local.unverified ? ` · ${int(local.unverified)} profiles need review` : '';
   const research = local.needs_research ? ` · ${int(local.needs_research)} need more research` : '';
   const state = backgroundAIState(local);
   if (!['Ready','Running'].includes(state)) return `Background AI ${state.toLowerCase()} · ${counts}${notes}${unverified}`;
-  return `K2 · ${counts}${notes}${unverified}${research}`;
+  return `${counts}${notes}${unverified}${research}`;
 }
 function renderCheckingMode() {
   const mode = settingsMode(S.sc), code = ({rules:'R',local:'RLAI',external:'RLEAI'})[mode];
   const status = $('#set-mode-status');
-  if (status) { status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Refresh to try again.'; status.hidden = !!code && !SET.modeBusy; }
+  if (status) { status.textContent = SET.modeBusy ? 'Saving…' : code ? `${PROCESSING_LABELS[code]} selected` : 'Current mode unavailable. Reload to try again.'; status.hidden = !!code && !SET.modeBusy; }
   $('#set-mode')?.querySelectorAll('[data-mode]').forEach(button => {
     button.classList.toggle('on', button.dataset.mode === code);
     button.setAttribute('aria-pressed', String(button.dataset.mode === code));
@@ -2934,7 +2934,7 @@ function renderCheckingMode() {
     const time = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
     const active = metrics?.active?.handle;
     const history = SET.localProcessing?.history || [];
-    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} checks/min` : 'Measuring pace'}${eta ? ` · about ${time} for this queue` : ''}</span></div>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:'Could not verify',archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
+    activity.innerHTML = `<div class="local-work-now"><b>${active ? `Checking @${esc(active)}` : backgroundAIState(SET.localProcessing)}</b><span class="muted">${metrics?.per_minute ? `${metrics.per_minute} checks/min` : 'Measuring pace'}${eta ? ` · about ${time} for this queue` : ''}</span></div>${history.length ? `<details><summary>Recent checks</summary><div class="local-history">${history.map(item => `<button type="button" class="local-history-item" data-reviewed-person="${item.person_id}"><span>@${esc(item.handle || `profile ${item.person_id}`)}</span><span>${esc(({complete:'Checked',needs_research:'Needs more evidence',unverified:"Couldn't verify",archived:'Earlier result'})[item.status] || 'Updated')}${item.score !== null && item.score !== undefined ? ` · ${item.score}` : ''}</span><time>${esc(new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></button>`).join('')}</div></details>` : ''}`;
   }
   const background = $('#background-ai'), local = SET.localProcessing;
   if (background) background.hidden = mode === 'rules';
@@ -2951,9 +2951,9 @@ async function toggleBackgroundAI() {
     const result = await api.post('/api/local-processing', {paused: !current.paused});
     if (typeof result.paused !== 'boolean' || result.paused === !!current.paused) throw new Error('Pause state not confirmed');
     SET.localProcessing = result;
-    toast(result.paused ? result.stop_acknowledged === true ? 'Background AI paused. Your queue is saved.' : 'Background AI is stopping. Your queue is saved.' : 'Background AI resumed when your Mac is ready.');
+    toast(result.paused ? result.stop_acknowledged === true ? 'Background AI paused. Your queue is saved.' : 'Background AI is stopping. Your queue is saved.' : 'Background AI resumed. It runs when your Mac is ready.');
     window.dispatchEvent(new Event('fl:control-changed'));
-  } catch { SET.localProcessing = null; toast('Could not confirm background AI. Refresh to check.'); }
+  } catch { SET.localProcessing = null; toast("Couldn't confirm the change. Reload to check."); }
   finally {
     SET.localBusy = false; renderCheckingMode();
     if (S.view === 'accounts') renderAccounts();
@@ -2979,7 +2979,7 @@ $('#set-mode')?.addEventListener('click', async (event) => {
     if (S.sc) S.sc.processing = result;
     window.dispatchEvent(new Event('fl:control-changed'));
     toast('Checking mode saved');
-  } catch (error) { SET.processingStale = true; if (S.sc) delete S.sc.processing; toast('Could not confirm the change. Refresh to check the current mode.'); }
+  } catch (error) { SET.processingStale = true; if (S.sc) delete S.sc.processing; toast("Couldn't confirm the change. Reload to check the mode."); }
   finally {
     SET.modeBusy = false; await loadProcessingStatus();
     await loadScout(); renderSettings();
@@ -2994,18 +2994,18 @@ function renderScout() {
   const sc = SET.scout, el = $('#set-scout');
   const external = !S.scStale && !S.scError && settingsMode(S.sc) === 'external';
   if (!el) return;
-  if (!sc) { el.innerHTML = '<div class="set-row muted">Could not load leadscout status.</div>'; return; }
+  if (!sc) { el.innerHTML = '<div class="set-row muted">Couldn\'t load research status.</div>'; return; }
   const tok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
   const use = sc.usage.length ? sc.usage.map((u) => `<div class="kv-row"><span>${esc(u.model)}<small class="muted"> · ${esc(u.provider || '')}</small></span>
       <span class="num">${int(u.runs)} runs · ${tok(u.tokens_in + u.tokens_out)} tokens</span></div>`).join('') : '<div class="muted">No runs this week.</div>';
   el.innerHTML = `
     <div class="set-row"><div><b>Enable deeper research</b><span class="muted">${sc.available ? `${int(sc.done_today)} checked today · ${int(sc.done)} in total · ${int(sc.waiting)} waiting` : 'Web research is unavailable on this Mac'}</span></div>
-      <button class="toggle${external && sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${external && sc.on}" aria-label="Extra web checks"${external ? '' : ' disabled'}><i></i></button></div>
-    <div class="set-row"><div><b>Research model</b><span class="muted">Used for external review and optional deep dives.</span></div>
+      <button class="toggle${external && sc.on ? ' on' : ''}" id="scout-on" role="switch" aria-checked="${external && sc.on}" aria-label="Deeper research"${external ? '' : ' disabled'}><i></i></button></div>
+    <div class="set-row"><div><b>Research model</b><span class="muted">Used for external review and deeper research.</span></div>
       <div class="seg" id="scout-model">${sc.models.map((m) => `<button data-m="${esc(m.id)}" class="${sc.model === m.id ? 'on' : ''}" aria-pressed="${sc.model === m.id}" title="${esc(m.label)}">${esc(m.label.split(' (')[0])}</button>`).join('')}</div></div>
-    <div class="set-row"><div><b>Research at once</b><span class="muted">Maximum leads being researched together.</span></div>
+    <div class="set-row"><div><b>Research at once</b><span class="muted">How many leads are researched together.</span></div>
       <div class="seg" id="scout-workers">${[2, 3, 4, 6, 8].map((n) => `<button data-w="${n}" class="${sc.workers === n ? 'on' : ''}" aria-pressed="${sc.workers === n}">${n}</button>`).join('')}</div></div>
-    <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">Recorded research usage. Provider allowance is shown in your provider account.</span></div>
+    <div class="sub-h"><b>Used in the last 7 days</b><span class="muted">Counted here. Your provider account shows its own limits.</span></div>
     <div class="kv-list">${use}</div>`;
 }
 $('#set-scout')?.addEventListener('click', async (e) => {
@@ -3020,12 +3020,12 @@ async function checkHealth() {
   try { SET.health = await api.get('/api/llm/health'); } catch (e) { SET.health = 'failed'; }
   renderServices();
 }
-const upText = (up) => (SET.health === 'failed' ? 'Could not check' : up == null ? 'Checking' : up ? 'Running' : 'Not running');
+const upText = (up) => (SET.health === 'failed' ? "Couldn't check" : up == null ? 'Checking' : up ? 'Running' : 'Not running');
 function renderServices() {
   const h = SET.health && typeof SET.health === 'object' ? SET.health : null, l = SET.llm;
   const row = (name, url, up, hint) => `<div class="svc"><i class="dot ${up ? 'on' : up === false ? 'off' : ''}"></i><div><b>${name}</b><span class="muted num">${esc(url || '')}</span>${up === false ? `<small>${hint}</small>` : ''}</div><span class="grow"></span><span class="${up ? '' : 'muted'}">${upText(up)}</span></div>`;
-  $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it the keys below go to OpenRouter directly.')
-    + row('Local Laya', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Use Start local services on Accounts to start the local helper.');
+  $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it, requests go to OpenRouter directly.')
+    + row('Local Laya', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Start it from Local AI setup above.');
 }
 function keyStatus(p) {
   if (p.disabled) return { text: 'Refused', cls: 'bad' };
@@ -3201,7 +3201,7 @@ const Q = {
     let d;
     try { d = await api.get('/api/qual?' + p); } catch (e) {
       if (g !== this.gen) return;
-      this.loadError = e.status === 404 ? 'Review is unavailable in this server version.' : 'Could not update review results.';
+      this.loadError = e.status === 404 ? "Review isn't available." : "Couldn't update review.";
       this.failedMore = !!more; this.render(); return;
     }
     if (g !== this.gen) return;
@@ -3217,9 +3217,9 @@ const Q = {
     const mode = settingsMode(S.sc);
     const known = !!mode;
     const on = mode === 'external';
-    const status = !known ? 'Checking status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for external review` : 'External review enabled') : mode === 'local' ? localProcessingSummary() : 'Rules only';
+    const status = !known ? 'Status unavailable' : on ? (Qp.left ? `${int(Qp.left)} waiting for external review` : 'External review on') : mode === 'local' ? localProcessingSummary() : 'Rules only';
     $('#ql-prog').innerHTML = `<p class="ql-progress-summary"><span>${s.rules == null ? 'Rules count unavailable' : `Rules checked ${int(s.rules)} profiles`}</span><span class="muted">${esc(status)}</span>${mode === 'external' ? `<span class="muted">${esc(localProcessingSummary())}</span>` : ''}${backgroundAIControlsHTML()}</p>`;
-    $('#ql-toggle').textContent = 'Checking mode';
+    $('#ql-toggle').textContent = 'Change checking mode';
     $('#n-qual').textContent = on && Qp.left ? fmt(Qp.left) : '';
   },
   card(r) {
@@ -3255,7 +3255,7 @@ const Q = {
     const focusAttr = focused?.hasAttribute('data-deep') ? 'data-deep' : focused?.hasAttribute('data-open') ? 'data-open' : null;
     const focusId = focusAttr ? focused.getAttribute(focusAttr) : null;
     $('#ql-list').innerHTML = this.rows.length ? this.rows.map((r) => this.card(r)).join('')
-      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'No AI reviews yet. Choose a checking mode in Settings.' : 'Nobody matches.'}</div>`;
+      : `<div class="muted ql-empty">${this.q ? 'No people match this search.' : this.view === 'ai' ? 'No AI reviews yet. Choose a checking mode in Settings.' : 'No one matches.'}</div>`;
     if (focusAttr) $(`#ql-list [${focusAttr}="${focusId}"]`)?.focus({ preventScroll: true });
     $('#ql-more').hidden = this.rows.length >= this.total;
   },
@@ -3372,7 +3372,7 @@ document.addEventListener('visibilitychange', () => refresher.visibilityChanged(
 
 async function loadBiofetch() {
   try { const b = await api.get('/api/settings/biofetch'); $('#bf-on').classList.toggle('on', !!b.on); $('#bf-on').setAttribute('aria-checked', String(!!b.on)); $('#bf-uid').value = b.ig_user_id || '';
-    $('#bf-info').textContent = `Business and creator accounts only, via your own Meta app. Today: ${b.hits || 0} bios, ${b.misses || 0} not business${b.last_error ? ' · ' + b.last_error : ''}`; } catch (e) {}
+    $('#bf-info').textContent = `Today: ${b.hits || 0} bios read, ${b.misses || 0} skipped${b.last_error ? ' · ' + b.last_error : ''}`; } catch (e) {}
 }
 $('#bf-on').onclick = async () => {
   const on = !$('#bf-on').classList.contains('on'), body = { on, ig_user_id: $('#bf-uid').value };

@@ -22,7 +22,7 @@ test('qualification uses latest external setting over stale full progress', () =
   assert.match(h.$('#ql-prog').innerHTML, /Rules only/);
   assert.equal(h.$('#n-qual').textContent, '');
   h.context.S.scStale = true; h.render();
-  assert.match(h.$('#ql-prog').innerHTML, /Checking status unavailable/);
+  assert.match(h.$('#ql-prog').innerHTML, /Status unavailable/);
 });
 test('qualification mode action navigates to settings without changing AI state', () => {
   const h = harness({ qualify: false, local_laya: true });

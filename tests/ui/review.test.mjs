@@ -42,7 +42,7 @@ test('failed review filter keeps an explicit unavailable state until successful 
   const q = reviewLoader({get:async()=>{ if(fail) throw Error('offline'); return {rows:[{id:2}],total:1,summary:{}}; }});
   q.rows=[{id:1}]; q.view='all'; q.q='new search';
   await q.load();
-  assert.equal(q.loadError, 'Could not update review results.');
+  assert.equal(q.loadError, "Couldn't update review.");
   assert.equal(q.renders,1);
   fail=false; await q.load();
   assert.equal(q.loadError,null);

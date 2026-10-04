@@ -30,7 +30,7 @@ test('earlier evidence remains inspectable with absence and unverified dates', (
   assert.match(html, /Not found when checked Sep 27/);
   assert.match(html, /First seen Sep 20/);
   assert.match(html, /Previously seen Sep 18/);
-  assert.match(html, /not reverified/);
+  assert.match(html, /not seen since/);
 });
 
 test('connection names are escaped and missing dates are labeled as unavailable', () => {

@@ -38,7 +38,7 @@ test('unexpected saved legacy model order reports failure',async()=>{
 });
 test('queued work never claims model is running when service is unavailable',()=>{
  const h=harness();h.SET.localProcessing={enabled:true,ready:false,state:'unavailable',reviewed:2,queue:30,seeding:true};
- assert.match(h.ctx.localProcessingSummary(),/Background AI unavailable.*2 bios reviewed.*30 waiting.*finding more saved bios/);
+ assert.match(h.ctx.localProcessingSummary(),/Background AI unavailable.*2 bios reviewed.*30 waiting.*queuing more bios/);
  h.SET.localProcessing.enabled=false;assert.equal(h.ctx.localProcessingSummary(),'Local AI off');
 });
 test('resource pause and manual pause override a ready running model',()=>{

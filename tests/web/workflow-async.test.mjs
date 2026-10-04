@@ -236,7 +236,7 @@ test('a failed atomic interaction keeps every option and retries the same comple
   ui.render(); ui.reject(0, 'Atomic save rolled back'); await saved;
   assert.deepEqual(ui.values(), submitted);
   assert.equal(ui.S.person.status, 'contacted'); assert.deepEqual(ui.S.person.follow_up, initialFollowUp);
-  assert.match(ui.field('activity-state').textContent, /Could not save: Atomic save rolled back/);
+  assert.match(ui.field('activity-state').textContent, /Couldn't save: Atomic save rolled back/);
   assert.equal(ui.field('activity-editor').open, true); assert.equal(ui.busy(1), false);
   ui.open(2); ui.open(1); assert.deepEqual(ui.values(), submitted);
   const retry = ui.submit(); assert.equal(ui.calls.length, 2);

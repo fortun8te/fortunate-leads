@@ -175,7 +175,7 @@ test('Tags overview keeps the Figma groups directly visible', () => {
   context.rows = rows;
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`, context);
   const html = groupNode.innerHTML;
-  assert.match(html, /Best prospects/);
+  assert.match(html, /Best fits/);
   const best = html.match(/<section class="tg-sec tg-top">([\s\S]*?)<\/section>/)[1];
   assert.deepEqual([...best.matchAll(/data-go="([^"]+)"/g)].map(m=>m[1]), ['Exceptional fit','AI: Top fit','Fit: strong','Fit: good']);
   assert.equal([...best.matchAll(/<b class="num">0<\/b>/g)].length, 4);
@@ -229,7 +229,7 @@ test('a saved fit survives an existing score while the row uses only one fit slo
   assert.match(ui.rowHTML({id:12,handle:'fit',business_fit:95,score:99,tags:[tag('Fit: strong')]},0,64),/data-tag="Fit: strong"/);
 });
 
-test('exceptional owner labels stay visible in Best prospects with actual counts and filter keys', () => {
+test('exceptional owner labels stay visible in Best fits with actual counts and filter keys', () => {
   const {context,groupNode} = mount();
   context.rows = [{...tag('Design partner','custom','manual'),total:7},{...tag('AI: Top fit','ai'),total:23}];
   vm.runInContext(`const groups = {${section('  renderGroups(q) {', '  syncRen() {')}}; groups.list = rows; groups.renderGroups('');`,context);
