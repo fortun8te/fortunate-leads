@@ -26,6 +26,8 @@ from storage.connection import ConnectionFactory
 
 from .common import Bad, Conflict, EXT_ORIGIN, NotFound
 from .collection import CollectionService
+from .seeds import SeedService
+from .account_cards import AccountCardService
 from .leads import LeadService
 from .maps import MapService
 from .photos import PhotoService
@@ -58,6 +60,8 @@ class Application:
         self.worker_connections = ConnectionFactory(config.db)
         self.supervisor = WorkerSupervisor(self.worker_connections)
         self.scouts = deepscout.ScoutPool(config.db)
+        self.seeds = SeedService(config, self.collection)
+        self.account_cards = AccountCardService(config)
         self.collection.background_probe = self.background_busy
         self.routes = self._routes()
         self.http = self.http_application()
@@ -82,6 +86,11 @@ class Application:
             ('POST', '/api/local-processing', self.processing.api_local_processing),
             ('POST', '/api/person/(\\d+)/note-retry', self.processing.api_note_retry),
             ('GET', '/api/accounts', self.collection.api_accounts),
+            ('GET', '/api/accounts/live', self.account_cards.api_live),
+            ('POST', f'/api/accounts/{LANE}/connect', self.account_cards.api_connect),
+            ('POST', f'/api/accounts/{LANE}/disconnect', self.account_cards.api_disconnect),
+            ('POST', f'/api/accounts/{LANE}/reconnect', self.account_cards.api_reconnect),
+            ('POST', f'/api/accounts/{LANE}/forget', self.account_cards.api_forget),
             ('POST', f'/api/accounts/{LANE}', self.collection.api_account_edit),
             ('POST', f'/api/accounts/{LANE}/remove', self.collection.api_account_remove),
             ('GET', '/api/setup', self.collection.api_setup),
@@ -128,6 +137,11 @@ class Application:
             ('GET', '/api/scraper/suggestions', self.collection.api_collection_suggestions),
             ('POST', '/api/scraper/suggestions', self.collection.api_collection_suggestions),
             ('POST', '/api/scraper/seeds', self.collection.api_seeds),
+            ('GET', '/api/seeds', self.seeds.api_list),
+            ('POST', '/api/seeds/check', self.seeds.api_check),
+            ('POST', '/api/seeds/batch', self.seeds.api_batch),
+            ('POST', '/api/seeds/act', self.seeds.api_act),
+            ('POST', '/api/seeds/undo', self.seeds.api_undo),
             ('POST', '/api/scraper/pause', self.collection.api_pause),
             ('POST', '/api/scraper/budget', self.collection.api_budget),
             ('POST', '/api/scraper/snowball', self.collection.api_snowball),
@@ -164,7 +178,7 @@ class Application:
         """Publish the actual listener port after an ephemeral bind."""
         self.config = self.config.with_port(port)
         for service in (self.local_services, self.qualification, self.photos, self.leads,
-                        self.maps, self.processing, self.collection):
+                        self.maps, self.processing, self.collection, self.seeds, self.account_cards):
             service.config = self.config
         self.http.config = self.config
 

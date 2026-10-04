@@ -55,6 +55,13 @@ def rename_seed(conn, old, new, ig_id):
                      "leased_until=NULL,lane=NULL,lease_token=NULL WHERE kind='profile' AND lower(handle)=lower(?)",
                      (new, old))
         return
+    if '~' not in new and old.lower() != new.lower():
+        # A real rename (not a parked holder): remember the old name so pasting it later finds this seed.
+        conn.execute('INSERT INTO seed_aliases(old_handle,new_handle,ig_id,renamed_at) VALUES(?,?,?,?) '
+                     'ON CONFLICT(old_handle) DO UPDATE SET new_handle=excluded.new_handle,ig_id=excluded.ig_id,'
+                     'renamed_at=excluded.renamed_at', (old, new, ig_id, now()))
+        # Names that already pointed at the old handle now point at the newest one.
+        conn.execute('UPDATE seed_aliases SET new_handle=? WHERE new_handle=? AND old_handle!=?', (new, old, old))
     target = conn.execute('SELECT * FROM seeds WHERE handle=?', (new,)).fetchone()
     if target and target['ig_id'] == ig_id:
         # Both seed records have identity proof. Keep the newest list state and

@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY, ig_id TEXT UNIQUE, han
   bio TEXT, website TEXT, category TEXT, followers INT, following INT, posts INT, is_business INT,
   bio_at TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS seeds(handle TEXT PRIMARY KEY COLLATE NOCASE, ig_id TEXT, is_me INT DEFAULT 0, added_at TEXT);
+-- A seed whose Instagram handle changed keeps its history under the new handle; the old name stays findable here.
+CREATE TABLE IF NOT EXISTS seed_aliases(old_handle TEXT PRIMARY KEY COLLATE NOCASE, new_handle TEXT NOT NULL COLLATE NOCASE,
+  ig_id TEXT, renamed_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS seed_aliases_new ON seed_aliases(new_handle);
 CREATE TABLE IF NOT EXISTS lists(seed TEXT COLLATE NOCASE, direction TEXT CHECK(direction IN('followers','following')), state TEXT,
   cursor TEXT, received INT DEFAULT 0, total INT, error TEXT, updated_at TEXT, PRIMARY KEY(seed,direction));
 CREATE INDEX IF NOT EXISTS lists_direction_updated ON lists(direction,updated_at);
@@ -255,6 +259,9 @@ def init(path):
                                  ('accounts', 'profile_cool_until', 'TEXT'),
                                  ('accounts', 'list_endpoint_until', 'TEXT'),
                                  ('lists', 'lane', 'TEXT'), ('lists', 'prev_lane', 'TEXT'),
+                                 # Seed workflow (docs/ACCOUNTS_UX.md): wanted lists, tombstone, per-list operator hold.
+                                 ('seeds', 'directions', 'TEXT'), ('seeds', 'removed_at', 'TEXT'),
+                                 ('lists', 'hold', 'TEXT'), ('accounts', 'disconnected_at', 'TEXT'),
                                  ('list_runs', 'member_count', 'INT NOT NULL DEFAULT 0'),
                                  ('lists', 'run_job_id', 'INT'), ('lists', 'released_at', 'TEXT'), ('lists', 'released_why', 'TEXT'),
                                  ('people', 'bio_src', 'TEXT'), ('people', 'bd_at', 'TEXT'),

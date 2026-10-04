@@ -1,11 +1,27 @@
 """Checkpoints storage ownership; writes remain in the caller transaction."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from .clock import now, utc_now
 from .evidence import list_run_complete
 from .handles import norm_handle
 from .settings import get_setting, set_setting
+
+
+DIRECTIONS = ('followers', 'following')
+
+
+def wanted_directions(raw):
+    """The lists a seed asks for. Older seeds have no choice saved and want both, as they always did."""
+    if raw is None:
+        return DIRECTIONS
+    try:
+        chosen = json.loads(raw)
+    except (TypeError, ValueError):
+        return DIRECTIONS
+    wanted = tuple(d for d in DIRECTIONS if isinstance(chosen, list) and d in chosen)
+    return wanted or DIRECTIONS
 
 
 def start_list_run(conn, job_id, seed, direction):
@@ -53,8 +69,13 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None,
                 or conn.execute('SELECT 1 FROM edges WHERE seed=? LIMIT 1', (seed,)).fetchone()):
             raise ValueError('experimental page size requires a new seed')
     ts = now()
+    meta = conn.execute('SELECT removed_at FROM seeds WHERE handle=?', (seed,)).fetchone()
+    if meta and meta['removed_at']:
+        return False  # a removed seed comes back only through the seed workflow (seeds.add_batch)
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
-    row = conn.execute('SELECT state FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+    row = conn.execute('SELECT state,hold FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+    if row and row['hold']:
+        return False  # the operator paused this list; only an explicit resume queues it again
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                     (seed, direction)).fetchone():
         return False  # duplicate requests never rewind or relabel work already in progress
@@ -121,12 +142,14 @@ def repair_lists(conn, dry=False):
     todo = []
     partial_candidates = []
     trial_seeds = {r[0].lower() for r in conn.execute("SELECT DISTINCT seed FROM jobs WHERE experiment_viewer_ig_id IS NOT NULL OR collection_backend='mobile'")}
-    for (s,) in conn.execute("SELECT handle FROM seeds WHERE instr(handle, '~')=0 AND NOT EXISTS "
-                             "(SELECT 1 FROM collection_discovery d WHERE d.handle=seeds.handle AND d.state='queued')"):
+    for (s, wanted_raw) in conn.execute("SELECT handle,directions FROM seeds WHERE instr(handle, '~')=0 AND removed_at IS NULL "
+                                        "AND NOT EXISTS (SELECT 1 FROM collection_discovery d WHERE d.handle=seeds.handle AND d.state='queued')"):
         if s.lower() in trial_seeds:
             continue  # Trials stop at their recorded result; never restart with an ordinary page size.
-        for d in ('followers', 'following'):
+        for d in wanted_directions(wanted_raw):
             r = rows.get((s.lower(), d))
+            if r is not None and r['hold']:
+                continue  # paused by the operator: repair never undoes that
             if r is None:
                 out['added'] += 1
                 todo.append((s, d, 'add'))

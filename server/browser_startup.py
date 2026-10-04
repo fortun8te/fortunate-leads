@@ -166,7 +166,7 @@ def _warning_signature(conn):
 
 def _selected(repo, conn, body):
     profiles = read_config(repo)
-    requested = body.get('accounts') if body.get('action') == 'resume_selected_accounts' else None
+    requested = body.get('accounts') if body.get('action') in ('resume_selected_accounts', 'connect_accounts') else None
     isolation = db.get_setting(conn, 'instagram_collection_isolation') or {}
     if requested is None and isolation:
         requested = [{'lane_id': lane, 'ig_id': identity} for lane, identity in isolation['accounts'].items()]

@@ -623,6 +623,10 @@ def collection_turn(conn, lane, kinds):
     return last_list, yield_list, prefer_profile
 
 
+# A list the operator paused, or a seed they removed, is never handed out, whoever queued its job.
+NOT_REMOVED = "NOT EXISTS (SELECT 1 FROM seeds sd WHERE sd.removed_at IS NOT NULL AND sd.handle=j.seed)"
+
+
 def pick_job(conn, lane, kinds, now, allow_page_size=True):
     """Select eligible work with four-page turns between checkpointed lists and bios.
 
@@ -740,6 +744,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
             LEFT JOIN lists l ON l.seed=j.seed AND l.direction=j.direction
             WHERE (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
               AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
+              AND l.hold IS NULL AND {NOT_REMOVED}
               AND (l.lane IS NULL OR l.lane=? OR l.lane NOT IN ({okm}){owner_filter})
               AND {viewer_filter}{denied_alts}{follower_filter}{page_size_filter}
             ORDER BY coalesce(l.lane=?, 0) DESC, j.priority DESC,
@@ -756,6 +761,7 @@ def pick_job(conn, lane, kinds, now, allow_page_size=True):
         LEFT JOIN lists l ON j.kind='list' AND l.seed=j.seed AND l.direction=j.direction
         WHERE j.kind IN ({marks}) AND (j.state='queued' OR (j.state='leased' AND j.leased_until<?))
           AND (j.retry_not_before IS NULL OR j.retry_not_before<=?)
+          AND l.hold IS NULL AND {NOT_REMOVED}
           AND (j.kind!='profile' OR NOT EXISTS (
             SELECT 1 FROM jobs busy WHERE busy.kind='profile' AND busy.state='leased'
               AND busy.id!=j.id AND busy.leased_until>=?
@@ -851,7 +857,8 @@ def out(conn, row, now, include_lists=True):
     own_budget = jload(row['budget'])
     return {'lane_id': row['lane_id'], 'ig_id': row['ig_id'], 'handle': row['handle'], 'label': row['label'], 'name': name_of(row),
             'role': row['role'], 'budget': budget_of(conn, row), 'budget_custom': isinstance(own_budget, dict),
-            'paused': bool(row['paused']), 'is_main': bool(row['is_main']), 'collection_protected': collection_protected(conn, row), 'first_seen': row['first_seen'],
+            'paused': bool(row['paused']), 'disconnected': bool(row['disconnected_at']), 'disconnected_at': row['disconnected_at'],
+            'is_main': bool(row['is_main']), 'collection_protected': collection_protected(conn, row), 'first_seen': row['first_seen'],
             'last_seen': row['last_seen'], 'version': row['version'], 'state': row['state'], 'hold': row['hold'],
             'status': status_of(row, now, conn), 'online': bool(row['last_seen']) and now - utc(row['last_seen']) < ONLINE_FOR,
             'healthy': healthy(row, now) and row['state'] != 'network_wait', 'cooldown_until': full_cooldown(row, now),
@@ -893,6 +900,7 @@ def alerts(conn, now=None, accts=None):
         return ''
 
     out_ = []
+    accts = [a for a in accts if not a.get('disconnected')]
     for a in accts:
         if a['list_endpoint_until']:
             out_.append({'level': 'warn', 'code': 'list_endpoint_wait', 'lane_id': a['lane_id'],
@@ -979,6 +987,8 @@ def edit(conn, lane, b):
         if k in b:
             if not isinstance(b[k], bool):
                 raise ValueError(f'{k} must be true or false')
+            if k == 'paused' and not b[k] and row['disconnected_at']:
+                raise ValueError('Reconnect this account first.')
             sets[k] = int(b[k])
     if 'label' in b:
         v = b['label']
@@ -990,6 +1000,46 @@ def edit(conn, lane, b):
     if sets.get('paused'):
         release(conn, db.utc_now(), only=lane)
     return conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+
+
+def disconnect(conn, lane):
+    """Stop using this Chrome profile without forgetting it. Its extension may keep checking in; it gets no work.
+
+    Unlike remove(), this survives the next heartbeat, so the account cannot quietly come back.
+    """
+    row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    if not row:
+        raise LookupError('no such account')
+    if not row['disconnected_at']:
+        conn.execute('UPDATE accounts SET disconnected_at=?,paused=1 WHERE lane_id=?', (db.now(), lane))
+        release_all(conn, lane, why='disconnected')
+    return conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+
+
+def reconnect(conn, lane):
+    """Use the account again. Collection still obeys Start/Stop, safety holds and the selection after a warning."""
+    row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    if not row:
+        raise LookupError('no such account')
+    if row['disconnected_at']:
+        conn.execute('UPDATE accounts SET disconnected_at=NULL,paused=0 WHERE lane_id=?', (lane,))
+    return conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+
+
+FORGET_AFTER = timedelta(minutes=5)
+
+
+def forget(conn, lane, now=None):
+    """Delete a disconnected account's row. Refused while its extension is still sending updates."""
+    now = now or datetime.now(timezone.utc)
+    row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (lane,)).fetchone()
+    if not row:
+        return 0
+    if not row['disconnected_at']:
+        raise ValueError('Disconnect this account first.')
+    if row['last_seen'] and now - utc(row['last_seen']) < FORGET_AFTER:
+        raise ValueError('Chrome is still sending updates from this profile. Close the profile or turn off the extension, then try again.')
+    return remove(conn, lane)
 
 
 def remove(conn, lane):

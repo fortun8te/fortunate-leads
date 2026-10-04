@@ -532,13 +532,18 @@ class CollectionService:
         if done and job and not error and not db.list_run_complete(conn, job['id']):
             error = 'The page history does not prove complete coverage; retry this list from the start.'
         state = 'partial' if done and error else ('done' if done else 'running')
+        # A pause asked for mid-request lands between pages: this page is saved, the next one waits for Resume.
+        held = conn.execute('SELECT hold FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+        paused_between_pages = state == 'running' and not stalled and bool(held and held['hold'])
+        if paused_between_pages:
+            state = 'paused'
         conn.execute('INSERT INTO lists(seed,direction,state,cursor,received,total,error,updated_at,run_job_id) VALUES(?,?,?,?,?,?,?,?,?) '
                      'ON CONFLICT DO UPDATE SET state=excluded.state,cursor=excluded.cursor,received=excluded.received, '
                      'total=coalesce(excluded.total,total),error=excluded.error,updated_at=excluded.updated_at,run_job_id=excluded.run_job_id',
                      (seed,direction,state,requested if stalled else next_cursor,received,total,error,ts,job['id'] if job else None))
         if job:
             conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL, lease_token=NULL WHERE id=?",
-                         ('error' if stalled else state if done else 'queued', job['id']))
+                         ('error' if stalled else 'cancelled' if paused_between_pages else state if done else 'queued', job['id']))
         changed = db.complete_list_snapshot(conn, seed, direction, job['id'], ts) if job and state == 'done' else set()
         if changed:
             rules.sync(conn, changed)
@@ -1278,6 +1283,9 @@ class CollectionService:
                             "AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.seed=p.handle AND l.direction='following') "
                             "ORDER BY m.updated_at DESC LIMIT ?", (*statuses, limit)).fetchall()
         seeds = [r[0] for r in rows if db.queue_list(conn, r[0], 'following')]
+        for handle in seeds:   # "who they follow" means following only; without this the repair job adds followers later
+            conn.execute("UPDATE seeds SET directions='[\"following\"]' WHERE handle=? AND directions IS NULL "
+                         "AND NOT EXISTS (SELECT 1 FROM lists WHERE seed=? AND direction='followers')", (handle, handle))
         conn.commit()
         return {'queued': len(seeds), 'seeds': seeds}
 
@@ -1483,7 +1491,7 @@ class CollectionService:
             db.set_setting(conn, 'onboarding_skipped', sorted(skipped))
             conn.commit()
         now = datetime.now(timezone.utc)
-        accts = accounts.listing(conn, now, include_lists=False)
+        accts = [a for a in accounts.listing(conn, now, include_lists=False) if not a['disconnected']]
         steps = onboarding.checks(accts, self.processing.api_llm(conn, {}, {}), onboarding.newest_backup(self.config['db']),
                                   onboarding.backup_agent_loaded(), set(db.get_setting(conn, 'onboarding_skipped') or []),
                                   {'extension_version': json.loads((self.config.root / 'extension' / 'manifest.json').read_text()).get('version')})

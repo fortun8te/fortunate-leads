@@ -79,7 +79,7 @@ def start_all(conn):
     db.set_setting(conn, 'paused', False)
     for stage in ('lists', 'bios'):
         set_stage(conn, stage, False)
-    conn.execute('UPDATE accounts SET paused=0 WHERE paused=1')
+    conn.execute('UPDATE accounts SET paused=0 WHERE paused=1 AND disconnected_at IS NULL')
 
 
 def mins(sec):
@@ -394,7 +394,7 @@ def apply(conn, b):
             if not isinstance(selection, dict):
                 raise ValueError('Each selected account needs its existing lane and Instagram identity.')
             row = conn.execute('SELECT * FROM accounts WHERE lane_id=?', (selection.get('lane_id'),)).fetchone()
-            if (not row or not row['ig_id'] or selection.get('ig_id') != row['ig_id'] or row['lane_id'] in allowed
+            if (not row or not row['ig_id'] or row['disconnected_at'] or selection.get('ig_id') != row['ig_id'] or row['lane_id'] in allowed
                     or row['ig_id'] in allowed.values() or accounts.collection_protected(conn, row) or accounts.warning_for(conn, row) or row['hold']
                     or not row['last_seen'] or now - utc(row['last_seen']) > accounts.RELEASE_AFTER
                     or row['state'] == 'network_wait' or row['collection_backend'] != 'chrome'
