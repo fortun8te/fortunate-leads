@@ -1,0 +1,636 @@
+#!/usr/bin/env python3
+"""What happened? A compact, files-only report from the server's structured log.
+
+    ops/diagnose                       last 2 hours, plain text, about 80 lines
+    ops/diagnose --since 6h --account trashtheturtles
+    ops/diagnose --json                the same facts as one JSON object
+    ops/diagnose --tail 40             the last 40 events, one line each
+
+Reads <data>/logs/events.jsonl (+ rotated copies), <data>/logs/run.json and <data>/crash/. Never contacts the
+server, so it works when the server is down. Standard library only. See docs/LOGGING.md.
+"""
+import argparse
+import collections
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+
+HIST_EDGES = (5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
+UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+SKIP_KEYS = ('ts', 'level', 'component', 'event', 'request_id', 'lane', 'account', 'hist', 'stack', 'agg', 'via')
+SILENT_SERVER_S = 180
+
+
+# ---------------------------------------------------------------- small helpers
+def parse_since(text):
+    match = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([smhd])', text.strip().lower())
+    if not match:
+        raise SystemExit("--since expects a number and s, m, h or d (for example 90m or 2h), got %r" % text)
+    return float(match.group(1)) * UNITS[match.group(2)]
+
+
+def parse_ts(text):
+    return datetime.strptime(text[:23], '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)
+
+
+def iso(moment):
+    return moment.strftime('%Y-%m-%dT%H:%M:%S.') + '%03dZ' % (moment.microsecond // 1000)
+
+
+def hms(text):
+    return text[11:19] + 'Z' if text else '?'
+
+
+def duration(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 90:
+        return '%ds' % seconds
+    if seconds < 5400:
+        return '%dm' % round(seconds / 60)
+    if seconds < 172800:
+        return '%dh%02dm' % (seconds // 3600, seconds % 3600 // 60)
+    return '%dd%02dh' % (seconds // 86400, seconds % 86400 // 3600)
+
+
+def ago(now, text):
+    try:
+        return duration((now - parse_ts(text)).total_seconds()) + ' ago'
+    except (TypeError, ValueError):
+        return '?'
+
+
+def clip(text, width):
+    text = str(text)
+    return text if len(text) <= width else text[:width - 1] + '~'
+
+
+def quantile(hist, q, top):
+    total = sum(hist)
+    if not total:
+        return 0
+    want, seen = total * q, 0
+    for index, count in enumerate(hist):
+        seen += count
+        if seen >= want:
+            return min(HIST_EDGES[index], top) if index < len(HIST_EDGES) else top
+    return top
+
+
+def bucket(ms):
+    for index, edge in enumerate(HIST_EDGES):
+        if ms < edge:
+            return index
+    return len(HIST_EDGES)
+
+
+def compact(event, show_account=False, width=160):
+    """12:00:03.123 warn collect.permit k=v k=v"""
+    rest = []
+    for key, value in event.items():
+        if key in SKIP_KEYS and not (show_account and key in ('account', 'lane')):
+            continue
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, separators=(',', ':'))
+        rest.append('%s=%s' % (key, value))
+    return clip('%s %-4s %s.%s %s' % (event['ts'][11:23], event.get('level', '')[:4], event.get('component'),
+                                      event.get('event'), ' '.join(rest)), width)
+
+
+# ---------------------------------------------------------------- reading
+def log_files(logs_dir):
+    names = []
+    try:
+        for name in os.listdir(logs_dir):
+            if name == 'events.jsonl' or re.fullmatch(r'events\.jsonl\.\d+', name):
+                names.append(name)
+    except OSError:
+        return []
+    rank = lambda name: int(name.rsplit('.', 1)[1]) if name[-1].isdigit() else 0
+    return [os.path.join(logs_dir, name) for name in sorted(names, key=rank, reverse=True)]
+
+
+def read_events(logs_dir, since_iso, until_iso):
+    events, bad = [], 0
+    for path in log_files(logs_dir):
+        try:
+            if datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).strftime('%Y-%m-%dT%H:%M:%S') < since_iso[:19]:
+                continue
+            with open(path, encoding='utf-8', errors='replace') as handle:
+                for line in handle:
+                    stamp = line[7:31]
+                    if stamp < since_iso or stamp > until_iso:
+                        if line.startswith('{"ts":"'):
+                            continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        bad += 1
+                        continue
+                    if isinstance(event, dict) and since_iso <= str(event.get('ts', '')) <= until_iso:
+                        events.append(event)
+        except OSError:
+            continue
+    events.sort(key=lambda e: e['ts'])
+    return events, bad
+
+
+def read_json(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def crash_dumps(crash_dir, since_iso):
+    found = []
+    try:
+        names = sorted(os.listdir(crash_dir))
+    except OSError:
+        return found
+    for name in names:
+        path = os.path.join(crash_dir, name)
+        if name.endswith('.json'):
+            body = read_json(path)
+            if body and body.get('ts', '') >= since_iso:
+                exc = body.get('exception') or {}
+                found.append({'ts': body['ts'], 'kind': body.get('kind'), 'file': path, 'run_id': body.get('run_id'),
+                              'sig': exc.get('sig'), 'message': exc.get('message'),
+                              'last_events': len(body.get('last_events') or [])})
+        elif name.endswith('-faulthandler.txt') or name == 'faulthandler.log':
+            try:
+                stamp = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+                if iso(stamp) >= since_iso and os.path.getsize(path):
+                    head = open(path, encoding='utf-8', errors='replace').read(400)
+                    kind = ('native crash' if 'Fatal Python error' in head else 'hang dump (watchdog)'
+                            if 'Timeout' in head else 'thread dump (SIGUSR1)')
+                    found.append({'ts': iso(stamp), 'kind': kind, 'file': path})
+            except OSError:
+                pass
+    return found
+
+
+# ---------------------------------------------------------------- analysis
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, ValueError, TypeError):
+        return False
+    except PermissionError:
+        return True
+
+
+def server_section(events, marker, now, dumps):
+    starts = [e for e in events if e['component'] == 'proc' and e['event'] == 'start']
+    previous = {e.get('run_id'): e for e in events if e['component'] == 'proc' and e['event'] == 'previous_run'}
+    beats = [e for e in events if e['component'] == 'proc' and e['event'] == 'heartbeat']
+    exits = [e for e in events if e['component'] == 'proc' and e['event'] in ('exit', 'signal', 'crash')]
+    verdicts = [e for e in events if e['component'] == 'proc' and e['event'] == 'previous_run']
+    out = {'marker': marker, 'restarts': [], 'alive': None}
+    if marker:
+        out['alive'] = marker.get('status') == 'running' and pid_alive(marker.get('pid'))
+    last_beat = beats[-1] if beats else None
+    out['last_heartbeat'] = last_beat['ts'] if last_beat else None
+    out['settings'] = last_beat.get('settings') if last_beat else None
+    out['vitals'] = ({k: last_beat.get(k) for k in ('rss_peak_mb', 'threads', 'fds', 'load1', 'queue', 'dropped',
+                                                    'errors', 'warns', 'http_active', 'http_oldest_s')}
+                     if last_beat else None)
+    for verdict in verdicts:
+        out['restarts'].append({'ts': verdict['ts'], 'after': verdict.get('outcome'), 'reason': verdict.get('exit_reason'),
+                                'last_alive': verdict.get('prev_last_alive'), 'crash_dump': verdict.get('crash_dump'),
+                                'last_events': verdict.get('last_events')})
+    out['starts'] = len(starts)
+    out['exits'] = [{'ts': e['ts'], 'event': e['event'], 'reason': e.get('reason') or e.get('signal')} for e in exits]
+    out['watchdog'] = collections.Counter(e['event'] for e in events if e['component'] == 'watchdog')
+    out['slept'] = [e.get('slept_s') for e in events if e['component'] == 'proc' and e['event'] == 'slept']
+    out['dropped'] = sum(e.get('n', 0) for e in events if e['component'] == 'obs' and e['event'] == 'dropped')
+    out['crash_dumps'] = dumps
+    return out
+
+
+def error_groups(events):
+    groups = {}
+    for e in events:
+        if e.get('level') != 'error':
+            continue
+        key = e.get('sig') or '%s.%s %s' % (e['component'], e['event'], '/'.join(
+            str(e[k]) for k in ('exc_type', 'code', 'reason') if e.get(k)) or str(e.get('error', ''))[:40])
+        group = groups.setdefault(key, {'sig': key, 'n': 0, 'first': e['ts'], 'last': e['ts'], 'sample': e})
+        group['n'] += 1
+        group['last'], group['sample'] = e['ts'], e
+    return sorted(groups.values(), key=lambda g: (-g['n'], g['last']))
+
+
+def warn_counts(events):
+    return collections.Counter('%s.%s' % (e['component'], e['event']) for e in events if e.get('level') == 'warn').most_common()
+
+
+def http_section(events):
+    routes = {}
+    for e in events:
+        if e['component'] != 'http':
+            continue
+        if e['event'] == 'agg' and e.get('key') != 'client_gone':
+            row = routes.setdefault(e['key'], {'n': 0, 'hist': [0] * (len(HIST_EDGES) + 1), 'max': 0.0, 'sum': 0.0, 'err': 0})
+            row['n'] += e.get('n', 0)
+            row['sum'] += e.get('sum_ms', 0)
+            row['max'] = max(row['max'], e.get('max_ms', 0))
+            for index, count in enumerate(e.get('hist') or []):
+                if index < len(row['hist']):
+                    row['hist'][index] += count
+            row['err'] += sum(c for status, c in (e.get('labels') or {}).items() if status.isdigit() and int(status) >= 500)
+        elif e['event'] == 'req':
+            key = '%s %s' % (e.get('method'), e.get('route'))
+            row = routes.setdefault(key, {'n': 0, 'hist': [0] * (len(HIST_EDGES) + 1), 'max': 0.0, 'sum': 0.0, 'err': 0})
+            dur = float(e.get('dur_ms') or 0)
+            row['n'] += 1
+            row['sum'] += dur
+            row['max'] = max(row['max'], dur)
+            row['hist'][bucket(dur)] += 1
+            row['err'] += 1 if (e.get('status') or 0) >= 500 else 0
+    rows = []
+    for key, row in routes.items():
+        rows.append({'route': key, 'n': row['n'], 'p50_ms': round(quantile(row['hist'], 0.5, row['max'])),
+                     'p95_ms': round(quantile(row['hist'], 0.95, row['max'])), 'max_ms': round(row['max']),
+                     'total_s': round(row['sum'] / 1000, 1), 'errors_5xx': row['err']})
+    rows.sort(key=lambda r: (-r['p95_ms'], -r['max_ms'], -r['n']))
+    gone = sum(e.get('n', 0) for e in events if e['component'] == 'http' and e['event'] == 'agg' and e.get('key') == 'client_gone')
+    slow = sum(1 for e in events if e['component'] == 'http' and e['event'] == 'req' and e.get('level') == 'warn'
+               and float(e.get('dur_ms') or 0) >= 500)
+    return {'routes': rows, 'client_gone': gone, 'slow_requests': slow}
+
+
+def db_section(events):
+    out = {'lock_waits': 0, 'lock_wait_max_ms': 0, 'busy': 0, 'slow': 0, 'top': []}
+    stats = {}
+    for e in events:
+        if e['component'] != 'db':
+            continue
+        if e['event'] == 'lock_wait':
+            out['lock_waits'] += 1
+            out['lock_wait_max_ms'] = max(out['lock_wait_max_ms'], e.get('dur_ms', 0))
+        elif e['event'] == 'busy':
+            out['busy'] += 1
+        elif e['event'] == 'slow':
+            out['slow'] += 1
+        elif e['event'] == 'q' and e.get('agg'):
+            row = stats.setdefault(e.get('key'), [0, 0.0, 0.0])
+            row[0] += e.get('n', 0)
+            row[1] += e.get('sum_ms', 0)
+            row[2] = max(row[2], e.get('max_ms', 0))
+    out['top'] = [{'sql': k, 'n': v[0], 'total_ms': round(v[1]), 'max_ms': round(v[2])}
+                  for k, v in sorted(stats.items(), key=lambda kv: -kv[1][1])[:5]]
+    return out
+
+
+def account_label(event):
+    return event.get('account') or event.get('lane')
+
+
+def matches_account(event, wanted):
+    if not wanted:
+        return True
+    wanted = wanted.lower().lstrip('@')
+    return any(str(event.get(k) or '').lower().lstrip('@').startswith(wanted) for k in ('account', 'lane'))
+
+
+def collection_section(events, now, wanted, context):
+    accounts = collections.OrderedDict()
+    for e in events:
+        if e['component'] not in ('collect', 'ig', 'ext') or not matches_account(e, wanted):
+            continue
+        label = account_label(e)
+        if not label:
+            continue
+        row = accounts.setdefault(label, {'account': e.get('account'), 'lane': e.get('lane'), 'permits': [], 'pages': [],
+                                          'bios': [], 'adverse': [], 'state': None, 'denial': None, 'ext': collections.Counter(),
+                                          'ig_status': collections.Counter(), 'version': None})
+        if e.get('account'):
+            row['account'] = e['account']
+        if e['component'] == 'collect':
+            if e['event'] == 'permit':
+                if e.get('granted'):
+                    row['permits'].append(e)
+                    row['denial'] = None
+                else:
+                    row['denial'] = e
+            elif e['event'] == 'page':
+                row['pages'].append(e)
+            elif e['event'] == 'bio':
+                row['bios'].append(e)
+            elif e['event'] == 'lane_state':
+                row['state'] = e
+                row['version'] = e.get('version') or row['version']
+        elif e['component'] == 'ig' and e['event'] == 'adverse':
+            row['adverse'].append(e)
+        elif e['component'] == 'ext':
+            row['ext'][e['event']] += 1
+            if e['event'] == 'ig.req':
+                row['ig_status'][str(e.get('status'))] += 1
+            if e.get('ext_v'):
+                row['version'] = e['ext_v']
+    hours = max(1e-9, (now - parse_ts(events[0]['ts'])).total_seconds() / 3600) if events else 1
+    result = []
+    for label, row in accounts.items():
+        last_hour = [e for e in row['permits'] if (now - parse_ts(e['ts'])).total_seconds() <= 3600]
+        good = [e for e in row['pages'] if e.get('outcome') == 'ok'] + row['bios']
+        good.sort(key=lambda e: e['ts'])
+        by_hour = collections.Counter(e['ts'][11:13] + ':00' for e in row['permits'])
+        entry = {'account': row['account'], 'lane': row['lane'], 'version': row['version'],
+                 'permits': len(row['permits']), 'permits_last_hour': len(last_hour),
+                 'permits_by_hour_utc': dict(sorted(by_hour.items())[-6:]),
+                 'pages': len(row['pages']), 'bios': len(row['bios']),
+                 'last_success': good[-1] if good else None,
+                 'state': row['state'], 'denial': row['denial'],
+                 'last_adverse': row['adverse'][-1] if row['adverse'] else None,
+                 'adverse_count': len(row['adverse']), 'ext_events': dict(row['ext']), 'ig_status': dict(row['ig_status'])}
+        result.append(entry)
+    result.sort(key=lambda r: -(r['permits'] + r['pages']))
+    newest = None
+    for entry in result:
+        if entry['last_adverse'] and (newest is None or entry['last_adverse']['ts'] > newest['last_adverse']['ts']):
+            newest = entry
+    before = []
+    if newest is not None:
+        target = newest['last_adverse']
+        index = events.index(target)
+        lane, account = target.get('lane'), target.get('account')
+        for e in reversed(events[:index]):
+            same = (lane and e.get('lane') == lane) or (account and e.get('account') == account)
+            context_proc = e['component'] == 'proc' and e['event'] != 'heartbeat'
+            if same or e['component'] in ('state', 'watchdog') or context_proc or (e['component'] == 'http' and e.get('level') != 'info'):
+                before.append(e)
+                if len(before) >= context:
+                    break
+        before.reverse()
+    return {'accounts': result, 'adverse_context': {'event': newest['last_adverse'] if newest else None, 'before': before}}
+
+
+def extension_section(events, wanted):
+    lanes = {}
+    for e in events:
+        if not matches_account(e, wanted):
+            continue
+        if e['component'] == 'proc' and e['event'] == 'heartbeat' and isinstance(e.get('lanes'), dict):
+            for label, age in e['lanes'].items():
+                lanes.setdefault(label, {'ages': []})['ages'].append((e['ts'], age))
+    for e in events:
+        label = account_label(e)
+        if e['component'] != 'ext' or not label or not matches_account(e, wanted):
+            continue
+        row = lanes.setdefault(e.get('account') or label, {'ages': []})
+        row.setdefault('counts', collections.Counter())[e['event']] += 1
+        row['errors'] = row.get('errors', 0) + (1 if e.get('level') in ('warn', 'error') and e['event'] not in
+                                                ('heartbeat_gap', 'heartbeat_silent') else 0)
+        if e.get('lag_s') is not None:
+            row.setdefault('lags', []).append(e['lag_s'])
+        if e.get('ext_v'):
+            row['version'] = e['ext_v']
+    result = []
+    for label, row in lanes.items():
+        counts = row.get('counts', collections.Counter())
+        lags = sorted(row.get('lags', []))
+        result.append({'account': label, 'version': row.get('version'),
+                       'last_age_s': row['ages'][-1][1] if row['ages'] else None,
+                       'last_seen': row['ages'][-1][0] if row['ages'] else None,
+                       'gaps': counts.get('heartbeat_gap', 0), 'silent': counts.get('heartbeat_silent', 0),
+                       'sw_starts': counts.get('sw_start', 0), 'ext_warnings': row.get('errors', 0),
+                       'log_lag_p50_s': lags[len(lags) // 2] if lags else None})
+    return result
+
+
+def stderr_section(path, limit=400000):
+    """Group the tracebacks in the old unstructured stderr log (no timestamps there)."""
+    try:
+        size = os.path.getsize(path)
+        mtime = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+        with open(path, 'rb') as handle:
+            handle.seek(max(0, size - limit))
+            text = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return None
+    groups = collections.OrderedDict()
+    frames, starts = [], 0
+    for line in text.splitlines():
+        if line.startswith('Fortunate Leads on '):
+            starts += 1
+        stripped = line.strip()
+        if stripped.startswith('File "'):
+            frames.append(re.sub(r'.*/', '', stripped).replace('"', ''))
+        elif re.match(r'^[A-Za-z_][\w.]*(Error|Exception|Interrupt|Exit)\b', line):
+            key = re.sub(r'\d+', 'N', line)[:90] + (' @ ' + frames[-1].split(', in ')[-1] if frames else '')
+            groups[key] = groups.get(key, 0) + 1
+            frames = []
+    return {'path': path, 'bytes': size, 'modified': iso(mtime), 'starts_in_tail': starts,
+            'groups': sorted(groups.items(), key=lambda kv: -kv[1])}
+
+
+# ---------------------------------------------------------------- rendering
+def render(report, full):
+    cap = (lambda rows, n: rows) if full else (lambda rows, n: rows[:n])
+    now = parse_ts(report['now'])
+    out = []
+    header = 'fortunate-leads diagnose  window=%s  now=%s (UTC; local %s)  data=%s' % (
+        report['window'], report['now'][:19] + 'Z', now.astimezone().strftime('%H:%M'), report['data_dir'])
+    out.append(header)
+    server = report['server']
+    marker = server['marker']
+    if not report['events']:
+        out.append('NO STRUCTURED LOG in this window (%s). The server has not run with structured logging yet, or the window is too short.'
+                   % os.path.join(report['data_dir'], 'logs', 'events.jsonl'))
+    if marker:
+        state = 'running' if server['alive'] else 'NOT RUNNING' if marker.get('status') == 'running' else 'stopped (%s)' % (marker.get('reason') or marker.get('status'))
+        beat = ('last heartbeat %s' % ago(now, server['last_heartbeat'])) if server['last_heartbeat'] else 'no heartbeat in window'
+        flag = ''
+        if server['alive'] and server['last_heartbeat'] and (now - parse_ts(server['last_heartbeat'])).total_seconds() > SILENT_SERVER_S:
+            flag = '  <-- ALIVE BUT SILENT: possible hang (kill -USR1 %s dumps thread stacks to crash/faulthandler.log)' % marker.get('pid')
+        try:
+            up = ' up ' + duration((now - parse_ts(marker['started'])).total_seconds()) if server['alive'] else ''
+        except (KeyError, TypeError, ValueError):
+            up = ''
+        out.append('SERVER  %s pid %s%s since %s sha %s | %s%s' % (state, marker.get('pid'), up, (marker.get('started') or '?')[:19] + 'Z',
+                                                                 marker.get('sha') or '?', beat, flag))
+    vitals = server['vitals']
+    if vitals:
+        out.append('        rss peak %s MB, %s threads, %s fds, load %s | events: %s errors, %s warns, %s dropped | http now %s active, oldest %ss' % (
+            vitals.get('rss_peak_mb'), vitals.get('threads'), vitals.get('fds'), vitals.get('load1'), vitals.get('errors'),
+            vitals.get('warns'), server['dropped'] or vitals.get('dropped'), vitals.get('http_active'), vitals.get('http_oldest_s')))
+    settings = server.get('settings')
+    if settings is not None:
+        shown = []
+        for key, value in settings.items():
+            if key == 'cooldown':
+                over = str(value)[:19] < report['now'][:19]
+                shown.append('cooldown %s %sZ' % ('ended' if over else 'until', str(value)[11:16]))
+            elif key == 'instagram_scraping_warning':
+                shown.append('scraping warning on ' + str((value or {}).get('lane')) +
+                             (' +%d more' % len((value or {}).get('pending') or []) if (value or {}).get('pending') else ''))
+            elif value is True:
+                shown.append(key.replace('instagram_', '').replace('_', ' '))
+            else:
+                shown.append('%s=%s' % (key, json.dumps(value, separators=(',', ':'))[:40]))
+        out.append('        STATE (last heartbeat): ' + (', '.join(shown) if shown else 'nothing paused, no cooldown, no warning'))
+    notes = []
+    if server['watchdog']:
+        notes.append('watchdog ' + ', '.join('%s x%d' % kv for kv in server['watchdog'].items()))
+    if server['slept']:
+        notes.append('machine slept %d time(s) (%s)' % (len(server['slept']), ', '.join(duration(s) for s in server['slept'][:3])))
+    if notes:
+        out.append('        ' + ' | '.join(notes))
+    restarts = [r for r in server['restarts'] if r['after'] != 'first']
+    if restarts:
+        out.append('RESTARTS in window: %d' % len(restarts))
+        for row in cap(list(reversed(restarts)), 4):
+            bad = row['after'] in ('crashed', 'killed', 'unknown')
+            extra = ''
+            if row.get('crash_dump'):
+                extra = ' dump=%s' % os.path.basename(str(row['crash_dump']))
+            detail = ('%s; last alive %s' % (row['reason'], hms(row['last_alive']))) if bad and row['last_alive'] else (row['reason'] or '')
+            out.append('  %s start after %s%s%s' % (hms(row['ts']), (row['after'] or '?').upper() if bad else row['after'],
+                                                    ' (%s)' % detail if detail else '', extra))
+            if bad and row.get('last_events'):
+                for line in cap(row['last_events'][-3:], 3):
+                    out.append('      before it: ' + clip(line, 130))
+    elif server['starts']:
+        out.append('RESTARTS in window: 0 (%d start, no earlier run recorded)' % server['starts'])
+    for dump in cap(server['crash_dumps'], 3):
+        out.append('  CRASH DUMP %s %s %s' % (hms(dump['ts']), dump['kind'], clip('%s %s' % (dump.get('sig') or '', os.path.basename(dump['file'])), 90)))
+    errors = report['errors']
+    if errors:
+        out.append('ERRORS  %d groups, %d events' % (len(errors), sum(g['n'] for g in errors)))
+        for group in cap(errors, 5):
+            sample = group['sample']
+            out.append('  x%-4d %s  %s -> %s' % (group['n'], clip(group['sig'], 72), hms(group['first']), hms(group['last'])))
+            where = ' '.join('%s=%s' % (k, sample[k]) for k in ('request_id', 'route', 'account', 'loop') if sample.get(k))
+            stack = ' < '.join(reversed((sample.get('stack') or [])[-4:]))
+            said = sample.get('error') or sample.get('message') or ' '.join(
+                str(sample[k]) for k in ('code', 'reason', 'http_status') if sample.get(k))
+            out.append('        sample %s %s' % (where, clip(said, 70)))
+            if stack:
+                out.append('        at ' + clip(stack, 128))
+    else:
+        out.append('ERRORS  none in window')
+    if report['warns']:
+        out.append('WARNINGS  ' + ', '.join('%s x%d' % kv for kv in cap(report['warns'], 8)))
+    http = report['http']
+    if http['routes']:
+        out.append('SLOW ENDPOINTS (top %d by p95)%s' % (min(10, len(http['routes'])),
+                   ' | %d requests over 500 ms, %d client disconnects' % (http['slow_requests'], http['client_gone'])))
+        out.append('  %-34s %6s %7s %7s %7s %5s' % ('route', 'n', 'p50ms', 'p95ms', 'maxms', '5xx'))
+        for row in cap(http['routes'], 10):
+            out.append('  %-34s %6d %7s %7s %7s %5s' % (clip(row['route'], 34), row['n'], row['p50_ms'], row['p95_ms'],
+                                                         row['max_ms'], row['errors_5xx'] or ''))
+    db = report['db']
+    if db['lock_waits'] or db['busy'] or db['slow'] or db['top']:
+        top = '; '.join('%s %dx %dms' % (clip(r['sql'], 36), r['n'], r['total_ms']) for r in db['top'][:2])
+        out.append('DB  lock waits %d (max %s ms), busy errors %d, slow statements %d | top: %s' % (
+            db['lock_waits'], db['lock_wait_max_ms'], db['busy'], db['slow'], top or '-'))
+    collection = report['collection']
+    if collection['accounts']:
+        out.append('COLLECTION (permits = Instagram requests the server allowed)')
+        for row in cap(collection['accounts'], 6):
+            state = row['state'] or {}
+            status = state.get('state') or '?'
+            if state.get('hold'):
+                status += ' hold=' + str(state['hold'])
+            if state.get('paused'):
+                status += ' paused'
+            if state.get('cooldown_until'):
+                status += ' cooldown_until=' + str(state['cooldown_until'])[11:19]
+            since = (' since ' + hms(state['ts'])) if state.get('ts') else ''
+            out.append('  @%s v%s  %s%s | requests %d (%d in the last hour) pages %d bios %d' % (
+                row['account'] or row['lane'], row['version'] or '?', status, since, row['permits'], row['permits_last_hour'],
+                row['pages'], row['bios']))
+            if row['permits_by_hour_utc']:
+                out.append('      per hour (UTC): ' + ' | '.join('%s %d' % kv for kv in row['permits_by_hour_utc'].items()))
+            good = row['last_success']
+            success = ('%s %s %s' % (hms(good['ts']), good['event'], good.get('seed') or good.get('handle') or '')) if good else 'none in window'
+            denial = row['denial']
+            tail = ' | now denied: %s%s' % (denial.get('why'), ' (%s)' % denial['hint'] if denial.get('hint') else '') if denial else ''
+            adverse = row['last_adverse']
+            out.append('      last success %s | adverse %d%s%s' % (success, row['adverse_count'],
+                       (' (last %s %s %s HTTP %s)' % (hms(adverse['ts']), adverse.get('code'), adverse.get('reason') or '', adverse.get('http_status'))) if adverse else '', tail))
+    context = collection['adverse_context']
+    if context['event']:
+        target = context['event']
+        out.append('LAST INSTAGRAM ADVERSE EVENT and the %d events before it:' % len(context['before']))
+        for event in context['before']:
+            out.append('    ' + compact(event, show_account=False, width=150))
+        out.append('  > ' + compact(target, show_account=True, width=150))
+    lanes = report['extension']
+    if lanes:
+        out.append('EXTENSION LANES (heartbeat health)')
+        for row in cap(lanes, 5):
+            out.append('  @%s v%s  last beat %s | gaps>90s %d, silent episodes %d, worker restarts %d, ext warnings %d%s' % (
+                row['account'], row['version'] or '?', ('%ss ago' % row['last_age_s']) if row['last_age_s'] is not None else 'n/a',
+                row['gaps'], row['silent'], row['sw_starts'], row['ext_warnings'],
+                ', log lag p50 %ss' % row['log_lag_p50_s'] if row['log_lag_p50_s'] is not None else ''))
+    stderr = report['stderr']
+    if stderr:
+        groups = stderr['groups']
+        out.append('STDERR (launchd log, unstructured, no timestamps) %s: %d KB, modified %s, %d server starts in its tail, %d error kinds' % (
+            os.path.basename(stderr['path']), stderr['bytes'] // 1024, stderr['modified'][:16] + 'Z', stderr['starts_in_tail'], len(groups)))
+        for key, count in cap(groups, 4):
+            out.append('  x%-4d %s' % (count, clip(key, 120)))
+    if report.get('bad_lines'):
+        out.append('NOTE  %d unreadable log lines skipped' % report['bad_lines'])
+    return out
+
+
+# ---------------------------------------------------------------- main
+def build(args):
+    now = parse_ts(args.now) if args.now else datetime.now(timezone.utc)
+    seconds = parse_since(args.since)
+    since_iso, until_iso = iso(now - timedelta(seconds=seconds)), iso(now + timedelta(seconds=5))
+    base = os.path.abspath(args.data_dir)
+    logs_dir = os.path.join(base, 'logs', args.subdir) if args.subdir else os.path.join(base, 'logs')
+    crash_dir = os.path.join(base, 'crash', args.subdir) if args.subdir else os.path.join(base, 'crash')
+    events, bad = read_events(logs_dir, since_iso, until_iso)
+    marker = read_json(os.path.join(logs_dir, 'run.json'))
+    dumps = crash_dumps(crash_dir, since_iso)
+    report = {'now': iso(now), 'window': args.since, 'data_dir': base, 'events': len(events), 'bad_lines': bad,
+              'server': server_section(events, marker, now, dumps), 'errors': error_groups(events), 'warns': warn_counts(events),
+              'http': http_section(events), 'db': db_section(events),
+              'collection': collection_section(events, now, args.account, args.context),
+              'extension': extension_section(events, args.account),
+              'stderr': None if args.no_stderr else stderr_section(os.path.expanduser(args.stderr))}
+    return report, events
+
+
+def main(argv=None):
+    here = os.path.dirname(os.path.abspath(__file__))
+    parser = argparse.ArgumentParser(description='Explain what the Fortunate Leads server did, from its log files.')
+    parser.add_argument('--since', default='2h', help='window, e.g. 30m, 2h, 1d (default 2h)')
+    parser.add_argument('--account', help='only this Instagram account (handle) or lane id prefix')
+    parser.add_argument('--json', action='store_true', help='machine-readable output')
+    parser.add_argument('--tail', nargs='?', const=30, type=int, metavar='N', help='print the last N events instead of the report')
+    parser.add_argument('--full', action='store_true', help='no per-section line caps')
+    parser.add_argument('--context', type=int, default=20, help='events shown before the last Instagram adverse event')
+    parser.add_argument('--data-dir', default=os.environ.get('FL_DATA_DIR') or os.path.join(here, '..', 'data'))
+    parser.add_argument('--subdir', help='preview-8880 style sub-folder written by a --no-workers server')
+    parser.add_argument('--stderr', default='~/Library/Logs/fortunate-leads.log', help='the LaunchAgent stdout/stderr file')
+    parser.add_argument('--no-stderr', action='store_true')
+    parser.add_argument('--now', help='report as of this UTC time (tests)')
+    args = parser.parse_args(argv)
+    report, events = build(args)
+    if args.tail is not None:
+        picked = [e for e in events if matches_account(e, args.account)][-args.tail:]
+        if args.json:
+            print(json.dumps(picked, indent=1))
+        else:
+            for event in picked:
+                print(compact(event, show_account=True, width=200))
+        return 0
+    if args.json:
+        print(json.dumps(report, indent=1, default=str))
+        return 0
+    lines = render(report, args.full)
+    print('\n'.join(lines))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
