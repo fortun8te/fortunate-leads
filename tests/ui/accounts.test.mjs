@@ -1,140 +1,114 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { readFileSync } from 'node:fs';
+import {createRequire} from 'node:module';
+import {readFileSync} from 'node:fs';
+const require=createRequire(import.meta.url);
+const P=require('../../web/accounts.js');
+const html=readFileSync(new URL('../../web/index.html',import.meta.url),'utf8');
+const source=readFileSync(new URL('../../web/app.js',import.meta.url),'utf8');
+const NOW=Date.parse('2026-10-04T12:00:00Z');
+const ui=(extra={})=>({open:new Set(),sel:new Set(),openCards:new Set(),busy:new Set(),errors:{},confirm:null,focus:null,...extra});
+const card=(c={})=>({lane_id:'lane-1',ig_id:'1',handle:'scout',label:null,name:'@scout',avatar:{pic:null,initial:'S'},kind:'collector',state:'ready',tone:'quiet',
+  headline:'Ready',detail:'Waiting for work.',until:null,action:{id:'pause',label:'Pause'},online:true,paused:false,disconnected:false,first_seen:'2026-10-01T00:00:00Z',
+  last_seen:'2026-10-04T11:59:00Z',version:'3.9.30',allowance:{reads:'both',list:{used:83,limit:200},profile:{used:0,limit:100},resets_at:'2026-10-05T00:00:00+02:00'},
+  details:{reads:'both',reads_label:'Lists and bios',budgets:{list:{limit:200,default:200,custom:false},profile:{limit:100,default:100,custom:false}},last_slowed:null,hour:{pages:0,people:0},events:[],can_forget:false,saved_profile:false,pace:null},...c});
 
-const source = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
-const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
-const start = source.indexOf('function collectionReason(');
-const end = source.indexOf('\nfunction renderAccounts()', start);
-assert.ok(start >= 0 && end > start);
-const snippet = source.slice(start, end);
-const view = vm.runInNewContext(`${snippet}\n({ accountAccess, accountRow })`, {
-  Date, ST_DOT: {}, ROLES: [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']],
-  A: { confirm: null, renaming: null },
-  esc: (x) => String(x ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
-  ago: () => '2m', left: () => '8m', int: (x) => Number(x || 0).toLocaleString('en-US'),
-  ucf: (x) => x[0].toUpperCase() + x.slice(1),
-  jobText: () => 'Waiting for work', backIn: () => 'in 8 min',
+test('a card leads with one health word, one reason and one action, with details closed', () => {
+  const {html:h}=P.cardView(card(),ui(),NOW);
+  assert.match(h,/<b data-headline="Ready"[^>]*>Ready<\/b>/);
+  assert.match(h,/83 of 200 list pages today/);assert.match(h,/0 of 100 bios today/);
+  assert.equal((h.match(/data-fid="primary"/g)||[]).length,1);
+  assert.match(h,/data-card="pause"/);
+  assert.doesNotMatch(h,/acx-more-body|Daily limits|Recent activity/);
+  assert.match(h,/aria-expanded="false"/);
 });
-const account = (changes = {}) => ({
-  lane_id: 'lane-1', handle: 'sample', name: '@sample', label: null,
-  role: 'lists', status: 'running', online: true, paused: false,
-  last_seen: new Date().toISOString(), budget: { list: 0, profile: 0 },
-  today: { list: 12, profile: 3 }, hour: { people: 60 }, ...changes,
+test('details hold reads, daily limits, the name, recent activity and an empty slot for pace', () => {
+  const c=card({details:{...card().details,events:[{at:'2026-10-04T10:05:00Z',text:'Saved 177 people from @x'}]}});
+  const {html:h}=P.cardView(c,ui({openCards:new Set(['lane-1'])}),NOW);
+  for(const word of ['Reads','Daily limits','Name','Recent activity','Disconnect']) assert.match(h,new RegExp(word));
+  assert.match(h,/data-slot="pace" hidden/);
+  assert.match(h,/Saved 177 people from @x/);
+  assert.match(h,/Whole numbers only/);
 });
-
-test('account card leads with access and work, with counts and controls in account settings', () => {
-  const html = view.accountRow(account());
-  assert.match(html, /Connected[\s\S]*Collect/);
-  assert.ok(html.indexOf('Account settings') > html.indexOf('Collect'));
-  assert.ok(html.indexOf('Today · workspace caps') > html.indexOf('Account settings'));
-  assert.match(html, /data-pause>Pause/);
-  assert.match(html, /data-role="lists"/);
-  assert.match(html, /data-bud/);
-  assert.match(html, /data-remove/);
-  assert.match(html, /No cap/);
-  assert.doesNotMatch(html, /no limit|unlimited/i);
+test('a waiting card counts down from an absolute time without asking the server again', () => {
+  const c=card({state:'waiting',tone:'wait',headline:'Waiting {t}',detail:'Instagram asked this account to slow down.',until:'2026-10-04T12:04:00Z'});
+  assert.equal(P.headlineText(c,NOW),'Waiting 4 min');
+  assert.equal(P.headlineText(c,NOW+3*60000+30000),'Waiting 30 s');
+  assert.match(P.cardView(c,ui(),NOW).html,/data-until="2026-10-04T12:04:00Z"/);
+  assert.equal(P.headlineText({...c,until:null},NOW),'Waiting');
+  assert.equal(P.countdown('2026-10-04T14:20:00Z',NOW),'2 h 20 min');
 });
-
-test('Accounts uses one concise summary instead of KPI tiles', () => {
-  assert.match(html, /id="acc-summary"[^>]*aria-live="polite"/);
-  assert.doesNotMatch(html, /id="acc-kpis"/);
-  assert.match(source, /need attention/);
+test('the warning review shows a disabled confirm with its reason until the extension agrees', () => {
+  const c=card({state:'review',tone:'attention',headline:'Instagram asked for a review',action:{id:'acknowledge',label:"I've reviewed it",enabled:false,hint:'Waiting for the extension to see the warning page closed.'}});
+  const h=P.cardView(c,ui(),NOW).html;
+  assert.match(h,/data-card="acknowledge"[^>]*disabled/);assert.match(h,/Waiting for the extension/);
 });
-
-test('polling keeps each account Advanced state and focused control', () => {
-  const document = { activeElement: null };
-  const list = {
-    rows: [],
-    contains(node) { return this.rows.some((row) => row.controls.includes(node)); },
-    querySelectorAll() { return this.rows; },
-    set innerHTML(markup) {
-      this.rows = [...markup.matchAll(/data-lane="([^"]+)"/g)].map((match) => {
-        const row = { dataset: { lane: match[1] }, details: { open: false } };
-        row.controls = ['SUMMARY', 'BUTTON'].map((tagName) => ({
-          tagName,
-          matches(selector) { return selector === 'button, summary'; },
-          closest() { return row; },
-          focus() { document.activeElement = this; },
-        }));
-        row.querySelector = () => row.details;
-        row.querySelectorAll = () => row.controls;
-        return row;
-      });
-    },
-  };
-  const elements = new Map([['#acc-list', list]]);
-  const $ = (selector) => {
-    if (!elements.has(selector)) elements.set(selector, { disabled: false, textContent: '', innerHTML: '' });
-    return elements.get(selector);
-  };
-  const renderSource = source.slice(source.indexOf('function renderAccounts() {'), source.indexOf('\nasync function editAccount(', source.indexOf('function renderAccounts() {')));
-  const context = vm.createContext({
-    $, document, renderScraper(){}, syncSeed(){}, A: { starting: false, wiz: null, dismissed: false, renaming: null },
-    S: { sc: { accounts: [{ lane_id: 'first', online: true }, { lane_id: 'second', online: true }], alerts: [], rate: { people_last_hour: 12 } }, scStale: false },
-    accountRow: (account) => `<section data-lane="${account.lane_id}"></section>`,
-    esc: String, int: String, accountAccess: view.accountAccess, collectionCoverageHTML: () => '',
-  });
-  vm.runInContext(`${renderSource}\nrenderAccounts()`, context);
-  list.rows[0].details.open = true;
-  list.rows[0].controls[1].focus();
-  vm.runInContext('renderAccounts()', context);
-  assert.equal(list.rows[0].details.open, true);
-  assert.equal(list.rows[1].details.open, false);
-  assert.equal(document.activeElement, list.rows[0].controls[1]);
-  list.rows[0].controls[0].focus();
-  vm.runInContext('renderAccounts()', context);
-  assert.equal(list.rows[0].details.open, true);
-  assert.equal(document.activeElement, list.rows[0].controls[0]);
+test('personal account has no pause, no limits and says so quietly', () => {
+  const c=card({kind:'main',state:'personal',headline:'Personal account',detail:'Never used for collecting.',allowance:null,action:{id:'inbox',label:'Open Instagram'}});
+  const h=P.cardView(c,ui({openCards:new Set(['lane-1'])}),NOW).html;
+  assert.match(h,/href="https:\/\/www.instagram.com\/direct\/inbox\/"/);assert.doesNotMatch(h,/data-card="pause"|Daily limits|Disconnect|of \d+ list pages/);
+  assert.match(h,/personal account/i);
+});
+test('a failed action stays on the card with a way to try again', () => {
+  const h=P.cardView(card(),ui({errors:{'lane-1':"Couldn't do that. Try again."}}),NOW).html;
+  assert.match(h,/role="alert"/);assert.match(h,/data-card="retry"/);
+});
+test('a busy card disables its action and never shows a spinner', () => {
+  const h=P.cardView(card(),ui({busy:new Set(['lane-1'])}),NOW).html;
+  assert.match(h,/disabled>Working…/);assert.doesNotMatch(h,/spinner|<progress/);
+});
+test('names, handles and reasons are escaped', () => {
+  const h=P.cardView(card({handle:'<b>x</b>',label:'"Q"',detail:'<img src=x onerror=1>'}),ui(),NOW).html;
+  assert.doesNotMatch(h,/<b>x<\/b>|<img src=x/);assert.match(h,/&lt;b&gt;x/);
+});
+test('no card state uses the words the copy guide bans', () => {
+  const states=['ready','collecting','waiting','limit','paused','offline','needs_login','security_check','review','held_back','personal','disconnected','connecting','trouble'];
+  for(const state of states){const h=P.cardView(card({state}),ui({openCards:new Set(['lane-1'])}),NOW).html;const text=h.replace(/<[^>]*>/g,' ');assert.doesNotMatch(text,/\blane\b|lease|permit|cooldown|\bhold\b|Error\b|Oops|Please|Successfully|!/i,state);}
 });
 
-test('navigation uses a settings gear and removes the keyboard help button while keeping the shortcut', () => {
-  assert.match(html, /data-view="settings"[^>]*aria-label="Settings"><svg[^>]*><path/);
-  assert.doesNotMatch(html, /id="help-btn"/);
-  assert.match(source, /if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
+test('add-account sequence follows what can be seen: waiting, extension, sign in, verified', () => {
+  const base=new Set(['old']);const w={base,started:NOW-1000};
+  const old=card({lane_id:'old',ig_id:'9',handle:'old'});
+  assert.deepEqual([P.wizardState(w,[old],NOW).step,P.wizardState(w,[old],NOW).done],[2,false]);
+  assert.equal(P.wizardState({...w,started:NOW-200000},[old],NOW).slow,true);
+  const waiting=card({lane_id:'new',ig_id:null,handle:null,state:'needs_login'});
+  assert.match(P.wizardState(w,[old,waiting],NOW).text,/Sign in to Instagram/);
+  assert.match(P.wizardState(w,[old,{...waiting,state:'security_check',ig_id:'5'}],NOW).text,/security check/);
+  const ok=card({lane_id:'new',ig_id:'5',handle:'fresh'});
+  assert.deepEqual([P.wizardState(w,[old,ok],NOW).step,P.wizardState(w,[old,ok],NOW).done],[4,true]);
+  assert.match(P.wizardState(w,[old,ok],NOW).text,/Verified. @fresh will join when collection runs/);
+});
+test('add-account refuses the personal account and a duplicate sign-in with a reason', () => {
+  const w={base:new Set(['old']),started:NOW};const old=card({lane_id:'old',ig_id:'9',handle:'old'});
+  assert.match(P.wizardState(w,[old,card({lane_id:'n',kind:'main',ig_id:'1'})],NOW).text,/personal account/);
+  assert.match(P.wizardState(w,[old,card({lane_id:'n',ig_id:'9',handle:'old'})],NOW).text,/already connected in another Chrome profile/);
+});
+test('the sequence copies the real extension folder and keeps steps 1 and 2 open until the extension checks in', () => {
+  const w={base:new Set(),started:NOW};
+  const h=P.wizardHTML(w,[],{extension_path:'/Users/me/fl/extension'},NOW);
+  assert.match(h,/data-copy="\/Users\/me\/fl\/extension"/);assert.match(h,/Load unpacked/);
+  assert.equal((h.match(/aria-current="step"/g)||[]).length,2);
 });
 
-test('Local AI setup owns model startup and reports its progress', () => {
-  assert.match(html, /id="acc-start">Start local models/);
-  assert.match(html, /id="acc-start-status"[^>]*role="status"/);
-
-  assert.match(source, /A\.starting \|\| !sc \|\| !!S\.scStale/);
-  assert.match(source, /api\.post\('\/api\/engine\/start', \{\}\)/);
-  assert.match(source, /Local models ready\./);
-  const accounts = html.slice(html.indexOf('id="view-accounts"'), html.indexOf('id="view-settings"'));
-  assert.doesNotMatch(accounts, /id="acc-start"/);
+test('Accounts has a single page header, two sections, and no second Start button', () => {
+  const view=html.slice(html.indexOf('id="view-accounts"'),html.indexOf('id="view-settings"'));
+  assert.equal((view.match(/<h1>/g)||[]).length,1);
+  assert.match(view,/id="acx-cards"/);assert.match(view,/id="acx-list"/);
+  assert.doesNotMatch(view,/Start collecting|Connect accounts|id="seed-in"|id="acc-list"|id="wiz"/);
+  assert.match(view,/aria-live="polite"/);
 });
-
-test('cooldowns, login holds and offline profiles have distinct access instructions', () => {
-  assert.match(view.accountRow(account({
-    status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
-    list_endpoint_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /Follower lists paused/);
-  const overlapping = view.accountRow(account({
-    status: 'cooldown', cooldown_until: new Date(Date.now() + 2 * 60 * 60000).toISOString(),
-    list_endpoint_until: new Date(Date.now() + 30 * 60000).toISOString(),
-  }));
-  assert.match(overlapping, /Instagram also requested a wait[\s\S]*when that wait ends/);
-  assert.doesNotMatch(overlapping, /retry 8m/);
-  assert.match(view.accountRow(account({
-    status: 'cooldown', cooldown_until: new Date(Date.now() + 8 * 60000).toISOString(),
-  })), /Instagram limit active[\s\S]*Resumes in 8 min/);
-  assert.match(view.accountRow(account({ status: 'needs_login', hold: 'login' })), /Open this Chrome profile and sign in/);
-  assert.match(view.accountRow(account({ status: 'offline', online: false })), /Offline/);
-  assert.doesNotMatch(view.accountRow(account({ status: 'running' })), /private source|private list/i);
+test('the old accounts code is gone from app.js and Local AI setup still owns model startup', () => {
+  for(const gone of ['function accountRow(','function renderAccounts(','function openWizard(','function parseHandles(','mountCollectionTargets']) assert.ok(!source.includes(gone),gone);
+  assert.match(html,/id="acc-start">Start local models/);assert.match(html,/id="acc-start-status"[^>]*role="status"/);
+  assert.match(source,/A\.starting \|\| !S\.sc \|\| !!S\.scStale/);assert.match(source,/api\.post\('\/api\/engine\/start', \{\}\)/);
+  const accounts=html.slice(html.indexOf('id="view-accounts"'),html.indexOf('id="view-settings"'));
+  assert.doesNotMatch(accounts,/id="acc-start"/);
 });
-
-
-test('account collection mode stays visible and a shared wait replaces ready text', () => {
-  const html = view.accountRow(account({status:'online', collection_wait:'Instagram wait until 22:08'}));
-  assert.match(html, /Waiting for Instagram to allow requests/);
-  assert.doesNotMatch(html, /Ready for collection/);
-  assert.ok(html.indexOf('data-role="lists"') < html.indexOf('Account settings'));
+test('navigation uses a settings gear and keeps the keyboard shortcut help', () => {
+  assert.match(html,/data-view="settings"[^>]*aria-label="Settings"><svg[^>]*><path/);
+  assert.doesNotMatch(html,/id="help-btn"/);
+  assert.match(source,/if \(k === '\?'\) \{ e\.preventDefault\(\); setHelp\(true\); return; \}/);
 });
-
- test('a shared Instagram rest is shown as a wait, not a manual pause', () => {
- const row = view.accountRow(account({collection_wait:'Instagram collection is resting'}));
- assert.match(row, /Waiting for Instagram to allow requests/);
- assert.doesNotMatch(row, /Scraping paused/);
- });
+test('the sidebar badge counts accounts that need a person and ignores disconnected ones', () => {
+  assert.match(source,/accs\.filter\(\(a\) => a\.hold && !a\.disconnected\)/);
+});

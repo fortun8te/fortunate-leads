@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../../web/app.js',import.meta.url),'utf8');
-const suggestionCode=source.slice(source.indexOf('const collectionSuggestions ='),source.indexOf('// Move the existing source form'));
-const c=vm.createContext({$:()=>null,esc:x=>String(x).replaceAll('<','&lt;'),toast(){},loadScraper(){},Date});
+const suggestionCode=source.slice(source.indexOf('const collectionSuggestions ='),source.indexOf('// Suggestion events are bound once'));
+const c=vm.createContext({$:()=>null,esc:x=>String(x).replaceAll('<','&lt;'),toast(){},loadScraper(){},window:{},Date});
 vm.runInContext(suggestionCode,c);
 test('suggestions describe directions, escape text, and omit invalid targets',()=>{
  const html=c.collectionSuggestionsHTML([{handle:'brand',directions:['followers'],reason:'<custom>'},{handle:'../bad',directions:['following']},{handle:'empty',directions:[]}]);
@@ -12,33 +12,19 @@ test('suggestions describe directions, escape text, and omit invalid targets',()
 });
 test('read-only suggestions never queue; explicit Add preserves supplied directions and ignores repeat clicks',async()=>{
  let posts=0,release;
- c.api={get:async()=>({suggestions:[{handle:'brand',directions:['following'],reason:'Client'}]}),post:async(path,body)=>{posts++;assert.equal(path,'/api/scraper/seeds');assert.equal(JSON.stringify(body),JSON.stringify({handles:['brand'],directions:['following']}));await new Promise(r=>release=r);return {queued:1}}};
+ c.api={get:async()=>({suggestions:[{handle:'brand',directions:['following'],reason:'Client'}]}),post:async(path,body)=>{posts++;assert.equal(path,'/api/seeds/batch');assert.equal(body.text,'brand');assert.deepEqual([...body.directions],['following']);assert.match(body.request_id,/^[A-Za-z0-9_-]{8,64}$/);await new Promise(r=>release=r);return {added:1}}};
  await c.loadCollectionSuggestions(true);assert.equal(posts,0);
  const add=c.addSuggestedTarget('brand');await c.addSuggestedTarget('brand');assert.equal(posts,1);
  release();await add;
  await c.addSuggestedTarget('brand');assert.equal(posts,1,'stale read must not resurface the target just added');
 });
-test('coverage uses the measured server range, never legacy historical ETA',()=>{
- const ctx=vm.createContext({int:String,esc:String,backgroundAIControlsHTML:()=>'',backgroundAIState:()=> 'Off',localProcessingSummary:()=> 'K2 status'});
- vm.runInContext(source.slice(source.indexOf('function collectionCoverageHTML('),source.indexOf('function renderAccounts()')),ctx);
- const snapshot={collection:{finished:0,pending:1,unknown_lists:0,eta:{scope:'current_queue',low_minutes:90,high_minutes:180}},stages:[{id:'lists',state:'running',paused:false}],progress:{lists:{left:50,eta_h:2,per_minute:3}}};
- assert.match(ctx.collectionCoverageHTML(snapshot),/Current queue: about 2 h–3 h/);
- const subset={...snapshot,collection:{...snapshot.collection,unknown_lists:4,eta:{...snapshot.collection.eta,scope:'known_lists'}}};
- assert.match(ctx.collectionCoverageHTML(subset),/Known lists: about 2 h–3 h/);
- assert.match(ctx.collectionCoverageHTML(subset),/4 list sizes unknown/);
- for(const override of [{paused:true},{collection:{...snapshot.collection,eta:null,message:'Measuring current pace'}},{collection:undefined}]) {
-   assert.doesNotMatch(ctx.collectionCoverageHTML({...snapshot,...override}),/Current queue:|Active queue:/);
- }
-});
-
-
 test('suggested accounts starts closed, keeps errors visible, and preserves disclosure state',()=>{
  const box={innerHTML:'',querySelector:()=>null,contains:()=>false};
- const ctx=vm.createContext({$:()=>box,document:{activeElement:null},esc:String,Date,toast(){},loadScraper(){}});
+ const ctx=vm.createContext({$:()=>box,document:{activeElement:null},esc:String,Date,toast(){},loadScraper(){},window:{}});
  vm.runInContext(suggestionCode,ctx);
  vm.runInContext("collectionSuggestions.enabled=true;collectionSuggestions.items=[{handle:'a',directions:['following'],reason:'Marked as your client'}];collectionSuggestions.history=[{handle:'old',state:'queued',reason:'Verbose old reason'}];renderCollectionSuggestions()",ctx);
  assert.match(box.innerHTML,/<details class="suggested-accounts" >/);
- assert.match(box.innerHTML,/Suggested accounts/);
+ assert.match(box.innerHTML,/Suggested profiles/);
  assert.match(box.innerHTML,/Auto-discover on/);
  assert.doesNotMatch(box.innerHTML,/Verbose old reason|Added automatically|Suggested next/);
  box.querySelector=selector=>selector==='.suggested-accounts'?{open:true}:null;
@@ -61,7 +47,7 @@ test('compact reasons keep factual scope and full evidence available without a l
 });
 
 test('failed Add keeps the suggested account available and reports the failure',async()=>{
- const ctx=vm.createContext({$:()=>null,esc:String,Date,toast(){},loadScraper(){},api:{post:async()=>{throw Error('offline')}}});
+ const ctx=vm.createContext({$:()=>null,esc:String,Date,toast(){},loadScraper(){},window:{},api:{post:async()=>{throw Error('offline')}}});
  vm.runInContext(suggestionCode,ctx);
  vm.runInContext("collectionSuggestions.items=[{handle:'brand',directions:['following']}];",ctx);
  await ctx.addSuggestedTarget('brand');

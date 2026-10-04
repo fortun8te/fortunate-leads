@@ -365,8 +365,7 @@ function setView(v) {
   // The detail panel belongs to Leads and Connections only; never carry it onto another page.
   if (prev !== v && S.open && (!work || narrow())) closeDetail();
   if (v === 'scraper') renderScraper();
-  if (v === 'accounts') { renderAccounts(); window.AccountSetup?.show(); }
-  if (v !== 'accounts' && A.wiz) closeWizard();
+  if (v === 'accounts') { window.AccountsPage?.show(); window.AccountSetup?.show(); loadCollectionSuggestions(); } else window.AccountsPage?.hide();
   if (v === 'settings') loadSettings();
   if (v === 'tags') T.show();
   if (v === 'qual') Q.show();
@@ -2157,14 +2156,15 @@ async function deleteRule(id) {
 
 
 // ---------- scraper ----------
-const SCRAPER_FULL_VIEWS = new Set(['scraper', 'accounts', 'settings', 'qual']);
+const SCRAPER_FULL_VIEWS = new Set(['scraper', 'settings', 'qual']);
 // Sidebar counts come from the lightweight scraper snapshot.
 function renderStatus() {
   const sc = S.sc;
   const q = sc ? (sc.queue?.list || 0) + (sc.queue?.profile || 0) : 0;
   $('#n-queue').textContent = q ? fmt(q) : '';
   const accs = sc?.accounts || [];
-  const alerts = (sc?.alerts || []).filter((x) => x.level === 'error').length;
+  // Accounts that need the person: a login, a security check or an Instagram warning. Disconnected ones don't.
+  const alerts = accs.filter((a) => a.hold && !a.disconnected).length;
   $('#n-acc').textContent = alerts ? String(alerts) : '';
   $('#n-acc').hidden = !alerts;
 }
@@ -2175,11 +2175,10 @@ async function loadScraper() {
   try { S.sc = await api.get('/api/scraper'); S.scError = false; S.scStale = false; }
   catch (e) { S.scError = true; S.scStale = true; }
   finally { S.scLoading = false; }
-  syncSeed();
+  syncEngineStart();
   if (SCRAPER_FULL_VIEWS.has(S.view)) await loadProcessingStatus();
   renderStatus();
   if (S.view === 'scraper') renderScraper();
-  if (S.view === 'accounts') renderAccounts();
   if (S.view === 'settings') renderSettings();
   if (S.view === 'qual') Q.renderProg();
 }
@@ -2193,8 +2192,8 @@ async function loadScraperStatus() {
   } catch (e) { S.scStale = true; }
   finally { S.scStatusLoading = false; }
   renderStatus();
+  syncEngineStart();
   if (SCRAPER_FULL_VIEWS.has(S.view)) await loadProcessingStatus();
-  if (S.view === 'accounts') renderAccounts();
   if (S.view === 'settings') renderCheckingMode();
   if (S.view === 'qual') Q.renderProg();
 }
@@ -2209,7 +2208,6 @@ function eta(h) {
   return `about ${Math.round(h / 24)} days`;
 }
 function renderScraper() {
-  mountCollectionTargets();
   const sc = S.sc;
   if (!sc || S.scError) {
     const message = S.scError
@@ -2321,7 +2319,6 @@ function backIn(t) {
   const m = Math.ceil(Math.max(0, Date.parse(t) - Date.now()) / 60000);
   return m <= 1 ? 'in about a minute' : m < 90 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`;
 }
-$('#scr-add').onclick = () => { $('#seed-panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); $('#seed-in').focus({ preventScroll: true }); };
 $('#lists-f').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) { listFilter = b.dataset.v; listsShown = 10; renderScraper(); } });
 $('#budget').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -2333,79 +2330,15 @@ $('#budget').addEventListener('submit', async (e) => {
 $('#snowball').onclick = async () => {
   try {
     const r = await api.post('/api/scraper/snowball', { min_status: 'interested' });
-    toast(r.queued ? `Queued the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new. Every Interested, Talking or Client lead is already queued, done or private.');
-    loadScraper();
-  } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not queue'); }
+    toast(r.queued ? `Added the following lists of ${plural(r.queued, 'lead')}` : 'Nothing new. Every Interested, Talking or Client lead is already added, done or private.');
+    loadScraper(); window.AccountsPage?.refresh();
+  } catch (e) { toast(e.status === 400 ? ucf(e.message) : "Couldn't add them. Try again."); }
 };
-function parseHandles(s) {
-  const out = new Set();
-  const reserved = new Set(['p', 'reel', 'reels', 'tv', 'stories', 'explore', 'accounts', 'direct', 'about', 'developer', '_u']);
-  const hosts = new Set(['instagram.com', 'www.instagram.com', 'm.instagram.com', 'instagr.am', 'www.instagr.am']);
-  for (let t of s.split(/[\s,;]+/)) {
-    t = t.trim().replace(/^@/, '');
-    if (!t) continue;
-    if (/[\/?#:]/.test(t) || /instagram\.com|instagr\.am/i.test(t)) {
-      const match = t.match(/^(?:https?:\/\/)?([^/?#]+)(\/[^?#]*)?(?:\?[^#]*)?(?:#.*)?$/i);
-      if (!match || !hosts.has(match[1].toLowerCase())) continue;
-      const path = match[2] || '';
-      const parts = path.split('/');
-      if (parts.length < 2 || parts.length > 3 || (parts.length === 3 && parts[2])) continue;
-      try { t = decodeURIComponent(parts[1]); } catch { continue; }
-    }
-    t = t.toLowerCase();
-    if (/^[a-z0-9._]{1,30}$/.test(t) && !reserved.has(t)) out.add(t);
-  }
-  return [...out];
-}
-let seedAdding = false;
-let seedAction = '';
-const seedFollowingOnly = () => S.sc?.control?.collection_scope === 'following';
-const seedDirs = () => $$('#seed-dir button.on').map((b) => b.dataset.v).filter(direction => !seedFollowingOnly() || direction === 'following');
-const seedCollectionRunning = () => !!S.sc && !S.sc.paused && S.sc.stages?.find(stage => stage.id === 'lists')?.paused === false;
-function syncSeed() {
-  const n = parseHandles($('#seed-in').value).length;
-  const directions = seedDirs();
-  $('#seed-n').textContent = n ? `${plural(n, 'profile')} · ${plural(n * directions.length, 'list')}` : '';
-  const unavailable = seedAdding || !n || !directions.length || !!S.scStale;
-  $('#seed-start').disabled = unavailable;
-  $('#seed-in').disabled = seedAdding;
-  $('#seed-start').textContent = seedAdding ? seedAction === 'start' ? 'Starting…' : 'Adding…' : seedCollectionRunning() ? 'Add profiles' : 'Start collecting';
-  $$('#seed-dir button').forEach(b => {
-    const excluded = seedFollowingOnly() && b.dataset.v === 'followers';
-    b.disabled = seedAdding || excluded;
-    b.setAttribute('aria-pressed', String(!excluded && b.classList.contains('on')));
-    b.title = excluded ? 'Following only is selected above' : '';
-  });
-}
-$('#seed-in').addEventListener('input', syncSeed);
-$('#seed-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { b.classList.toggle('on'); syncSeed(); } });
-async function submitSeed(start = true) {
-  const handles = parseHandles($('#seed-in').value), directions = seedDirs();
-  if (seedAdding || S.scStale || !handles.length || !directions.length) return;
-  seedAdding = true; seedAction = start ? 'start' : 'queue'; syncSeed();
-  try {
-    const r = await api.post(start ? '/api/start' : '/api/scraper/seeds', { handles, directions });
-    if (start && r.started !== true && r.starting !== true) {
-      $('#seed-feedback').textContent = "Profiles are queued. Couldn't confirm collection started. Check status and try again.";
-      loadScraper(); return;
-    }
-    const message = start ? r.starting === true ? 'Profiles queued. Connecting your saved accounts…' : 'Collection is on. Check the status above for activity.'
-      : r.queued ? `${ucf(plural(r.queued, 'list'))} added to the queue.` : 'Those lists are already queued.';
-    $('#seed-feedback').textContent = message;
-    toast(message);
-    window.dispatchEvent(new Event('fl:control-changed'));
-    $('#seed-in').value = ''; syncSeed(); loadScraper();
-  } catch (e) { $('#seed-feedback').textContent = start ? "Couldn't start collection. Your input is kept. Try again." : "Couldn't add these lists. Your input is kept. Try again."; }
-  finally { seedAdding = false; seedAction = ''; syncSeed(); }
-}
-$('#seed-start').onclick = () => submitSeed(!seedCollectionRunning());
 window.addEventListener('fl:control-changed', () => loadScraper());
 
 // ---------- accounts (one Chrome profile + extension + Instagram account each) ----------
 const ST_LABEL = { connection_error: 'Connection trouble', running: 'Running', online: 'Online', cooldown: 'Cooldown', needs_login: 'Needs login', challenge: 'Security check', offline: 'Offline', paused: 'Paused' };
-const ST_DOT = { connection_error: 'hollow', running: 'live run', online: 'live', cooldown: 'hollow', needs_login: 'need', challenge: 'need', offline: 'off', paused: '' };
-const ROLES = [['lists', 'Lists'], ['bios', 'Bios'], ['both', 'Both']];
-const A = { wiz: null, setup: null, confirm: null, renaming: null, renameValue: null, busy: new Set(), dismissed: false, starting: false };
+const A = { starting: false };
 
 async function copyText(text, btn) {
   let ok = false;
@@ -2414,15 +2347,6 @@ async function copyText(text, btn) {
     try { ok = document.execCommand('copy'); } catch (e2) { /* no clipboard */ } ta.remove();
   }
   if (btn) { btn.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { btn.textContent = 'Copy'; }, 1400); }
-}
-const copyRow = (text, label) => `<div class="copy"><code title="${esc(text)}">${esc(label || text)}</code><button class="btn" data-copy="${esc(text)}">Copy</button></div>`;
-
-function jobText(a) {
-  if (a.job) return a.job.kind === 'list' ? `@${a.job.seed} ${a.job.direction}` : `Bio of @${a.job.handle}`;
-  if (a.status === 'needs_login') return 'Waiting for a login';
-  if (a.status === 'challenge') return 'Waiting for the security check';
-  if (a.status === 'offline') return 'Last seen ' + ago(a.last_seen) + ' ago';
-  return ucf(a.activity || a.text || 'Idle');
 }
 function collectionReason(value, fallback = 'Scraping paused') {
   const reason = String(value || '').toLowerCase();
@@ -2437,86 +2361,6 @@ function collectionReason(value, fallback = 'Scraping paused') {
   if (/offline|extension/.test(reason)) return 'Open the connected Chrome profile';
   return fallback;
 }
-function accountAccess(a) {
-  if (a.hold === 'login' || a.status === 'needs_login') return { label: 'Login needed', detail: 'Open this Chrome profile and sign in.', kind: 'bad' };
-  if (a.hold || a.status === 'challenge') return { label: 'Security check', detail: 'Complete the check in this Chrome profile.', kind: 'bad' };
-  if (a.collection_protected || a.is_main) return {label:'Personal use only', detail:'Automated collection is blocked for this account.', kind:'quiet'};
-  if (!a.online || a.status === 'offline') return { label: 'Offline', detail: `Last seen ${ago(a.last_seen)} ago`, kind: 'quiet' };
-  if (a.status === 'connection_error') return {label:'Connection trouble', detail:'Check Instagram in this Chrome profile. Retries keep your saved progress.', kind:'wait'};
-  const instagramWait = a.cooldown_until && Date.parse(a.cooldown_until) > Date.now();
-  if (a.list_endpoint_until && Date.parse(a.list_endpoint_until) > Date.now()) return {
-    label: 'Follower lists paused',
-    detail: instagramWait
-      ? 'Instagram also requested a wait. Following lists and bios resume when that wait ends.'
-      : 'Following lists and bios can continue. Followers will retry later.',
-    kind: 'wait' };
-  if (instagramWait || a.status === 'cooldown') return { label: 'Instagram limit active', detail: a.cooldown_until ? `Resumes ${backIn(a.cooldown_until)}.` : 'Waiting for Instagram to allow requests again.', kind: 'wait' };
-  if (a.paused || a.status === 'paused') return { label: 'Paused', detail: 'Ready when resumed.', kind: 'quiet' };
-  if (a.collection_reason === 'main_reserved') return {label:'Protected', detail:a.collection_now, kind:'quiet'};
-  if (a.collection_state === 'waiting') return {label:'Waiting', detail:a.collection_now, kind:'wait'};
-  return { label: 'Connected', detail: `Seen ${ago(a.last_seen)} ago`, kind: 'ok' };
-}
-function accountInstagramHTML(a) {
-  if (!a.is_main) return '';
-  return location.port === '8777' && window.chrome?.runtime?.sendMessage
-    ? '<button class="btn" data-instagram="inbox">Instagram Inbox</button>'
-    : '<a class="btn" href="https://www.instagram.com/direct/inbox/" target="_blank" rel="noopener" title="Opens Instagram; check the signed-in account">Instagram Inbox</a>';
-}
-async function openInstagramAccount(lane, destination) {
-  try {
-    const setup = await api.get('/api/setup');
-    const instagram = setup.instagram;
-    if (!setup.extension_id || !instagram?.connected || instagram.lane_id !== lane || !instagram.ig_id) {
-      toast('Open the connected Chrome profile and sign in to Instagram.'); return;
-    }
-    const reply = await new Promise((resolve, reject) => {
-      const deadline = setTimeout(() => reject(Error('Unavailable')), 5000);
-      window.chrome.runtime.sendMessage(setup.extension_id, {type:'OPEN_INSTAGRAM',destination,expected_lane_id:lane,expected_account_id:instagram.ig_id}, result => {
-        clearTimeout(deadline);
-        if (window.chrome.runtime.lastError || !result?.ok || !result.opened || !result.account_verified) reject(Error('Unconfirmed'));
-        else resolve(result);
-      });
-    });
-    if (reply.opened) toast('Instagram opened in your connected profile.');
-  } catch { toast("Couldn't open the connected profile. Open Instagram in that Chrome profile."); }
-}
-function accountRow(a) {
-  const b = a.budget || {}, t = a.today || {}, h = a.hour || {};
-  const conf = A.confirm === a.lane_id, access = accountAccess(a);
-  const protectedAccount = a.collection_protected || a.is_main;
-  const budget = `${b.list ? `${int(b.list)} list requests/day` : 'No cap'} · ${b.profile ? `${int(b.profile)} profile requests/day` : 'No cap'}`;
-  const work = protectedAccount ? access.detail : a.collection_now || (a.paused ? 'Work paused' : a.collection_wait ? collectionReason(a.collection_wait, 'Scraping paused') : a.status === 'running'
-    ? a.job ? jobText(a) : 'Waiting for a profile'
-    : access.kind === 'ok' ? 'Ready' : access.detail);
-  const name = A.renaming === a.lane_id
-    ? `<form class="acc-ren" data-ren><input class="input" id="acc-label" value="${esc(A.renameValue ?? a.label ?? '')}" placeholder="Label, e.g. Scout 2" maxlength="40" autocomplete="off"><button class="btn solid">Save</button><button type="button" class="btn" data-ren-x>Cancel</button></form>`
-    : `<div class="acc-identity"><b class="acc-name">${esc(a.handle ? '@' + a.handle : a.label || a.name)}</b>${a.handle && a.label ? `<span class="muted acc-label">${esc(a.label)}</span>` : ''}</div>`;
-  return `<section class="acc${access.kind === 'bad' ? ' warn' : ''}" data-lane="${esc(a.lane_id)}">
-    <div class="acc-top"><i class="dot ${a.collection_wait ? 'hollow' : ST_DOT[a.collection_state === 'running' ? 'running' : a.collection_state ? a.online ? 'online' : 'offline' : a.status] || ''}" aria-hidden="true"></i>${name}${a.is_main ? '<span class="pill" title="Excluded from automated collection">Main</span>' : ''}
-      <span class="grow"></span>${accountInstagramHTML(a)}${protectedAccount ? '' : `<button class="btn${a.paused ? ' solid' : ''}" data-pause>${a.paused ? 'Resume' : 'Pause'}</button>`}</div>
-    <div class="acc-brief"><span class="acc-access ${access.kind}">${esc(a.collection_wait && access.kind === 'ok' ? collectionReason(a.collection_wait, 'Scraping paused') : access.label)}</span>${a.collection_wait && access.kind === 'ok' ? '' : `<span class="muted">${esc(work)}</span>`}</div>
-    <div class="acc-glance"><span class="acc-key">Today</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b>${b.list ? `<div class="bar-p run" role="img" aria-label="${int(t.list)} of ${int(b.list)} workspace list requests used"><i style="width:${Math.min(100, (t.list || 0) / b.list * 100)}%"></i></div>` : ''}${access.kind === 'bad' ? '<span class="acc-need">Needs you</span>' : ''}</div>
-    ${protectedAccount ? '' : `<div class="acc-mode"><span class="acc-key">Collect</span><div class="seg" aria-label="What this account collects">${ROLES.map(([v, l]) => `<button data-role="${v}" aria-pressed="${a.role === v}" class="${a.role === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`}
-    <details class="adv acc-more"><summary>Account settings</summary>
-    <div class="acc-usage"><span class="acc-key">Today · workspace caps</span><b class="num">${int(t.list)} list requests · ${int(t.profile)} profile requests</b><small>${esc(budget)}</small></div>
-    <p class="muted acc-telemetry">${int(h.people)} list entries this hour${a.last_limit ? ` · Instagram last slowed this profile ${ago(a.last_limit)} ago` : ''}</p>
-    <div class="acc-ctl">
-
-      <button class="toggle${a.is_main ? ' on' : ''}" data-main aria-pressed="${!!a.is_main}" title="Main accounts are excluded from automated collection"><i></i><span>Main account</span></button>
-      <span class="grow"></span>
-      ${protectedAccount ? '' : `<form class="acc-bud" data-bud>
-        <label><input class="input" type="number" min="0" max="3000" data-b="list" value="${a.budget_custom ? esc(b.list) : ''}" placeholder="${esc(b.list)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">list pages/day</span></label>
-        <label><input class="input" type="number" min="0" max="5000" data-b="profile" value="${a.budget_custom ? esc(b.profile) : ''}" placeholder="${esc(b.profile)}" inputmode="numeric" title="0 = no workspace daily cap"><span class="muted">bios/day</span></label>
-        <button class="btn">Save</button>
-      </form>`}
-    </div>
-    <div class="acc-foot"><button class="btn ghost acc-edit" data-rename>Rename</button><span class="muted num">${a.version ? 'Extension v' + esc(a.version) + ' · ' : ''}Seen ${ago(a.last_seen)} ago</span>
-      <span class="grow"></span>
-      <button class="btn ${conf ? 'danger' : 'ghost'}" data-remove>${conf ? 'Remove account?' : 'Remove'}</button></div>
-    </details>
-  </section>`;
-}
-
 // Suggestions use saved evidence; discovery adds one target only when the queue is empty.
 const collectionSuggestions = {items:[], loadedAt:0, loading:false, busy:new Set(), added:new Set(), error:'', enabled:null, history:[]};
 function collectionSuggestionsHTML(items, busy = new Set()) {
@@ -2529,7 +2373,7 @@ function collectionSuggestionsHTML(items, busy = new Set()) {
     const why = labels[reason.split(' · ')[0]] || 'Saved match';
     const followers = Number.isFinite(item.followers) ? ` · ${item.followers.toLocaleString('en-US',{notation:'compact',maximumFractionDigits:1})} followers` : '';
     const sources = Number.isFinite(item.observed_sources) && item.observed_sources > 0 ? ` · ${item.observed_sources} source accounts` : '';
-    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><details class="suggestion-evidence"><summary>${esc(what)} · ${esc(why)}${esc(followers + sources)}</summary><p>${esc(reason)}</p></details></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)} to scraping"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button><button class="btn ghost" data-discovery-hide="${esc(item.handle)}" aria-label="Skip @${esc(item.handle)}"${busy.has(item.handle) ? ' disabled' : ''}>Skip</button></div>`;
+    return `<div class="collection-suggestion"><div><b>@${esc(item.handle)}</b><details class="suggestion-evidence"><summary>${esc(what)} · ${esc(why)}${esc(followers + sources)}</summary><p>${esc(reason)}</p></details></div><button class="btn" data-suggested-handle="${esc(item.handle)}" aria-label="Add @${esc(item.handle)}"${busy.has(item.handle) ? ' disabled' : ''}>${busy.has(item.handle) ? 'Adding…' : 'Add'}</button><button class="btn ghost" data-discovery-hide="${esc(item.handle)}" aria-label="Skip @${esc(item.handle)}"${busy.has(item.handle) ? ' disabled' : ''}>Skip</button></div>`;
   }).join('');
 }
 function renderCollectionSuggestions() {
@@ -2540,15 +2384,14 @@ function renderCollectionSuggestions() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   const focusHandle = focused?.dataset.suggestedHandle || focused?.dataset.discoveryHide;
   const focusAction = focused?.matches('.suggested-accounts > summary') ? 'disclosure' : focused?.hasAttribute('data-discovery-toggle') ? 'toggle' : focused?.dataset.suggestedHandle ? 'add' : focused?.dataset.discoveryHide ? 'skip' : null;
-  box.innerHTML = `<details class="suggested-accounts" ${open ? 'open' : ''}><summary>Suggested accounts</summary><div class="collection-suggestion-heading"><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : `Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}`}</button></div>${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Checking saved profiles…' : 'No suggestions yet.'}</p>`}</details>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}`;
+  box.innerHTML = `<details class="suggested-accounts" ${open ? 'open' : ''}><summary>Suggested profiles</summary><div class="collection-suggestion-heading"><button class="btn" data-discovery-toggle aria-pressed="${!!state.enabled}" ${state.enabled === null || state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : `Auto-discover ${state.enabled === null ? '…' : state.enabled ? 'on' : 'off'}`}</button></div>${state.items.length ? `<div class="collection-suggestions-grid">${collectionSuggestionsHTML(state.items,state.busy)}</div>` : `<p class="muted">${state.loading ? 'Checking saved profiles…' : 'No suggestions yet.'}</p>`}</details>${state.error ? `<p class="muted" role="status">${esc(state.error)}</p>` : ''}`;
   if (focusAction) {
     const selector = focusAction === 'disclosure' ? '.suggested-accounts > summary' : focusAction === 'toggle' ? '[data-discovery-toggle]' : focusAction === 'add' ? `[data-suggested-handle="${focusHandle}"]` : `[data-discovery-hide="${focusHandle}"]`;
     const action = box.querySelector(selector);
     if (action && !action.disabled) action.focus({preventScroll:true});
     else box.querySelector('.suggested-accounts > summary')?.focus({preventScroll:true});
   }
-}
-async function loadCollectionSuggestions(force = false) {
+}async function loadCollectionSuggestions(force = false) {
   const state = collectionSuggestions;
   if (state.loading || (!force && Date.now() - state.loadedAt < 60000)) return;
   state.loading = true;
@@ -2576,212 +2419,42 @@ async function addSuggestedTarget(handle) {
   if (!directions.length) return;
   state.busy.add(handle); state.error = ''; renderCollectionSuggestions();
   try {
-    const result = await api.post('/api/scraper/seeds', {handles:[handle], directions});
+    const result = await api.post('/api/seeds/batch', {text:handle, directions, request_id:'s' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)});
     state.added.add(handle);
     state.items = state.items.filter(row => row.handle !== handle);
-    toast(result.queued === 0 ? 'Already queued' : `@${handle} added to the collection queue`);
-    loadScraper();
+    toast(result.added === 0 ? 'Already added' : `@${handle} added`);
+    window.AccountsPage?.refresh();
     await loadCollectionSuggestions(true);
   } catch { state.error = `Couldn't add @${handle}. Try again.`; }
   finally { state.busy.delete(handle); renderCollectionSuggestions(); }
 }
 
-// Move the existing source form and list table between views. Event handlers and
-// input state stay on the same nodes, and both views use the same queue API.
-let collectionTargetHomes;
-function mountCollectionTargets() {
-  const form = $('#seed-panel'), table = $('#lists-body')?.closest('.panel');
-  if (!form || !table) return;
-  if (!collectionTargetHomes) {
-    $('#seed-in').placeholder = '@handle or instagram.com/handle, one per line';
-    $('#seed-in').setAttribute('aria-label', 'Target profile handles or Instagram links');
-    collectionTargetHomes = [form, table].map(node => {
-      const home = document.createComment('collection targets');
-      node.before(home);
-      return {node, home};
-    });
-  }
-  let workspace = $('#acc-targets');
-  if (!workspace) {
-    workspace = document.createElement('section');
-    workspace.id = 'acc-targets';
-    workspace.className = 'collection-targets';
-    workspace.setAttribute('aria-label', 'Scrape profiles');
-    workspace.innerHTML = '<header class="collection-target-heading"><h2>Collect from profiles</h2></header>';
-    $('#acc-coverage').after(workspace);
-    const suggestions = document.createElement('section');
-    suggestions.id = 'collection-suggestions';
-    suggestions.setAttribute('aria-label', 'Suggested target profiles');
-    workspace.append(suggestions);
-    suggestions.addEventListener('click', e => {
-      const toggle = e.target.closest('[data-discovery-toggle]'), hide = e.target.closest('[data-discovery-hide]');
-      if (toggle && !toggle.disabled) { updateDiscovery({enabled: !collectionSuggestions.enabled}); return; }
-      if (hide) { updateDiscovery({hide: hide.dataset.discoveryHide}); return; }
-      const button = e.target.closest('button[data-suggested-handle]');
-      if (button && !button.disabled) addSuggestedTarget(button.dataset.suggestedHandle);
-    });
-    renderCollectionSuggestions();
-  }
-  if (S.view === 'accounts') {
-    for (const {node} of collectionTargetHomes) if (node.parentNode !== workspace) workspace.append(node);
-    const suggestions = $('#collection-suggestions');
-    if (suggestions.previousSibling !== table) table.after(suggestions);
-    loadCollectionSuggestions();
-  } else if (S.view === 'scraper') {
-    for (const {node, home} of collectionTargetHomes) if (node.previousSibling !== home) home.after(node);
-  }
+// Suggestion events are bound once, when the page loads.
+{
+  const box = $('#collection-suggestions');
+  box.addEventListener('click', e => {
+    const toggle = e.target.closest('[data-discovery-toggle]'), hide = e.target.closest('[data-discovery-hide]');
+    if (toggle && !toggle.disabled) { updateDiscovery({enabled: !collectionSuggestions.enabled}); return; }
+    if (hide) { updateDiscovery({hide: hide.dataset.discoveryHide}); return; }
+    const button = e.target.closest('button[data-suggested-handle]');
+    if (button && !button.disabled) addSuggestedTarget(button.dataset.suggestedHandle);
+  });
+  renderCollectionSuggestions();
 }
-
-function collectionCoverageHTML(sc) {
-  if (!sc) return '';
-  const lists = sc.coverage?.lists, bios = sc.progress?.bios, queue = sc.collection;
-  const stages = sc.stages || sc.control?.stages || [];
-  const held = stages.find(stage => stage.wait?.scope === 'workspace') || stages.find(stage => stage.state === 'waiting' && stage.wait);
-  const collectionStages = stages.filter(stage => ['lists','bios'].includes(stage.id));
-  const activity = sc.control?.collection || {
-    stopping: collectionStages.some(stage => stage.state === 'stopping' || stage.paused && stage.active),
-    stop_acknowledged: collectionStages.length === 2 && collectionStages.every(stage => stage.stop_acknowledged === true)
-      ? true : collectionStages.some(stage => stage.stop_acknowledged === false) ? false : undefined,
-  };
-  const pausedByUser = sc.paused || collectionStages.length === 2 && collectionStages.every(stage => stage.paused);
-  const state = activity?.stopping ? 'Stopping. Waiting for the current request to finish'
-    : pausedByUser ? activity?.stop_acknowledged === true ? 'Stopped' : activity?.stop_acknowledged === false ? 'Checking the last request before stopping' : 'Paused by you'
-    : held ? held.now || collectionReason(held.reason_code || held.wait?.why, 'Collection is waiting')
-    : collectionStages.some(stage => stage.state === 'running') ? 'Scraping' : 'Waiting';
-  const until = held?.wait?.until;
-  const resumes = !pausedByUser && until && Number.isFinite(Date.parse(until)) && Date.parse(until) > Date.now()
-    ? ` · Retries automatically at ${new Date(until).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}. Progress is saved.` : '';
-  const estimate = queue?.eta && !pausedByUser && !held ? (() => {
-    const minutes = value => value < 60 ? `${Math.ceil(value)} min` : value < 2880 ? `${Math.ceil(value / 60)} h` : `${Math.ceil(value / 1440)} days`;
-    return `${queue.eta.scope === 'known_lists' ? 'Known lists' : 'Current queue'}: about ${minutes(queue.eta.low_minutes)}–${minutes(queue.eta.high_minutes)}`;
-  })() : '';
-  if (queue) {
-    const metrics = sc.control?.progress;
-    const saved = metrics?.unique_new_profiles?.today == null ? '' : `<span title="Counts since midnight UTC"><b>${int(metrics.unique_new_profiles.today)} new profiles today</b> · ${int(metrics.bios_read?.today || 0)} bios read · ${int(metrics.saved_list_entries?.today || 0)} list entries saved</span>`;
-    const parts = [`${int(queue.finished)} finished`, `${int(queue.pending)} queued`];
-    if (queue.limited) parts.push(`${int(queue.limited)} limited`);
-    if (queue.partial > (queue.limited || 0)) parts.push(`${int(queue.partial - (queue.limited || 0))} partial`);
-    if (queue.needs_review) parts.push(`${int(queue.needs_review)} need review`);
-    const timing = pausedByUser || held || activity.stopping ? state + resumes : estimate || queue.message;
-    const unknown = queue.unknown_lists ? ` · ${int(queue.unknown_lists)} list sizes unknown` : '';
-    return `<div class="collection-summary">${saved}<span><b>${parts.map(esc).join(' · ')}</b></span><span>${esc(timing)}${esc(unknown)}</span>${queue.open_ended ? '<span class="muted">Auto-discovery on</span>' : ''}<span>${bios?.left != null ? `${int(bios.left)} bios queued` : 'Counting bios'}</span></div>`;
-  }
-  const saved = lists?.saved_entries == null ? 'Counting saved entries' : `${int(lists.saved_entries)} list entries saved`;
-  const bioQueue = bios?.left == null ? 'Counting unread bios' : `${int(bios.left)} bios waiting${bios.failed ? ` · ${int(bios.failed)} need retry` : ''}`;
-  const speed = bios?.per_minute == null ? '' : ` · ${int(bios.per_minute)} bios read this minute`;
-  return `<div class="collection-summary"><span><b>${esc(saved)}</b>${lists?.complete_lists != null ? ` · ${int(lists.complete_lists)} complete lists` : ''}</span><span>${esc(bioQueue)}${speed}</span><span class="muted">${esc(state)}${esc(resumes)}${esc(estimate)}</span><span>${esc(localProcessingSummary())}</span>${backgroundAIControlsHTML()}</div>`;
+// Local AI setup lives in Settings; this keeps its start button honest.
+function syncEngineStart() {
+  const b = $('#acc-start');
+  if (!b) return;
+  b.disabled = A.starting || !S.sc || !!S.scStale;
+  b.textContent = A.starting ? 'Starting…' : 'Start local models';
 }
-
-function renderAccounts() {
-  renderScraper();
-  syncSeed();
-  const sc = S.sc;
-  const accs = sc?.accounts || [];
-  const coverage = $('#acc-coverage');
-  if (coverage) coverage.innerHTML = collectionCoverageHTML(sc);
-  $('#acc-start').disabled = A.starting || !sc || !!S.scStale;
-  $('#acc-start').textContent = A.starting ? 'Starting…' : 'Start local models';
-  $('#acc-alerts').innerHTML = ''; // Account rows show short, actionable status without raw error payloads.
-  const connected = accs.filter((a) => a.online).length;
-  const attention = accs.filter((a) => accountAccess(a).kind === 'bad').length;
-  $('#acc-summary').textContent = accs.length
-    ? `${connected} connected${attention ? ` · ${attention} need attention` : ` · ${accs.length} accounts`}`
-    : 'Connect an Instagram account to begin';
-  $('#acc-n').textContent = accs.length ? int(accs.length) : '';
-  if (!accs.length && !A.wiz && !A.dismissed && sc) openWizard();
-  const list = $('#acc-list');
-  if (list.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // don't clobber typing
-  const openLanes = new Set([...list.querySelectorAll('[data-lane]')]
-    .filter((row) => row.querySelector('.acc-more')?.open).map((row) => row.dataset.lane));
-  const focused = list.contains(document.activeElement) ? document.activeElement : null;
-  const focusRow = focused?.closest('[data-lane]');
-  const focusIndex = focused?.matches('button, summary') && focusRow
-    ? [...focusRow.querySelectorAll('button, summary')].indexOf(focused) : -1;
-  const focusLane = focusIndex >= 0 ? focusRow.dataset.lane : null;
-  const collectionStages = (sc?.stages || sc?.control?.stages || []).filter(s => s.id === 'lists' || s.id === 'bios');
-  const sharedWait = collectionStages.find(s => s.wait?.scope === 'workspace');
-  const collectionWait = (sharedWait ? sharedWait.reason_code || sharedWait.wait?.why || 'workspace' : null)
-    || (collectionStages.length === 2 && collectionStages.every(s => s.paused) ? 'Scraping paused' : null);
-  list.innerHTML = accs.length ? accs.map(a => { const status = sc.control?.accounts?.find(row => row.lane_id === a.lane_id); return accountRow({...a, collection_wait: collectionWait, collection_state: status?.state, collection_reason: status?.reason_code, collection_now: status?.now}); }).join('') : `<div class="acc-empty muted">${A.wiz ? 'Follow the steps above; the account shows up here once its extension checks in.' : 'Connect an account to start collecting people.'}</div>`;
-  for (const row of list.querySelectorAll('[data-lane]')) {
-    if (openLanes.has(row.dataset.lane)) row.querySelector('.acc-more').open = true;
-    if (row.dataset.lane === focusLane) row.querySelectorAll('button, summary')[focusIndex]?.focus({ preventScroll: true });
-  }
-  if (A.renaming) { const i = $('#acc-label'); if (i && document.activeElement !== i) { i.focus(); i.select(); } }
-  if (A.wiz) renderWizard();
-}
-
-async function editAccount(lane, body, msg) {
-  if (A.busy.has(lane)) return;
-  A.busy.add(lane);
-  const a = S.sc?.accounts?.find((x) => x.lane_id === lane);
-  let saved = false;
-  try {
-    const r = await api.post(`/api/accounts/${encodeURIComponent(lane)}`, body);
-    if (a && r.account) Object.assign(a, r.account);
-    saved = true;
-    renderAccounts(); renderStatus();
-    if (msg) toast(msg);
-  } catch (e) { toast(e.status === 400 ? ucf(e.message) : 'Could not save'); }
-  finally { A.busy.delete(lane); }
-  loadScraper();
-  return saved;
-}
-$('#acc-list').addEventListener('input', (e) => { if (e.target.id === 'acc-label') A.renameValue = e.target.value; });
-$('#acc-list').addEventListener('click', async (e) => {
-  const row = e.target.closest('[data-lane]');
-  if (!row) return;
-  const lane = row.dataset.lane, a = S.sc?.accounts?.find((x) => x.lane_id === lane);
-  const t = e.target.closest('button');
-  if (!a || !t || t.type === 'submit' && t.closest('form')) return;
-  if (!t.hasAttribute('data-remove') && A.confirm) { A.confirm = null; renderAccounts(); }
-  if (t.dataset.instagram) return openInstagramAccount(lane, t.dataset.instagram);
-  if (t.dataset.role) return t.dataset.role !== a.role && editAccount(lane, { role: t.dataset.role }, `${a.name}: ${ROLES.find((x) => x[0] === t.dataset.role)[1].toLowerCase()}`);
-  if (t.hasAttribute('data-main')) return editAccount(lane, { is_main: !a.is_main }, a.is_main ? `${a.name} is no longer the main account` : `${a.name} is the main account`);
-  if (t.hasAttribute('data-pause')) return editAccount(lane, { paused: !a.paused }, a.paused ? `${a.name} resumed` : `${a.name} paused`);
-  if (t.hasAttribute('data-rename')) { A.renameValue = null; A.renaming = lane; A.confirm = null; return renderAccounts(); }
-  if (t.hasAttribute('data-ren-x')) { A.renaming = null; return renderAccounts(); }
-  if (t.hasAttribute('data-remove')) {
-    if (A.confirm !== lane) {
-      A.confirm = lane; renderAccounts();
-      setTimeout(() => { if (A.confirm === lane) { A.confirm = null; renderAccounts(); } }, 4000);
-      return;
-    }
-    A.confirm = null;
-    try { await api.post(`/api/accounts/${encodeURIComponent(lane)}/remove`, {}); toast(`${a.name} removed`); } catch (err) { toast("Couldn't remove. Try again."); }
-    loadScraper();
-  }
-});
-$('#acc-list').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const row = e.target.closest('[data-lane]'), lane = row?.dataset.lane;
-  if (!lane) return;
-  if (e.target.hasAttribute('data-ren')) {
-    const label = $('#acc-label').value.trim();
-    A.renameValue = $('#acc-label').value;
-    const saved = await editAccount(lane, { label: label || null }, label ? `Renamed to ${label}` : 'Label cleared');
-    if (saved) { A.renaming = null; A.renameValue = null; document.activeElement?.blur(); renderAccounts(); }
-    else $('#acc-label')?.focus();
-    return;
-  }
-  if (e.target.hasAttribute('data-bud')) {
-    const val = (k) => { const v = row.querySelector(`[data-b="${k}"]`).value.trim(); return v === '' ? null : /^\d+$/.test(v) ? +v : NaN; };
-    const list = val('list'), profile = val('profile');
-    if (Number.isNaN(list) || Number.isNaN(profile)) { toast('Enter whole numbers, 0 or more'); return; }
-    document.activeElement?.blur();
-    return editAccount(lane, { budget: list == null && profile == null ? null : { list, profile } }, list == null && profile == null ? 'Using the default budget' : 'Budget saved');
-  }
-});
-$('#acc-list').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && e.target.id === 'acc-label') { e.stopPropagation(); A.renaming = null; renderAccounts(); }
-});
 $('#acc-start').addEventListener('click', async () => {
   if (A.starting) return;
   A.starting = true;
   const status = $('#acc-start-status');
   status.dataset.state = 'working';
   status.textContent = 'Starting…';
-  renderAccounts();
+  syncEngineStart();
   try {
     const result = await api.post('/api/engine/start', {});
     if (result?.ok === false) throw new Error(result.error || 'Could not start');
@@ -2796,61 +2469,8 @@ $('#acc-start').addEventListener('click', async () => {
     toast("Couldn't start local models. Try again.");
   } finally {
     A.starting = false;
-    renderAccounts();
+    syncEngineStart();
   }
-});
-
-// Add-account wizard: three steps, ticked as the new profile's extension checks in and reports its account.
-async function openWizard() {
-  const accs = S.sc?.accounts || [];
-  A.wiz = { base: new Set(accs.map((a) => a.lane_id)), acct: null, poll: null };
-  $('#wiz').hidden = false; $('#acc-add').hidden = true;
-  if (!A.setup) { try { A.setup = await api.get('/api/setup'); } catch (e) { /* shown as unknown */ } }
-  renderWizard();
-  A.wiz.poll = setInterval(pollWizard, 2000);
-}
-function closeWizard() {
-  if (A.wiz?.poll) clearInterval(A.wiz.poll);
-  A.wiz = null; A.dismissed = true;
-  $('#wiz').hidden = true; $('#acc-add').hidden = false;
-  renderAccounts();
-}
-async function pollWizard() {
-  if (!A.wiz) return;
-  let d;
-  try { d = await api.get('/api/accounts'); } catch (e) { return; }
-  if (!A.wiz) return;
-  const fresh = d.accounts.filter((a) => !A.wiz.base.has(a.lane_id));
-  A.wiz.acct = fresh.find((a) => a.ig_id) || fresh[0] || null;
-  renderWizard();
-}
-function renderWizard() {
-  const w = A.wiz, s = A.setup || {};
-  if (!w) return;
-  const a = w.acct;
-  const done = [!!a, !!a, !!(a && a.ig_id && !a.hold)];
-  const step = (i, title, body) => `<li class="${done[i] ? 'done' : done.slice(0, i).every(Boolean) ? 'cur' : ''}">
-    <span class="n">${done[i] ? '<i class="tick"></i>' : i + 1}</span><div><b>${title}</b>${body}</div></li>`;
-  const who = a ? (a.ig_id ? (a.handle ? 'Connected: @' + a.handle : 'Connected: account ' + a.ig_id) : 'Extension checked in, not logged in yet') : 'Waiting for the extension';
-  $('#wiz').innerHTML = `<div class="p-head"><h3>Add account</h3><span class="muted wiz-who">${esc(who)}</span><div class="grow"></div>
-      <button class="btn${done[2] ? ' solid' : ''}" id="wiz-x">${done[2] ? 'Done' : 'Close'}</button></div>
-    <ol class="steps">
-      ${step(0, 'Create a Chrome profile', `<p>Chrome profile menu, Add, Continue without an account. One profile per Instagram account.</p>${copyRow('chrome://profile-picker')}`)}
-      ${step(1, 'Load the extension', `<p>In the new profile: open Extensions, turn on Developer mode, Load unpacked, pick this folder.</p>${copyRow('chrome://extensions')}${copyRow(s.extension_path || 'extension/ in the repo')}
-        <p class="muted num">Extension id ${esc(s.extension_id || '–')}${s.extension_version ? ' · v' + esc(s.extension_version) : ''}</p>`)}
-      ${step(2, 'Log in to Instagram', `<p>Log in with the account this profile should use and keep one Instagram tab open.</p>${copyRow('https://www.instagram.com/')}`)}
-    </ol>`;
-}
-$('#acc-manage')?.addEventListener('click', () => {
-  const accounts = $('#acc-list').closest('.panel');
-  accounts.scrollIntoView({block:'start', behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
-  accounts.querySelector('button')?.focus({preventScroll:true});
-});
-$('#acc-add').onclick = () => openWizard();
-$('#wiz').addEventListener('click', (e) => {
-  const c = e.target.closest('[data-copy]');
-  if (c) return copyText(c.dataset.copy, c);
-  if (e.target.closest('#wiz-x')) closeWizard();
 });
 
 // ---------- settings (qualification, OpenRouter keys and models, local services) ----------
@@ -2957,7 +2577,6 @@ async function toggleBackgroundAI() {
   } catch { SET.localProcessing = null; toast('Could not confirm background AI. Refresh to check.'); }
   finally {
     SET.localBusy = false; renderCheckingMode();
-    if (S.view === 'accounts') renderAccounts();
     if (S.view === 'qual') Q.renderProg();
   }
 }
@@ -2966,7 +2585,7 @@ $('#set-local-activity')?.addEventListener('click', event => {
   const button = event.target.closest('[data-reviewed-person]');
   if (button) openDetail(+button.dataset.reviewedPerson);
 });
-for (const selector of ['#view-accounts', '#ql-prog']) $(selector)?.addEventListener('click', event => {
+for (const selector of ['#ql-prog']) $(selector)?.addEventListener('click', event => {
   if (event.target.closest('[data-local-ai-toggle]')) toggleBackgroundAI();
 });
 $('#set-mode')?.addEventListener('click', async (event) => {

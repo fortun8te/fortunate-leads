@@ -666,7 +666,7 @@ def counts(seeds):
     return {name: sum(_matches(s, name) for s in seeds) for name in FILTERS}
 
 
-def listing(conn, coverage_rows, *, q='', status='all', sort='newest', limit=200, offset=0, scope='both'):
+def listing(conn, coverage_rows, *, q='', status='all', sort='newest', limit=200, offset=0, scope='both', queue=None):
     """The payload behind GET /api/seeds. `revision` changes only when something a person could see changes."""
     if status not in FILTERS:
         raise ValueError('status must be one of ' + ', '.join(FILTERS))
@@ -683,7 +683,7 @@ def listing(conn, coverage_rows, *, q='', status='all', sort='newest', limit=200
     if sort == 'name':
         chosen.sort(key=lambda s: s['handle'].lower())
     page = chosen[offset:offset + limit]
-    payload = {'scope': scope, 'counts': counts(everything), 'total': len(chosen), 'offset': offset, 'items': page}
+    payload = {'scope': scope, 'counts': counts(everything), 'total': len(chosen), 'offset': offset, 'queue': queue, 'items': page}
     payload['revision'] = hashlib.sha1(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:16]
     return payload
 

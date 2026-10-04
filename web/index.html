@@ -25,6 +25,7 @@
   <link rel="stylesheet" href="workflow.css">
   <link rel="stylesheet" href="shell.css">
   <link rel="stylesheet" href="refine.css">
+  <link rel="stylesheet" href="accounts.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -191,30 +192,12 @@
     <section class="view" id="view-scraper">
       <div class="scr">
         <header class="ph">
-          <div class="ph-t"><h1>Scraping</h1><p>Add profiles and track what has been saved.</p></div>
-          <div class="ph-a"><button class="btn solid" id="scr-add">Add accounts</button></div>
+          <div class="ph-t"><h1>Scraping</h1><p>What is running, and what has been saved.</p></div>
+          <div class="ph-a"><a class="btn solid" href="#/accounts" id="scr-add">Add profiles</a></div>
         </header>
         <div class="now" id="now"></div>
         <div class="tiles" id="scr-counts"></div>
         <div class="stages" id="stages"></div>
-        <div class="panel" id="seed-panel">
-          <div class="p-head"><h3>Add accounts to scrape</h3><div class="grow"></div><span class="muted hide-sm">We read the people in their lists</span></div>
-          <div class="p-body">
-            <textarea class="input" id="seed-in" aria-label="Accounts to scrape, one handle per line" spellcheck="false" placeholder="@handle, one per line"></textarea>
-            <div class="row-flex">
-              <div class="seg" id="seed-dir" aria-label="Lists to collect"><button data-v="followers" class="on" aria-pressed="true">Followers</button><button data-v="following" class="on" aria-pressed="true">Following</button></div>
-              <div class="grow"></div>
-              <span class="muted num" id="seed-n" aria-live="polite"></span>
-              <button class="btn solid" id="seed-start" disabled>Start collecting</button>
-            </div>
-            <p class="muted" id="seed-feedback" role="status"></p>
-          </div>
-        </div>
-        <div class="panel grow-panel">
-          <div class="gp-text"><b>Find more people like your best leads</b>
-            <span class="muted">Reads who your Interested, Talking and Client leads follow. Their circles often hold more brands like them.</span></div>
-          <button class="btn" id="snowball">Scrape who they follow</button>
-        </div>
         <div class="panel">
           <div class="p-head"><h3>Lists</h3><div class="grow"></div><div class="seg" id="lists-f"></div></div>
           <div class="tbl-wrap"><table class="tbl">
@@ -230,20 +213,71 @@
     </section>
 
     <section class="view" id="view-accounts">
-      <div class="scr">
+      <div class="scr acx">
         <header class="ph">
           <div class="ph-t"><h1>Accounts</h1></div>
-          <div class="ph-a"><button class="btn" id="acc-add">Connect account</button></div>
+          <div class="ph-a"><a class="acx-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
         </header>
-        <div class="alerts" id="acc-alerts"></div>
-        <p class="acc-summary muted" id="acc-summary" aria-live="polite"></p>
-        <div class="panel wiz" id="wiz" hidden></div>
-        <div id="account-setup" hidden></div>
-        <div id="acc-coverage" class="acc-coverage" aria-live="polite"></div>
-        <div class="panel">
-          <div class="p-head"><h3>Connected accounts</h3><span class="num muted" id="acc-n" hidden></span><a class="account-collection-link" href="#/scraper">Detailed activity <span class="num" id="n-queue" hidden></span></a></div>
-          <div id="acc-list"></div>
+
+        <section class="acx-section" aria-labelledby="acx-ig-h">
+          <div class="acx-sh">
+            <div><h2 id="acx-ig-h">Instagram accounts</h2><p class="acx-sum muted" id="acx-ig-sum" aria-live="polite"></p></div>
+            <button class="btn" id="acx-add-account" type="button">Add account</button>
+          </div>
+          <p class="acx-notice" id="acx-notice" role="status" hidden></p>
+          <div class="acx-wiz" id="acx-wiz" hidden></div>
+          <div class="acx-cards" id="acx-cards" aria-live="off"></div>
+          <div class="acx-empty" id="acx-empty" hidden><b>No Instagram accounts yet.</b><span>Connect one to start collecting.</span><button class="btn solid" id="acx-empty-add" type="button">Add account</button></div>
+          <details class="adv acx-gone" id="acx-gone" hidden><summary>Disconnected <span class="num muted" id="acx-gone-n"></span></summary><div class="acx-cards" id="acx-gone-list"></div></details>
+          <p class="acx-footnote muted" id="acx-main-note" hidden></p>
+        </section>
+
+        <section class="acx-section" aria-labelledby="acx-p-h">
+          <div class="acx-sh">
+            <div><h2 id="acx-p-h">Profiles to collect</h2><p class="muted">We read the people in their follower and following lists.</p></div>
+          </div>
+          <form class="acx-add" id="acx-add-form" novalidate>
+            <label class="acx-label" for="acx-paste">Add profiles</label>
+            <textarea id="acx-paste" class="input" rows="2" spellcheck="false" autocomplete="off" placeholder="@brandname, instagram.com/founder" aria-describedby="acx-help"></textarea>
+            <p class="acx-help muted" id="acx-help">Paste handles or links. Commas, spaces and new lines all work.</p>
+            <div class="acx-preview" id="acx-preview" hidden></div>
+            <div class="acx-addbar">
+              <div class="acx-dirs"><span class="muted">Collect</span><div class="seg" id="acx-dirs" role="group" aria-label="Lists to collect"><button type="button" data-v="followers" aria-pressed="true" class="on">Followers</button><button type="button" data-v="following" aria-pressed="true" class="on">Following</button></div></div>
+              <button class="btn solid" id="acx-add-btn" type="submit" disabled title="Add (Command-Return)">Add</button>
+            </div>
+          </form>
+
+          <div class="acx-toolbar">
+            <div class="acx-search"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="acx-q" type="search" class="input" aria-label="Search profiles" placeholder="Search profiles" autocomplete="off" spellcheck="false"></div>
+            <div class="seg acx-filters" id="acx-filters" role="group" aria-label="Show profiles"></div>
+            <select class="select" id="acx-sort" aria-label="Sort profiles"><option value="newest">Newest first</option><option value="name">Name</option></select>
+          </div>
+          <p class="acx-count muted num" id="acx-count" aria-live="polite"></p>
+          <ul class="acx-list" id="acx-list" role="list" aria-label="Profiles to collect"></ul>
+          <div class="acx-empty-list" id="acx-empty-list" hidden></div>
+          <button class="btn acx-showmore" id="acx-more-btn" type="button" hidden></button>
+          <div class="acx-bulk" id="acx-bulk" role="region" aria-label="Selected profiles" hidden>
+            <span class="num" id="acx-bulk-n"></span>
+            <button type="button" class="btn" data-bulk="pause">Pause</button>
+            <button type="button" class="btn" data-bulk="resume">Resume</button>
+            <button type="button" class="btn" data-bulk="next">Do next</button>
+            <button type="button" class="btn" data-bulk="restore" hidden>Restore</button>
+            <select class="select" id="acx-bulk-dirs" aria-label="Change lists for the selection"><option value="">Lists…</option><option value="both">Followers and following</option><option value="following">Following only</option><option value="followers">Followers only</option></select>
+            <button type="button" class="btn" data-bulk="remove">Remove</button>
+            <span class="grow"></span>
+            <button type="button" class="btn ghost" data-bulk="clear">Clear</button>
+          </div>
+        </section>
+
+        <div class="acx-more-ways">
+          <section id="collection-suggestions" aria-label="Suggested profiles"></section>
+          <div class="acx-grow">
+            <div><b>Find more people like your best leads</b>
+              <span class="muted">Reads who your Interested, Talking and Client leads follow. Their circles often hold more brands like them.</span></div>
+            <button class="btn" id="snowball" type="button">Add who they follow</button>
+          </div>
         </div>
+        <div id="account-setup" hidden></div>
       </div>
     </section>
 
@@ -421,6 +455,7 @@
 <script src="connections.js" defer></script>
 <script src="controls.js"></script>
 <script src="start.js"></script>
+<script src="accounts.js"></script>
 <script src="map-core.js"></script>
 <script src="map-model.js"></script>
 <script src="map-universe-gpu.js"></script>

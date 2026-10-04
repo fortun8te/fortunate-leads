@@ -15,7 +15,7 @@ test('small scraper status refresh preserves detailed progress and lists', async
       assert.equal(path, '/api/scraper/status');
       return status;
     } },
-    renderStatus() {}, renderAccounts() {}, renderScraper() {}, renderSettings() {},
+    syncEngineStart() {}, renderStatus() {}, renderScraper() {}, renderSettings() {},
     Q: { renderProg() {} },
   });
   vm.runInContext(between('async function loadScraper()', 'let listFilter'), c);

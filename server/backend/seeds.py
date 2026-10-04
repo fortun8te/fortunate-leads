@@ -8,6 +8,10 @@ POST /api/seeds/undo    take back one add by its request_id
 """
 import json
 
+from datetime import datetime, timezone
+
+import accounts
+import collection_progress
 import db
 import map_view
 import seeds
@@ -27,9 +31,12 @@ class SeedService:
     def api_list(self, conn, q, b):
         first = lambda key, default='': (q.get(key) or [default])[0]
         coverage, _ = self.collection.list_coverage(conn)
+        now = datetime.now(timezone.utc)
+        summary = collection_progress.summary(conn, coverage, accounts.listing(conn, now, include_lists=False), now)
+        queue = {k: summary.get(k) for k in ('pending', 'finished', 'partial', 'limited', 'needs_review', 'unknown_lists', 'status', 'message', 'eta')}
         try:
             payload = seeds.listing(conn, coverage, q=first('q'), status=first('status', 'all'), sort=first('sort', 'newest'),
-                                    limit=qint(q, 'limit') or 200, offset=qint(q, 'offset') or 0, scope=self._scope(conn))
+                                    limit=qint(q, 'limit') or 200, offset=qint(q, 'offset') or 0, scope=self._scope(conn), queue=queue)
         except ValueError as exc:
             raise Bad(str(exc)) from None
         return map_view.Raw(json.dumps(payload).encode(), etag='"' + payload['revision'] + '"',

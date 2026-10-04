@@ -21,6 +21,8 @@
   if (typeof document === 'undefined' || !document.getElementById('account-setup')) return;
   const root = document.getElementById('account-setup');
   let data = null, pending = null, error = false, timer = 0;
+  // The account cards and the add-account sequence own the extension and sign-in steps; this panel keeps the rest.
+  const OWNED = new Set(['server', 'extension', 'instagram']);
   const visible = () => document.getElementById('view-accounts')?.classList.contains('on');
   function render() {
     if (!data) {
@@ -28,7 +30,7 @@
       root.innerHTML = error ? '<p class="muted" role="status">Setup status unavailable. <button class="btn" data-st-retry>Retry</button></p>' : '';
       return;
     }
-    const missing = data.steps.filter(s => s.status !== 'ok');
+    const missing = data.steps.filter(s => s.status !== 'ok' && !OWNED.has(s.id));
     const required = missing.filter(s => !s.optional);
     const expanded = root.querySelector('details')?.open ?? false;
     root.hidden = !missing.length && !error;
@@ -68,7 +70,7 @@
     }
     const copy = target.closest('[data-st-copy]');
     if (copy) { window.copyText?.(copy.dataset.stCopy, copy); return; }
-    if (target.closest('[data-st-wizard]')) document.getElementById('acc-add')?.click();
+    if (target.closest('[data-st-wizard]')) document.getElementById('acx-add-account')?.click();
   });
   window.AccountSetup = {show() { render(); refresh(); clearTimeout(timer); timer = setTimeout(schedule, 20000); }, refresh};
   window.addEventListener('fl:control-changed', () => { if (visible()) refresh(); });

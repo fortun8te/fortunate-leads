@@ -10,6 +10,7 @@ const V=window.StartView;
 test('setup lives in Accounts and old Start links resolve there', () => {
   const html=read('index.html'),app=read('app.js');
   assert.match(html,/id="account-setup" hidden/);
+  assert.match(html,/id="acx-add-account"/);
   assert.doesNotMatch(html,/id="tab-start"|id="view-start"|Get started/);
   assert.match(app,/v === 'start' \? 'accounts'/);
   assert.match(app,/window\.AccountSetup\?\.show/);
@@ -34,9 +35,10 @@ function harness(steps) {
 }
 const required={id:'extension',title:'Chrome extension',status:'todo',detail:'Connect a profile',optional:false,items:[],action:{route:'#/accounts',label:'Show accounts'}};
 
-test('only missing setup appears; ready workspace shows no setup panel',async()=>{
+test('the account cards own extension and sign-in steps; the panel shows only what is left',async()=>{
   const h=harness([{...required,status:'ok'}]);await h.window.AccountSetup.refresh();assert.equal(h.root.hidden,true);
-  const missing=harness([required,{...required,id:'server',status:'ok'}]);await missing.window.AccountSetup.refresh();assert.equal(missing.root.hidden,false);assert.match(missing.root.innerHTML,/Connection needed/);assert.doesNotMatch(missing.root.innerHTML,/<details[^>]*open/);assert.doesNotMatch(missing.root.innerHTML,/data-step="server"/);
+  const owned=harness([required,{...required,id:'instagram',status:'todo'}]);await owned.window.AccountSetup.refresh();assert.equal(owned.root.hidden,true);
+  const other=harness([required,{...required,id:'ai',optional:true}]);await other.window.AccountSetup.refresh();assert.equal(other.root.hidden,false);assert.match(other.root.innerHTML,/data-step="ai"/);assert.doesNotMatch(other.root.innerHTML,/data-step="extension"/);assert.doesNotMatch(other.root.innerHTML,/<details[^>]*open/);
 });
 
 test('optional setup stays collapsed',async()=>{
