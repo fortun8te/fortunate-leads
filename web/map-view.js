@@ -27,15 +27,15 @@
     return el;
   };
   const initials = (n) => String(n.name || n.handle || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).slice(0, 2).map((s) => s[0]).join('').toUpperCase() || '?';
-  const profileMetric = (person, shared) => {
+  const profileMetric = (person, shared, mode) => {
+    if (mode && root.MapModes) return root.MapModes.metricText(person, mode);
     const hasFollowers = person.followers != null && Number.isFinite(+person.followers) && +person.followers >= 0;
     const hasSources = person.source_count != null && Number.isFinite(+person.source_count) && +person.source_count >= 0;
     if (shared && hasSources || !hasFollowers && hasSources) return plural(+person.source_count, 'source audience', 'source audiences');
     return hasFollowers ? `${int(person.followers)} followers` : 'Followers unknown';
   };
   const savedDensity = () => { try { const n=+root.localStorage?.getItem('fortunate.map.count'); return [500,1000,3000,5000,10000,20000].includes(n)?n:500; } catch (_) { return 500; } };
-  const savedSize = () => { try { return root.localStorage?.getItem('fortunate.map.size'); } catch (_) { return null; } };
-  const MAP_VIEW_VERSION = 'recorded-follows-1';
+  const MAP_VIEW_VERSION = 'modes-1';
   const savedViewMode = () => {
     try {
       if (root.localStorage?.getItem('fortunate.map.view.version') !== MAP_VIEW_VERSION) {
@@ -146,7 +146,7 @@
       const Model = MapModel;
       this.model = new Model({
         container: refs.canvasBox,
-        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), size: savedSize(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
+        fetchJson: (u, o) => host.fetchJson(u, o), viewMode: savedViewMode(), density: savedDensity(), reduced: reducedMotion(), online: () => root.navigator.onLine !== false,
         budget: Number(new URLSearchParams(root.location.search).get('mapbudget')) || 0
       });
       this.model.cam.set(.5,.5,1.55);
@@ -166,7 +166,7 @@
     onModel(what) {
       if (what === 'density') { try { root.localStorage?.setItem('fortunate.map.count', String(this.model.density)); } catch (_) {} }
       if (what === 'scene' || what === 'mode') this.finishNodeDrag(true);
-      if (what === 'size') { try { root.localStorage?.setItem('fortunate.map.size', this.model.size); } catch (_) {} if(this.sizeEncoding)this.sizeEncoding.value=this.model.size; this.renderLegend(); this.invalidate(); }
+      if (what === 'size') { if(this.sizeEncoding)this.sizeEncoding.value=this.model.size; this.renderLegend(); this.invalidate(); }
       if (what === 'scene' || what === 'camera' || what === 'edges') this.invalidate();
       if (what === 'edges') { this.edgeAt = performance.now(); this.renderSeeds(); }
       if (what === 'phase' || what === 'scene') { this.renderModes(); this.renderLegend(); this.renderState(); this.renderCount(); }
@@ -347,6 +347,7 @@
       if (sel) {
         const it = m.scene.get(sel.id), x = sx(it ? it.x : sel.x), y = sy(it ? it.y : sel.y), r = plan.nodes.find(mark=>String(mark.it.d.id)===String(sel.id))?.r || (it?.d.portraitRadius ? Math.max(2,it.d.portraitRadius*S) : radiusFor(sel, k, m.size));
         this.paintPortrait(ctx, P, sel, x, y, r, true);
+        this.paintLocator(ctx, P, sel, x, y, r);
         if (!me || sel.id !== me.id) want.unshift({ key: 'sel', text: sel.name || (sel.compact ? 'Saved profile' : '@' + sel.handle), x, y, r: r + 6, w: 600, strong: true });
       }
 
@@ -578,6 +579,14 @@
       }
       ctx.globalAlpha = 1;
     }
+    // A ring settles around a person the search just found; a guest outside the page keeps a dashed one.
+    paintLocator(ctx, P, sel, x, y, r) {
+      const S = root.MapSearchModule, m = this.model;
+      if (!S) return;
+      if (sel.guest) S.drawGuestRing(ctx, P, x, y, r);
+      const found = m.located;
+      if (found && !m.reduced && String(found.id) === String(sel.id) && S.drawLocator(ctx, P, x, y, r, m.now() - found.at, !!sel.guest)) this.invalidate();
+    }
     emphasizeMarks(plan, dt) {
       const ownerId = String(this.model.world.me?.id);
       const activeId = String(this.nodeDrag?.d.id ?? this.model.selected?.id);
@@ -787,18 +796,11 @@
       this.r.zoomOut.addEventListener('click', () => this.zoomCentre(1 / 1.6));
       this.r.fit.addEventListener('click', () => m.fit());
       this.r.me.addEventListener('click', () => m.world.me && m.flyTo({ cx: m.world.me.x, cy: m.world.me.y, k: Math.max(m.cam.k, 3) }, 700));
-      this.r.size?.addEventListener('change', () => m.setViewMode(this.r.size.value));
-      // Search.
-      const input = this.r.q; let timer = 0;
-      input.addEventListener('input', () => { this.closeResults(); clearTimeout(timer); timer = setTimeout(() => this.runSearch(), 160); if (!input.value.trim()) this.closeResults(); });
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (!this.results.length) return; e.preventDefault(); this.moveActive(e.key === 'ArrowDown' ? 1 : -1); }
-        else if (e.key === 'Enter') { e.preventDefault(); const n = this.results[Math.max(0, this.active)]; if (n) this.choose(n); else this.runSearch(true); }
-        else if (e.key === 'Escape') { if (input.value || !this.r.results.hidden) { e.stopPropagation(); input.value = ''; this.closeResults(); } }
-      });
-      this.r.results.addEventListener('mousedown', (e) => e.preventDefault());
-      this.r.results.addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) this.choose(this.results[+b.dataset.i]); });
-      input.addEventListener('blur', () => setTimeout(() => this.closeResults(), 120));
+      // Search lives in map-search.js.
+      if (root.MapSearchModule) {
+        this.search = new root.MapSearchModule.MapSearch({ input: this.r.q, list: this.r.results, model: m, doc, metric: (n) => profileMetric(n, m.viewMode === 'shared', m.viewMode), announce: (t) => this.announce(t), afterChoose: () => this.canvas.focus({ preventScroll: true }) });
+        this.search.bind();
+      }
       // Filters.
       const f = this.r.filters;
       f.scope.addEventListener('click', (e) => { const b = e.target.closest('[data-scope]'); if (b) m.setFilters({ scope: b.dataset.scope }); });
@@ -852,7 +854,7 @@
         tip.append(h('b', { text: plural(d.count, 'person', 'people') }), h('span', { text: (d.label ? d.label.replace(/^(Around |Audience of )/, '') + '. ' : '') + 'Click to explore this group.' }));
       } else {
         tip.append(h('b', { text: d.name || (d.compact ? 'Saved profile' : '@' + d.handle) }), h('span', { text: d.compact ? 'Click to open' : '@' + d.handle }),
-          h('span', { text: profileMetric(d, this.model.viewMode === 'shared') }));
+          h('span', { text: profileMetric(d, this.model.viewMode === 'shared', this.model.viewMode) }));
         if (d.status) tip.append(h('span', { text: SLABEL(d.status) }));
       }
       tip.hidden = false;
@@ -872,43 +874,7 @@
       if (dx || dy) { const s = cam.scale, t = { cx: cam.cx - dx / s, cy: cam.cy - dy / s, k: cam.k }; this.model.flyTo(t, 400); }
     }
 
-    /* ---------- search ---------- */
-    async runSearch(now) {
-      const q = this.r.q.value.trim();
-      this.results = []; this.active = -1;
-      if (!q) { this.closeResults(); return; }
-      this.showResults([], 'loading');
-      try {
-        const list = await this.model.searchPeople(q);
-        if (list === null || q !== this.r.q.value.trim()) return;
-        this.results = list; this.active = list.length ? 0 : -1;
-        this.showResults(list, list.length ? 'ok' : 'none');
-        if (now && list.length === 1) this.choose(list[0]);
-      } catch (e) {
-        if ((e && e.name === 'AbortError') || q !== this.r.q.value.trim() || !this.shown) return;
-        this.showResults([], 'error');
-      }
-    }
-    showResults(list, state) {
-      const box = this.r.results; box.replaceChildren(); box.hidden = false;
-      this.r.q.removeAttribute('aria-activedescendant');
-      if (list.length && this.active >= 0) this.r.q.setAttribute('aria-activedescendant', 'mv-result-' + this.active);
-      this.r.q.setAttribute('aria-expanded', 'true');
-      if (state === 'loading') box.append(h('p', { class: 'mv-r-note', text: 'Searching…' }));
-      else if (state === 'none') box.append(h('p', { class: 'mv-r-note', text: 'No one matches. Try a name or handle.' }));
-      else if (state === 'error') box.append(h('p', { class: 'mv-r-note', text: 'Search isn’t available. Try again.' }));
-      else list.forEach((n, i) => box.append(h('button', { type: 'button', role: 'option', id: 'mv-result-' + i, tabindex: '-1', 'data-i': i, 'aria-selected': String(i === this.active), class: 'mv-r' + (i === this.active ? ' on' : '') },
-        h('b', { text: '@' + n.handle }), h('span', { text: n.name || '' }), h('i', { text: profileMetric(n, this.model.viewMode === 'shared') }))));
-    }
-    moveActive(d) {
-      this.active = (this.active + d + this.results.length) % this.results.length;
-      this.showResults(this.results, 'ok');
-    }
-    closeResults() { this.model.searchReq.cancel(); this.r.q.removeAttribute('aria-activedescendant'); this.r.results.hidden = true; this.r.q.setAttribute('aria-expanded', 'false'); this.results = []; this.active = -1; }
-    choose(n) {
-      this.closeResults(); this.r.q.value = ''; this.r.q.blur();
-      this.model.goTo(n); this.canvas.focus({ preventScroll: true }); this.announce(n.compact ? 'Loading selected profile.' : `Selected ${n.name || '@' + n.handle}.`);
-    }
+    closeResults() { this.search?.close(); }
 
     /* ---------- static DOM ---------- */
     buildStatic() {
@@ -926,20 +892,18 @@
       this.next.addEventListener('click', () => this.model.browse(1));
       r.fit.setAttribute('aria-label', 'Show this page');
       r.fit.title = 'Show this page';
-      r.size?.replaceChildren(...VIEW_MODES.map(o=>h('option',{value:o.id,text:o.label})));
-      if (r.size) r.size.value=this.model.viewMode;
       this.sizeEncoding=h('select',{class:'select',id:'map-bubble-size','aria-label':'Bubble size'},...SIZE_OPTIONS.map(o=>h('option',{value:o.id,text:o.label})));
       this.sizeEncoding.value=this.model.size;
-      const sizeLabel=h('label',{class:'mv-size mv-encoding'},h('span',{text:'Size'}),this.sizeEncoding);
-      r.size?.closest('label')?.after(sizeLabel);
+      r.filtersBox?.querySelector('.mv-pop')?.prepend(h('label',{class:'mv-f mv-encoding'},h('span',{class:'mv-fl',text:'Bubble size'}),this.sizeEncoding));
       this.sizeEncoding.addEventListener('change',()=>this.model.setSizeEncoding(this.sizeEncoding.value));
+      if (root.MapModes && r.modes) this.modes = root.MapModes.build(doc, (id) => this.model.setViewMode(id), { group: r.modes, line: r.modeline });
       const scope=r.filtersBox?.querySelector('#map-scope-l');if(scope)scope.textContent='People';
       this.renderModes();
       this.renderFilters();
     }
     renderModes() {
       const universe=!!this.model.universe;
-      for (const label of [this.r.size?.closest?.('label'), this.r.filters.follow?.closest?.('label')]) {
+      for (const label of [this.r.filters.follow?.closest?.('label')]) {
         if (label) label.hidden = universe;
       }
       if (this.r.filtersBox) this.r.filtersBox.hidden = universe;
@@ -955,12 +919,15 @@
       }
       if(this.pager)this.pager.hidden=universe;
       if(this.sizeEncoding)this.sizeEncoding.closest('label').hidden=universe;
-      if(this.r.size){this.r.size.disabled=universe;this.r.size.title=universe?'The full map uses recorded follow distance and follower size.':'';}
+      if (this.modes) {
+        for (const b of this.modes.buttons) b.disabled = universe;
+        this.modes.group.title = universe ? 'The full map uses recorded follow distance and follower size.' : '';
+        this.modes.update(this.model.viewMode, this.model.scene.nodes.filter(it => it.ta !== 0 && String(it.d.id) !== String(this.model.world.me?.id)).map(it => it.d));
+      }
       for(const control of [this.r.filters.fit,this.r.filters.status,this.r.filters.follow,...this.r.filters.scope.children]) {
         if(control){control.disabled=universe;control.title=universe?'Filters are available in the paged map; the full map shows all saved people.':'';}
       }
       this.r.fit.title=universe?'Show the full map':'Show this page';
-      if (this.r.size) { this.r.size.value = this.model.viewMode; this.r.size.title = universe ? 'The full map uses recorded follow distance and follower size.' : VIEW_MODES.find(mode => mode.id === this.model.viewMode)?.description || ''; }
       if (this.r.filters.follow) { this.r.filters.follow.disabled = universe || !!this.model.fallback; this.r.filters.follow.title = universe ? 'Following filters are available in the paged map; the full map shows all saved people.' : this.model.fallback ? 'Following filters become available when the network layout is ready.' : 'Not following requires an explicit absence at the last complete check.'; }
       this.r.me.hidden = !this.model.world.me;
     }
@@ -974,9 +941,10 @@
     }
     renderLegend() {
       const shared = this.model.viewMode === 'shared', fit=this.model.viewMode === 'fit';
-      const sizeText={followers:'Size: followers',fit:'Size: fit',connections:'Size: shared audiences',equal:'Size: equal'}[this.model.size];
+      const sizeText={followers:'Size: followers',reach:'Size: followers, wide range',score:'Size: priority',fit:'Size: fit',connections:'Size: shared audiences',equal:'Size: equal'}[this.model.size];
+      const mode=root.MapModes?.get(this.model.viewMode);
       const rows = this.model.universe ? [{g:'centre',s:'Closer: fewer recorded follow steps',t:'Distance shows shortest recorded follow chains. The outer band has no recorded path; that does not prove no connection.'},{g:'size',s:'Larger: more followers',t:'Portrait size uses saved follower counts. Missing counts remain unknown.'}] : this.model.fallback ? [{ g: 'size', t: 'Ranked overview. Position does not indicate a relationship.', s: 'Ranked overview' }] : [
-        { g:'centre',s:shared?'Closer: more shared audiences':fit?'Closer: stronger fit':'Closer: recorded follows',
+        mode ? { g:'centre', s:mode.closer, t:mode.help } : { g:'centre',s:shared?'Closer: more shared audiences':fit?'Closer: stronger fit':'Closer: recorded follows',
           t:shared?'Distance orders this page by distinct collected source audiences. Shared audiences are not mutual friends.':fit?'Distance orders this page by the saved fit assessment. It does not show a connection.':'Mutual follows first, then accounts following you, then accounts you follow. Relationship tags and source-only evidence come after these.' },
         { g:'size',s:sizeText,t:SIZE_HELP[this.model.size] }
       ], box = this.r.legend;
@@ -1076,6 +1044,8 @@
 
       if (n.id !== m.world.me?.id && n.following_evidence) facts.push(['You follow', n.followed ? 'Recorded' : n.following_evidence === 'absent' ? 'Not following at last check' : 'Unknown']);
       if (n.follows_me) facts.push(['Follows you', 'Recorded']);
+      if (n.links > 0) facts.push(['Linked through', plural(n.links, 'connection')]);
+      if (n.guest) facts.unshift(['On this page', 'No. Shown for reference']);
       const avatar = h('span', { class: 'mv-av', 'aria-hidden': 'true', text: n.compact ? '…' : initials(n) });
       if (/^\/img\/\d+$/.test(n.pic || '')) {
         const image = h('img', { src: n.pic, alt: '', decoding: 'async' });
@@ -1330,7 +1300,7 @@
     const $ = (id) => doc.getElementById(id);
     const pane = $('pane-map'); if (!pane || !$('map-canvas')) return null;
     return {
-      pane, size: $('map-size'), canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
+      pane, modes: $('map-modes'), modeline: $('map-modeline'), canvas: $('map-canvas'), canvasBox: $('map-canvas-box'), q: $('map-q'), results: $('map-search-results'), filtersBox: $('map-filters'), filtersBtn: $('map-filters').querySelector('summary'),
       badge: $('map-filter-badge'), filters: { scope: $('map-scope'), fit: $('map-fit-filter'), status: $('map-status-filter'), follow: $('map-follow-filter'), clear: $('map-filters-clear') },
       state: $('map-state'), stale: $('map-stale'), progress: $('map-progress'), tip: $('hover'), legend: $('map-legend'), hud: $('map-hud'), count: $('map-shown'), live: $('map-live'),
       card: $('map-card'), zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), fit: $('map-fit'), me: $('map-me')
@@ -1343,7 +1313,7 @@
     return view;
   }
 
-  const api = { MapView, mount, initials, cardTags, cardFit, directedConnections, recordedOwnerConnections, recordedBackgroundConnections, savedViewMode };
+  const api = { MapView, mount, initials, cardTags, cardFit, directedConnections, recordedOwnerConnections, recordedBackgroundConnections, savedViewMode, profileMetric };
   root.MapViewModule = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

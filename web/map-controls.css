@@ -1,0 +1,38 @@
+/* Map view modes and search. Neutral greys, flat, namespaced mv- like map-view.css. */
+
+/* ---------- View modes ---------- */
+.mv-modes { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.mv-modes::-webkit-scrollbar { display: none; }
+.mv-modes button { height: 28px; padding: 0 12px; font-size: var(--fs-sm); }
+.mv-modes button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.mv-modes button:disabled { opacity: .45; cursor: default; }
+.mv-modeline { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 0 8px; min-height: 18px; margin: 2px 0 0; color: var(--fg3); font-size: var(--fs-sm); line-height: 18px; }
+.mv-modeline-note { color: var(--fg3); opacity: .8; }
+.mv-modeline-note::before { content: "·"; margin-right: 8px; }
+.mv-modeline-note[hidden] { display: none; }
+.mv-pop .mv-encoding { padding-top: var(--s2); border-top: 1px solid var(--line); order: 9; }
+
+/* ---------- Search results ---------- */
+.mv-search { width: 260px; }
+.mv-results { width: 400px; max-height: min(440px, 70vh); padding: 6px; }
+.mv-r { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 8px; }
+.mv-r-av { display: grid; place-items: center; width: 28px; height: 28px; overflow: hidden; border-radius: 50%; background: var(--bg3); color: var(--fg3); font-size: 10px; font-weight: 600; }
+.mv-r-av img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.mv-r-main { display: grid; gap: 1px; min-width: 0; }
+.mv-r-handle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mv-r-sub { display: flex; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--fg3); font-size: var(--fs-sm); }
+.mv-r-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mv-r-fol { flex: none; }
+.mv-r-dot { font-style: normal; }
+.mv-r-snip { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg3); font-size: var(--fs-sm); }
+.mv-r-rel { align-self: center; padding: 1px 7px; border: 1px solid var(--line2); border-radius: 9px; color: var(--fg2); font-size: var(--fs-xs); font-style: normal; white-space: nowrap; }
+.mv-r mark { background: transparent; color: var(--fg); font-weight: 700; text-decoration: underline; text-decoration-color: var(--line3); text-underline-offset: 2px; }
+.mv-r-head { padding: 6px 8px 4px; color: var(--fg3); font-size: var(--fs-xs); }
+.mv-r-note { padding: 12px 10px; }
+
+@media (max-width: 760px) {
+  .mv-modes { flex: 1 1 100%; order: 3; }
+  .mv-modeline { order: 4; }
+  .mv-search { width: auto; }
+  .mv-results { width: auto; }
+}

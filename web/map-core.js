@@ -255,9 +255,11 @@
     connections:'Larger bubbles appear in more collected audiences. Shared sources do not establish a relationship.',
     equal:'Every person has the same bubble size. Distance still uses the selected view.'
   };
+  const SIZE_FN = {};   // extra size scales registered by map-modes.js, keyed by size id
   const radiusFor = (n, k, size = 'followers') => {
     let base = 14;
     if (size === 'equal') base = 14;
+    else if (SIZE_FN[size]) base = SIZE_FN[size](n);
     else if (size === 'connections') base = clamp(7 + 6 * Math.sqrt(Math.max(0, +n.source_count || 0)), 7, 28);
     else if (size === 'fit') base = { strong: 24, good: 16, weak: 10, unread: 7 }[n.fit] || 7;
     else if (n.followers != null) base = 14 + 7 * Math.pow(clamp((Math.log10(1 + Math.max(0, +n.followers || 0)) - 2) / 4, 0, 1), 2);
@@ -285,7 +287,8 @@
   }
   function cohortLayout(people, owner, size = 'followers', distance = 'network') {
     const members = people.filter(n => String(n.id) !== String(owner?.id));
-    members.sort((a,b) => (distance==='network'?networkEvidenceTier(a)-networkEvidenceTier(b):0)
+    // A view mode may pass its own ordering function; strings keep the built-in orderings.
+    members.sort(typeof distance === 'function' ? distance : (a,b) => (distance==='network'?networkEvidenceTier(a)-networkEvidenceTier(b):0)
       || distanceValue(b,distance)-distanceValue(a,distance)
       || (b.closeness||0)-(a.closeness||0) || (b.rank||0)-(a.rank||0) || String(a.id).localeCompare(String(b.id)));
     if (!members.length) return owner ? [{...owner,x:.5,y:.5,cohort:true,spacing:.075}] : [];
@@ -528,7 +531,7 @@
     }
   }
 
-  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, followRing, networkEvidenceTier, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
+  const api = { clamp, int, plural, compact, easeOut, easeInOut, MODES, FIT_LABEL, STATUS_LABEL, K_MIN, K_MAX, Camera, Flight, SpatialIndex, snapRect, viewQuery, Cache, Latest, debounceMax, Scene, RADIUS, SIZE_OPTIONS, SIZE_HELP, SIZE_FN, followRing, networkEvidenceTier, cohortLayout, distanceValue, hasRing, toneFor, radiusFor, LEGENDS, whyLine, closenessWords, Labeler, displayPlan, PortraitCache, OWNER_RADIUS };
   root.MapCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

@@ -18,6 +18,7 @@
 <link rel="stylesheet" href="relationship.css">
 <link rel="stylesheet" href="connections.css">
 <link rel="stylesheet" href="map-view.css">
+<link rel="stylesheet" href="map-controls.css">
 <link rel="stylesheet" href="settings.css">
   <link rel="stylesheet" href="collection.css">
   <link rel="stylesheet" href="start.css">
@@ -91,14 +92,14 @@
               <input id="map-q" type="search" role="combobox" aria-label="Find a person on the map" aria-expanded="false" aria-controls="map-search-results" aria-autocomplete="list" placeholder="Name or handle" autocomplete="off" spellcheck="false">
               <div id="map-search-results" class="mv-results" role="listbox" aria-label="Matching people" hidden></div>
             </div>
-            <label class="mv-size">View <select class="select" id="map-size" aria-label="Map view"></select></label>
-                <label class="mv-size mv-follow">Show
-                  <select class="select" id="map-follow-filter" aria-label="Show connections"><option value="all">Everyone</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
+            <div class="mv-modes seg" id="map-modes" role="radiogroup" aria-label="Map view"></div>
             <details class="mv-filters" id="map-filters">
               <summary class="btn"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg><span>Filters</span><span class="mv-badge num" id="map-filter-badge" hidden></span></summary>
               <div class="mv-pop">
                 <div class="mv-f"><span class="mv-fl" id="map-scope-l">Show</span>
                   <div class="seg" id="map-scope" role="group" aria-labelledby="map-scope-l"><button type="button" data-scope="all">Everyone</button><button type="button" data-scope="leads">Leads only</button></div></div>
+                <label class="mv-f mv-follow"><span class="mv-fl">Connections</span>
+                  <select class="select" id="map-follow-filter" aria-label="Show connections"><option value="all">Everyone</option><option value="following">You follow</option><option value="followers">Follows you</option><option value="mutual">Mutual</option><option value="not_following">Not following at last check</option><option value="unknown">Not checked yet</option></select></label>
                 <label class="mv-f"><span class="mv-fl">Fit</span>
                   <select class="select" id="map-fit-filter"><option value="">Any fit</option><option value="good">Good or stronger</option><option value="strong">Strong only</option></select></label>
                 <label class="mv-f"><span class="mv-fl">Status</span>
@@ -109,6 +110,7 @@
               </div>
             </details>
             <button class="btn" id="connections-toggle" aria-expanded="false" aria-controls="connections-panel">Compare profiles</button>
+            <p class="mv-modeline" id="map-modeline" aria-live="polite"></p>
           </div>
           <section id="connections-panel" class="connections-panel" aria-label="Compare Instagram profiles" hidden></section>
           <div class="stage mv-stage" id="stage">
@@ -423,10 +425,12 @@
 <script src="controls.js"></script>
 <script src="start.js"></script>
 <script src="map-core.js"></script>
+<script src="map-modes.js"></script>
 <script src="map-model.js"></script>
 <script src="map-universe-gpu.js"></script>
 <script src="map-universe.js"></script>
 <script src="map-universe-model.js"></script>
+<script src="map-search.js"></script>
 <script src="map-view.js"></script>
 <script src="map-host.js"></script>
 <script src="k2-connection.js"></script>

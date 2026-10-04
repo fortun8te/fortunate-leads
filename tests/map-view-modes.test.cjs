@@ -20,26 +20,49 @@ test('recorded follows use owner evidence distance; shared uses recorded audienc
  assert.equal(shared.at(-1).x,.5);assert.equal(shared.at(-1).y,.5);
  assert.ok(VIEW_MODES.find(mode=>mode.id==='shared').description.includes('not mutual friends'));
 });
-test('view presets repack the same people without changing camera, cursors, evidence, or fetching',()=>{
- const model=new MapModel({reduced:true,fetchJson:()=>assert.fail('mode change must stay local')});
+test('a size change repacks the same people without changing camera, cursors, evidence, or fetching',()=>{
+ const model=new MapModel({reduced:true,fetchJson:()=>assert.fail('size change must stay local')});
  model.apply({nodes,world:{me:{id:0,x:.5,y:.5}},total:10000,next_cursor:'next'},{});
  model.selected=model.scene.get(1).d;model.scene.pin(model.selected);
  model.cam.set(.6,.4,2);model.cursor='saved';model.pages=['','saved'];model.pageIndex=1;
  const camera=model.cam.state(),ids=model.scene.nodes.map(it=>it.d.id).sort();
- model.setViewMode('shared');
- assert.equal(model.viewMode,'shared');assert.equal(model.size,'followers','distance never overrides the size choice');
+ model.setSizeEncoding('connections');
+ assert.equal(model.size,'connections');
  assert.deepEqual(model.scene.nodes.map(it=>it.d.id).sort(),ids);
  assert.deepEqual(model.cam.state(),camera);assert.equal(model.cursor,'saved');assert.equal(model.nextCursor,'next');assert.equal(model.pageIndex,1);
  assert.equal(model.selected.id,1);
  for(const n of nodes){const placed=model.scene.get(n.id).d;assert.equal(placed.evidenceX,n.x);assert.equal(placed.evidenceY,n.y);}
- model.setViewMode('network');assert.equal(model.size,'followers');assert.deepEqual(model.cam.state(),camera);
 });
-test('invalid or retired saved modes return to recorded follows',()=>{
+test('a view mode with its own slice loads that slice, keeps the camera and applies the mode default size',async()=>{
+ const urls=[];
+ const model=new MapModel({reduced:true,fetchJson:async url=>{urls.push(url);return {rev:1,total:2,nodes:nodes.slice(1),world:{me:{id:0,x:.5,y:.5}}};}});
+ model.apply({nodes,world:{me:{id:0,x:.5,y:.5}},total:10000,next_cursor:'next'},{});
+ model.cam.set(.6,.4,2);model.cursor='saved';model.pages=['','saved'];model.pageIndex=1;
+ const camera=model.cam.state();
+ model.setViewMode('shared');
+ assert.equal(model.viewMode,'shared');assert.equal(model.size,'connections');
+ assert.equal(model.cursor,'','a new slice starts at its first page');
+ return new Promise(resolve=>setImmediate(resolve)).then(()=>{
+  assert.equal(urls.length,1);assert.match(urls[0],/lens=shared/);assert.match(urls[0],/cohort=1/);
+  assert.deepEqual(model.cam.state(),camera);
+  assert.deepEqual(model.scene.nodes.map(it=>it.d.id).filter(id=>id!==0).sort(),[2,3]);
+  model.setViewMode('network');assert.equal(model.size,'followers');assert.equal(model.lens,'');
+ });
+});
+test('switching back to a visited mode reuses its page instead of asking again',async()=>{
+ let calls=0;
+ const model=new MapModel({reduced:true,fetchJson:async()=>{calls++;return {rev:1,total:3,nodes,world:{me:{id:0}}};}});
+ await model.load();model.setViewMode('reach');await new Promise(r=>setImmediate(r));
+ assert.equal(calls,2);model.setViewMode('network');await new Promise(r=>setImmediate(r));
+ assert.equal(calls,2,'the default page was cached');assert.equal(model.stats.cacheHits,1);
+});
+test('invalid or retired saved modes return to the closest view; earlier fit view becomes promising leads',()=>{
  for(const viewMode of [undefined,'equal','audience','bogus']){
   const model=new MapModel({viewMode});assert.equal(model.viewMode,'network');assert.equal(model.size,'followers');
  }
- assert.equal(new MapModel({viewMode:'shared',size:'connections'}).size,'connections');
- assert.equal(new MapModel({viewMode:'fit'}).viewMode,'fit');
+ assert.equal(new MapModel({viewMode:'shared'}).size,'connections');
+ assert.equal(new MapModel({viewMode:'fit'}).viewMode,'leads');
+ assert.equal(new MapModel({viewMode:'reach'}).size,'reach');
 });
 test('default map includes unqualified people and does not filter either observed follow direction',()=>{
  const model=new MapModel();const params=model.params();
@@ -47,8 +70,9 @@ test('default map includes unqualified people and does not filter either observe
  assert.equal(params.get('scope'),'all');assert.equal(params.get('follow') || 'all','all');
  assert.equal(params.get('mode'),'closeness');
  const preset=VIEW_MODES.find(mode=>mode.id==='network');
- assert.equal(preset.label,'Recorded follows');
- assert.match(preset.description,/Mutual follows first, then accounts following me, then accounts I follow/);
+ assert.equal(preset.label,'Closest to me');
+ assert.match(preset.line,/Mutual follows first, then people who follow you, then people you follow/);
+ assert.match(preset.description,/mutual follows first, then accounts that follow you, then accounts you follow/);
  assert.match(preset.description,/do not establish a personal relationship/);
 });
 test('owner evidence order survives high overlap, celebrity followers and lead fit',()=>{

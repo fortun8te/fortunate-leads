@@ -7,11 +7,9 @@
   const { Camera, Flight, Scene, Cache, Latest, snapRect, viewQuery, debounceMax, clamp, K_MAX, cohortLayout } = Core;
   const FITS = ['strong', 'good', 'weak', 'unread'];
   const PAD = 0.25;
-  const VIEW_MODES = [
-    { id: 'network', label: 'Recorded follows', size: 'followers', distance: 'Recorded follows with me', description: 'Mutual follows first, then accounts following me, then accounts I follow. Recorded follows do not establish a personal relationship. Larger means more saved followers.' },
-    { id: 'shared', label: 'Audience overlap', size: 'connections', distance: 'Collected source audiences', description: 'Closer means more collected source audiences. Shared audiences are not mutual friends.' },
-    { id: 'fit', label: 'Best fit', size: 'fit', distance: 'Saved fit assessment', description: 'Closer means a stronger saved fit assessment. This view does not indicate a connection.' }
-  ];
+  const Modes = root.MapModes || (typeof require === 'function' ? require('./map-modes.js') : null);
+  // One entry per view mode (map-modes.js owns the wording, ordering and size scale).
+  const VIEW_MODES = Modes.MODES.map(mode => ({ id: mode.id, label: mode.label, size: mode.size, distance: mode.distance, description: mode.help, line: mode.line, lens: mode.lens }));
 
   const finite = (v) => typeof v === 'number' && Number.isFinite(v);
   // Trust the shape, not the server: keep only people with a place on the map.
@@ -44,9 +42,9 @@
       this.reduced = !!o.reduced;
       this.online = o.online || (() => true);
       this.budgetOverride = o.budget || 0;
-      this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(1); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
+      this.cam = new Camera(); this.scene = new Scene(); this.cache = new Cache(8); this.viewReq = new Latest(); this.edgeReq = new Latest(); this.searchReq = new Latest(); this.locateReq = new Latest();
       this.density = [250,500,1000,3000,5000,10000,20000,50000,200000].includes(+o.density) ? +o.density : 500; this.cursor = ''; this.pages = ['']; this.pageIndex = 0; this.nextCursor = null;
-      this.viewMode = VIEW_MODES.some(mode => mode.id === o.viewMode) ? o.viewMode : 'network'; this.size = Core.SIZE_OPTIONS.some(size => size.id === o.size) ? o.size : 'followers'; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
+      this.viewMode = Modes.normalize(o.viewMode); this.size = Core.SIZE_OPTIONS.some(size => size.id === o.size) ? o.size : Modes.get(this.viewMode).size; this.mode = o.mode || 'closeness'; this.scope = 'all'; this.minFit = ''; this.status = ''; this.follow = 'all'; this.q = '';
       this.phase = 'idle'; this.error = ''; this.total = 0; this.worldTotal = 0; this.shown = 0; this.hidden = 0; this.world = {}; this.rev = null;
       this.selected = null; this.edges = null; this.connectionsVisible = false; this.flight = null; this.goal = null; this.vel = null;
       this.loaded = null; this.paused = false; this.pending = 0; this.listeners = new Set(); this.morph = 0;
@@ -58,6 +56,10 @@
     emit(what) { for (const fn of this.listeners) fn(what); }
     setSize(w, h) { this.cam.resize(w, h); }
     get budget() { return this.density; }
+    // The slice of people the active view mode draws from (empty: the default, follow-evidence order).
+    get lens() { return Modes.lens(this.viewMode); }
+    // How people are ordered from the centre outwards in the active view mode.
+    get ordering() { return Modes.comparator(this.viewMode); }
     get filtersActive() { return (this.scope !== 'all' ? 1 : 0) + (this.minFit ? 1 : 0) + (this.status ? 1 : 0) + (this.follow !== 'all' ? 1 : 0); }
 
     /* ----- loading ----- */
@@ -67,6 +69,7 @@
         status: this.status, q: this.q, follow: this.follow
       });
       p.set('cohort', '1');
+      if (this.lens) p.set('lens', this.lens);
       if (this.density > 2000 && !this.q) { p.set('compact', '1'); p.set('budget', String(Math.min(20000, this.density))); }
       if (this.cursor) p.set('after', this.cursor);
       return p;
@@ -78,6 +81,7 @@
       if (this.paused) return;
       const cam = opt.cam ? Object.assign(new Camera(), this.cam, { ...opt.cam }) : this.cam;
       const rect = {x0:0,y0:0,x1:1,y1:1}, params = this.params(), key = params.toString() + '|count=' + this.density;
+      this.cache.limit = this.density > 3000 ? 1 : 6;   // a few small pages for quick mode switches; one large page
       this.schedule.cancel();
       const cached = !opt.force && this.cache.get(key);
       if (cached) { this.stats.cacheHits++; this.viewReq.cancel(); this.pending = 0; this.emit('busy'); this.loaded = { rect, k: cam.k }; this.apply(cached, { rect, k: cam.k }); return; }
@@ -126,12 +130,12 @@
         if (envelope && (String(response.rev)!==String(envelope.rev) || response.cohort_reset)) throw new Error('The saved network changed. Refresh the map to continue.');
         envelope = response;
         for (const row of response.rows) {
-          const [id,x,y,rank,fit,closeness,followers,status,flags,source_count,hasPhoto,source,connection_tier] = row;
+          const [id,x,y,rank,fit,closeness,followers,status,flags,source_count,hasPhoto,source,connection_tier,links,priority] = row;
           if (seen.has(id)) throw new Error('The map returned duplicate people. Refresh to continue.');
           seen.add(id); collected.push({id,x,y,rank,fit,closeness,followers,status:statuses[status]||null,
             followed:!!(flags&1),follows_me:!!(flags&2),not_following:!!(flags&4),
             connection_tier,connection_kind:['mutual','follows_me','followed','known','source'][connection_tier] || null,
-            source_count,pic:hasPhoto?'/img/'+id:null,source,compact:true,handle:String(id)});
+            source_count,links:links??0,priority:priority??null,pic:hasPhoto?'/img/'+id:null,source,compact:true,handle:String(id)});
         }
         this.loadingCount=collected.length; this.loadingTotal=Math.min(this.density,response.total||this.density); this.emit('busy');
         const next=response.next_cursor;
@@ -152,7 +156,7 @@
       this.returningNode = null;
       const previousRev = this.rev;
       const layoutStart=this.now();
-      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size, this.viewMode), clusters = [];
+      const nodes = cohortLayout(resp.nodes.map(n => cleanNode(n, this.mode)).filter(Boolean), resp.world?.me, this.size, this.ordering), clusters = [];
       this.stats.layoutMs=this.now()-layoutStart;
       this.nextCursor = resp.next_cursor || null; this.cohort = true;
       if (resp.cohort_reset) {
@@ -190,11 +194,15 @@
 
     /* ----- modes and filters ----- */
     setViewMode(id) {
-      const preset = VIEW_MODES.find(mode => mode.id === id);
-      if (!preset || id === this.viewMode) return;
-      this.viewMode = id;
-      this.repack();
-      this.emit('mode');
+      id = Modes.normalize(id);
+      if (id === this.viewMode) return;
+      const before = this.lens;
+      this.viewMode = id; this.size = Modes.get(id).size;
+      // Modes that draw from the same slice only repack. A different slice loads its own page, cached
+      // for the next visit; the camera never moves.
+      if (this.lens === before) this.repack();
+      else { this.deselect(); this.resetPages(); this.load(); }
+      this.emit('mode'); this.emit('size');
     }
     setMode(mode) {
       if (mode === this.mode) return;
@@ -233,14 +241,18 @@
     select(n) {
       this.locateReq.cancel();
       if (!n) return this.deselect();
-      this.connectionsVisible = true; this.selected = n; this.scene.pin(n); this.emit('selection');
+      if (this.selected?.guest && String(this.selected.id) !== String(n.id)) this.dropGuest(this.selected.id);
+      this.connectionsVisible = true; this.selected = n; this.scene.pin(n);
+      if (n.guest) { const it = this.scene.get(n.id); if (it) it.a = 1; this.scene.rebuild(); this.emit('scene'); }
+      this.emit('selection');
       this.loadEdges(n);
     }
     deselect() {
       if (!this.selected) return false;
       this.locateReq?.cancel();
-      this.selected = null; this.edges = null; this.connectionsVisible = false; this.edgeReq.cancel(); this.scene.unpin(); this.scene.rebuild();
-      this.emit('selection'); return true;
+      const leaving = this.selected;
+      this.selected = null; this.edges = null; this.connectionsVisible = false; this.edgeReq.cancel(); this.scene.unpin(); this.dropGuest(leaving.id); this.scene.rebuild();
+      this.located = null; this.emit('selection'); return true;
     }
     setConnectionsVisible(on) {
       const visible = !!on && !!this.selected;
@@ -307,28 +319,42 @@
       return (this.fallback ? overview(r).nodes : r.results || []).map(n => cleanNode(n, this.mode)).filter(Boolean);
     }
     kFor() { return Math.max(1,this.cam.k); }
+    // Find a person on the map: select them and fly there. Someone who is not on the loaded page is shown
+    // as a guest just outside the rim, so nobody else moves and the page keeps its meaning.
     goTo(n) {
       const person = cleanNode(n);
       if (!person) return;
       const existing = this.scene.get(person.id);
-      if (existing) this.select(existing.d);
-      else {
-        const members = this.scene.nodes.map(it => it.d).filter(it => String(it.id) !== String(this.world.me?.id));
-        if (members.length >= this.density) members.pop();
-        members.push(person);
-        const nodes = cohortLayout(members, this.world.me, this.size, this.viewMode);
-        this.scene.clear();
-        this.scene.apply({ nodes, clusters: [] }, this.now(), { instant: true });
-        this.select(nodes.find(it => String(it.id) === String(person.id)));
-        this.emit('scene');
-      }
+      if (existing && existing.ta !== 0) this.select(existing.d);
+      else this.select(this.guest(person));
       if (this.selected) {
         const radius = this.scene.get(this.selected.id)?.d.portraitRadius;
         const baseScale = this.cam.scale / this.cam.k;
         const readableZoom = this.scene.large && radius > 0 ? 16 / (radius * baseScale) : this.cam.k;
         const k = clamp(Math.max(this.cam.k, readableZoom), Core.K_MIN, K_MAX);
+        this.located = { id: this.selected.id, at: this.now() };
         this.flyTo({ cx: this.selected.x, cy: this.selected.y, k }, 450);
+        this.emit('locate');
       }
+    }
+    // A pinned stand-in for a person outside the page. Placed on the rim at a free angle; it never enters the pack.
+    guest(person) {
+      const me = this.world.me, members = this.scene.nodes.filter(it => it.ta !== 0 && !it.d.guest && !(me && String(it.d.id) === String(me.id)));
+      const sizes = members.map(it => it.d.portraitRadius || 0).sort((a, b) => a - b);
+      const r = sizes.length ? sizes[Math.floor(sizes.length * .75)] || .012 : .012;
+      const hash = [...String(person.id)].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0, 2166136261);
+      let angle = (hash / 4294967296) * Math.PI * 2, spot = null;
+      const ring = .46 + r * 1.3 + .014, near = members.filter(it => Math.hypot(it.x - .5, it.y - .5) > .3);
+      for (let i = 0; i < 60 && !spot; i++, angle += 2.399963) {
+        const x = .5 + ring * Math.cos(angle), y = .5 + ring * Math.sin(angle);
+        if (near.every(it => Math.hypot(it.x - x, it.y - y) >= r + (it.d.portraitRadius || 0) + .006)) spot = { x, y };
+      }
+      spot = spot || { x: .5 + ring * Math.cos(angle), y: .5 + ring * Math.sin(angle) };
+      return { ...person, ...spot, evidenceX: person.x, evidenceY: person.y, guest: true, cohort: true, portraitRadius: r, spacing: r * 2 };
+    }
+    dropGuest(id) {
+      const it = this.scene.get(id);
+      if (it && it.d.guest) { this.scene.items.delete('n:' + id); this.scene.rebuild(); }
     }
 
     /* ----- camera ----- */
@@ -362,7 +388,7 @@
     repack() {
       this.returningNode = null;
       if (!this.cohort) return;
-      const nodes = cohortLayout(this.scene.nodes.filter(it => it.ta !== 0).map(it => it.d), this.world.me, this.size, this.viewMode);
+      const nodes = cohortLayout(this.scene.nodes.filter(it => it.ta !== 0 && !it.d.guest).map(it => it.d), this.world.me, this.size, this.ordering);
       this.scene.apply({nodes, clusters: []}, this.now(), {morph: this.reduced || nodes.length > 1500 ? 0 : 280, instant: this.reduced});
       if (this.selected) this.selected = nodes.find(n => String(n.id) === String(this.selected.id)) || this.selected;
       this.emit('scene');

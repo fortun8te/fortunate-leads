@@ -258,6 +258,13 @@ class Query:
             raise ValueError('overview must be 0 or 1')
         self.overview = overview == '1'
         self.cohort = q.get('cohort', ['0'])[0] == '1'
+        self.lens = q.get('lens', [''])[0].strip().lower() or None
+        if self.lens:
+            import map_lenses
+            if self.lens not in map_lenses.LENSES:
+                raise ValueError('lens must be ' + ', '.join(map_lenses.LENSES))
+            if not self.cohort or self.text:
+                raise ValueError('lens requires cohort=1 without a text search')
         if self.compact and (not self.cohort or self.text):
             raise ValueError('compact requires cohort=1 without a text search')
         self.after = None
@@ -274,7 +281,7 @@ class Query:
 
     def key(self):
         return json.dumps([self.mode, list(self.rect), self.budget, self.scope, self.min_fit,
-                           self.status_text, self.text.lower(), self.follow, self.overview, self.cohort, self.compact, self.after], separators=(',', ':'))
+                           self.status_text, self.text.lower(), self.follow, self.overview, self.cohort, self.compact, self.after, self.lens], separators=(',', ':'))
 
 
 def _etag(store, query):
@@ -593,6 +600,9 @@ def view(conn, db_path, q, if_none_match=None, cache=True):
 
 def _view(conn, db_path, store, query):
     mode, mask, budget = store.mode, query.mask, query.budget
+    if query.lens:
+        import map_lenses
+        return map_lenses.cohort(conn, store, query)
     if query.cohort and not query.text:
         return _cohort_view(conn, store, query)
     depth = choose_depth(*query.rect)
@@ -923,6 +933,13 @@ def _search_pool(conn, db_path, text, store):
 
 
 def search(conn, db_path, q):
+    """Answer /api/map/search from the ranked side index (map_search.py)."""
+    import map_search
+    return map_search.search(conn, db_path, q)
+
+
+def legacy_search(conn, db_path, q):
+    """The earlier handle-prefix search over the top of the layout. Kept for comparison and rollback."""
     text = q.get('q', [''])[0]
     ids, _ = search_ids(conn, db_path, text, 60)
     positions = {}

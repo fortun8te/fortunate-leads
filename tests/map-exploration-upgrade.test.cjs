@@ -41,14 +41,16 @@ test('all requested page sizes are accepted and retain the compact request bound
   assert.equal(model.params().get('compact'),'1');assert.ok(+model.params().get('budget')<=20000);
  }
 });
-test('distance and size controls stay independent and preserve selection and camera',()=>{
- const model=new MapModel({reduced:true,size:'equal'});
+test('a view mode sets its size scale, an explicit size choice sticks until the mode changes, and the camera never moves',()=>{
+ const model=new MapModel({reduced:true,size:'equal',fetchJson:async()=>({rev:1,total:0,nodes:[],world:{me:{id:0}}})});
  model.apply({rev:1,total:2,nodes:[{id:1,x:.1,y:.2,closeness:.4,fit:80,source_count:3}],world:{me:{id:0}}},{});
  const selected=model.scene.get(1).d;model.select=()=>{};model.selected=selected;model.cam.set(.3,.6,2);
  const camera=model.cam.state();
- model.setViewMode('shared');assert.equal(model.size,'equal');assert.deepEqual(model.cam.state(),camera);assert.equal(model.selected.id,1);
- model.setViewMode('fit');assert.equal(model.size,'equal');assert.equal(model.selected.id,1);
- model.setSizeEncoding('followers');assert.equal(model.viewMode,'fit');assert.deepEqual(model.cam.state(),camera);
+ assert.equal(model.size,'equal','a size passed in explicitly is honoured');
+ model.setSizeEncoding('followers');assert.equal(model.size,'followers');assert.equal(model.selected.id,1);assert.deepEqual(model.cam.state(),camera);
+ model.setViewMode('shared');assert.equal(model.size,'connections');assert.deepEqual(model.cam.state(),camera);
+ model.setSizeEncoding('equal');model.setViewMode('leads');assert.equal(model.size,'score','the mode default replaces the earlier choice');
+ assert.deepEqual(model.cam.state(),camera);
 });
 test('movement during an unfinished page load does not cancel and restart it',async()=>{
  let finish,requests=0,scheduled=0;
