@@ -2791,7 +2791,7 @@ $('#acc-start').addEventListener('click', async () => {
     await loadScraper();
   } catch (e) {
     status.dataset.state = 'error';
-    status.textContent = 'Could not start local models. Check setup in Settings.';
+    status.textContent = "Couldn't start local models.";
     toast("Couldn't start local models. Try again.");
   } finally {
     A.starting = false;
@@ -3094,7 +3094,7 @@ $('#set-q').addEventListener('submit', async (e) => {
   const n = (id) => { const v = $(id).value.trim(); return /^\d+$/.test(v) ? +v : NaN; };
   const body = { workers: n('#set-workers'), llm_min: n('#set-llm-min'), bio_min: n('#set-bio-min') };
   if (Object.values(body).some(Number.isNaN)) { toast('Enter whole numbers only'); return; }
-  try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+  try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't save. Try again."); }
 });
 $('#set-key-f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -3108,7 +3108,7 @@ $('#set-limit-f').addEventListener('submit', async (e) => {
   const v = $('#set-limit').value.trim();
   if (!/^\d+$/.test(v)) { toast('Enter a whole number. 0 means no limit.'); return; }
   try { await api.post('/api/llm/models', { daily_limit: +v }); toast('Daily limit saved'); document.activeElement?.blur(); loadSettings(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not save'); }
+  catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't save. Try again."); }
 });
 $('#set-model-f').addEventListener('submit', (e) => {
   e.preventDefault();
