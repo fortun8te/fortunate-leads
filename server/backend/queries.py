@@ -186,7 +186,8 @@ def counts(conn, q):
     """Tier and status counts inside the shared filter, each ignoring its own dimension (so the choices stay visible).
     none = unmarked, open = everyone but 'no'; total / with_bio: everyone in the database."""
     import lead_rank
-    if not any(values[0].strip() for values in q.values() if values):
+    # The web app always sends its local date as `today`; only a follow_up filter reads it.
+    if not any(values[0].strip() for key, values in q.items() if values and key != 'today'):
         indexed = lead_rank.counts(conn, STATUSES)
         if indexed is not None:
             return indexed
