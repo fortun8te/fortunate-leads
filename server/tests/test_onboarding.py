@@ -118,7 +118,7 @@ class OnboardingApiTest(Base):
         self.conn.commit()
         body = self.call('/api/start', {'handle': 'held.brand'})[1]
         self.assertEqual((body['queued'], body['started']), (2, False))
-        self.assertIn('safety hold', body['note'])
+        self.assertIn('holding collection', body['note'])
         self.assertEqual(self.call('/api/onboarding')[1]['flow']['state'], 'wait')
 
 
