@@ -7,3 +7,4 @@ Read `docs/PRODUCT.md` first: what this is, who a lead is, and the rules.
 - UI copy: sentence case, plain words, see `docs/COPY.md`.
 - Tests: `python3 -m unittest discover -s server/tests`; `node --test extension/test/*.test.mjs tests/*.test.mjs tests/*.test.cjs tests/ui/*.test.* tests/web/*.test.*`; `node tests/e2e/driver.mjs`.
 - Open backlog: `docs/OPEN_ITEMS.md`.
+- To see what happened (a crash, odd behaviour, where collection stands): run `ops/diagnose`; format and hooks in `docs/LOGGING.md`.

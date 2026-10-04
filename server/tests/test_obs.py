@@ -585,11 +585,13 @@ class HttpTests(ObsCase):
         states = self.events(event='lane_state')
         self.assertEqual(len(states), 1)
         self.assertEqual((states[0]['lane'], states[0]['account'], states[0]['state'], states[0]['first']), ('lane-a', 'alt1', 'idle', True))
-        self.call('POST', '/api/ext/heartbeat', dict(beat, state='running'))
-        self.call('POST', '/api/ext/heartbeat', dict(beat, state='running'))
+        self.call('POST', '/api/ext/heartbeat', dict(beat, state='running'))      # running <-> idle is not a change
+        self.assertEqual(len(self.events(event='lane_state')), 1)
+        self.call('POST', '/api/ext/heartbeat', dict(beat, state='network_wait'))
+        self.call('POST', '/api/ext/heartbeat', dict(beat, state='network_wait'))
         states = self.events(event='lane_state')
-        self.assertEqual([s['state'] for s in states], ['idle', 'running'])
-        self.assertEqual(states[1]['prev_repeats'], 2)
+        self.assertEqual([s['state'] for s in states], ['idle', 'network_wait'])
+        self.assertEqual(states[1]['prev_repeats'], 3)
 
     def test_denied_permits_collapse_into_one_line_and_an_adverse_response_links_to_its_state_change(self):
         lane = {'lane_id': 'lane-a', 'account': {'ig_id': '11', 'handle': 'alt1'}}

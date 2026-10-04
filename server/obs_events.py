@@ -245,7 +245,9 @@ def _state_facts(lane, b, out):
         row['version'] = b['version']
     if cool or 'cool' in b:
         row['cool'] = (cool.get('list'), cool.get('profile'))
-    return (row.get('state'), row.get('tab'), row.get('hold'), row.get('paused'), row.get('cooldown_until'),
+    # running <-> idle flips with every request; only a different kind of state is a change worth a line.
+    kind = 'active' if row.get('state') in ('running', 'idle') else row.get('state')
+    return (kind, row.get('tab'), row.get('hold'), row.get('paused'), row.get('cooldown_until'),
             row.get('cool'), tuple(sorted((stages or {}).items())), row.get('upgrade'))
 
 
@@ -278,7 +280,6 @@ def _next(t, q, b, out):
     signature = _state_facts(lane, {}, out)
     job = out.get('job')
     if isinstance(job, dict):
-        obs.transition_end(('lease_none', lane))
         obs.info('collect', 'lease', kind=job.get('kind'), job_id=job.get('id'),
                  seed=_text(job.get('seed')) or _text(job.get('handle')), direction=job.get('direction'),
                  has_cursor=bool(job.get('cursor')), received=job.get('received'), page_size=job.get('page_size'))

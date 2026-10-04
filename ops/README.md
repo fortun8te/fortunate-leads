@@ -34,7 +34,8 @@ ops/doctor.sh --fix                        # stop the old :8766 / hand-started :
 ops/backup.sh                              # backup now -> data/backups/leads-YYYYmmdd-HHMMSS-PID-RANDOM.sqlite
 ops/uninstall-launchagent.sh               # remove both agents; data, backups and logs stay
 ```
-Logs: `~/Library/Logs/fortunate-leads.log` (server), `~/Library/Logs/fortunate-leads-backup.log` (backup).
+What happened: `ops/diagnose` (last 2 hours, files only, works with the server down). It reads `data/logs/events.jsonl`, `data/logs/run.json` and `data/crash/`; see `docs/LOGGING.md`.
+Logs: `~/Library/Logs/fortunate-leads.log` (server stderr: tracebacks and anything before structured logging starts), `~/Library/Logs/fortunate-leads-backup.log` (backup).
 The server log is rotated by `backup.sh` past 20 MB (copy + truncate, 3 `.gz` kept); `doctor.sh` warns on size.
 Generated database backups keep the three newest copies and one copy on each of the newest 14 dates by default. `--keep N` changes the number of dates. Named checkpoints are untouched.
 
