@@ -29,13 +29,15 @@
     return ok;
   }
 
+  // app.js declares M, api and toast with const: global to every script, but not properties of window.
+  const global = (name) => { try { return (0, root.eval)(name); } catch (e) { return undefined; } };
   const el = (tag, attrs, ...kids) => {
     const n = root.document.createElement(tag);
     for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v);
     n.append(...kids);
     return n;
   };
-  const say = (text) => { if (typeof root.toast === 'function') root.toast(text); const live = root.document.getElementById('map-live'); if (live) live.textContent = text; };
+  const say = (text) => { const toast = global('toast'); if (typeof toast === 'function') toast(text); const live = root.document.getElementById('map-live'); if (live) live.textContent = text; };
 
   // The two buttons on the selected-person card.
   function actions(handle) {
@@ -103,11 +105,11 @@
     }
 
     // Bubbles: right-click, or press and hold on touch.
-    const view = () => root.M?.impl;
+    const view = () => global('M')?.impl;
     const handleOf = async (hit) => {
       const d = hit?.it?.d; if (!d || hit.kind === 'c') return '';
       if (d.handle) return d.handle;
-      try { return (await root.api.get('/api/person/' + encodeURIComponent(d.id))).handle || ''; } catch (e) { return ''; }
+      try { return (await global('api').get('/api/person/' + encodeURIComponent(d.id))).handle || ''; } catch (e) { return ''; }
     };
     const at = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
     const show = async (e) => {
