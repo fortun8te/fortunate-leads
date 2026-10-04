@@ -23,11 +23,11 @@ def validate(value):
             raise ValueError('This Mac uses the fixed local K2 address')
         return dict(DEFAULT)
     if location != 'other_pc' or not isinstance(host, str) or type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError('Choose another PC with a private IPv4 address and valid port')
+        raise ValueError('Enter a private IPv4 address and a port from 1 to 65535.')
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        raise ValueError('Use the other PC private IPv4 address') from None
+        raise ValueError("Enter the other PC's private IPv4 address.") from None
     if not isinstance(ip, ipaddress.IPv4Address) or not any(ip in network for network in (
             ipaddress.ip_network('10.0.0.0/8'), ipaddress.ip_network('172.16.0.0/12'),
             ipaddress.ip_network('192.168.0.0/16'))):

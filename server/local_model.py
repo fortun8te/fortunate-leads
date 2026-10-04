@@ -80,7 +80,7 @@ def test_connection():
     try:
         _call_state.connection = k2_connection.read_secret()
         if not ready():
-            return {'ok': False, 'message': 'Expected K2 model was not found at this connection.'}
+            return {'ok': False, 'message': "K2 isn't loaded at this address."}
         rendered = _request('/apply-template', {'messages': [{'role': 'user', 'content': 'test'}]})
         if not isinstance(rendered, dict) or not isinstance(rendered.get('prompt'), str):
             raise ValueError('Prompt template endpoint did not return a prompt')
@@ -89,9 +89,9 @@ def test_connection():
             raise ValueError('Tokenization endpoint did not return tokens')
         if _call_state.connection['location'] == 'other_pc':
             _remote_ready_endpoint = k2_connection.endpoint({key: _call_state.connection[key] for key in k2_connection.DEFAULT})
-        return {'ok': True, 'message': 'Verified K2 model and required endpoints are reachable.'}
+        return {'ok': True, 'message': 'Connected. K2 is responding.'}
     except (Unavailable, ValueError, TypeError, AttributeError):
-        return {'ok': False, 'message': 'Connection failed or does not expose the required K2 endpoints.'}
+        return {'ok': False, 'message': "Couldn't connect to K2. Check the address and port."}
     finally:
         _call_state.connection = None
 

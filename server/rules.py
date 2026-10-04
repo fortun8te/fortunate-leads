@@ -96,7 +96,7 @@ def compile_match(field, match):
     if field not in FIELDS:
         raise ValueError('field must be one of ' + '|'.join(FIELDS))
     if not isinstance(match, str) or not match.strip():
-        raise ValueError('match required')
+        raise ValueError('Enter at least one word.')
     m = match.strip()
     if len(m) >= 3 and m.startswith('/') and m.endswith('/'):
         pat = m[1:-1]
@@ -110,12 +110,12 @@ def compile_match(field, match):
         _probe(rx)
         return rx, rx
     if len(m) > MAX_KEYWORDS:
-        raise ValueError(f'keywords longer than {MAX_KEYWORDS} characters')
+        raise ValueError(f'Words can\'t be longer than {MAX_KEYWORDS} characters in total.')
     words = list(dict.fromkeys(w.strip() for w in m.split(',') if w.strip() and w.strip() != '*'))
     if not words or len(words) > MAX_WORDS:
-        raise ValueError(f'1-{MAX_WORDS} comma-separated keywords required')
+        raise ValueError(f'Enter 1 to {MAX_WORDS} words, separated by commas.')
     if any(w.count('*') > 1 for w in words):
-        raise ValueError('one * per keyword')
+        raise ValueError('Use at most one * in each word.')
     alt = '|'.join(_keyword(w) for w in sorted(words, key=len, reverse=True))
     word_rx, sub_rx = re.compile(r'(?<!\w)(?:' + alt + r')(?!\w)', re.I), re.compile(alt, re.I)
     _probe(word_rx, sub_rx)

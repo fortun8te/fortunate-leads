@@ -214,24 +214,24 @@ def enabled(conn):
 def result(conn, pid):
     note, fingerprint = _snapshot(conn, pid)
     base = {'model': MODEL, 'facts': [], 'updated_at': None,
-            'ranking_effect': 'Confirm relationship suggestions to update ranking. Private note suggestions do not change your saved relationships.'}
+            'ranking_effect': 'Confirm a suggestion to update ranking. Nothing changes until you do.'}
     if not note.strip():
         return dict(base, state='empty', message='')
     if not enabled(conn):
-        return dict(base, state='disabled', message='Local processing is off. Your note is saved.')
+        return dict(base, state='disabled', message='Local AI is off. Your note is saved.')
     try:
         row = conn.execute('SELECT * FROM owner_note_reads WHERE person_id=?', (pid,)).fetchone()
     except sqlite3.OperationalError:
         row = None
     if not row or row['snapshot'] != fingerprint:
-        return dict(base, state='pending', message='Your note is saved. Waiting for the local reader.')
+        return dict(base, state='pending', message='Your note is saved. Waiting to read it.')
     state = row['state']
-    messages = {'pending': 'Reading your note locally.', 'ready': 'Suggestions from your note. Your relationship choice stays unchanged.',
-                'unavailable': 'Local note reader is unavailable. Your note is saved.',
-                'failed': 'Could not reliably read this note. Automatic retries stopped. Your note is saved; you can retry it.'}
+    messages = {'pending': 'Reading your note locally.', 'ready': 'Suggestions from your note. Nothing changes until you confirm.',
+                'unavailable': 'Local reading is unavailable. Your note is saved.',
+                'failed': "Couldn't read this note. Your note is saved. You can retry."}
     facts = json.loads(row['facts']) if state == 'ready' else []
     if state == 'ready' and not facts:
-        messages['ready'] = 'No clear suggestions found. Your original note is saved.'
+        messages['ready'] = 'No suggestions. Your note is saved.'
     return dict(base, state=state, facts=[actionable(f) for f in facts], message=messages[state], updated_at=row['updated_at'], can_retry=state in ('failed', 'unavailable'))
 
 

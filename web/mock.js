@@ -297,7 +297,7 @@
   const TEXT = ['bio', 'name', 'category'];
   function compile(match) {
     const m = String(match || '').trim();
-    if (!m) throw new Error('match required');
+    if (!m) throw new Error('Enter at least one word.');
     if (m.length >= 3 && m.startsWith('/') && m.endsWith('/')) { const rx = new RegExp(m.slice(1, -1), 'i'); return [rx, rx]; }
     const words = m.split(',').map((w) => w.trim()).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '\\w*').replace(/\s+/g, '\\s+'));
     return [new RegExp('(^|\\W)(' + words.join('|') + ')(?=\\W|$)', 'i'), new RegExp(words.join('|'), 'i')];

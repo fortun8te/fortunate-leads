@@ -100,7 +100,7 @@ def owner_recommendation(person, verdict):
 def owner_conflict(person):
     labels = {str(tag).strip().casefold() for tag in person.get('manual_tags') or []}
     if has_connection(person) and 'not reachable' in labels:
-        return 'Not reachable label conflicts with the saved relationship. Update the status or label.'
+        return 'The Not reachable tag conflicts with this relationship. Update the status or remove the tag.'
     return None
 
 
