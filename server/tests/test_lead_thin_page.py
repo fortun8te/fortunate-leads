@@ -55,6 +55,19 @@ class ThinLeadPage(unittest.TestCase):
                         self.assertEqual(page['next_offset'], offset + len(rows))
                         self.assertEqual(page['has_more'], offset + len(rows) < total)
 
+    def test_followers_order_lists_largest_first_and_unknown_last(self):
+        # SQLite sorts NULL below every number, so DESC alone ends with unknown counts.
+        # Keeping the plain column lets the followers index order the page without a sort.
+        self.assertEqual(server.SORTS['followers'], 'p.followers DESC')
+        people = self.conn.execute("SELECT id, followers FROM people WHERE handle!='fortun8te' "
+                                   "AND id NOT IN (SELECT person_id FROM marks WHERE status='no')").fetchall()
+        expected = [row[0] for row in sorted(people, key=lambda r: (r[1] is None, -(r[1] or 0), r[0]))]
+        page = server.api_leads(self.conn, {'sort': ['followers'], 'limit': ['500']}, {})
+        self.assertEqual([row['id'] for row in page['rows']], expected)
+        plan = ' '.join(str(row[3]) for row in self.conn.execute(
+            f"EXPLAIN QUERY PLAN SELECT p.id {server.PEOPLE_FROM} ORDER BY {server.SORTS['followers']}, p.id LIMIT 5"))
+        self.assertIn('people_followers', plan)
+
     def test_interrupted_summary_backfill_keeps_exact_fallback(self):
         self.conn.execute("UPDATE settings SET value='false' WHERE key='map_person_degree_v1'")
         query = {'sort': ['fit'], 'limit': ['5'], 'offset': ['3']}
