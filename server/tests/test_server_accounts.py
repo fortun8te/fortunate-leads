@@ -132,9 +132,10 @@ class LaneTest(Base):
         r = self.call('/api/accounts/lane-c', {'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'label': ' spare '})[1]['account']
         self.assertEqual((r['paused'], r['budget'], r['budget_custom'], r['label'], r['status']),
                          (True, {'list': 3000, 'profile': 20}, True, 'spare', 'paused'))
-        self.assertEqual(self.nxt('c'), {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'job': None,
+        self.assertEqual({k: v for k, v in self.nxt('c').items() if k != 'pace'}, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'job': None,
                                          'cooldown_until': None, 'stages': {'list': True, 'profile': True}})
         hb = self.post('c', '/api/ext/heartbeat', {'version': '3.9.17', 'state': 'paused'})[1]
+        hb = {k: v for k, v in hb.items() if k != 'pace'}   # pace has its own tests (test_pace.py)
         self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'stages': {'list': True, 'profile': True}})
         self.call('/api/accounts/lane-c', {'budget': None})
         self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})

@@ -196,12 +196,13 @@ class ServerTest(Base):
         self.assertEqual((nxt['job']['kind'], nxt['budget'], nxt['paused']), ('list', {'list': 3000, 'profile': 300}, False))
         self.assertIsNone(self.call('/api/ext/next?kinds=list')[1]['job'])
         self.call('/api/scraper/pause', {'paused': True})
-        self.assertEqual(self.call('/api/ext/next')[1], {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 300},
+        self.assertEqual({k: v for k, v in self.call('/api/ext/next')[1].items() if k != 'pace'}, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 300},
                                                          'job': None, 'cooldown_until': None, 'stages': {'list': False, 'profile': False}})
         self.call('/api/scraper/pause', {'paused': False})
         self.assertEqual(self.call('/api/scraper/budget', {'list': 9999, 'profile': 200})[0], 400)  # out of range: nothing changes
         self.call('/api/scraper/budget', {'list': 3000, 'profile': 200})
         hb = self.call('/api/ext/heartbeat', {'version': '3.9.17', 'state': 'idle', 'today': {'list': 1, 'profile': 2}})[1]
+        hb = {k: v for k, v in hb.items() if k != 'pace'}
         self.assertEqual(hb, {'ok': True, 'paused': False, 'budget': {'list': 3000, 'profile': 200}, 'stages': {'list': True, 'profile': True}})
         self.assertTrue(self.call('/api/scraper')[1]['ext']['online'])
         self.call('/api/ext/error', {'job_id': None, 'code': 'challenge', 'retry_at': None, 'message': 'checkpoint'})
