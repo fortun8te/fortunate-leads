@@ -3,19 +3,17 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../../web/app.js',import.meta.url),'utf8');
-function harness({failPost=false, failRead=false,reorder=false}={}) {
+function harness({failPost=false, failRead=false}={}) {
  const nodes=new Map(),calls=[],messages=[];
  const $=id=>{if(!nodes.has(id))nodes.set(id,{disabled:false,classList:{toggle(){}},setAttribute(){},querySelectorAll:()=>[],addEventListener(k,fn){this[k]=fn}});return nodes.get(id)};
  const S={sc:{processing:{mode:'RLAI',generation:1}}};
- const SET={processing:{mode:'RLAI',generation:1},processingStale:false,models:['vendor/first','vendor/second'],dirty:true,scout:{model:'grok'}};
+ const SET={processing:{mode:'RLAI',generation:1},processingStale:false,scout:{model:'grok'}};
  let saved=SET.processing;
- const ctx=vm.createContext({$,S,SET,window:{dispatchEvent(){}},Event,int:String,toast:s=>messages.push(s),renderSettings(){},renderScout(){},loadScout:async()=>{},renderModels(){},ucf:s=>s,api:{
-  post:async(url,body)=>{calls.push({url,body});if(failPost)throw Error('offline');if(url==='/api/local-processing')return {enabled:true,paused:body.paused,stop_acknowledged:true,ready:true,queue:42,reviewed:318,runtime:{resources:{allowed:true}}};if(url==='/api/llm/models')return {models:reorder?[...body.models].reverse():body.models};return saved={mode:body.mode,generation:2,capabilities:{rules:true,laya:body.mode!=='R',local_qualification:body.mode!=='R',external:body.mode==='RLEAI'}}},
+ const ctx=vm.createContext({$,S,SET,window:{dispatchEvent(){}},Event,int:String,toast:s=>messages.push(s),renderSettings(){},renderScout(){},loadScout:async()=>{},ucf:s=>s,api:{
+  post:async(url,body)=>{calls.push({url,body});if(failPost)throw Error('offline');if(url==='/api/local-processing')return {enabled:true,paused:body.paused,stop_acknowledged:true,ready:true,queue:42,reviewed:318,runtime:{resources:{allowed:true}}};return saved={mode:body.mode,generation:2,capabilities:{rules:true,laya:body.mode!=='R',local_qualification:body.mode!=='R',external:body.mode==='RLEAI'}}},
   get:async(url)=>{if(failRead)throw Error('offline');return url==='/api/processing-mode'?saved:{enabled:saved.mode!=='R',model:'K2 Horizon 3.7B',ready:true,reviewed:318,queue:42,notes_pending:2,needs_research:19}}
  }});
  vm.runInContext(source.slice(source.indexOf('const PROCESSING_LABELS ='),source.indexOf('// Leadscout:')),ctx);
- const start=source.indexOf("$('#set-models-save').onclick = async () => {");
- vm.runInContext(source.slice(start,source.indexOf("$('#view-settings').addEventListener",start)),ctx);
  return {$,S,SET,ctx,calls,messages,choose:mode=>$('#set-mode').click({target:{closest:()=>({dataset:{mode},disabled:false})}})};
 }
 test('three modes use one atomic endpoint and cumulative authoritative readback',async()=>{
@@ -29,12 +27,6 @@ test('local progress shows actual saved bio queue and separate research needs',a
 });
 test('new mode beats stale scraper snapshot, external summary preserves local and identifies research model',async()=>{
  const h=harness();await h.choose('RLEAI');h.S.sc.processing={mode:'R',generation:1};h.ctx.renderCheckingMode();assert.match(h.$('#set-mode-status').textContent,/External AI selected/);assert.match(h.$('#set-mode-models').textContent,/K2 Horizon.*Laya.*External review: grok/);
-});
-test('legacy model save preserves order without changing mode',async()=>{
- const h=harness();await h.$('#set-models-save').onclick();assert.equal(h.calls.length,1);assert.equal(h.calls[0].url,'/api/llm/models');assert.equal(h.SET.processing.mode,'RLAI');assert.equal(h.SET.dirty,false);
-});
-test('unexpected saved legacy model order reports failure',async()=>{
- const h=harness({reorder:true});await h.$('#set-models-save').onclick();assert.equal(h.SET.dirty,true);assert.match(h.messages.at(-1),/Could not confirm/);
 });
 test('queued work never claims model is running when service is unavailable',()=>{
  const h=harness();h.SET.localProcessing={enabled:true,ready:false,state:'unavailable',reviewed:2,queue:30,seeding:true};

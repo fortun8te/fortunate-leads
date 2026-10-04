@@ -305,34 +305,9 @@
         <details class="settings-setup" id="external-setup">
           <summary><b>External AI setup</b></summary>
           <div class="settings-setup-body">
-            <section class="sg legacy-processing-settings" hidden>
-              <div class="sg-h"><h2>Automatic start</h2></div>
-              <div class="card"><div class="set-row"><div><b>After collection finishes</b><span class="muted">Applies only when External AI is selected.</span></div><button class="toggle" id="set-q-auto" role="switch" aria-checked="false" aria-label="Start AI checks after the lists"><i></i></button></div></div>
-            </section>
             <section class="sg">
               <div class="sg-h"><h2>External research</h2><p>Choose the model for profiles that need more evidence.</p></div>
               <div class="card" id="set-scout"><div class="set-row muted" role="status">Loading research settings…</div></div>
-            </section>
-            <section class="sg legacy-processing-settings" hidden>
-              <div class="sg-h"><h2>OpenRouter access</h2><p>Used for external profile review. Saving a key does not start checks.</p><span class="num muted" id="set-keys-n" hidden></span></div>
-              <div class="card flush">
-                <div class="tbl-wrap"><table class="tbl tg-tbl"><thead><tr><th>Key</th><th class="hide-sm">Added in</th><th>Status</th><th class="r">Today</th><th class="hide-sm">Last result</th><th class="r"></th></tr></thead><tbody id="set-keys"></tbody></table></div>
-                <div class="set-forms">
-                  <form class="set-inline" id="set-key-f"><input class="input grow" id="set-key" type="password" aria-label="OpenRouter key" placeholder="Paste an OpenRouter key" autocomplete="off" spellcheck="false"><button class="btn">Add key</button></form>
-                  <form class="set-inline" id="set-limit-f" novalidate><label for="set-limit" class="muted">Daily requests per key and model</label><input class="input" id="set-limit" type="number" min="0" inputmode="numeric" aria-label="Requests per key and model per day"><button class="btn">Save limit</button></form>
-                  <span class="muted num" id="set-file"></span>
-                </div>
-              </div>
-            </section>
-            <section class="sg legacy-processing-settings" hidden>
-              <div class="sg-h"><h2>Profile review models</h2><p>Uses the first available model, trying the next if needed. This does not change the web research model.</p></div>
-              <div class="card">
-                <div class="sub-h"><b>Selected models</b><div class="grow"></div><button class="btn" id="set-models-save" disabled>Save order</button></div>
-                <ol class="models" id="set-models"></ol>
-                <div class="sub-h"><b>Available free models</b><span class="muted" id="set-free-at"></span><div class="grow"></div><button class="btn" id="set-free-refresh">Refresh list</button></div>
-                <ul class="models" id="set-free"></ul>
-                <form class="set-inline" id="set-model-f"><input class="input grow" id="set-model" aria-label="Model identifier" placeholder="Model identifier" autocomplete="off" spellcheck="false"><button class="btn">Add model</button></form>
-              </div>
             </section>
           </div>
         </details>

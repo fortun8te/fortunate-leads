@@ -1238,7 +1238,7 @@ function detailProfileState(p) {
   const state = p.profile_read?.state === 'reading' ? 'reading' : p.profile_read_pending ? 'queued' : p.profile_read?.state || '';
   const pending = state === 'queued' || state === 'reading';
   const message = state === 'queued' ? 'Profile refresh queued' : state === 'reading' ? 'Reading profile' : state === 'failed' ? "Couldn't refresh the profile. Open More details to retry." : '';
-  const source = { extension: 'Instagram browser', tab: 'Instagram browser', meta_bd: 'Profile lookup' }[p.bio_src] || (p.bio_src ? 'Other profile source' : 'Source not recorded');
+  const source = { extension: 'Instagram browser', tab: 'Instagram browser', meta_bd: 'Profile lookup' }[p.bio_src] || (p.bio_src ? 'another source' : '');
   return { pending, failed: state === 'failed', message, source, button: pending ? state === 'reading' ? 'Reading profile…' : 'Refresh queued' : state === 'failed' ? 'Retry profile read' : p.bio_at ? 'Refresh profile' : 'Read profile' };
 }
 async function retryDetail(id) {
@@ -1319,7 +1319,7 @@ function renderDetail() {
       <div class="d-bio${p.bio ? '' : ' muted'}">${bio}</div>
       <dl class="d-stats"><div><dt>Followers</dt><dd class="num">${int(p.followers)}</dd></div><div><dt>Following</dt><dd class="num">${int(p.following)}</dd></div><div><dt>Posts</dt><dd class="num">${int(p.posts)}</dd></div>${p.score == null ? '' : `<div><dt>Priority</dt><dd class="num">${esc(p.score)}</dd></div>`}</dl>
       ${site && !url ? `<p class="muted">${esc(site)}</p>` : ''}
-      <p class="muted profile-freshness">${readDate ? 'Profile read ' + esc(readDate) + '.' : 'Profile not read yet.'} Source: ${esc(profile.source.toLowerCase())}.</p>
+      ${readDate ? `<p class="muted profile-freshness">Read ${esc(readDate)}${profile.source ? ' via ' + esc(profile.source) : ''}.</p>` : ''}
       ${profile.message ? `<p class="${profile.failed ? 'bad' : 'muted'} profile-freshness" role="status">${esc(profile.message)}</p>` : ''}
       ${!p.loading && !p.failed ? `<button class="btn" id="d-read" ${profile.pending ? 'disabled' : ''}>${esc(profile.button)}</button>` : ''}
       ${ev.length || evidenceTags.length || p.site || p.scout ? `<h4 class="d-h2">Evidence</h4>` : ''}
@@ -2372,7 +2372,7 @@ function syncSeed() {
     const excluded = seedFollowingOnly() && b.dataset.v === 'followers';
     b.disabled = seedAdding || excluded;
     b.setAttribute('aria-pressed', String(!excluded && b.classList.contains('on')));
-    b.title = excluded ? 'Following only is selected above' : '';
+    b.title = excluded ? 'Collection is set to following only' : '';
   });
 }
 $('#seed-in').addEventListener('input', syncSeed);
@@ -2852,13 +2852,13 @@ $('#wiz').addEventListener('click', (e) => {
   if (e.target.closest('#wiz-x')) closeWizard();
 });
 
-// ---------- settings (qualification, OpenRouter keys and models, local services) ----------
-const SET = { llm: null, health: null, tests: {}, models: null, confirm: null, dirty: false, modeBusy: false, processing: null, localProcessing: null, processingStale: true };
+// ---------- settings (checking mode, local services, research) ----------
+const SET = { llm: null, health: null, modeBusy: false, processing: null, localProcessing: null, processingStale: true };
 async function loadSettings() {
   loadBiofetch();
   await loadProcessingStatus();
   const [llm] = await Promise.allSettled([api.get('/api/llm')]);
-  if (llm.status === 'fulfilled') { SET.llm = llm.value; if (!SET.dirty) SET.models = [...SET.llm.models]; }
+  if (llm.status === 'fulfilled') SET.llm = llm.value;
   renderSettings();
   if (!SET.health) checkHealth();
   loadScout();
@@ -2918,7 +2918,6 @@ function renderCheckingMode() {
     button.setAttribute('aria-pressed', String(button.dataset.mode === code));
     button.disabled = SET.modeBusy || !code;
   });
-  $('#set-q-auto').disabled = SET.modeBusy || mode !== 'external';
   const summary = $('#set-mode-models');
   if (summary) {
     const model = SET.localProcessing?.model || 'K2 3.7B';
@@ -3027,68 +3026,16 @@ function renderServices() {
   $('#set-svc').innerHTML = row('OpenRouter proxy', h?.proxy.url || l?.providers?.[0]?.url, h ? h.proxy.up : null, 'Optional. Without it, requests go to OpenRouter directly.')
     + row('Local Laya', h?.laya.url || l?.laya?.url, h ? h.laya.up : null, 'Start it from Local AI setup above.');
 }
-function keyStatus(p) {
-  if (p.disabled) return { text: 'Refused', cls: 'bad' };
-  const until = Object.values(p.cooldowns || {}).sort().pop();
-  if (until) return { text: 'Cooling until ' + new Date(until).toTimeString().slice(0, 5), cls: 'warn' };
-  return { text: 'Ready', cls: '' };
-}
 function renderSettings() {
   renderCheckingMode();
   const l = SET.llm, sc = S.sc;
-  $('#set-q-auto').classList.toggle('on', !!sc?.qualify_auto);
-  $('#set-q-auto').setAttribute('aria-checked', String(!!sc?.qualify_auto));
   const f = $('#set-q');
   if (l && !f.contains(document.activeElement)) { $('#set-workers').value = l.workers; $('#set-llm-min').value = l.llm_min; $('#set-bio-min').value = l.bio_min; }
   const bL = $('#b-list'), bP = $('#b-profile'), bud = sc?.ext?.budget || {};
   if (document.activeElement !== bL && document.activeElement !== bP) { bL.value = bud.list ?? ''; bP.value = bud.profile ?? ''; }
   syncLook();
   renderServices();
-  const keys = (l?.providers || []).filter((p) => p.key);
-  $('#set-keys-n').textContent = l ? plural(keys.length, 'key') : '';
-  $('#set-file').textContent = l?.config || '';
-  $('#set-keys').innerHTML = !l ? `<tr><td colspan="5" class="muted">Loading</td></tr>` : keys.length ? keys.map((p) => {
-    const st = keyStatus(p), t = SET.tests[p.id], today = Object.values(p.requests_today || {}).reduce((a, b) => a + b, 0);
-    const test = t === 'run' ? 'Testing' : t ? (t.passed ? `Works, ${t.ms} ms` : t.error) : p.last_error || '';
-    const conf = SET.confirm === p.id;
-    return `<tr><td class="mono">${esc(p.key)}</td><td class="hide-sm muted">${p.source === 'env' ? 'Environment' : 'Settings'}</td>
-      <td><span class="kst ${st.cls}">${esc(st.text)}</span></td><td class="r num">${int(today)}</td>
-      <td class="hide-sm key-note${t && !t.passed && t !== 'run' ? ' bad' : ''}" title="${esc(test)}">${esc(test)}</td>
-      <td class="r"><span class="acts"><button data-ktest="${esc(p.id)}"${t === 'run' || settingsMode(S.sc) !== 'external' || S.scStale ? ' disabled' : ''}>Test</button>${p.source === 'env' ? '' : `<button data-kdel="${esc(p.id)}" class="${conf ? 'warn' : ''}">${conf ? 'Confirm' : 'Remove'}</button>`}</span></td></tr>`;
-  }).join('') : `<tr><td colspan="6" class="muted">No keys yet. Free models work with a free OpenRouter key.</td></tr>`;
-  if (l && document.activeElement?.id !== 'set-limit') $('#set-limit').value = l.daily_limit;
-  renderModels();
 }
-function renderModels() {
-  const ms = SET.models || [];
-  $('#set-models').innerHTML = ms.length ? ms.map((m, i) => `<li><span class="num muted">${i + 1}</span><code>${esc(m)}</code>${/:free$|^stealth\//.test(m) ? '<span class="pill">Free</span>' : ''}<span class="grow"></span>
-    <button class="btn ghost" data-mup="${i}" title="Try earlier"${i ? '' : ' disabled'}>Up</button><button class="btn ghost" data-mdown="${i}" title="Try later"${i < ms.length - 1 ? '' : ' disabled'}>Down</button><button class="btn ghost" data-mdel="${i}">Remove</button></li>`).join('')
-    : '<li class="muted">No models</li>';
-  $('#set-models-save').disabled = !SET.dirty;
-  // OpenRouter's current free catalogue (checked daily by the server); one click adds a model to the list above.
-  const auto = SET.llm?.auto_models || {};
-  const free = [...new Set([...(auto.stealth || []), ...(auto.free || [])])];
-  $('#set-free-at').textContent = auto.at ? `${free.length} models · checked ${ago(auto.at)} ago` : auto.error ? "Couldn't reach OpenRouter" : 'Not checked yet';
-  $('#set-free').innerHTML = free.length ? free.map((m) => `<li><code>${esc(m)}</code>${(auto.new_stealth || []).includes(m) ? '<span class="pill">New</span>' : ''}<span class="grow"></span>
-    ${ms.includes(m) ? '<span class="muted">In use</span>' : `<button class="btn ghost" data-madd="${esc(m)}">Add</button>`}</li>`).join('')
-    : '<li class="muted">None found</li>';
-}
-$('#set-free').addEventListener('click', (e) => {
-  const m = e.target.closest('[data-madd]')?.dataset.madd;
-  if (!m || !SET.models || SET.models.includes(m)) return;
-  SET.models.push(m); SET.dirty = true; renderModels(); toast('Added. Press Save to use it.');
-});
-$('#set-free-refresh').onclick = async (e) => {
-  e.target.disabled = true;
-  try { const r = await api.post('/api/llm/models/refresh', {}); if (SET.llm) SET.llm.auto_models = r.auto; renderModels(); toast('Model list updated'); }
-  catch { toast("Couldn't reach OpenRouter. Check your connection."); }
-  finally { e.target.disabled = false; }
-};
-$('#set-q-auto').onclick = async () => {
-  if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) return;
-  const auto = !S.sc?.qualify_auto;
-  try { await api.post('/api/settings/qualify', { auto }); toast(auto ? 'Starts by itself after the lists' : 'Starts only by hand'); await loadScraper(); renderSettings(); } catch (e) { toast("Couldn't save. Try again."); }
-};
 $('#set-q').addEventListener('submit', async (e) => {
   e.preventDefault();
   const n = (id) => { const v = $(id).value.trim(); return /^\d+$/.test(v) ? +v : NaN; };
@@ -3096,64 +3043,8 @@ $('#set-q').addEventListener('submit', async (e) => {
   if (Object.values(body).some(Number.isNaN)) { toast('Enter whole numbers only'); return; }
   try { await api.post('/api/settings/qualify', body); toast('Saved'); document.activeElement?.blur(); loadSettings(); } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't save. Try again."); }
 });
-$('#set-key-f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const key = $('#set-key').value.trim();
-  if (!key) return;
-  try { await api.post('/api/llm/keys', { key }); $('#set-key').value = ''; toast('Key added'); loadSettings(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't add the key. Check it and try again."); }
-});
-$('#set-limit-f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const v = $('#set-limit').value.trim();
-  if (!/^\d+$/.test(v)) { toast('Enter a whole number. 0 means no limit.'); return; }
-  try { await api.post('/api/llm/models', { daily_limit: +v }); toast('Daily limit saved'); document.activeElement?.blur(); loadSettings(); }
-  catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't save. Try again."); }
-});
-$('#set-model-f').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const m = $('#set-model').value.trim();
-  if (!/^[\w.-]+\/[\w.:-]+$/.test(m) || !/:free$|^stealth\//.test(m)) { toast('Choose a free model from the list, or enter vendor/model:free'); return; }
-  if (!SET.models) { toast('Settings are still loading. Try again in a moment.'); return; }
-  if (!SET.models.includes(m)) { SET.models.push(m); SET.dirty = true; }
-  $('#set-model').value = ''; renderModels();
-});
-$('#set-models-save').onclick = async () => {
-  if (!SET.models?.length || !SET.dirty) return;
-  const models = [...SET.models];
-  $('#set-models-save').disabled = true;
-  try {
-    const saved = await api.post('/api/llm/models', { models });
-    if (!Array.isArray(saved.models) || saved.models.join('\n') !== models.join('\n')) throw new Error('Order changed');
-    SET.models = [...saved.models]; SET.dirty = false;
-    if (SET.llm) SET.llm.models = [...saved.models];
-    toast('Model order saved. Checking mode unchanged.');
-  } catch (err) { toast(err.status === 400 ? ucf(err.message) : 'Could not confirm this model order. Your changes are still here.'); }
-  finally { renderModels(); }
-};
-$('#view-settings').addEventListener('click', async (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  if (b.id === 'set-recheck') return checkHealth();
-  const ms = SET.models;
-  const swap = (i, j) => { [ms[i], ms[j]] = [ms[j], ms[i]]; SET.dirty = true; renderModels(); };
-  if (b.dataset.mup) return swap(+b.dataset.mup, +b.dataset.mup - 1);
-  if (b.dataset.mdown) return swap(+b.dataset.mdown, +b.dataset.mdown + 1);
-  if (b.dataset.mdel) { if (ms.length > 1) { ms.splice(+b.dataset.mdel, 1); SET.dirty = true; renderModels(); } else toast('Keep at least one model in the list'); return; }
-  if (b.dataset.ktest) {
-    if (settingsMode(S.sc) !== 'external' || S.scStale || S.scError) { toast('Switch to External AI to test a key'); return; }
-    const id = b.dataset.ktest;
-    SET.tests[id] = 'run'; renderSettings();
-    try { SET.tests[id] = await api.post(`/api/llm/keys/${id}/test`, {}); } catch (err) { SET.tests[id] = { passed: false, error: 'Could not reach the server' }; }
-    return loadSettings();
-  }
-  if (b.dataset.kdel) {
-    const id = b.dataset.kdel;
-    if (SET.confirm !== id) { SET.confirm = id; renderSettings(); setTimeout(() => { if (SET.confirm === id) { SET.confirm = null; renderSettings(); } }, 3000); return; }
-    SET.confirm = null;
-    try { await api.post(`/api/llm/keys/${id}/remove`, {}); toast('Key removed'); } catch (err) { toast(err.status === 400 ? ucf(err.message) : "Couldn't remove. Try again."); }
-    return loadSettings();
-  }
+$('#view-settings').addEventListener('click', (e) => {
+  if (e.target.closest('#set-recheck')) checkHealth();
 });
 
 // ---------- qualification ----------
