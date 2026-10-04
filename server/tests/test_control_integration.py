@@ -71,7 +71,7 @@ class PublicControlIntegration(unittest.TestCase):
             self.assertFalse(server.LLMPool().step(self.conn))
             self.assertFalse(db.get_setting(self.conn, 'scout'))
             self.assertTrue(server.api_scraper_status(self.conn, {}, {})['local_laya'])
-            self.assertIn('Laya', control.snapshot(self.conn)['stages'][2]['now'])
+            self.assertIn('Local AI is still on', control.snapshot(self.conn)['stages'][2]['now'])
             control.start_all(self.conn)
             self.assertFalse(db.get_setting(self.conn, 'qualify'))
             self.assertTrue(db.get_setting(self.conn, 'local_laya'))

@@ -50,15 +50,15 @@ def snapshot(processing, runtimes=None, starting=False):
             state = ('stopping' if active and not wanted else 'running' if active else
                      'stopping' if not wanted and (starting or loaded) else 'off' if not wanted else
                      'starting' if starting and not ready else 'waiting')
-            reason = (runtime.get('error') or 'Waiting for the engine to confirm it has stopped.' if uncertain else
+            reason = (runtime.get('error') or 'Waiting for it to confirm it has stopped.' if uncertain else
                       'Finishing the current request.' if state == 'stopping' and active else
-                      'Unloading the local engine.' if state == 'stopping' else
+                      'Unloading the model.' if state == 'stopping' else
                       'AI is paused.' if processing['paused'] else
-                      'Choose RLAI or RLEAI to use this engine.' if not processing['capabilities'][stage] else
-                      'Engine disabled.' if not enabled else
-                      'Processing a request.' if active else
-                      'Starting engine.' if state == 'starting' else
-                      waiting or ('Waiting for work.' if ready else 'Waiting for the engine to become ready.'))
+                      'Turn on Local AI or External AI to use this.' if not processing['capabilities'][stage] else
+                      'Turned off.' if not enabled else
+                      'Working now.' if active else
+                      'Starting.' if state == 'starting' else
+                      waiting or ('Waiting for work.' if ready else 'Waiting for the model to load.'))
             result[engine] = dict(enabled=enabled, allowed=allowed, state=state,
                 active=active, ready=ready, reason=reason,
                 activity_unknown=uncertain,

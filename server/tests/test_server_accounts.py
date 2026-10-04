@@ -375,7 +375,7 @@ class LaneTest(Base):
         now = datetime.now(timezone.utc)
         self.assertIsNone(control.lane_wait(self.conn, row, 'list', now))
         self.assertEqual(control.lane_wait(self.conn, row, 'profile', now)[0],
-                         'Instagram asked us to slow down, resting')
+                         'Instagram asked us to slow down')
 
     def test_long_routine_request_gap_is_not_reported_as_an_instagram_limit(self):
         self.nxt('a', 'list')

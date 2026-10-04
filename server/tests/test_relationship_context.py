@@ -142,11 +142,11 @@ class RelationshipContext(unittest.TestCase):
     def test_fixed_relationship_taxonomy_cannot_be_globally_renamed_or_deleted(self):
         self.mark(relationships=['friend'])
         for label in owner.RELATIONSHIPS.values():
-            with self.assertRaisesRegex(server.Bad, 'Edit relationships on the profile'):
+            with self.assertRaisesRegex(server.Bad, 'Change relationships in the lead details'):
                 server.api_tag_delete(self.conn, {}, {'tag': label})
-            with self.assertRaisesRegex(server.Bad, 'Edit relationships on the profile'):
+            with self.assertRaisesRegex(server.Bad, 'Change relationships in the lead details'):
                 server.api_tag_rename(self.conn, {}, {'from': label, 'to': 'Other'})
-            with self.assertRaisesRegex(server.Bad, 'Edit relationships on the profile'):
+            with self.assertRaisesRegex(server.Bad, 'Change relationships in the lead details'):
                 server.api_tag_rename(self.conn, {}, {'from': 'Other', 'to': label})
         self.assertEqual(self.read()['relationships'], ['friend'])
 

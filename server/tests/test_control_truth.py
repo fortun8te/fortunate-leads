@@ -57,7 +57,7 @@ class CollectionTruthTest(unittest.TestCase):
         self.conn.execute("INSERT INTO accounts(lane_id,ig_id,handle,role,is_main,last_seen) VALUES('main','1','owner','both',1,?)", (self.at,))
         state = control.snapshot(self.conn)
         self.assertEqual(state['accounts'][0]['reason_code'], 'main_reserved')
-        self.assertEqual(state['stages'][0]['wait']['why'], 'Daily request budget reached')
+        self.assertEqual(state['stages'][0]['wait']['why'], 'Daily limit reached')
 
     def test_expired_request_is_unconfirmed_not_running(self):
         db.set_setting(self.conn, 'instagram_request_gate', {'active': {'lane': 'alt', 'kind': 'list', 'until': self.now.timestamp() - 1}})
@@ -69,8 +69,8 @@ class CollectionTruthTest(unittest.TestCase):
     def test_leased_account_at_daily_limit_reports_limit(self):
         self.conn.execute("UPDATE accounts SET today='{\"list\":200}',budget='{\"list\":200}' WHERE lane_id='alt'")
         state = control.snapshot(self.conn)
-        self.assertEqual(state['accounts'][0]['wait']['why'], 'Daily request budget reached')
-        self.assertEqual(state['stages'][0]['wait']['why'], 'Daily request budget reached')
+        self.assertEqual(state['accounts'][0]['wait']['why'], 'Daily limit reached')
+        self.assertEqual(state['stages'][0]['wait']['why'], 'Daily limit reached')
 
     def test_progress_queries_use_timestamp_indexes(self):
         for query, index in [

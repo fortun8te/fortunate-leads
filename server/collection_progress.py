@@ -30,7 +30,7 @@ def summary(conn, lists, accts, now=None):
     def waiting(status, message):
         return dict(out, status=status, message=message)
     if control.stage_paused(conn, 'lists'):
-        return waiting('paused', 'Lists paused · progress saved')
+        return waiting('paused', 'Paused. Progress is saved.')
     shared = control.shared_collection_wait(conn, now)
     if shared:
         return waiting('waiting', 'Waiting for Instagram')
@@ -55,7 +55,7 @@ def summary(conn, lists, accts, now=None):
         if any(account['hold'] == 'challenge' for account in online):
             return waiting('waiting', 'Complete the Instagram security check')
         if any(account.get('status') == 'connection_error' for account in online):
-            return waiting('waiting', 'Instagram connection trouble · retrying safely')
+            return waiting('waiting', 'Instagram connection trouble · retrying')
         if any(account['hold'] == 'login' for account in online):
             return waiting('waiting', 'Sign in to Instagram')
         return waiting('waiting', 'Connected accounts are paused' if assigned and all(account['paused'] for account in assigned)
@@ -96,7 +96,7 @@ def summary(conn, lists, accts, now=None):
         if not lane_events:
             continue
         if len(lane_events) < 2:
-            return waiting('warming_up', 'Measuring the connected accounts')
+            return waiting('warming_up', 'Measuring pace')
         daily = account['budget'].get('list')
         if daily:
             lane_added = sum(max(0, event['saved_entries']) for event in lane_events)

@@ -1610,14 +1610,14 @@ def clean_tag(t):
         raise Bad('tag must be a string')
     t = re.sub(r'\s+', ' ', t).strip()
     if not t or len(t) > 64 or ',' in t:
-        raise Bad('tag must be 1-64 characters without commas')
+        raise Bad('Tags are 1 to 64 characters, without commas.')
     return t
 
 
 def manual_tag(t):
     tag = clean_tag(t)
     if tag.casefold() == 'client':
-        raise Bad('Use the Client relationship status instead of adding a Client label.')
+        raise Bad('Set Client as the relationship instead of adding a tag.')
     return tag
 
 
@@ -1684,7 +1684,7 @@ def api_tag_rename(conn, q, b):
     src, dst = clean_tag(b.get('from')), clean_tag(b.get('to'))
     fixed = {label.casefold() for label in owner.RELATIONSHIPS.values()}
     if src.casefold() in fixed or dst.casefold() in fixed:
-        raise Bad('Edit relationships on the profile')
+        raise Bad('Change relationships in the lead details.')
     dst = manual_tag(dst)
     if src == dst:
         return {'renamed': 0}
@@ -1702,7 +1702,7 @@ def api_tag_rename(conn, q, b):
 def api_tag_delete(conn, q, b):
     tag = clean_tag(b.get('tag'))
     if tag.casefold() in {label.casefold() for label in owner.RELATIONSHIPS.values()}:
-        raise Bad('Edit relationships on the profile')
+        raise Bad('Change relationships in the lead details.')
     pids = [r[0] for r in conn.execute("SELECT person_id FROM tags WHERE tag=? AND source='manual'", (tag,))]
     conn.execute("DELETE FROM tags WHERE tag=? AND source='manual'", (tag,))
     touch(conn, pids)
@@ -1781,7 +1781,7 @@ def api_read(conn, q, b, pid):
     person = person_row(conn, pid)
     handle = person['handle']
     if '~' in handle:  # parked row of an account that gave up this handle: there is no profile to read under it
-        raise Bad('this account no longer has a handle to read')
+        raise Bad('This lead has no Instagram handle to read.')
     target = {'handle': handle, 'target_ig_id': person['ig_id']}
     accounts.coalesce_profile_jobs(conn, target)
     if not conn.execute("UPDATE jobs SET priority=? WHERE kind='profile' AND handle=? COLLATE NOCASE AND state IN ('queued','leased')",
@@ -2422,7 +2422,7 @@ def api_qualify(conn, q, b):
     if 'local_laya' in b and not isinstance(b['local_laya'], bool):
         raise Bad('local_laya must be true or false')
     if b.get('auto'):
-        raise Bad('Choose RLEAI to enable external AI. It never starts automatically.')
+        raise Bad('Choose External AI to turn it on. It never starts by itself.')
     for key, lo, hi in (('workers', 1, 32), ('llm_min', 0, 100), ('bio_min', 0, 100)):
         if key in b and (not isinstance(b[key], int) or isinstance(b[key], bool) or not lo <= b[key] <= hi):
             raise Bad(f'{key} must be a whole number {lo}-{hi}')
@@ -2534,7 +2534,7 @@ def api_scout_set(conn, q, b):
         if not isinstance(b['on'], bool):
             raise Bad('on must be true or false')
         if b['on'] and not processing_modes.allows(conn, 'external'):
-            raise Bad('Deep research requires RLEAI mode.')
+            raise Bad('Deeper research needs External AI.')
         db.set_setting(conn, 'scout', b['on'])
     if 'model' in b:
         if b['model'] not in deepscout.MODELS:
@@ -2698,7 +2698,7 @@ def api_note_retry(conn, q, b, pid):
     if not conn.execute('SELECT 1 FROM people WHERE id=?', (pid,)).fetchone():
         raise NotFound('No such profile')
     if not processing_modes.allows(conn, 'notes'):
-        raise Bad('Choose RLAI to read notes locally.')
+        raise Bad('Choose Local AI to read notes on this Mac.')
     queued = owner_notes.retry(conn, int(pid))
     conn.commit()
     if queued:
@@ -2829,7 +2829,7 @@ def require_collection_resume(conn):
         conn.execute('BEGIN IMMEDIATE')
     try:
         if workspace_cooldown(conn, datetime.now(timezone.utc)):
-            raise Bad('Instagram is on a shared safety hold. Collection remains paused.')
+            raise Bad('Instagram is holding collection. It stays stopped.')
     except Exception:
         conn.rollback()
         raise

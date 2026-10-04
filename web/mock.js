@@ -478,7 +478,7 @@
   const statusOf = (a) => (a.hold ? (a.hold === 'login' ? 'needs_login' : 'challenge') : a.paused ? 'paused' : a.cooldown_until ? 'cooldown' : 'running');
   function alertsView() {
     return accounts.filter((a) => a.hold === 'login').map((a) => ({ level: 'error', lane_id: a.lane_id,
-      text: `${a.name} logged out — open its Chrome profile and log in; its list moved to @fortunate.scout` }));
+      text: `${a.name} logged out. Open its Chrome profile and log in. Its list moved to @fortunate.scout.` }));
   }
   function rateView() {
     const on = accounts.filter((a) => a.online);
@@ -497,7 +497,7 @@
       const allowed = engineEnabled[id] && processingMode !== 'R';
       const active = allowed && !localPaused && id === 'k2';
       engines[id] = {enabled:engineEnabled[id],allowed,state:active?'running':allowed&&!localPaused?'waiting':'off',active,ready:true,
-        reason:active?'Processing a request.':allowed&&!localPaused?'Waiting for work.':localPaused?'AI is paused.':'Choose RLAI or RLEAI to use this engine.',stop_acknowledged:!active};
+        reason:active?'Working now.':allowed&&!localPaused?'Waiting for work.':localPaused?'AI is paused.':'Turn on Local AI or External AI to use this.',stop_acknowledged:!active};
     }
     return {processing,paused:localPaused,engines,stop_acknowledged:!Object.values(engines).some(engine=>engine.active)};
   }
@@ -542,7 +542,7 @@
         last_seen: now(), last_error: null,
         rate: { pages_hour: scraper.paused ? 0 : 342, people_hour: scraper.paused ? 0 : 11280, last_hit_at: new Date(Date.now() - 5.2 * 3600000).toISOString() },
         activity: l ? `@${l.seed} ${l.direction} · page ${page}` : null,
-        text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Scraping' },
+        text: scraper.paused ? 'Paused in workspace' : secs > 1 ? `Next request in ${secs}s` : 'Collecting' },
       paused: scraper.paused, qualify: scraper.qualify, qualify_auto: scraper.qualify_auto, local_laya: settings.local_laya, soak: { '1h': w(1), '6h': w(1 / 5.6) },
       people_today: scraper.peopleToday, lists: listViews, coverage, control:controlView(), processing:processingView(), stages: controlView().stages, accounts: accounts.map((a) => ({ ...a })),
       rate: rateView(), alerts: alertsView(),
@@ -557,7 +557,7 @@
 
   function validateTags(add, remove) {
     for (const list of [add, remove]) if (list != null && !Array.isArray(list)) throw {status:400, message:'tags must be arrays'};
-    for (const t of add || []) if (typeof t !== 'string' || !t.trim() || t.trim().length > 64 || t.includes(',')) throw {status:400, message:'tag must be 1-64 characters without commas'};
+    for (const t of add || []) if (typeof t !== 'string' || !t.trim() || t.trim().length > 64 || t.includes(',')) throw {status:400, message:'Tags are 1 to 64 characters, without commas.'};
   }
   function editTags(id, add, remove) {
     validateTags(add, remove);
@@ -682,7 +682,7 @@
     if (path === '/api/tags/rename') {
       const from = String(body.from || ''), to = String(body.to || '').trim();
       if (!from || !to) return { ok: false, error: 'from and to required' };
-      if (to.toLowerCase() === 'client') fail('Use the Client relationship status instead of adding a Client label.');
+      if (to.toLowerCase() === 'client') fail('Set Client as the relationship instead of adding a tag.');
       let renamed = 0;
       tags.forEach((t, id) => {
         if (!t.some((x) => x.tag === from && x.source === 'manual')) return;
