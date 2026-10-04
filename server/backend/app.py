@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 
+import accounts
 import biofetch
 import browser_startup
 import control
@@ -196,6 +197,7 @@ class Application:
 
     def repair_step(self, conn):
         out = db.repair_lists(conn)
+        out['parked_denied'] = accounts.park_denied_lists(conn)
         conn.commit()
         if any(out.values()):
             print('repair_lists', out, flush=True)

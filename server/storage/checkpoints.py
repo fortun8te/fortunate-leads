@@ -31,6 +31,15 @@ def start_list_run(conn, job_id, seed, direction):
         conn.execute('UPDATE lists SET run_job_id=? WHERE seed=? AND direction=?', (job_id, seed, direction))
 
 
+CAPPED_PREFIX = 'Instagram limited this list;'
+
+
+def is_capped(row):
+    """A follower list Instagram itself limited. The cap belongs to the target, so asking again returns the same few people."""
+    return bool(row and row['direction'] == 'followers' and row['state'] == 'partial'
+                and str(row['error'] or '').startswith(CAPPED_PREFIX))
+
+
 def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None, experiment_viewer_ig_id=None):
     seed = norm_handle(seed)
     if conn.execute("SELECT 1 FROM jobs WHERE seed=? AND direction=? AND collection_backend='mobile'", (seed, direction)).fetchone():
@@ -54,10 +63,12 @@ def queue_list(conn, seed, direction, priority=0, refresh=False, page_size=None,
             raise ValueError('experimental page size requires a new seed')
     ts = now()
     conn.execute('INSERT OR IGNORE INTO seeds(handle, added_at) VALUES(?,?)', (seed, ts))
-    row = conn.execute('SELECT state FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
+    row = conn.execute('SELECT * FROM lists WHERE seed=? AND direction=?', (seed, direction)).fetchone()
     if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state IN ('queued','leased')",
                     (seed, direction)).fetchone():
         return False  # duplicate requests never rewind or relabel work already in progress
+    if not refresh and is_capped(row):
+        return False  # Start/Add must not spend requests re-asking a list Instagram already capped; following is the route
     if refresh:
         conn.execute('DELETE FROM list_private_denials WHERE seed=? AND direction=?', (seed, direction))
     if row and row['state'] in ('done', 'private') and not refresh:

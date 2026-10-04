@@ -379,6 +379,54 @@ def eligible_for_list(conn, row, seed, direction, now):
         conn, row, seed, direction)
 
 
+def usable_viewers(conn, now):
+    """Accounts that could be asked to read a list: not the protected main, a list role, not on hold or paused."""
+    return [r for r in conn.execute('SELECT * FROM accounts')
+            if not collection_protected(conn, r) and (r['role'] or 'both') in ('lists', 'both')
+            and not r['hold'] and not r['paused'] and account_available(r, now)]
+
+
+def denied_for_all_usable(conn, now):
+    """{direction: {seed, ...}} of lists every usable viewer was denied (private target). Empty without usable viewers."""
+    viewers = usable_viewers(conn, now)
+    ids = {v['ig_id'] for v in viewers}
+    if not viewers or None in ids:
+        return {}
+    out = {'followers': set(), 'following': set()}
+    seen = {}
+    for r in conn.execute('SELECT seed,direction,viewer_ig_id FROM list_private_denials'):
+        seen.setdefault((r['seed'].lower(), r['direction']), set()).add(r['viewer_ig_id'])
+    for (seed, direction), by in seen.items():
+        if ids <= by:
+            out[direction].add(seed)
+    return out
+
+
+def park_denied_lists(conn, now=None):
+    """Stop queueing lists that no non-protected account can see.
+
+    A list stays 'queued' after its last candidate viewer is denied when the protected main account was counted as one,
+    which a queued state then promised wrongly. Lists with a live lease are left alone. Caller commits.
+    """
+    now = now or db.utc_now()
+    ts = db.now()
+    parked = 0
+    candidates = [r for r in conn.execute('SELECT * FROM accounts') if not collection_protected(conn, r)]
+    for lst in conn.execute("SELECT DISTINCT l.seed,l.direction FROM lists l JOIN list_private_denials d "
+                            "ON d.seed=l.seed AND d.direction=l.direction WHERE l.state IN ('queued','running')").fetchall():
+        if conn.execute("SELECT 1 FROM jobs WHERE kind='list' AND seed=? AND direction=? AND state='leased' AND leased_until>?",
+                        (lst['seed'], lst['direction'], iso(now))).fetchone():
+            continue
+        if any(viewer_may_access_list(conn, a, lst['seed'], lst['direction']) for a in candidates):
+            continue
+        conn.execute("UPDATE jobs SET state='done',leased_until=NULL,lane=NULL,lease_token=NULL WHERE kind='list' AND seed=? "
+                     "AND direction=? AND state IN ('queued','leased')", (lst['seed'], lst['direction']))
+        conn.execute("UPDATE lists SET state='private',lane=NULL,released_at=?,released_why='private',updated_at=? WHERE seed=? AND direction=?",
+                     (ts, ts, lst['seed'], lst['direction']))
+        parked += 1
+    return parked
+
+
 def reopen_private_for_viewer(conn, row, now):
     """A newly usable identity reopens only lists stopped after access denials; keep the saved prefix."""
     if not row['ig_id'] or not healthy(row, now) or not identity_owner(conn, row, now) \

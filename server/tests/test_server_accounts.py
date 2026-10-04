@@ -137,7 +137,7 @@ class LaneTest(Base):
         hb = self.post('c', '/api/ext/heartbeat', {'version': '3.9.17', 'state': 'paused'})[1]
         self.assertEqual(hb, {'ok': True, 'paused': True, 'budget': {'list': 3000, 'profile': 20}, 'stages': {'list': True, 'profile': True}})
         self.call('/api/accounts/lane-c', {'budget': None})
-        self.assertEqual(self.nxt('a')['budget'], {'list': 3000, 'profile': 300})
+        self.assertEqual(self.nxt('a')['budget'], {'list': 0, 'profile': 0})  # no daily cap by default
 
     def test_handoff_on_login_keeps_cursor(self):
         self.seeds('s1')

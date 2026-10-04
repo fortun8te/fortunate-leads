@@ -84,7 +84,9 @@ class ListProvenanceTest(unittest.TestCase):
         self.assertEqual((self.row('followers')['state'], self.row('followers')['received'],
                           self.row('followers')['total']), ('partial', 2, 100))
         self.assertEqual(self.conn.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0], 'partial')
-        self.assertIsNone(self.next())
+        # The capped followers list is not asked again; the seed is routed to its following list instead.
+        routed = self.next()
+        self.assertEqual((routed['seed'], routed['direction']), ('seed', 'following'))
         self.assertEqual(db.repair_lists(self.conn, dry=True)['requeued'], 0)
 
     def test_partial_repair_waits_and_retries_in_small_bounded_batches(self):

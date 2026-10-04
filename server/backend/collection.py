@@ -539,6 +539,10 @@ class CollectionService:
         if job:
             conn.execute("UPDATE jobs SET state=?, leased_until=NULL, attempts=0, lane=NULL, lease_token=NULL WHERE id=?",
                          ('error' if stalled else state if done else 'queued', job['id']))
+        if limited and direction == 'followers' and not conn.execute(
+                "SELECT 1 FROM lists WHERE seed=? AND direction='following'", (seed,)).fetchone():
+            # A capped follower list will not grow. Following is the productive route: queue it now, at this list's priority.
+            db.queue_list(conn, seed, 'following', priority=(job['priority'] if job else 0) or 0)
         changed = db.complete_list_snapshot(conn, seed, direction, job['id'], ts) if job and state == 'done' else set()
         if changed:
             rules.sync(conn, changed)
@@ -801,7 +805,9 @@ class CollectionService:
             if code == 'private' and was_list:
                 conn.execute('INSERT OR IGNORE INTO list_private_denials(seed,direction,viewer_ig_id,denied_at) VALUES(?,?,?,?)',
                              (job['seed'], job['direction'], viewer_id, ts))
-                candidates = conn.execute('SELECT * FROM accounts').fetchall()
+                # The protected main account is never automated, so it can never be the account that "might still see" a list.
+                candidates = [a for a in conn.execute('SELECT * FROM accounts').fetchall()
+                              if not accounts.collection_protected(conn, a)]
                 # A cooling or offline account may still follow this private target later.
                 # Its temporary availability must not turn an access denial into a final result.
                 remaining = any(accounts.viewer_may_access_list(conn, a, job['seed'], job['direction'])
@@ -1138,6 +1144,7 @@ class CollectionService:
             CASE l.direction WHEN 'followers' THEN p.followers ELSE p.following END AS profile_total
             FROM lists l LEFT JOIN list_runs r ON r.job_id=l.run_job_id
             LEFT JOIN people p ON p.handle=l.seed ORDER BY l.updated_at DESC""").fetchall()
+        denied_all = accounts.denied_for_all_usable(conn, datetime.now(timezone.utc))
         out = []
         total = {'saved_entries': 0, 'tracked_saved_entries': 0, 'expected_entries': 0,
                  'saved_entries_known_targets': 0, 'saved_entries_unknown_targets': 0,
@@ -1165,6 +1172,9 @@ class CollectionService:
             elif row['state'] == 'partial':
                 completion = 'partial'
                 reason = self.list_completion_reason(row['error']) or 'Only part of this list was saved.'
+            elif row['state'] == 'queued' and row['seed'].lower() in denied_all.get(row['direction'], ()):
+                completion = 'blocked'
+                reason = 'No connected account can view this list. It waits for an account that can.'
             elif row['state'] in ('private', 'error', 'paused'):
                 completion = 'blocked'
                 reason = self.list_completion_reason(row['error']) or {'private': 'Access to this list was denied.', 'paused': 'This list is stopped. Review it before retrying.'}.get(row['state'], 'Collection stopped with an error.')
