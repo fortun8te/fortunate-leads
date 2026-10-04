@@ -39,7 +39,7 @@ class RecoveryTest(lanes.Base):
         job = self.nxt('a', 'list')['job']
         now = datetime.now(timezone.utc)
         for minutes in (35, 5):
-            self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason) VALUES(?,?,?,'list','followers','other','list_html_home_redirect')",
+            self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason,viewer_ig_id) VALUES(?,?,?,'list','followers','other','list_html_home_redirect','101')",
                               ((now-timedelta(minutes=minutes)).isoformat(),'lane-a',job['id']))
         hold = (now+timedelta(hours=3)).isoformat()
         db.set_setting(self.conn, 'cooldown', hold)
@@ -87,10 +87,43 @@ class RecoveryTest(lanes.Base):
         lanes.LaneTest.page(self, 'a', job, 5, 'next')
         self.post('b', '/api/ext/heartbeat', {'version':'3.9.17','state':'idle'})
         now = datetime.now(timezone.utc)
-        self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason) VALUES(?,?,?,'list','followers','other','list_html_home_redirect')",
+        self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason,viewer_ig_id) VALUES(?,?,?,'list','followers','other','list_html_home_redirect','101')",
                           ((now-timedelta(minutes=40)).isoformat(), 'lane-a', job['id']))
         self.conn.commit()
         self.assertIsNone(self.nxt('a', 'list')['job'])
         handed = self.nxt('b', 'list')['job']
         self.assertIsNotNone(handed, 'Saved historical route waits must release ownership to an eligible viewer')
         self.assertEqual((handed['id'], handed['cursor'], handed['received']), (job['id'], 'next', 5))
+
+
+    def test_repeat_after_two_hour_wait_and_overhead_escalates(self):
+        self.seeds('failed')
+        job=self.nxt('a','list')['job']
+        now=datetime.now(timezone.utc)
+        for at in (now-timedelta(hours=2,minutes=4),now):
+            self.conn.execute("INSERT INTO collector_events(at,lane,job_id,kind,direction,outcome,reason,viewer_ig_id) VALUES(?,?,?,'list','followers','other','list_html_home_redirect','101')",
+                (at.isoformat(),'lane-a',job['id']))
+        self.conn.commit()
+        row=self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual(accounts.utc(accounts.follower_route_wait(self.conn,row,now)),now+timedelta(hours=4))
+
+
+    def test_legacy_redirects_keep_conservative_rest_after_migration(self):
+        self.seeds('failed')
+        self.nxt('a','list')
+        now=datetime.now(timezone.utc)
+        for at in (now-timedelta(hours=2,minutes=4),now):
+            self.conn.execute("INSERT INTO collector_events(at,lane,kind,direction,outcome,reason) VALUES(?,'lane-a','list','followers','other','list_html_home_redirect')",(at.isoformat(),))
+        self.conn.commit()
+        row=self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual(accounts.utc(accounts.follower_route_wait(self.conn,row,now)),now+timedelta(hours=4))
+
+    def test_another_known_identity_redirect_is_not_recurrence(self):
+        self.seeds('failed')
+        self.nxt('a','list')
+        now=datetime.now(timezone.utc)
+        for identity,at in (('999',now-timedelta(minutes=5)),('101',now)):
+            self.conn.execute("INSERT INTO collector_events(at,lane,kind,direction,outcome,reason,viewer_ig_id) VALUES(?,'lane-a','list','followers','other','list_html_home_redirect',?)",(at.isoformat(),identity))
+        self.conn.commit()
+        row=self.conn.execute("SELECT * FROM accounts WHERE lane_id='lane-a'").fetchone()
+        self.assertEqual(accounts.utc(accounts.follower_route_wait(self.conn,row,now)),now+timedelta(hours=2))

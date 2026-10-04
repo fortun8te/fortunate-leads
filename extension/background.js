@@ -459,7 +459,7 @@ async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem
     else if (bad.code === 'network') FL.backoff(st, now, 'net');
     else if (bad.code === 'unsupported') st.infoOffUntil = now + 6 * FL.HOUR;
     if (bad.code !== 'busy') st.lastError = hhmmss(now).slice(0, 5) + ' ' + line +
-      (homeRedirect && st.listEndpointUntil > now ? ' List API unavailable for this account until ' + hhmmss(st.listEndpointUntil).slice(0, 5) + '.' : '') +
+      (homeRedirect && st.listEndpointUntil > now ? ' Follower lists paused until ' + hhmmss(st.listEndpointUntil).slice(0, 5) + '.' : '') +
       (sample ? ' | ' + sample.slice(0, 300) : '');
   });
   if (bad.code !== 'busy') {
