@@ -3,14 +3,14 @@
 // (st, box, cur, prog, lane, ids, seen, trail, debug). The in-memory loop is single-flight with a staleness expiry;
 // the 30 s alarm restarts it after the worker was stopped or if it stalls. Instagram requests are serialised by the
 // stored `lane` marker, so a restarted worker never fires while an earlier request may still be in flight.
-importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js', 'lib/workspace.js');
+importScripts('lib/core.js', 'lib/benchmark.js', 'lib/follower-capture.js', 'lib/workspace.js', 'lib/log.js');
 const SERVER = 'http://127.0.0.1:8777';
 const IG = 'https://www.instagram.com';
 const VERSION = chrome.runtime.getManifest().version;
 const LOOP_STALE = 4 * FL.MIN;  // a loop that hasn't beaten this long is considered dead and replaced
 const CUR_TTL = 8 * FL.MIN;     // server leases jobs for 10 min; resume our own job only well inside that
 const mem = { gen: 0, looping: false, beat: 0, serverPaused: false, offline: false, noTab: null, budgetDone: false, laneWait: false,
-  job: null, label: '', backoff: 5e3, lastBeat: 0, badTab: null, lookups: new Set() };
+  job: null, label: '', backoff: 5e3, lastBeat: 0, badTab: null, lookups: new Set(), loggedOffline: false };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 const get = async (k) => (await chrome.storage.local.get(k))[k];
@@ -24,6 +24,19 @@ const iso = (t) => (t ? new Date(t).toISOString() : null);
 const hhmmss = (t) => new Date(t).toTimeString().slice(0, 8);
 class Superseded extends Error {}
 class ControlPaused extends Error {}
+
+// Structured events for the server's log (lib/log.js, docs/LOGGING.md): statuses, timings and classifications only,
+// never cookies or Instagram content. A no-op where the library is not loaded (unit tests).
+const log = (level, ev, fields, opts) => { try { if (typeof FLLog !== 'undefined') FLLog.event(level, ev, fields, opts); } catch {} };
+const flushLog = (force) => (typeof FLLog === 'undefined' ? Promise.resolve(0)
+  : FLLog.flush((body) => api('/api/ext-log', body, 8e3), { version: VERSION, force }));
+let urgentFlush = 0;
+if (typeof FLLog !== 'undefined') FLLog.onUrgent = () => { if (!urgentFlush) urgentFlush = setTimeout(() => { urgentFlush = 0; flushLog(true); }, 3000); };
+function noteConnection() {
+  if (mem.loggedOffline === !!mem.offline) return;
+  mem.loggedOffline = !!mem.offline;
+  log(mem.offline ? 'warn' : 'info', mem.offline ? 'server_offline' : 'server_online');
+}
 
 // Short ring of recent events (requests, failures, restarts) for the popup's "Copy debug".
 const trail = (what, extra) => edit('trail', (t) => (t || []).concat({ at: hhmmss(Date.now()), what, ...(extra || {}) }).slice(-40)).catch(() => {});
@@ -101,7 +114,7 @@ async function whoami(force) {
     return { switched, changed: !current || current.ig_id !== next.ig_id || current.handle !== next.handle };
   });
   if (switched) { ++mem.gen; mem.looping = false; mem.job = null; mem.label = ''; }
-  if (changed) { await trail('account', { ig_id: next.ig_id, handle: next.handle }); mem.lastBeat = 0; }
+  if (changed) { await trail('account', { ig_id: next.ig_id, handle: next.handle }); log('info', 'account', { handle: next.handle, ig_id: next.ig_id }); mem.lastBeat = 0; }
   return next;
 }
 // First request after a quiet spell (browser start, install, > 30 min without a request): wait this lane's own offset.
@@ -151,7 +164,7 @@ function flushBox() {
         const box = (await get('box')) || [];
         if (!box.length) { mem.offline = false; return true; }
         const sending = box[0], sendingGen = mem.gen, r = await sendItem(sending);
-        if (r === 'retry') { mem.offline = true; return false; }
+        if (r === 'retry') { mem.offline = true; log('warn', 'outbox_retry', { path: sending.path, queued: box.length }, { every: 60e3 }); return false; }
         mem.offline = false;
         const path = box[0].path;
         const removed = await locked(async () => {
@@ -176,6 +189,7 @@ function flushBox() {
         if (r !== 'ok') {
           await editSt((s) => { s.lastError = 'Server rejected a saved result; see debug log'; });
           await trail('outbox parked', { path, reason: r });
+          log('error', 'outbox_parked', { path, reason: r });
         }
         mem.beat = Date.now();
       }
@@ -207,6 +221,7 @@ async function applyServer(j) {
   if (j && j.stages) mem.stages = j.stages;
   if (j?.upgrade_required) await editSt(st => { st.lastError = 'Reload this extension to version ' + (j.minimum_version || '3.9.17') + ' before collecting.'; });
   if (!j || typeof j.paused !== 'boolean') return;
+  if (mem.serverPaused !== j.paused) log('info', 'server_pause', { paused: j.paused });
   mem.serverPaused = j.paused;
   const st = await loadSt();
   if (!st.hold) return;
@@ -226,7 +241,7 @@ async function applyServer(j) {
 async function selfUpdate() {
   try {
     const m = await (await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })).json();
-    if (m.version && m.version !== VERSION) { console.log('update', VERSION, '->', m.version); chrome.runtime.reload(); return true; }
+    if (m.version && m.version !== VERSION) { console.log('update', VERSION, '->', m.version); log('warn', 'self_update', { from: VERSION, to: m.version }); chrome.runtime.reload(); return true; }
   } catch {}
   return false;
 }
@@ -252,7 +267,9 @@ async function heartbeat(force) {
     if (r.status !== 200 || typeof r.json?.paused !== 'boolean') throw new Error('Control state unavailable');
     mem.offline = false;
     await applyServer(r.json);
-  } catch { mem.offline = true; }
+  } catch (e) { mem.offline = true; log('warn', 'heartbeat_failed', { err: String((e && e.message) || e).slice(0, 80) }, { every: 60e3 }); }
+  noteConnection();
+  flushLog().catch(() => {});
 }
 
 // ---- status, badge, popup view ------------------------------------------
@@ -362,12 +379,14 @@ async function acquireSharedRequest(kind) {
   catch { mem.offline = true; throw new ControlPaused(); }
   if (response.status !== 200 || response.json?.ok === false) { mem.offline = true; throw new ControlPaused(); }
   const grant = response.json;
-  if (grant?.stale) { await set({ cur: null }); throw new ControlPaused(); }
+  // typeof guards: unit tests evaluate these two functions without the logger in scope.
+  if (grant?.stale) { typeof log === 'function' && log('info', 'permit_denied', { kind, stale: true }, { every: 300e3, key: 'permit:stale' }); await set({ cur: null }); throw new ControlPaused(); }
   if (grant?.lease_renewed) {
     const cur = await get('cur');
     if (cur?.job?.id === mem.job?.id) await set({ cur: { ...cur, at: Date.now() } });
   }
   if (!grant?.granted || !grant.token || !Number.isFinite(Date.parse(grant.expires_at))) {
+    typeof log === 'function' && log('info', 'permit_denied', { kind, wait_ms: Number(grant?.wait_ms) || 0 }, { every: 300e3, key: 'permit:' + kind + ':' + (Number(grant?.wait_ms) || 0) });
     mem.sharedWaitUntil = Date.now() + Math.max(1000, Math.min(15000, Number(grant?.wait_ms) || 15000));
     throw new ControlPaused();
   }
@@ -429,6 +448,8 @@ async function igRequest(gen, tab, url, kind, ctx) {
   if (res.tabError) mem.badTab = { id: tab.id, until: now + 2 * FL.MIN };
   const bad = FL.classify(res, kind, now, ctx);
   await trail(kind + ' ' + url.replace(IG, '').replace(/\?.*/, ''), { status: res.status, ms: res.ms, code: bad ? bad.code : 'ok', reason: bad ? bad.reason : undefined });
+  log(bad ? 'warn' : 'info', 'ig.req', { kind, path: url.replace(IG, '').replace(/\?.*/, ''), status: res.status, ms: res.ms,
+    code: bad ? bad.code : 'ok', reason: bad ? bad.reason : undefined, sent: res.sent, tab_error: res.tabError, timed_out: res.timedOut });
   return { res, bad };
 }
 
@@ -461,6 +482,8 @@ async function fail(job, bad, what, res, bucket, publicTarget = false, gen = mem
   }
   if (local) return;
   const cd = st.cool[bucket] && st.cool[bucket].until > now ? st.cool[bucket].until : 0;
+  log(bad.code === 'other' || bad.code === 'network' ? 'warn' : 'error', 'fail', { kind: bucket, code: bad.code, reason: bad.reason,
+    status: res ? res.status : 0, hold: st.hold ? st.hold.code : undefined, cool_min: cd ? Math.round((cd - now) / 6e4) : 0 });
   await queueDone('/api/ext/error', { job_id: job.id, lease_token: job.lease_token, code: bad.code, retry_at: cd ? iso(cd) : null,
     event_id: Date.now().toString(36) + Math.random().toString(36).slice(2), kind: bucket,
     direction: job.direction || null, http_status: res ? res.status : 0,
@@ -797,7 +820,7 @@ async function step(gen) {
 async function loop() {
   await booted;
   if (mem.looping && Date.now() - mem.beat < LOOP_STALE) return;
-  if (mem.looping) await trail('loop stalled; restarting', { since: hhmmss(mem.beat) });
+  if (mem.looping) { await trail('loop stalled; restarting', { since: hhmmss(mem.beat) }); log('warn', 'loop_stalled', { since_s: Math.round((Date.now() - mem.beat) / 1e3) }); }
   const gen = ++mem.gen;
   mem.looping = true; mem.beat = Date.now();
   try {
@@ -809,6 +832,7 @@ async function loop() {
         const m = String((e && e.message) || e).slice(0, 200);
         await editSt((s) => { s.lastError = 'extension error: ' + m; });
         await trail('step threw', { err: m });
+        log('error', 'step_threw', { err: m.slice(0, 100) });
       }
       if (gen !== mem.gen) break;
       mem.beat = Date.now();
@@ -869,11 +893,13 @@ async function lookupViaPage(gen, handle, kind, near) {
     if (p) {
       const info = await checkedProfileDom(tab.id, handle, p);
       await trail(kind + ' page /' + handle + '/', { ms: Date.now() - t0, code: 'ok' });
+      typeof log === 'function' && log('info', 'ig.page', { kind, ms: Date.now() - t0, code: 'ok' });
       return { p, info, res: { status: 0, url: info && info.url, text: info && info.text, ms: Date.now() - t0 } };
     }
     const info = await checkedProfileDom(tab.id, handle, null), bad = FL.pageVerdict(info);
     const res = { status: 0, url: info && info.url, text: info ? 'title: ' + info.title + ' | ' + (info.text || '') : 'lookup tab closed', ms: Date.now() - t0 };
     await trail(kind + ' page /' + handle + '/', { ms: res.ms, code: bad.code, reason: bad.reason });
+    typeof log === 'function' && log('warn', 'ig.page', { kind, ms: res.ms, code: bad.code, reason: bad.reason });
     return { p: null, info, bad, res };
   } catch (e) {
     if (e instanceof Superseded) throw e;
@@ -949,15 +975,21 @@ async function ensureAlarm() {
   if (!(await chrome.alarms.get('tick'))) await chrome.alarms.create('tick', { periodInMinutes: 0.5 });
 }
 async function wake(reason) {
-  await edit('boot', (b) => ({ n: ((b && b.n) || 0) + 1, at: iso(Date.now()), reason, version: VERSION })).catch(() => {});
+  const boot = await edit('boot', (b) => ({ n: ((b && b.n) || 0) + 1, at: iso(Date.now()), reason, version: VERSION })).catch(() => null);
+  log('info', 'sw_start', { n: boot && boot.n, reason, v: VERSION });
   // A lookup tab left behind by a stopped worker.
   const stale = await get('lookupTab');
   if (stale != null && !mem.lookups.size) { chrome.tabs.remove(stale).catch(() => {}); await set({ lookupTab: null }); }
   await ensureAlarm();
   await startOffset(reason).catch(() => {});
 }
-chrome.runtime.onInstalled.addListener((d) => { trail('installed', { reason: d && d.reason }); ensureAlarm(); loop(); });
-chrome.runtime.onStartup.addListener(() => { trail('browser startup'); ensureAlarm(); loop(); });
+chrome.runtime.onInstalled.addListener((d) => { trail('installed', { reason: d && d.reason }); log('info', 'installed', { reason: d && d.reason }); ensureAlarm(); loop(); });
+chrome.runtime.onStartup.addListener(() => { trail('browser startup'); log('info', 'browser_startup'); ensureAlarm(); loop(); });
+// Errors that escape every try/catch: one line each, so a dying service worker is visible in the server log.
+if (typeof self !== 'undefined' && self.addEventListener) {
+  self.addEventListener('error', (e) => log('error', 'uncaught', { err: String((e && e.message) || '').slice(0, 100), at: String((e && e.filename) || '').split('/').pop() + ':' + ((e && e.lineno) || 0) }));
+  self.addEventListener('unhandledrejection', (e) => log('error', 'unhandled_rejection', { err: String((e && e.reason && e.reason.message) || (e && e.reason) || '').slice(0, 100) }));
+}
 chrome.alarms.onAlarm.addListener(() => { ensureAlarm(); heartbeat(); loop(); });
 const booted = wake('worker').catch(() => {});
 booted.then(loop);

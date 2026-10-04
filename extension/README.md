@@ -39,3 +39,8 @@ are saved. These samples make no requests and are not list coverage or auto-impo
 Complete biographies already present in native list responses and bounded late
 JSON scripts use the existing guarded passive profile path. Reload the extension
 and an authorized tab when deploying; this change does not itself reload tabs.
+
+## Events for the server log (3.9.31)
+
+`lib/log.js` keeps up to 300 small structured events (Instagram request status and timing, failures, permit refusals, outbox retries, service-worker starts, uncaught errors) in `chrome.storage.local.elog` and posts them in batches to `POST /api/ext-log`. The server writes them into its own log tagged with this account, so a service-worker problem is visible with `ops/diagnose` without opening Chrome. Only statuses, timings, counts and classifications are recorded: never cookies, tokens, page or API content, or URL query strings (`FLLog.sanitize` drops them). Nothing is sent to Instagram or any other site. Format and event list: `docs/LOGGING.md`.
+

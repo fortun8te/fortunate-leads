@@ -132,6 +132,10 @@ def main():
     parser.add_argument('--db', required=True)
     parser.add_argument('--port', type=int, required=True)
     arguments = parser.parse_args()
+    if os.environ.get('FL_E2E_LOG') == '1':
+        # Opt in: run the simulated hours with structured logging on, then read them with ops/diagnose.
+        import obs
+        obs.start(Path(arguments.db).parent, root=SERVER_DIR.parent, name='sim', port=arguments.port)
     application = create_application(arguments.db, arguments.port)
     application.server = Server(('127.0.0.1', arguments.port), SimulationHandler,
                                 application=application.http)
