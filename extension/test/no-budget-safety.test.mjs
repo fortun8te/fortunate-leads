@@ -15,7 +15,7 @@ test('default budget is no cap, however many requests were made today', () => {
 test('with no budget the gap between pages still applies', () => {
   const st = FL.fresh();
   FL.afterRequest(st, 'list', T0, () => 0);
-  const p = FL.plan(st, noCap(st, T0), T0);
+  const p = FL.plan(st, noCap(st, T0), T0, ['list']);
   assert.equal(p.why, 'pace');
   assert.ok(p.wait >= FL.PACE.listGap[0] - 1);
 });
