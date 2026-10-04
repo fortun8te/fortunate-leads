@@ -193,3 +193,18 @@
 .mv-line-sample.outgoing::before { border-top-style: dashed; }
 .mv-line-sample.mutual::before { top: 1px; }
 .mv-line-sample.mutual::after { content: ''; position: absolute; inset: 5px 0 auto; border-top: 1px dashed currentColor; opacity: .6; }
+
+/* Instagram actions: card, search rows, bubble menu. */
+.mv-links { display: flex; flex-wrap: wrap; gap: var(--s2); padding: 0 var(--s4) var(--s3); }
+.mv-links .btn { flex: 1 1 auto; justify-content: center; }
+.mv-links [aria-disabled="true"] { opacity: .5; pointer-events: none; }
+.mv-r { position: relative; }
+.mv-r-links { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: none; gap: 4px; background: var(--bg2); }
+.mv-r.on .mv-r-links, .mv-r:hover .mv-r-links { display: inline-flex; }
+.mv-r.on i, .mv-r:hover i { visibility: hidden; }
+.mv-r-link { padding: 3px 8px; border: 1px solid var(--line3); border-radius: var(--r3); color: var(--fg); font-size: var(--fs-xs); cursor: pointer; }
+.mv-r-link:hover { background: var(--bg3); }
+.mv-menu { position: absolute; z-index: 40; min-width: 180px; padding: 4px; display: grid; background: var(--bg1); border: 1px solid var(--line2); border-radius: var(--r); box-shadow: var(--shadow-2); }
+.mv-menu-item { display: block; padding: 8px 10px; border-radius: var(--r2); color: var(--fg); font: inherit; text-align: left; text-decoration: none; background: none; border: 0; cursor: pointer; }
+.mv-menu-item:hover, .mv-menu-item:focus-visible { background: var(--bg2); }
+.mv-tip-hint { color: var(--fg4); }

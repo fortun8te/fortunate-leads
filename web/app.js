@@ -1340,7 +1340,7 @@ function renderDetail() {
   const readDate = p.bio_at ? new Date(p.bio_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   panel.innerHTML = `
     <header class="d-head">${avatar(p.pic, p.name || p.handle, 'lg')}
-      <div class="who"><b id="d-person-title" tabindex="-1">${esc(p.name || p.handle || '')}</b><span>@${esc(p.handle)}${role ? `<i class="d-role">${esc(ucf(role))}</i>` : ''}</span></div>
+      <div class="who"><b id="d-person-title" tabindex="-1" title="${esc(p.name || p.handle || '')}">${esc(p.name || p.handle || '')}</b><span>@${esc(p.handle)}${role ? `<i class="d-role">${esc(ucf(role))}</i>` : ''}</span></div>
       <div class="d-tools">${S.view === 'leads' && S.rows.length > 1 ? `<button type="button" id="d-prev" class="d-icon" aria-label="Previous lead" title="Previous (k)">${icon('arrowUp')}</button><button type="button" id="d-next" class="d-icon" aria-label="Next lead" title="Next (j)">${icon('arrowDown')}</button>` : ''}<button type="button" class="d-icon d-close" id="d-close" aria-label="Close lead details" title="Close (esc)">${icon('close')}</button></div></header>
     ${p.failed ? '<div class="d-sec"><p class="bad" role="status">Could not load this lead.</p><button class="btn" id="d-retry">Retry</button></div>' : ''}
     <section class="d-sec d-summary" aria-label="Summary">

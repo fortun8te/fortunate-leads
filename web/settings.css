@@ -48,3 +48,6 @@
 
 .background-ai-inline { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .background-ai-inline .btn { min-height:28px; padding:3px 9px; font-size:12px; }
+
+/* Top-level groups share one layout: heading above, content below, the same width as the setup panels. */
+.settings-page > .sg { grid-template-columns: minmax(0, 1fr); gap: var(--s3); padding-top: var(--s4); }

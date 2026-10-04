@@ -262,9 +262,9 @@ button.tag:hover, button.tchip:hover { filter: brightness(1.06); }
 .d-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4) var(--s3) var(--s5); background: var(--bg); border-bottom: 1px solid var(--line); }
 .d-head .av.lg { width: 44px; height: 44px; font-size: 15px; }
 .d-head .who { flex: 1; min-width: 0; display: grid; gap: 1px; overflow-wrap: anywhere; }
-.d-head .who b { display: block; font-size: 17px; line-height: 22px; font-weight: 600; letter-spacing: -.01em; white-space: normal; }
-.d-head .who > span { display: block; color: var(--fg3); font-size: 13px; line-height: 18px; }
-.d-role { display: inline-block; margin-left: var(--s2); font-style: normal; color: var(--fg4); white-space: nowrap; }
+.d-head .who b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 17px; line-height: 22px; font-weight: 600; letter-spacing: -.01em; white-space: normal; }
+.d-head .who > span { display: flex; flex-wrap: wrap; column-gap: var(--s2); color: var(--fg3); font-size: 13px; line-height: 18px; }
+.d-role { display: inline-block; font-style: normal; color: var(--fg4); white-space: nowrap; }
 .d-tools { display: flex; align-items: center; gap: 2px; flex: none; }
 .d-icon, .d-close { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: var(--rad-ctl); color: var(--fg3); font-size: 20px; line-height: 1; transition: background-color .12s var(--ease-out), color .12s; }
 .d-close { margin-left: auto; }
