@@ -105,7 +105,7 @@ def config(conn):
            'ceiling': raw.get('ceiling') if isinstance(raw.get('ceiling'), (int, float)) and raw.get('ceiling') > 0 else PROVEN_CEILING,
            'interval_s': raw.get('interval_s') if isinstance(raw.get('interval_s'), (int, float)) and raw.get('interval_s') >= 60 else DEFAULT_INTERVAL_S,
            'step_factor': raw.get('step_factor') if isinstance(raw.get('step_factor'), (int, float)) and raw.get('step_factor') > 1 else DEFAULT_STEP,
-           'auto_resume': bool(raw.get('auto_resume', True)),
+           'auto_resume': bool(raw.get('auto_resume', False)),
            'accounts': [str(a).lstrip('@').lower() for a in raw.get('accounts') or DEFAULT_ACCOUNTS],
            'lanes': raw.get('lanes') if isinstance(raw.get('lanes'), dict) else {}}
     return cfg
@@ -327,7 +327,7 @@ def blockers_now(conn, row, now):
         if shared and parse(shared) > now:
             out.append(('wait', 'all collection is resting after an Instagram response'))
     except (TypeError, ValueError):
-        pass
+        out.append(('stop', 'the shared protective wait is invalid; a person must review it'))
     if accounts.later(row['cooldown_until'], now) or accounts.later(row['list_cool_until'], now):
         out.append(('wait', 'the account is resting after an Instagram limit'))
     if row['paused'] or stage_pauses(conn):
@@ -427,11 +427,49 @@ def tick_lane(conn, cfg, row, st, now):
     evaluate_window(conn, cfg, row, st, now, start, blocks)
 
 
+def record_protective_stop(conn, lane, code, now):
+    """Called before a server protective pause, never by the ramp's event reader.
+
+    A warning isolation cannot be resumed automatically. Remember only the exact
+    stages and identities that were running before an ordinary protective stop.
+    Manual controls invalidate this one-use permission.
+    """
+    db.set_setting(conn, 'ramp_protective_stop', None)
+    if code not in ('rate_limit', 'soft_block', 'home_redirect'):
+        return
+    if (db.get_setting(conn, 'paused') or db.get_setting(conn, 'instagram_collection_isolation')
+            or db.get_setting(conn, 'instagram_scraping_warning')):
+        return
+    stages = [name for name in ('lists', 'bios') if not db.get_setting(conn, 'paused_' + name)]
+    if not stages:
+        return
+    identities = {r['lane_id']: {'ig_id': r['ig_id'], 'paused': bool(r['paused'])}
+                  for r in accounts.rows(conn)}
+    db.set_setting(conn, 'ramp_protective_stop', {'lane': lane, 'code': code, 'at': iso(now),
+                    'stages': stages, 'identities': identities})
+
+
 def maybe_auto_resume(conn, cfg, row, st, now, blocks):
     due = st.get('resume_due')
     if not due or not cfg['auto_resume']:
         return
     lane = row['lane_id']
+    marker = db.get_setting(conn, 'ramp_protective_stop')
+    expected = {'lane': lane, 'code': due['code'], 'at': due['at']}
+    if not isinstance(marker, dict) or any(marker.get(k) != v for k, v in expected.items()):
+        st['resume_due'] = None
+        note(conn, st, now, 'auto_resume_refused', 'no matching server protective stop; a person must restart collection', 'warn')
+        return
+    identities = {r['lane_id']: {'ig_id': r['ig_id'], 'paused': bool(r['paused'])}
+                  for r in accounts.rows(conn)}
+    if identities != marker.get('identities'):
+        st['resume_due'] = None
+        db.set_setting(conn, 'ramp_protective_stop', None)
+        return
+    gate = db.get_setting(conn, 'instagram_request_gate') or {}
+    if (gate.get('active') or db.get_setting(conn, 'paused')
+            or db.get_setting(conn, 'instagram_collection_isolation')):
+        return
     at = parse(due['at'])
     if now - at < timedelta(seconds=due['rest_s']):
         return
@@ -451,8 +489,13 @@ def maybe_auto_resume(conn, cfg, row, st, now, blocks):
         st['stopped_reason'] = 'collection stopped again after automatic restarts; a person needs to restart it'
         note(conn, st, now, 'auto_resume_refused', f'already restarted {len(recent)} times in 24 hours; a person must restart collection', 'error')
         return
-    db.set_setting(conn, 'paused_lists', False)
-    db.set_setting(conn, 'paused_bios', False)
+    stages = marker.get('stages')
+    if not isinstance(stages, list) or not stages or any(s not in ('lists', 'bios') for s in stages):
+        st['resume_due'] = None
+        return
+    for stage in ('lists', 'bios'):
+        db.set_setting(conn, 'paused_' + stage, stage not in stages)
+    db.set_setting(conn, 'ramp_protective_stop', None)
     conn.commit()
     st['auto_resumes'] = recent + [iso(now)]
     st['resume_due'] = None
@@ -495,6 +538,14 @@ def evaluate_window(conn, cfg, row, st, now, start, blocks):
     if st['just_stepped'] and st['pre_step_rate'] and obs < st['pre_step_rate'] * SLOWER_THAN_BEFORE:
         return step_down(conn, lane, st, now, f"after the step the pace is {obs:.0f} pages/h against {st['pre_step_rate']:.0f} before it; back one level",
                          HOLD_AFTER_LIMIT, 'warn', before=st['pre_step_rate'], **nums)
+    expected = st.get('expected_after')
+    if st['just_stepped'] and st['pre_step_rate'] and expected and expected >= st['pre_step_rate'] * 1.10 and obs < st['pre_step_rate'] * 1.05:
+        st['no_effect'] = True
+        st['mode'] = 'no_effect'
+        step_down(conn, lane, st, now, f"the step did not make it faster ({st['pre_step_rate']:.0f} to {obs:.0f} pages/h, {expected:.0f} expected): the limit is not the list gap "
+                  '(idle waiting or response time), so the ramp goes back and stops stepping', 0, 'warn', before=st['pre_step_rate'], expected=expected, **nums)
+        st['mode'] = 'no_effect'
+        return
     if prev_over is not None and over is not None and over > max(RISE_RATIO * prev_over, prev_over + RISE_ABS):
         st['consec_rise'] += 1
         nums_r = dict(nums, previous_overhead_s=prev_over)
@@ -513,8 +564,11 @@ def evaluate_window(conn, cfg, row, st, now, start, blocks):
         st['mode'] = 'holding' if st['hold_left'] else 'running'
         return hold(f"clean window after a limit; {st['hold_left']} more before the ramp continues")
     # --- clean: step up, clipped to the ceiling and the bounds
+    if st.get('no_effect'):
+        st['mode'] = 'no_effect'
+        return hold(f'{obs:.0f} pages/h; a faster list gap made no difference earlier, so the ramp is not stepping (resume it after the cause is fixed)')
     plan = plan_step(values, obs, cfg['step_factor'], cfg['ceiling'])
-    if obs >= cfg['ceiling'] * 0.98 or (plan['at_ceiling'] and plan['predicted'] <= obs * 1.02):
+    if obs >= cfg['ceiling'] * 0.98:
         st['mode'] = 'at_ceiling'
         return hold(f"at the ceiling: {obs:.0f} pages/h against {cfg['ceiling']:.0f}", 'info', 'at_ceiling')
     if plan['predicted'] <= obs * 1.02:
@@ -526,10 +580,12 @@ def evaluate_window(conn, cfg, row, st, now, start, blocks):
     st['levels'].append({'level': st['level'], 'values': out['after']['values'], 'predicted': plan['predicted'], 'at': iso(now), 'from_observed': obs})
     st['mode'] = 'at_ceiling' if plan['at_ceiling'] else 'running'
     st['pre_step_rate'] = obs
+    st['expected_after'] = plan['predicted']
     st['just_stepped'] = True
     restart_window(st, now)
-    note(conn, st, now, 'step_up', f"clean window: {obs:.0f} pages/h measured, new target {plan['target']:.0f} (expected {plan['predicted']:.0f})" +
-         (f" - the ceiling of {cfg['ceiling']:.0f}" if plan['at_ceiling'] else ''), 'info',
+    note(conn, st, now, 'step_up', f"clean window: {obs:.0f} pages/h measured, new target {plan['target']:.0f}, expected {plan['predicted']:.0f}" +
+         (f" (the ceiling of {cfg['ceiling']:.0f})" if plan['at_ceiling'] and plan['predicted'] >= plan['target'] * 0.97 else
+          ' (the fastest allowed gap limits it)' if plan['predicted'] < plan['target'] * 0.97 else ''), 'info',
          target=plan['target'], expected=plan['predicted'], to_id=out['after']['id'], list_gap=out['after']['values']['list_gap'],
          overhead_model_s=plan['overhead_s'], clamped=[c['field'] for c in out['clamped']] or None, **nums)
 
@@ -603,6 +659,7 @@ def post(conn, q, b):
         raise ValueError('Choose on, off, resume, restore or set.')
     now = utcnow()
     cfg = config(conn)
+    db.set_setting(conn, 'ramp_protective_stop', None)
     for key, kind, lo, hi in (('ceiling', (int, float), 20, 5000), ('interval_s', (int, float), 60, 7 * 86400), ('step_factor', (int, float), 1.01, 4)):
         if key in b:
             if isinstance(b[key], bool) or not isinstance(b[key], kind) or not lo <= b[key] <= hi:
@@ -612,7 +669,9 @@ def post(conn, q, b):
                      above_proven=b[key] > PROVEN_CEILING)
             cfg[key] = b[key]
     if 'auto_resume' in b:
-        cfg['auto_resume'] = bool(b['auto_resume'])
+        if not isinstance(b['auto_resume'], bool):
+            raise ValueError('auto_resume must be true or false.')
+        cfg['auto_resume'] = b['auto_resume']
     if 'accounts' in b:
         if not isinstance(b['accounts'], list) or not all(isinstance(a, str) for a in b['accounts']):
             raise ValueError('accounts must be a list of handles.')
@@ -667,13 +726,13 @@ def status(conn, now=None):
         cur = st['levels'][min(st['level'], len(st['levels']) - 1)]
         start = parse(st['window_start'])
         left = max(0, cfg['interval_s'] - (now - start).total_seconds())
-        word = {'running': 'climbing', 'holding': 'holding after a limit', 'at_ceiling': 'at the ceiling', 'at_bound': 'at the fastest allowed gap',
+        word = {'running': 'climbing', 'no_effect': 'not stepping (a faster gap made no difference)', 'holding': 'holding after a limit', 'at_ceiling': 'at the ceiling', 'at_bound': 'at the fastest allowed gap',
                 'stopped': 'STOPPED, needs a person', 'manual': 'standing down (pace changed by hand)'}.get(st['mode'], st['mode'])
         name = accounts.name_of(row)
         lw = st.get('last_window') or {}
         lines.append('')
         lines.append(f"{name}: {word}. Level {st['level']}, expected about {cur.get('predicted', 0):.0f} pages/h; list gap {cur['values']['list_gap'][0]}-{cur['values']['list_gap'][1]} s.")
-        if st['mode'] in ('running', 'holding', 'at_ceiling', 'at_bound'):
+        if st['mode'] in ('running', 'holding', 'at_ceiling', 'at_bound', 'no_effect'):
             lines.append(f"  Current window started {iso(start)}; the next decision is in {int(left // 60)} min"
                          + (f" ({st['hold_left']} clean window(s) to hold first)" if st['hold_left'] else '') + '.')
         if st['stopped_reason']:

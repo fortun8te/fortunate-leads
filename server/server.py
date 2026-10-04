@@ -923,6 +923,10 @@ def ext_error(conn, q, b):
     fields = {'last_error': (b.get('message') or code or '')[:500] or None}
     route_recovery = home_redirect and not stale and trial_warning and scoped_follower_redirect(
         conn, job, b, datetime.now(timezone.utc))
+    # Warning isolation needs owner review, never an automatic restart.
+    # Capture provenance before the server changes stage state.
+    if code in ('rate_limit', 'soft_block', 'login', 'challenge') or (home_redirect and not route_recovery):
+        ramp.record_protective_stop(conn, lane, 'home_redirect' if home_redirect else code, utc(ts))
     if (code in ('rate_limit', 'soft_block', 'login', 'challenge') or (home_redirect and not route_recovery)) and db.get_setting(conn, 'instagram_collection_isolation'):
         db.set_setting(conn, 'instagram_collection_isolation', None)
         db.set_setting(conn, 'paused_lists', True)

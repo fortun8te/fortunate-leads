@@ -8,6 +8,7 @@ from unittest import mock
 
 from test_server import Base, db
 import accounts
+import control
 import pace
 import pace_limits as limits
 import ramp
@@ -93,6 +94,7 @@ class Steps(RampBase):
     def test_off_by_default_and_changes_nothing(self):
         self.online(T0)
         self.assertFalse(ramp.config(self.conn)['enabled'])
+        self.assertFalse(ramp.config(self.conn)['auto_resume'])
         self.assertFalse(ramp.tick(self.conn, T0))
         self.feed(T0, T0 + 3 * H, 200)
         self.assertFalse(ramp.tick(self.conn, T0 + 3 * H))
@@ -119,6 +121,18 @@ class Steps(RampBase):
         text = '\n'.join(ramp.status(self.conn, end)['lines'])
         self.assertIn('at the ceiling', text)
         self.assertIn('unmeasured', text)
+
+    def test_a_step_with_no_measurable_benefit_is_undone_and_not_repeated(self):
+        self.turn_on(step_factor=1.5)
+        end = self.run_window(T0, 160)
+        self.assertEqual(self.last_action(), 'step_up')
+        end = self.run_window(end, 161)
+        self.assertEqual(self.last_action(), 'step_down')
+        self.assertEqual(self.lane()['level'], 0)
+        self.assertEqual(self.gap(), [7, 12])
+        self.run_window(end, 160)
+        self.assertEqual(self.last_action(), 'hold')
+        self.assertEqual(self.lane()['mode'], 'no_effect')
 
     def test_user_ceiling_above_the_proven_is_explicit_and_labelled_unmeasured(self):
         out = ramp.post(self.conn, {}, {'action': 'set', 'ceiling': 330})
@@ -173,23 +187,29 @@ class Bounds(RampBase):
         self.assertEqual(wild['values']['list_gap'], floor)
         self.assertTrue(wild['at_bound'] or wild['predicted'] < wild['target'])
 
-    def test_the_bounds_are_widened_only_as_far_as_the_proven_ceiling_needs(self):
-        v, over = limits.defaults(), 3.45                    # modelled 230/h after the idle-gap fix
-        plan = ramp.plan_step(v, 3600 / (ramp.model_cycle(v) + over), 1.5, ramp.PROVEN_CEILING)
-        self.assertTrue(plan['at_ceiling'])
-        self.assertLessEqual(plan['predicted'], ramp.PROVEN_CEILING * 1.005)
-        self.assertGreaterEqual(plan['predicted'], ramp.PROVEN_CEILING * 0.98)
-        self.assertEqual(plan['values']['list_gap'], limits.FIELDS['list_gap']['floor'])   # the floor is exactly what it needs
+    def test_shipped_floor_is_preserved_even_when_a_high_ceiling_is_requested(self):
+        self.assertEqual(limits.FIELDS['list_gap']['floor'], [7, 12])
+        plan = ramp.plan_step(limits.defaults(), 230, 4, 5000)
+        self.assertEqual(plan['values']['list_gap'], [7, 12])
 
-    def test_without_the_idle_gap_fix_the_bounds_stop_the_ramp_honestly(self):
+    def test_a_slower_start_can_return_toward_but_never_exceed_shipped_pace(self):
+        pace.post(self.conn, {}, {'scope': 'account', 'lane_id': LANE, 'values': {'list_gap': [14, 24]}})
         self.turn_on(step_factor=1.5)
-        end = self.run_window(T0, 160)                       # today's real rate: about 10 s of idle per page
+        end = self.run_window(T0, 150)
         self.assertEqual(self.last_action(), 'step_up')
-        self.assertEqual(self.gap(), limits.FIELDS['list_gap']['floor'])
-        self.assertLess(self.lane()['levels'][1]['predicted'], 200)       # not 240: the bounds cannot give it
-        end = self.run_window(end, 185)
+        self.assertGreaterEqual(self.gap()[0], 7)
+        self.assertGreaterEqual(self.gap()[1], 12)
+        for rate in (220, 250, 280):
+            end = self.run_window(end, rate)
+            self.assertGreaterEqual(self.gap()[0], 7)
+            self.assertGreaterEqual(self.gap()[1], 12)
+
+    def test_default_pace_cannot_be_sped_up_by_the_ramp(self):
+        self.turn_on(step_factor=1.5)
+        self.run_window(T0, 160)
         self.assertEqual(self.last_action(), 'at_bound')
-        self.assertIn('fastest allowed gap', ' '.join(ramp.status(self.conn, end)['lines']))
+        self.assertEqual(self.gap(), [7, 12])
+
 
 
 class Eligibility(RampBase):
@@ -391,6 +411,9 @@ class Adverse(RampBase):
 
 
 class Recovery(RampBase):
+    def turn_on(self, **extra):
+        super().turn_on(**dict({'auto_resume': True}, **extra))
+
     def test_a_long_outage_resumes_one_level_lower_never_from_the_top(self):
         self.turn_on()
         end = self.run_window(T0, 200)
@@ -430,6 +453,7 @@ class Recovery(RampBase):
 
     def pause_like_the_server(self, hit_at, code='rate_limit'):
         self.event(hit_at, code, status=429)
+        ramp.record_protective_stop(self.conn, LANE, code, hit_at)
         db.set_setting(self.conn, 'paused_lists', True)
         db.set_setting(self.conn, 'paused_bios', True)
         db.set_setting(self.conn, 'cooldown', ramp.iso(hit_at + timedelta(minutes=15)))
@@ -453,6 +477,65 @@ class Recovery(RampBase):
         self.assertEqual(ev['level'], 'warn')
         self.assertGreaterEqual(ev['rested_min'], 120)
         self.assertEqual(self.lane()['level'], 0)             # still the lower level: never from the top
+
+    def test_lists_only_recovery_keeps_bios_paused(self):
+        db.set_setting(self.conn, 'paused_bios', True)
+        self.conn.commit()
+        self.turn_on()
+        hit = T0 + timedelta(minutes=10)
+        self.pause_like_the_server(hit)
+        ramp.tick(self.conn, hit + timedelta(minutes=1))
+        self.online(hit + 3 * H)
+        ramp.tick(self.conn, hit + 3 * H)
+        self.assertFalse(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+
+    def test_operator_stop_invalidates_recovery_even_when_already_paused(self):
+        self.turn_on()
+        hit = T0 + timedelta(minutes=10)
+        self.pause_like_the_server(hit)
+        ramp.tick(self.conn, hit + timedelta(minutes=1))
+        control.apply(self.conn, {'stage': 'collection', 'action': 'pause'})
+        self.online(hit + 3 * H)
+        ramp.tick(self.conn, hit + 3 * H)
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertTrue(db.get_setting(self.conn, 'paused_bios'))
+        self.assertFalse(self.logged('auto_resume'))
+
+    def test_unproven_pause_is_never_auto_resumed(self):
+        self.turn_on()
+        hit = T0 + timedelta(minutes=10)
+        self.pause_like_the_server(hit)
+        db.set_setting(self.conn, 'ramp_protective_stop', None)
+        self.conn.commit()
+        ramp.tick(self.conn, hit + timedelta(minutes=1))
+        self.online(hit + 3 * H)
+        ramp.tick(self.conn, hit + 3 * H)
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(self.logged('auto_resume'))
+
+    def test_active_request_waits_and_identity_change_cancels_recovery(self):
+        self.turn_on()
+        hit = T0 + timedelta(minutes=10)
+        self.pause_like_the_server(hit)
+        ramp.tick(self.conn, hit + timedelta(minutes=1))
+        db.set_setting(self.conn, 'instagram_request_gate', {'active': {'token': 'pending'}})
+        self.online(hit + 3 * H)
+        ramp.tick(self.conn, hit + 3 * H)
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        db.set_setting(self.conn, 'instagram_request_gate', None)
+        self.conn.execute("UPDATE accounts SET ig_id='new-identity'")
+        self.conn.commit()
+        self.online(hit + 4 * H)
+        ramp.tick(self.conn, hit + 4 * H)
+        self.assertTrue(db.get_setting(self.conn, 'paused_lists'))
+        self.assertFalse(self.logged('auto_resume'))
+
+    def test_warning_isolation_does_not_grant_automatic_recovery(self):
+        db.set_setting(self.conn, 'instagram_collection_isolation', {'accounts': {LANE: IG}})
+        self.conn.commit()
+        ramp.record_protective_stop(self.conn, LANE, 'rate_limit', T0)
+        self.assertIsNone(db.get_setting(self.conn, 'ramp_protective_stop'))
 
     def test_auto_resume_never_follows_a_warning_challenge_or_login(self):
         self.turn_on()
@@ -513,6 +596,7 @@ class Recovery(RampBase):
         end = self.run_window(T0, 200)
         hit = end + timedelta(minutes=10)
         self.event(hit, 'other', 'list_html_home_redirect')
+        ramp.record_protective_stop(self.conn, LANE, 'home_redirect', hit)
         db.set_setting(self.conn, 'paused_lists', True)
         db.set_setting(self.conn, 'paused_bios', True)
         self.conn.commit()

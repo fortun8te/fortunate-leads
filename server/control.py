@@ -492,6 +492,8 @@ def review_unconfirmed_request(conn, body):
 def apply(conn, b):
     """Stage/account pause or resume, or explicit {"action": "start_all"}."""
     action = b.get('action')
+    # An operator action must win over any pending automatic restart.
+    db.set_setting(conn, 'ramp_protective_stop', None)
     if action == 'review_unconfirmed_request':
         return review_unconfirmed_request(conn, b)
     if action in ('acknowledge_scraping_warning', 'resume_selected_accounts') and not conn.in_transaction:

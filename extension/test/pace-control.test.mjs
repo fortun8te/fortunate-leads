@@ -22,11 +22,11 @@ test('the shipped pace is exactly what it was before the control existed', () =>
   assert.deepEqual(FL.BUDGET, { list: 3000, profile: 300 });
 });
 
-test('the bounds allow nothing faster than the shipped pacing except the list gap (down to 4.8-8.2 s, for the speed ramp)', () => {
+test('the bounds allow nothing faster than the shipped pacing', () => {
   const fast = FL.clampPace({ list_gap: [1, 2], profile_gap: [1, 2], spacing: [0, 1], break_every: [500, 900], break_len: [1, 2], window_max: 9999 }).values;
-  assert.deepEqual(fast, { ...SHIPPED, list_gap: [4.8, 8.2] });
+  assert.deepEqual(fast, SHIPPED);
   assert.deepEqual(FL.clampPace(FL.PACE_LIMITS.presets.normal.values).values, SHIPPED);
-  assert.deepEqual(FL.clampPace(FL.PACE_LIMITS.presets.fast.values).values, { ...SHIPPED, list_gap: [5, 9] });
+  assert.deepEqual(FL.clampPace(FL.PACE_LIMITS.presets.fast.values).values, SHIPPED);
 });
 
 test('every value is clamped into its own bounds, keeps its jitter, and clamping twice changes nothing', () => {

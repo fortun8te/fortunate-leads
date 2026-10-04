@@ -1,12 +1,12 @@
 # Automatic speed ramp
 
-Off until switched on. Raises the speed of a healthy collector step by step, backs off at the first sign of trouble,
+Off until switched on. Automatic stage restart is also off by default; enabling the ramp does not enable it. Raises the speed of a healthy collector step by step, backs off at the first sign of trouble,
 and needs no extension change or reload (each step travels through the ordinary pace delivery, `docs/PACE_CONTROL.md`).
 Code: `server/ramp.py` (controller, runs from a server worker every 30 s), `ops/set-pace --ramp`, tests `server/tests/test_ramp.py`,
 simulator `node tests/e2e/driver.mjs --ramp`. Failure handling: `docs/RECOVERY.md`.
 
 ```sh
-ops/set-pace --ramp on                  # default: @trashtheturtles, x1.5 after every 2 h of clean collection, ceiling 285 pages/h
+ops/set-pace --ramp on                  # only returns from a slower pace toward shipped defaults; default: @trashtheturtles, x1.5 after every 2 h of clean collection, ceiling 285 pages/h
 ops/set-pace --ramp status              # what it decided and why, in plain words
 ops/set-pace --ramp off                 # stop stepping; the pace stays where it is   (--ramp restore: also reset the pace)
 ops/set-pace --ramp resume --account @trashtheturtles   # after the ramp stopped and a person fixed the cause
@@ -21,7 +21,7 @@ aims at `measured x step_factor`, never above `ceiling` (default 285, the top of
 It changes only the list gap (a range kept in the same shape), holds the extra time per page that Instagram and the app add
 (measured, kept constant), and rounds toward slower, so a step can undershoot its target but never overshoot the ceiling.
 At the ceiling it holds and says "at the ceiling". Above the ceiling is only possible by the explicit `--ceiling N`, and every readout then says it is unmeasured.
-It never goes below the lower list-gap bound in `extension/lib/pace-limits.js` (4.8 to 8.2 s); if that bound stops a step it says "at the fastest allowed gap".
+It never goes below the lower list-gap bound in `extension/lib/pace-limits.js` (7 to 12 s); if that bound stops a step it says "at the fastest allowed gap".
 
 A window counts only if collection ran at least 90% of it (no stretch of 20 minutes without a saved page), at least 30 pages
 were saved, and none of these happened: 429 or soft block, challenge, login, scraping warning, hold, unconfirmed request, a cooldown or pause, the
@@ -42,4 +42,6 @@ A window that does not count restarts the clock; nothing steps.
 | somebody changes the pace by hand | the ramp stands down and leaves the pace alone |
 | main account, held or warned account, other handles | never ramped |
 
-No daily cap is involved. State lives in the `ramp` setting, so it survives restarts. Every decision is a `ramp.*` event in the structured log and in the status readout.
+Existing daily limits stay in force. State lives in the `ramp` setting, so it survives restarts. The 285 pages/h ceiling is a historical observation, not a guarantee of safety. The shipped list-gap floor still wins even if the requested target cannot be reached. A step with no measurable benefit is undone and further steps stop until an operator resumes the ramp.
+
+Every decision is a `ramp.*` event in the structured log and in the status readout.

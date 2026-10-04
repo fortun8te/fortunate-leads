@@ -13,8 +13,8 @@ import pace_limits as limits
 SHIPPED_DEFAULTS = {'list_gap': [7, 12], 'profile_gap': [35, 70], 'spacing': [2, 5], 'break_every': [40, 60],
                     'break_len': [90, 180], 'window_max': 72}
 DEFAULT_ID = 'lg7-12|pg35-70|sp2-5|be40-60|bl90-180|wm72'
-# The one deliberate widening: the list gap may go to 4.8-8.2 s, as far as the speed ramp needs to reach 285 pages an hour.
-FASTEST = dict(SHIPPED_DEFAULTS, list_gap=[4.8, 8.2])
+# The fastest setting retains the shipped pace; the ramp may only recover from slower settings.
+FASTEST = dict(SHIPPED_DEFAULTS)
 
 
 class LimitsFile(Base):
@@ -25,7 +25,7 @@ class LimitsFile(Base):
         self.assertEqual(limits.ident(limits.defaults()), DEFAULT_ID)
 
     def test_bounds_allow_nothing_faster_than_the_defaults_except_the_list_gap(self):
-        self.assertEqual(limits.FIELDS['list_gap']['floor'], [4.8, 8.2])
+        self.assertEqual(limits.FIELDS['list_gap']['floor'], [7, 12])
         for f, d in SHIPPED_DEFAULTS.items():
             spec = limits.FIELDS[f]
             if f == 'list_gap':
@@ -50,7 +50,7 @@ class LimitsFile(Base):
 
     def test_the_file_can_be_swapped_without_touching_code(self):
         text = Path(limits.PATH).read_text()
-        wide = text.replace('"floor": [4.8, 8.2]', '"floor": [3, 5.5]')
+        wide = text.replace('"floor": [7, 12]', '"floor": [3, 5.5]')
         self.assertNotEqual(text, wide)
         path = Path(self.tmp.name) / 'wide.js'
         path.write_text(wide)
@@ -130,7 +130,7 @@ class Clamp(Base):
             self.assertGreater(slow[f][0], SHIPPED_DEFAULTS[f][0])
         self.assertLess(slow['window_max'], 72)
         fast, notes = limits.preset('fast')
-        self.assertEqual(fast, dict(SHIPPED_DEFAULTS, list_gap=[5, 9]))   # only the list gap is faster than normal
+        self.assertEqual(fast, dict(SHIPPED_DEFAULTS))   # fast remains within the shipped floor
         self.assertTrue(notes)
         with self.assertRaises(ValueError):
             limits.preset('ludicrous')
