@@ -15,6 +15,7 @@ import control
 import collection_suggestions
 import collection_progress
 import db
+import disk_guard
 import owner
 import engine_start
 import browser_startup
@@ -142,6 +143,9 @@ class CollectionService:
             return accounts.request_permit(conn, lane, token=token, now=now)
         if b.get('action') != 'acquire' or b.get('kind') not in ('list', 'profile'):
             raise Bad('request action and kind required')
+        hold = disk_guard.lease_hold(self.config.db)   # releases above still work
+        if hold:
+            return hold
         conn.execute('BEGIN IMMEDIATE')
         if edge_benchmark_api.active(conn):
             conn.rollback()
@@ -203,6 +207,9 @@ class CollectionService:
         """Leases per lane (see accounts.py): never one job to two lanes, lists stick to their lane while it is healthy."""
         lane, ts, now = accounts.lane_of(q, b), db.now(), datetime.now(timezone.utc)
         kinds = [k for k in csv(q, 'kinds') if k in ('list', 'profile')] or ['list', 'profile']
+        hold = disk_guard.lease_hold(self.config.db)   # almost no disk space: hand out no new work
+        if hold:
+            return hold
         conn.execute('BEGIN IMMEDIATE')
         if edge_benchmark_api.active(conn):
             conn.rollback()

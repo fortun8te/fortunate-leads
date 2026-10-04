@@ -9,6 +9,7 @@ import browser_startup
 import control
 import db
 import deepscout
+import disk_guard
 import dm_import
 import map_layout
 import map_universe
@@ -146,6 +147,7 @@ class Application:
             ('POST', '/api/llm/models/refresh', self.processing.api_llm_models_refresh)]
         routes += map_universe.routes(self.maps._map_database)
         routes += qual_api.routes(self.leads)
+        routes += disk_guard.routes(lambda: self.config.db)
         routes += workflows.routes()
         routes += dm_import.routes()
         return routes
@@ -240,8 +242,9 @@ class Application:
                 ('research', self.scouts.step, 2, 10),
                 ('map-layout', self.map_layout_step, 1, 10),
             ]
-            for loop in loops:
-                self.supervisor.start(*loop)
+            for name, step, busy_wait, idle_wait in loops:
+                # Write-heavy loops idle while the disk is almost full (server/disk_guard.py).
+                self.supervisor.start(name, disk_guard.guarded(name, step, self.config.db), busy_wait, idle_wait)
             self.started = True
             return self.supervisor
 

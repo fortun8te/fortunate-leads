@@ -27,8 +27,9 @@ done
 
 LOG_WARN_BYTES=$((20 * 1024 * 1024))
 WAL_WARN_BYTES=$((64 * 1024 * 1024))
-DISK_FAIL_KB=$((1024 * 1024))       # 1 GB
-DISK_WARN_KB=$((5 * 1024 * 1024))   # 5 GB
+# Same lines as server/disk_guard.py: warn at 10 GB free, the server pauses collection and background work at 3 GB.
+DISK_FAIL_KB=$((3000000000 / 1024))
+DISK_WARN_KB=$((10000000000 / 1024))
 BACKUP_WARN_HOURS=36
 
 npass=0 nwarn=0 nfail=0 nskip=0

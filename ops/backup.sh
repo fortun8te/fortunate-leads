@@ -34,6 +34,15 @@ die() { echo "$(date '+%F %T') backup FAILED: $*" >&2; exit 1; }
 python_ok || die "$FL_PYTHON missing or unusable (set PYTHON=...)"
 "$FL_PYTHON" -c 'import sys; sys.exit(0 if int(sys.argv[1]) > 0 else 1)' "$keep" || die "--keep must be a positive integer"
 mkdir -p "$dest"
+# A backup is a full copy: refuse to start one the disk cannot hold, instead of filling it.
+# Needs 1.5 x the database + 512 MB free (FL_BACKUP_MIN_FREE_MB overrides, for tests).
+need_kb=$(( ($(file_size "$db") * 3 / 2 + 512 * 1024 * 1024) / 1024 ))
+[ -z "${FL_BACKUP_MIN_FREE_MB:-}" ] || need_kb=$(( FL_BACKUP_MIN_FREE_MB * 1024 ))
+avail_kb="$(df -Pk "$dest" 2>/dev/null | awk 'NR == 2 {print $4}')"
+if [ -n "$avail_kb" ] && [ "$avail_kb" -lt "$need_kb" ]; then
+  die "only $(human_bytes $((avail_kb * 1024))) free on $dest; a backup of this database needs about $(human_bytes $((need_kb * 1024))). Free up space first (ops/storage.md)"
+fi
+started_at=$SECONDS
 [ "$db" != "$FL_REPO/data/leads.sqlite" ] || chmod 700 "$FL_REPO/data" || die "cannot restrict data directory permissions"
 chmod 700 "$dest" || die "cannot restrict backup directory permissions"
 
@@ -79,7 +88,7 @@ os.link(sys.argv[1], sys.argv[2])
 PY
 rm -f "$part"
 trap - EXIT
-echo "$(date '+%F %T') backup ok: $out ($(human_bytes "$(file_size "$out")"), $summary)"
+echo "$(date '+%F %T') backup ok: $out ($(human_bytes "$(file_size "$out")"), $summary, $((SECONDS - started_at))s)"
 
 # Keep the newest three snapshots and one snapshot on each of the newest N
 # dates. Same-day manual backups cannot displace older daily recovery points.
