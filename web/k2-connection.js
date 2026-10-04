@@ -41,8 +41,8 @@
   }
   async function load() {
     busy = true; render();
-    try { showSaved(await call('/api/k2/connection')); status.textContent = `Connection saved${saved.hasKey ? ' · PC key saved' : ''}. Testing does not turn K2 on.`; }
-    catch { saved = null; status.textContent = 'Could not load K2 connection. Reload settings to try again.'; }
+    try { showSaved(await call('/api/k2/connection')); status.textContent = `Saved${saved.hasKey ? ' · PC key saved' : ''}.`; }
+    catch { saved = null; status.textContent = "Couldn't load the connection. Reload to try again."; }
     finally { busy = false; render(); }
   }
   form.addEventListener('click', event => {
@@ -50,24 +50,24 @@
     if (!button || busy) return;
     location = button.dataset.k2Location;
     if (location === 'this_mac') key.value = '';
-    status.textContent = same(candidate(), saved) ? 'Connection saved.' : 'Save this connection before testing.';
+    status.textContent = same(candidate(), saved) ? 'Saved.' : 'Save this connection before testing.';
     render();
   });
-  form.addEventListener('input', () => { status.textContent = same(candidate(), saved) ? 'Connection saved.' : 'Save this connection before testing.'; render(); });
+  form.addEventListener('input', () => { status.textContent = same(candidate(), saved) ? 'Saved.' : 'Save this connection before testing.'; render(); });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const value = candidate();
     if (busy || !valid(value)) { status.textContent = 'Enter a LAN address and a port from 1 to 65535.'; return; }
-    busy = true; status.textContent = 'Saving connection…'; render();
-    try { const result = await call('/api/k2/connection', {...value, ...(value.location === 'other_pc' && key.value.trim() ? {api_key:key.value.trim()} : {})}); if (!same(result, value)) throw new Error('Unconfirmed save'); showSaved(result); status.textContent = `Connection saved${saved.hasKey ? ' · PC key saved' : ''}. K2 remains as selected in the engine panel.`; }
-    catch (error) { status.textContent = error.message || 'Could not confirm this connection.'; }
+    busy = true; status.textContent = 'Saving…'; render();
+    try { const result = await call('/api/k2/connection', {...value, ...(value.location === 'other_pc' && key.value.trim() ? {api_key:key.value.trim()} : {})}); if (!same(result, value)) throw new Error('Unconfirmed save'); showSaved(result); status.textContent = `Saved${saved.hasKey ? ' · PC key saved' : ''}.`; }
+    catch (error) { status.textContent = error.message || "Couldn't confirm the connection."; }
     finally { busy = false; render(); }
   });
   test.addEventListener('click', async () => {
     if (busy || !same(candidate(), saved)) return;
-    busy = true; status.textContent = 'Testing the saved connection…'; render();
-    try { const result = await call('/api/k2/connection/test', {}); status.textContent = result.message || (result.ok ? 'K2 connection is ready.' : 'K2 connection could not be verified.'); }
-    catch (error) { status.textContent = error.message || 'Could not test the K2 connection.'; }
+    busy = true; status.textContent = 'Testing…'; render();
+    try { const result = await call('/api/k2/connection/test', {}); status.textContent = result.message || (result.ok ? 'Connection works.' : "Couldn't verify the connection."); }
+    catch (error) { status.textContent = error.message || "Couldn't test the connection."; }
     finally { busy = false; render(); }
   });
   render(); load();
