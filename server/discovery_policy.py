@@ -9,7 +9,8 @@ from math import ceil
 POLICY_KEY = 'auto_discover_policy'
 LEGACY = 'saved_fit'
 COMPLETION = 'bounded_completion'
-POLICIES = (LEGACY, COMPLETION)
+ADAPTIVE = 'adaptive_yield'
+POLICIES = (LEGACY, COMPLETION, ADAPTIVE)
 CANDIDATE_POOL = 200
 EXPLORATION_EVERY = 4
 ESTIMATED_ROWS_PER_PAGE = 45

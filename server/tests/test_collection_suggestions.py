@@ -15,6 +15,7 @@ class CollectionSuggestions(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.init(str(Path(self.tmp.name) / 'suggestions.sqlite'))
         suggestions.ensure(self.conn)
+        suggestions.set_policy(self.conn, discovery_policy.LEGACY)   # these tests cover the saved-fit rule
 
     def tearDown(self):
         self.conn.close()

@@ -1264,6 +1264,32 @@ class CollectionService:
             conn.commit()
         return collection_suggestions.suggest(conn, qint(q, 'limit') or 6)
 
+    def api_auto_seeds(self, conn, q, b):
+        """Automatic seeds with reasons; POST also saves auto-pick settings {enabled, depth, daily_cap}."""
+        import discovery_picker
+        if b:
+            try:
+                discovery_picker.set_settings(conn, enabled=b.get('enabled'), depth=b.get('depth'), daily_cap=b.get('daily_cap'))
+            except ValueError as exc:
+                conn.rollback()
+                raise Bad(str(exc)) from None
+            conn.commit()
+        return discovery_picker.listing(conn)
+
+    def api_auto_seeds_act(self, conn, q, b):
+        """{action: pin|unpin|remove, handles: [...]} -> {items: [{handle, result: ok|missing}]}"""
+        import discovery_picker
+        handles = b.get('handles')
+        if b.get('action') not in ('pin', 'unpin', 'remove') or not isinstance(handles, list) or not handles:
+            raise Bad('Choose pin, unpin or remove and at least one profile.')
+        items = []
+        for h in dict.fromkeys(x for x in handles if isinstance(x, str)):
+            act = b['action']
+            res = discovery_picker.remove(conn, h) if act == 'remove' else discovery_picker.pin(conn, h, act == 'pin')
+            items.append({'handle': db.norm_handle(h), 'result': res})
+        conn.commit()
+        return {'items': items}
+
     def api_snowball(self, conn, q, b):
         """Opt-in: queue the `following` lists of good/client leads as new seeds (their people then get the same network signals)."""
         min_status = status_in(b.get('min_status', 'interested'))

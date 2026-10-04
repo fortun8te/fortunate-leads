@@ -25,6 +25,8 @@ def ensure(conn):
     conn.execute('CREATE TABLE IF NOT EXISTS collection_discovery('
                  'handle TEXT PRIMARY KEY COLLATE NOCASE,person_id INTEGER,ig_id TEXT,'
                  'state TEXT NOT NULL,at TEXT NOT NULL,reason TEXT NOT NULL,directions TEXT NOT NULL)')
+    import discovery_picker
+    discovery_picker.ensure(conn)
     for name, column in (('person', 'person_id'), ('identity', 'ig_id'), ('at', 'at')):
         conn.execute(f'CREATE INDEX IF NOT EXISTS collection_discovery_{name} ON collection_discovery({column})')
     conn.execute("CREATE INDEX IF NOT EXISTS discovery_manual_tags ON tags(lower(trim(tag)),person_id DESC) WHERE source='manual'")
@@ -81,14 +83,14 @@ LIMIT :limit
 
 
 def policy(conn):
-    value = db.get_setting(conn, discovery_policy.POLICY_KEY, discovery_policy.LEGACY)
-    return value if value in discovery_policy.POLICIES else discovery_policy.LEGACY
+    value = db.get_setting(conn, discovery_policy.POLICY_KEY, discovery_policy.ADAPTIVE)
+    return value if value in discovery_policy.POLICIES else discovery_policy.ADAPTIVE
 
 
 def set_policy(conn, value):
     """Explicit opt-in; caller owns the transaction, as with set_enabled."""
     if value not in discovery_policy.POLICIES:
-        raise ValueError('auto_discover_policy must be saved_fit or bounded_completion')
+        raise ValueError('auto_discover_policy must be saved_fit, bounded_completion or adaptive_yield')
     db.set_setting(conn, discovery_policy.POLICY_KEY, value)
 
 
@@ -180,6 +182,8 @@ def queue_when_idle(conn, row, now=None):
             or control.lane_wait(conn, row, 'list', now)
             or 'list' not in accounts.kinds_for(conn, row, ['list'], now)):
         return None
+    if policy(conn) == discovery_policy.ADAPTIVE:
+        return _adaptive_top_up(conn, now)
     if _pending_auto(conn) >= MAX_AUTO_PENDING:
         return None
     # A healthy lane finishes available work first. Future retries must not
@@ -209,3 +213,13 @@ def queue_when_idle(conn, row, now=None):
                  "VALUES(?,?,?,'queued',?,?,?)", (candidate['handle'], candidate['person_id'],candidate['ig_id'],
                                                 now.isoformat(),candidate['reason'],json.dumps(queued)))
     return dict(candidate, directions=queued)
+
+
+def _adaptive_top_up(conn, now):
+    """Keep depth x active collectors lists pending using the evidence-based picker. Guards already passed."""
+    import discovery_picker
+    rows = conn.execute('SELECT * FROM accounts').fetchall()
+    share = accounts.list_share(conn, rows)
+    active = sum(1 for r in rows if accounts.keeps_lists(conn, r, now, share))
+    added = discovery_picker.top_up(conn, active, now)
+    return added[0] if added else None
